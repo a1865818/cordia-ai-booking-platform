@@ -1,0 +1,10 @@
+{
+  "//": "Maps generated C# enum type names -> PostgreSQL enum type + member string values. Used by tools/scripts/generate_csharp_types.mjs to inject [JsonStringEnumMemberName]/[PgName] attributes for EF Core. Empty by default in the Cordia base; add an entry per pg-enum-mapped enum, e.g.:",
+  "//example": {
+    "GreetingStatusEnum": {
+      "pgEnumName": "greeting_status",
+      "members": { "Pending": "pending", "Greeted": "greeted" }
+    }
+  },
+  "enums": {}
+}

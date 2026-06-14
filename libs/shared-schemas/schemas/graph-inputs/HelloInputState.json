@@ -1,0 +1,4 @@
+{
+  "title": "HelloInputState",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/HelloInputState"
+}

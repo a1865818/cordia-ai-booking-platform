@@ -1,0 +1,27 @@
+{
+  "name": "@cordia/source",
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ],
+  "scripts": {
+    "nx": "nx",
+    "dev": "nx run-many -t serve --projects=api,langgraph",
+    "dev:log": "nx run-many -t serve-log --projects=api,langgraph,web --output-style=stream",
+    "langgraph-dev": "nx serve langgraph"
+  },
+  "devDependencies": {
+    "@nx/dotnet": "^22.7.1",
+    "@nx/js": "^22.7.1",
+    "@nx/workspace": "^22.7.1",
+    "@nxlv/python": "^22.0.0",
+    "fast-xml-parser": "^5.3.5",
+    "nx": "^22.7.1",
+    "openapi-typescript": "^7.13.0",
+    "quicktype": "^23.0.0",
+    "typescript": "~5.8.3"
+  }
+}

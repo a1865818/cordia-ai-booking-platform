@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pydantic Shared Definitions",
+  "$defs": {
+    "GreetingStatus": {
+      "description": "Lifecycle status of a greeting.",
+      "enum": [
+        "pending",
+        "greeted"
+      ],
+      "title": "GreetingStatus",
+      "type": "string"
+    },
+    "HelloConfiguration": {
+      "additionalProperties": false,
+      "description": "Configurable parameters for the hello graph.",
+      "properties": {
+        "greeting": {
+          "default": "Hello",
+          "description": "Greeting prefix to use.",
+          "title": "Greeting",
+          "type": "string"
+        }
+      },
+      "title": "HelloConfiguration",
+      "type": "object"
+    },
+    "HelloInputState": {
+      "additionalProperties": false,
+      "description": "Input to the hello graph.",
+      "properties": {
+        "name": {
+          "description": "Name of the person to greet.",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "HelloInputState",
+      "type": "object"
+    },
+    "HelloMessageCode": {
+      "description": "Discriminator for hello-graph stream messages.",
+      "enum": [
+        "started",
+        "completed"
+      ],
+      "title": "HelloMessageCode",
+      "type": "string"
+    },
+    "HelloOutputState": {
+      "additionalProperties": false,
+      "description": "Output of the hello graph.",
+      "properties": {
+        "message": {
+          "description": "The rendered greeting message.",
+          "title": "Message",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/GreetingStatus",
+          "default": "greeted",
+          "description": "Resulting greeting status."
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "HelloOutputState",
+      "type": "object"
+    },
+    "HelloStreamMessage": {
+      "additionalProperties": false,
+      "description": "A single streamed message frame from the hello graph.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/HelloMessageCode",
+          "description": "Message code discriminator."
+        },
+        "text": {
+          "description": "Human-readable message text.",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "text"
+      ],
+      "title": "HelloStreamMessage",
+      "type": "object"
+    }
+  }
+}

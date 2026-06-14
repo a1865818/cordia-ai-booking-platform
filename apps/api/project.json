@@ -1,0 +1,117 @@
+{
+  "name": "api",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/api/src",
+  "tags": ["scope:api", "type:app", "lang:csharp"],
+  "implicitDependencies": ["shared-schemas"],
+  "release": {
+    "version": {
+      "versionActions": "tools/release/dotnet-version-actions.ts"
+    }
+  },
+  "targets": {
+    "install": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet restore Cordia.sln"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["install"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet build Cordia.sln --no-restore"
+      },
+      "outputs": [
+        "{projectRoot}/src/**/bin",
+        "{projectRoot}/src/**/obj",
+        "{projectRoot}/test/**/bin",
+        "{projectRoot}/test/**/obj"
+      ]
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet watch run --project src/Cordia.Api/Cordia.Api.csproj"
+      }
+    },
+    "serve-log": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/api",
+        "command": "mkdir -p ../../.tmp && dotnet watch run --project src/Cordia.Api/Cordia.Api.csproj 2>&1 | tee ../../.tmp/api-dev.log"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet test test/Cordia.Tests/Cordia.Tests.csproj --no-restore --filter \"{args.filter}\"",
+        "filter": "Category=Unit"
+      },
+      "outputs": ["{projectRoot}/test/**/TestResults"]
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet test test/Cordia.Tests/Cordia.Tests.csproj --filter \"{args.filter}\"",
+        "filter": "Category=Integration&Category!=Manual"
+      }
+    },
+    "publish": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["install"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet publish src/Cordia.Api/Cordia.Api.csproj -c Release -o dist --no-restore"
+      },
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "package": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["publish"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "cd dist && zip -r ../api.zip ."
+      },
+      "outputs": ["{projectRoot}/api.zip"]
+    },
+    "test-coverage": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet test test/Cordia.Tests/Cordia.Tests.csproj --no-restore --filter \"{args.filter}\"",
+        "filter": "Category=Unit"
+      },
+      "outputs": ["{projectRoot}/test/**/TestResults"]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["install"],
+      "inputs": ["dotnet"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/api",
+        "command": "dotnet format --verify-no-changes --no-restore"
+      }
+    }
+  }
+}

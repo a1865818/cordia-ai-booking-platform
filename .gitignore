@@ -1,0 +1,52 @@
+# NX
+.nx/cache
+.nx/workspace-data
+node_modules/
+dist/
+
+# Dev server log files (bun run dev:log)
+.tmp/
+
+# Local environment overrides
+.env*.local
+
+# Bun
+bun.lockb
+
+# Generated types
+libs/shared-schemas/generated/
+libs/api-contract/generated/
+
+# Coverage output
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Pre-commit
+.pre-commit-cache/
+
+# Local Claude instructions (machine-specific paths)
+CLAUDE.local.md
+
+# OS
+.DS_Store
+
+.claude/worktrees
+.claude/scheduled_tasks.lock
+
+.env

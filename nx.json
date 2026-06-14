@@ -1,0 +1,141 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "sharedGlobals": [],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.test.*",
+      "!{projectRoot}/**/tests/**/*",
+      "!{projectRoot}/**/*.spec.*"
+    ],
+    "dotnet": [
+      "{projectRoot}/src/**/*.cs",
+      "{projectRoot}/src/**/*.csproj",
+      "{projectRoot}/src/**/*.props",
+      "{projectRoot}/src/**/*.targets",
+      "{projectRoot}/test/**/*.cs",
+      "{projectRoot}/test/**/*.csproj",
+      "{projectRoot}/test/**/Inputs/**/*",
+      "{projectRoot}/Cordia.sln",
+      "{workspaceRoot}/global.json",
+      "{workspaceRoot}/.editorconfig",
+      "{workspaceRoot}/libs/shared-schemas/generated/csharp/**/*.cs",
+      "!{projectRoot}/**/bin/**/*",
+      "!{projectRoot}/**/obj/**/*",
+      "!{projectRoot}/dist/**/*",
+      "!{projectRoot}/coverage*/**/*",
+      "!{projectRoot}/api.zip",
+      "!{projectRoot}/CLAUDE.md",
+      "!{projectRoot}/AGENTS.md",
+      "!{projectRoot}/README.md"
+    ],
+    "python": [
+      "{projectRoot}/cordia_agent/**/*.py",
+      "{projectRoot}/tests/unit_tests/**/*.py",
+      "{projectRoot}/pyproject.toml",
+      "{projectRoot}/uv.lock",
+      "{projectRoot}/pytest.ini",
+      "{projectRoot}/langgraph.json",
+      "{projectRoot}/langgraph.production.json",
+      "!{projectRoot}/.venv/**/*",
+      "!{projectRoot}/CLAUDE.md",
+      "!{projectRoot}/AGENTS.md",
+      "!{projectRoot}/README.md",
+      "!{projectRoot}/.env.example",
+      "!{projectRoot}/dist/**/*",
+      "!{projectRoot}/coverage*/**/*",
+      "!{projectRoot}/__pycache__/**/*",
+      "!{projectRoot}/**/__pycache__/**/*",
+      "!{projectRoot}/**/*.pyc"
+    ],
+    "typescript": [
+      "{projectRoot}/src/**/*",
+      "{projectRoot}/index.html",
+      "{projectRoot}/vite.config.ts",
+      "{projectRoot}/tsconfig.json",
+      "{projectRoot}/tsconfig.app.json",
+      "{projectRoot}/tsconfig.node.json",
+      "{projectRoot}/.oxlintrc.json",
+      "{projectRoot}/package.json",
+      "{workspaceRoot}/libs/shared-schemas/generated/typescript/**/*",
+      "{workspaceRoot}/libs/api-contract/generated/typescript/**/*",
+      "!{projectRoot}/CLAUDE.md",
+      "!{projectRoot}/AGENTS.md",
+      "!{projectRoot}/README.md",
+      "!{projectRoot}/Dockerfile",
+      "!{projectRoot}/nginx.conf",
+      "!{projectRoot}/dist/**/*",
+      "!{projectRoot}/coverage*/**/*",
+      "!{projectRoot}/node_modules/**/*"
+    ]
+  },
+  "plugins": [
+    {
+      "plugin": "@nx/dotnet",
+      "exclude": ["apps/api/**"],
+      "options": {
+        "inferredTargets": {
+          "build": true,
+          "test": "xunit",
+          "serve": true
+        }
+      }
+    },
+    {
+      "plugin": "@nxlv/python",
+      "options": {
+        "packageManager": "uv"
+      }
+    }
+  ],
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "cache": true
+    },
+    "test-coverage": {
+      "dependsOn": ["build"],
+      "cache": true
+    },
+    "lint": {
+      "cache": true
+    },
+    "generate-types": {
+      "dependsOn": ["^generate-schemas"],
+      "cache": true
+    }
+  },
+  "tui": {
+    "enabled": true,
+    "autoExit": false
+  },
+  "analytics": false,
+  "defaultBase": "main",
+  "release": {
+    "projectsRelationship": "fixed",
+    "projects": ["langgraph", "api", "web"],
+    "releaseTag": {
+      "pattern": "v{version}"
+    },
+    "version": {
+      "conventionalCommits": true
+    },
+    "changelog": {
+      "workspaceChangelog": {
+        "createRelease": "github",
+        "file": "CHANGELOG.md"
+      },
+      "projectChangelogs": false
+    },
+    "git": {
+      "commit": true,
+      "tag": true,
+      "commitMessage": "chore(release): v{version}"
+    }
+  }
+}

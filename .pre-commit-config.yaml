@@ -1,0 +1,181 @@
+# Pre-commit configuration.
+# See https://pre-commit.com
+#
+# Hooks run selectively by staged file type:
+# - Python files trigger ruff + pytest
+# - C# files trigger dotnet format + test + contract regen
+# - TypeScript files trigger oxlint
+# - All files trigger generic validators
+
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
+default_stages: [pre-commit]
+exclude: '(/|^)(\.git|\.tox|\.venv|build|dist|\.eggs|coverage|node_modules|\.nx)(/|$)'
+fail_fast: false
+minimum_pre_commit_version: '3.0.0'
+
+repos:
+# ============================================
+# PHASE 1: Fast file validators (all files)
+# ============================================
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.6.0
+  hooks:
+  - id: trailing-whitespace
+    args: [--markdown-linebreak-ext=md]
+  - id: end-of-file-fixer
+    exclude: ^CHANGELOG\.md$
+  - id: check-yaml
+    args: [--allow-multiple-documents]
+  - id: check-toml
+  - id: check-json
+    exclude: tsconfig.*\.json$
+  - id: check-added-large-files
+    args: [--maxkb=1000]
+  - id: check-merge-conflict
+  - id: mixed-line-ending
+    args: [--fix=lf]
+  - id: check-case-conflict
+  - id: check-symlinks
+
+# ============================================
+# PHASE 1b: JSONC syntax check (tsconfig files)
+# ============================================
+- repo: local
+  hooks:
+  - id: check-jsonc
+    name: Check JSONC syntax (tsconfig files)
+    language: node
+    entry: node tools/scripts/check_jsonc.js
+    additional_dependencies: ['strip-json-comments@3.1.1']
+    files: tsconfig.*\.json$
+
+# ============================================
+# PHASE 2: Python syntax & structure
+# ============================================
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.6.0
+  hooks:
+  - id: check-ast
+    types: [python]
+  - id: debug-statements
+    types: [python]
+
+# ============================================
+# PHASE 3: Python formatting (langgraph)
+# ============================================
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.4
+  hooks:
+  - id: ruff-format
+    name: Ruff format (Python)
+    types_or: [python, pyi]
+    files: ^apps/langgraph/cordia_agent/
+  - id: ruff
+    name: Ruff linter (Python)
+    args: [--fix, --exit-non-zero-on-fix]
+    types_or: [python, pyi]
+    files: ^apps/langgraph/cordia_agent/
+
+# ============================================
+# PHASE 4: Schema generation (auto-stage)
+# ============================================
+- repo: local
+  hooks:
+  - id: generate-schemas
+    name: Regenerate shared schemas
+    entry: bash -c '
+      bun nx run langgraph:generate-schemas &&
+      bun nx run shared-schemas:generate-csharp &&
+      bun nx run shared-schemas:generate-typescript &&
+      git add libs/shared-schemas/'
+    language: system
+    files: ^apps/langgraph/cordia_agent/
+    types: [python]
+    pass_filenames: false
+    stages: [pre-commit]
+
+# ============================================
+# PHASE 5: Python security scan (pre-push)
+# ============================================
+- repo: https://github.com/PyCQA/bandit
+  rev: 1.7.10
+  hooks:
+  - id: bandit
+    name: Security scan (Python)
+    args: ['-c', 'apps/langgraph/pyproject.toml']
+    additional_dependencies: ['bandit[toml]']
+    files: ^apps/langgraph/cordia_agent/
+    stages: [pre-push]
+
+# ============================================
+# PHASE 6: Python unit tests (pre-commit)
+# ============================================
+- repo: local
+  hooks:
+  - id: pytest-unit-python
+    name: Python unit tests
+    entry: bun nx run langgraph:test
+    language: system
+    types: [python]
+    files: ^apps/langgraph/(cordia_agent|tests/unit_tests)/
+    pass_filenames: false
+    stages: [pre-commit]
+
+# ============================================
+# PHASE 7: .NET format + unit tests (pre-commit), build (pre-push)
+# ============================================
+- repo: local
+  hooks:
+  - id: dotnet-format
+    name: .NET format check
+    entry: bun nx run api:lint
+    language: system
+    files: ^apps/api/.*\.(cs|csproj|sln|props|targets)$
+    pass_filenames: false
+    stages: [pre-commit]
+  - id: dotnet-test
+    name: .NET unit tests
+    entry: bun nx run api:test
+    language: system
+    files: ^apps/api/(src|test)/.*\.(cs|csproj|sln|props|targets)$
+    pass_filenames: false
+    stages: [pre-commit]
+  - id: dotnet-build
+    name: .NET build check
+    entry: bun nx run api:build
+    language: system
+    files: ^apps/api/.*\.(cs|csproj|sln|props|targets)$
+    pass_filenames: false
+    stages: [pre-push]
+  - id: api-contract-generate
+    name: Regenerate API contract
+    entry: bash -c '
+      bun nx run api-contract:generate-types &&
+      git add libs/api-contract/openapi/v1.json'
+    language: system
+    files: ^apps/api/.*\.(cs|csproj|sln|props|targets)$
+    pass_filenames: false
+    stages: [pre-commit]
+
+# ============================================
+# PHASE 8: Web lint (pre-commit)
+# ============================================
+# Web vitest runs in CI only — too slow for the local commit loop.
+- repo: local
+  hooks:
+  - id: oxlint-web
+    name: Web oxlint check
+    entry: bun nx run web:lint
+    language: system
+    files: ^apps/web/src/.*\.(ts|tsx)$
+    pass_filenames: false
+    stages: [pre-commit]
+
+# ============================================
+# PHASE 9: Commit message standards
+# ============================================
+- repo: https://github.com/commitizen-tools/commitizen
+  rev: v3.13.0
+  hooks:
+  - id: commitizen
+    stages: [commit-msg]

@@ -1,0 +1,4 @@
+{
+  "title": "HelloConfiguration",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/HelloConfiguration"
+}

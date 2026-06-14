@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- Generated types from shared-schemas (Pydantic -> JSON Schema -> C#) -->
+  <ItemGroup>
+    <Compile Include="..\..\..\..\libs\shared-schemas\generated\csharp\SharedTypes.cs" Link="Generated\SharedTypes.cs" Condition="Exists('..\..\..\..\libs\shared-schemas\generated\csharp\SharedTypes.cs')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.2" />
+  </ItemGroup>
+</Project>

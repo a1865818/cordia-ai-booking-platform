@@ -1,0 +1,44 @@
+{
+  "name": "shared-schemas",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "library",
+  "sourceRoot": "libs/shared-schemas/schemas",
+  "tags": ["scope:shared", "type:schemas"],
+  "implicitDependencies": ["langgraph"],
+  "targets": {
+    "generate-csharp": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["langgraph:generate-schemas"],
+      "inputs": [
+        "{projectRoot}/schemas/**/*",
+        "{workspaceRoot}/tools/scripts/generate_csharp_types.mjs",
+        "{workspaceRoot}/tools/config/ef-enum-mappings.json"
+      ],
+      "options": {
+        "cwd": "libs/shared-schemas",
+        "command": "node ../../tools/scripts/generate_csharp_types.mjs"
+      },
+      "outputs": ["{projectRoot}/generated/csharp"]
+    },
+    "generate-typescript": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["langgraph:generate-schemas"],
+      "inputs": [
+        "{projectRoot}/schemas/**/*",
+        "{workspaceRoot}/tools/scripts/generate_typescript_types.mjs"
+      ],
+      "options": {
+        "cwd": "libs/shared-schemas",
+        "command": "node ../../tools/scripts/generate_typescript_types.mjs"
+      },
+      "outputs": ["{projectRoot}/generated/typescript"]
+    },
+    "generate-types": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["generate-csharp", "generate-typescript"],
+      "options": {
+        "command": "echo 'All types generated successfully'"
+      }
+    }
+  }
+}
