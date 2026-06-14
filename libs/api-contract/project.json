@@ -1,0 +1,35 @@
+{
+  "name": "api-contract",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "library",
+  "sourceRoot": "libs/api-contract/openapi",
+  "tags": ["scope:shared", "type:contract", "lang:typescript"],
+  "implicitDependencies": ["api"],
+  "targets": {
+    "export-openapi": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["api:build"],
+      "options": {
+        "cwd": "libs/api-contract",
+        "command": "node ../../tools/scripts/export_openapi.mjs ../../apps/api/src/Cordia.Api/Cordia.Api.csproj ./openapi/v1.json {args.configuration}"
+      },
+      "outputs": ["{projectRoot}/openapi/v1.json"]
+    },
+    "generate-types": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["export-openapi"],
+      "options": {
+        "cwd": "libs/api-contract",
+        "command": "node ../../tools/scripts/generate_openapi_types.mjs ./openapi/v1.json ./generated/typescript/index.ts"
+      },
+      "outputs": ["{projectRoot}/generated/typescript/index.ts"]
+    },
+    "generate-contract": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["generate-types"],
+      "options": {
+        "command": "echo 'OpenAPI contract generated successfully'"
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@cordia/shared-schemas",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./generated/typescript/index.ts",
+  "types": "./generated/typescript/index.ts",
+  "exports": {
+    ".": {
+      "types": "./generated/typescript/index.ts",
+      "import": "./generated/typescript/index.ts",
+      "default": "./generated/typescript/index.ts"
+    },
+    "./zod": {
+      "types": "./generated/typescript/zod.ts",
+      "import": "./generated/typescript/zod.ts",
+      "default": "./generated/typescript/zod.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  }
+}
