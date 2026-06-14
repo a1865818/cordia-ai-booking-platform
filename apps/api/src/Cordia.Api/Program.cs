@@ -42,7 +42,17 @@ app.UseSerilogRequestLogging();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors(CorsPolicy);
+
+// Serve the bundled SPA (present in the combined Docker image under wwwroot/).
+// Harmless in dev where wwwroot is empty.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapControllers();
+
+// Client-side routes fall back to the SPA shell. Controller routes (/api/*) and
+// Swagger are matched first, so only unmatched non-API paths hit index.html.
+app.MapFallbackToFile("index.html");
 
 await app.RunAsync();
 
