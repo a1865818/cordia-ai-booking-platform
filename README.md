@@ -1,4 +1,4 @@
-# Cordia
+# Cordia monorepo
 
 Agentic booking software.
 
