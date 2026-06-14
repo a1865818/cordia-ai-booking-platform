@@ -1,0 +1,156 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cordia_agent"
+version = "0.0.1"
+description = "Cordia LangGraph agent server"
+authors = [
+    {name = "Harry Nguyen", email = "Harry.Nguyen@insightfactory.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # LangChain / LangGraph core
+    "langchain-openai",
+    "langgraph-api",
+    "langsmith",
+    "langgraph-cli[inmem]>=0.3.3",
+    "langgraph>=1.0.0,<2.0.0",
+    "langchain>=1.0.0,<2.0.0",
+    "langchain-core>=1.0.0,<2.0.0",
+
+    # Persistence
+    "langgraph-checkpoint-postgres>=3.0.0,<4.0.0",
+    "psycopg[binary,pool]>=3.2.10,<4.0.0",
+
+    # Utilities
+    "pydantic>=2.7.0,<3.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cordia_agent"]
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    # Testing
+    "coverage>=7.9.1,<8.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest>=8.4.1,<9.0.0",
+    "pytest-asyncio>=0.25.0,<0.26.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
+    # Linting / formatting
+    "ruff>=0.12.4,<0.13.0",
+    # Security scanning
+    "bandit[toml]>=1.7.10,<2.0.0",
+    # Commit standards
+    "commitizen>=3.13.0,<4.0.0",
+    # Pre-commit
+    "pre-commit>=4.2.0,<5.0.0",
+    # LangGraph client (for scripts / notebooks)
+    "langgraph-sdk>=0.2.6",
+    "dotenv>=0.9.9,<0.10.0",
+]
+
+[tool.pyright]
+typeCheckingMode = "off"
+
+[tool.coverage.html]
+directory = "coverage/html"
+
+[tool.coverage.xml]
+output = "coverage/coverage.xml"
+
+[tool.coverage.run]
+data_file = "coverage/.coverage"
+
+# ============================================
+# Ruff Configuration
+# ============================================
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["cordia_agent"]
+exclude = [
+    ".git",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".vscode",
+    "__pycache__",
+    "_build",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "ASYNC",  # flake8-async (critical for LangGraph)
+    "TC",     # flake8-type-checking
+    "PERF",   # Perflint
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**/*.py" = ["ASYNC"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cordia_agent"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+lines-after-imports = 2
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "pydantic.RootModel",
+    "langgraph.graph.state.StateGraph",
+]
+runtime-evaluated-decorators = [
+    "pydantic.validate_call",
+    "pydantic.dataclasses.dataclass",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = false
+
+# ============================================
+# Bandit Security Scanner Configuration
+# ============================================
+
+[tool.bandit]
+targets = ["cordia_agent"]
+exclude_dirs = ["tests", ".venv", ".tox", ".git", "__pycache__"]
+skips = []
+severity = "medium"
+confidence = "medium"
+format = "txt"
+verbose = true

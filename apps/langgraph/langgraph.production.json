@@ -1,0 +1,9 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "hello_graph": "cordia_agent/__init__.py:hello_graph"
+  },
+  "env": ".env",
+  "python_version": "3.12",
+  "image_distro": "wolfi"
+}

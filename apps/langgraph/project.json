@@ -1,0 +1,152 @@
+{
+  "name": "langgraph",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/langgraph/cordia_agent",
+  "tags": ["scope:ai", "type:app", "lang:python"],
+  "release": {
+    "version": {
+      "versionActions": "tools/release/python-version-actions.ts"
+    }
+  },
+  "targets": {
+    "sync": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv sync {args.flags}",
+        "flags": ""
+      }
+    },
+    "install": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["sync"],
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run pre-commit install --install-hooks"
+      }
+    },
+    "upgrade": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv lock --upgrade && uv sync && uv run pre-commit install --install-hooks"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["sync"],
+      "inputs": ["python"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv build"
+      },
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run langgraph dev --no-browser --port 2024 --debug-port 5678"
+      }
+    },
+    "serve-log": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "mkdir -p ../../.tmp && uv run langgraph dev --no-browser --port 2024 --debug-port 5678 2>&1 | tee ../../.tmp/langgraph-dev.log"
+      }
+    },
+    "serve-docker": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run langgraph up -c langgraph.production.json --watch --port 8123 --postgres-uri postgresql://cordia:localdev@host.docker.internal:5432/Cordia_Agent?sslmode=disable"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["sync"],
+      "inputs": ["python"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run pytest tests/unit_tests -n auto -v --tb=short"
+      }
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run pytest tests/integration_tests -n auto -v --tb=short"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["sync"],
+      "inputs": [
+        "{projectRoot}/cordia_agent/**/*.py",
+        "{projectRoot}/pyproject.toml"
+      ],
+      "cache": true,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run ruff check cordia_agent/"
+      }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run ruff format cordia_agent/"
+      }
+    },
+    "test-coverage": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["sync"],
+      "inputs": ["python"],
+      "cache": true,
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "uv run pytest tests/unit_tests -n auto -v --cov=cordia_agent --cov-report=xml:coverage/coverage.xml"
+      },
+      "outputs": ["{projectRoot}/coverage"]
+    },
+    "docker-build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "bash scripts/build_image.sh {args.tag} {args.platform}",
+        "tag": "cordia-langgraph",
+        "platform": "linux/amd64"
+      }
+    },
+    "generate-schemas": {
+      "executor": "nx:run-commands",
+      "dependsOn": [],
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/cordia_agent/**/*.py",
+        "{projectRoot}/langgraph.json",
+        "{workspaceRoot}/tools/scripts/export_pydantic_schemas.py"
+      ],
+      "options": {
+        "cwd": "apps/langgraph",
+        "command": "BUILDING=true uv run python ../../tools/scripts/export_pydantic_schemas.py"
+      },
+      "outputs": [
+        "{workspaceRoot}/libs/shared-schemas/schemas/enums",
+        "{workspaceRoot}/libs/shared-schemas/schemas/models",
+        "{workspaceRoot}/libs/shared-schemas/schemas/graph-inputs",
+        "{workspaceRoot}/libs/shared-schemas/schemas/graph-outputs",
+        "{workspaceRoot}/libs/shared-schemas/schemas/configurations",
+        "{workspaceRoot}/libs/shared-schemas/schemas/streaming",
+        "{workspaceRoot}/libs/shared-schemas/schemas/shared"
+      ]
+    }
+  }
+}

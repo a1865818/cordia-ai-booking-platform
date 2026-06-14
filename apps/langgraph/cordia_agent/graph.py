@@ -1,0 +1,44 @@
+"""The Cordia hello graph — a minimal LangGraph workflow.
+
+A single-node graph that renders a greeting. Serves as the working template for
+real graphs and exercises the Pydantic -> JSON Schema -> C#/TS type pipeline.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from langgraph.graph import END, START, StateGraph
+
+from cordia_agent.configurations import HelloConfiguration
+from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
+
+
+if TYPE_CHECKING:
+    from langgraph.runtime import Runtime
+
+
+async def greet(state: HelloInputState, runtime: Runtime[HelloConfiguration]) -> HelloOutputState:
+    """Render a greeting for the given name."""
+    greeting = runtime.context.greeting if runtime.context else "Hello"
+    return HelloOutputState(
+        message=f"{greeting}, {state.name}!",
+        status=GreetingStatus.GREETED,
+    )
+
+
+def build_hello_graph() -> StateGraph:
+    """Construct and compile the hello graph."""
+    builder = StateGraph(
+        state_schema=HelloOutputState,
+        input_schema=HelloInputState,
+        output_schema=HelloOutputState,
+        context_schema=HelloConfiguration,
+    )
+    builder.add_node("greet", greet)
+    builder.add_edge(START, "greet")
+    builder.add_edge("greet", END)
+    return builder.compile()
+
+
+hello_graph = build_hello_graph()
