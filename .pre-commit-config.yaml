@@ -151,7 +151,7 @@ repos:
     name: Regenerate API contract
     entry: bash -c '
       bun nx run api-contract:generate-types &&
-      git add libs/api-contract/openapi/v1.json libs/api-contract/generated/'
+      git add libs/api-contract/openapi/v1.json'
     language: system
     files: ^apps/api/.*\.(cs|csproj|sln|props|targets)$
     pass_filenames: false

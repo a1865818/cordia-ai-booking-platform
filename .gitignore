@@ -17,6 +17,9 @@ bun.lockb
 libs/shared-schemas/generated/
 libs/api-contract/generated/
 
+# Coverage output
+coverage/
+
 # Python
 __pycache__/
 *.py[cod]
