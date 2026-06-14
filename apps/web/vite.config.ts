@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig(({ command, mode }) => {
+export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   // Point `bun nx serve web` at any API (local or hosted) via VITE_API_PROXY_TARGET.
   const proxyTarget = env.VITE_API_PROXY_TARGET ?? "https://localhost:8001";
