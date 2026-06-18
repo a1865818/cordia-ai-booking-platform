@@ -49,4 +49,7 @@ CLAUDE.local.md
 .claude/worktrees
 .claude/scheduled_tasks.lock
 
+# HumanLayer workspace local config
+.humanlayer/workspace.local.json
+
 .env
