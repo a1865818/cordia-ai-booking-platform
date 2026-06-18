@@ -55,3 +55,7 @@ validators (`libs/shared-schemas/generated/typescript/`). The .NET API's OpenAPI
 document feeds `libs/api-contract` for the web app's request/response types.
 
 See `CLAUDE.md` for the full architecture and command reference.
+
+## Architecture
+
+- [Booking Agent and Reliable Fulfillment Design](docs/booking-agent-reliability-design.md)
