@@ -29,6 +29,8 @@ from typing import Any
 from cordia_agent.configurations import HelloConfiguration
 from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
 from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
+from cordia_agent.tools.contracts import ToolResultEnvelope
+from cordia_agent.tools.status_codes import AvailabilityMode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,11 +45,11 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     "graph-outputs": [HelloOutputState],
     "configurations": [HelloConfiguration],
     "streaming": [HelloStreamMessage],
-    "models": [],
+    "models": [ToolResultEnvelope],
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode]
+ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode, AvailabilityMode]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [

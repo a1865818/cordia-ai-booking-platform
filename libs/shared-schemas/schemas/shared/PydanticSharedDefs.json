@@ -2,6 +2,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pydantic Shared Definitions",
   "$defs": {
+    "AvailabilityMode": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AvailabilityMode",
+      "description": "Availability mode bounding agent wording (owned by spec 07).",
+      "type": "string",
+      "enum": [
+        "informational",
+        "live",
+        "held",
+        "confirmed"
+      ]
+    },
     "GreetingStatus": {
       "description": "Lifecycle status of a greeting.",
       "enum": [
@@ -90,6 +102,88 @@
         "text"
       ],
       "title": "HelloStreamMessage",
+      "type": "object"
+    },
+    "ToolResultEnvelope": {
+      "additionalProperties": false,
+      "description": "Single closed wrapper returned by every tool (spec 03 \u00a74.2).",
+      "properties": {
+        "ok": {
+          "description": "Machine-readable success/failure.",
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Per-tool status code; never raw error text.",
+          "title": "Status",
+          "type": "string"
+        },
+        "customer_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Safe customer-facing string; never raw provider text.",
+          "title": "Customer Hint"
+        },
+        "recoverable_fields": {
+          "description": "Fields the agent may re-prompt to correct.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Recoverable Fields",
+          "type": "array"
+        },
+        "suggested_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Machine hint for next move, e.g. request_alternative_time.",
+          "title": "Suggested Action"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tool-specific typed payload (per-tool Out schemas).",
+          "title": "Data"
+        },
+        "correlation_id": {
+          "description": "Propagated from the typed tool client; consumed by observability.",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "description": "Cross-language contract version.",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "status",
+        "correlation_id",
+        "schema_version"
+      ],
+      "title": "ToolResultEnvelope",
       "type": "object"
     }
   }

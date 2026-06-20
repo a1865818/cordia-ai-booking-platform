@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AvailabilityMode",
+  "description": "Availability mode bounding agent wording (owned by spec 07).",
+  "type": "string",
+  "enum": [
+    "informational",
+    "live",
+    "held",
+    "confirmed"
+  ]
+}

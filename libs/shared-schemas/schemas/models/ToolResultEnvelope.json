@@ -1,0 +1,4 @@
+{
+  "title": "ToolResultEnvelope",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/ToolResultEnvelope"
+}
