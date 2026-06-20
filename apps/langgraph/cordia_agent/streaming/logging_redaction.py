@@ -8,7 +8,8 @@ from typing import Any
 from pydantic import BaseModel
 
 
-REDACTION_TOKEN = "[REDACTED]"
+# Log scrub placeholder aligned with spec 14 RedactionPolicy.mask_token.
+REDACTION_TOKEN = "[REDACTED]"  # nosec B105
 
 SENSITIVE_DIGIT_FIELD_NAMES = frozenset(
     {
