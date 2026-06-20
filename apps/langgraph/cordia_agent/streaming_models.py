@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.state import StreamFrameType
 
@@ -32,7 +32,7 @@ class StreamFrameEnvelope(BaseModel):
         default=None, description="Event-lineage parent id."
     )
     seq: int = Field(ge=0, description="Monotonic per-session ordering counter.")
-    ts: str = Field(description="ISO-8601 timestamp with offset.")
+    ts: AwareDatetime = Field(description="ISO-8601 timestamp with offset.")
 
 
 class AudioStartedFrame(StreamFrameEnvelope):
