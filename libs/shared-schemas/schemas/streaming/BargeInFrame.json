@@ -1,0 +1,4 @@
+{
+  "title": "BargeInFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/BargeInFrame"
+}

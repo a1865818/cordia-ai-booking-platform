@@ -2,6 +2,298 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pydantic Shared Definitions",
   "$defs": {
+    "AgentTextDeltaFrame": {
+      "additionalProperties": false,
+      "description": "Incremental agent response text chunk.",
+      "properties": {
+        "type": {
+          "const": "agent.text.delta",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "delta": {
+          "description": "Incremental agent response text chunk.",
+          "title": "Delta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "delta"
+      ],
+      "title": "AgentTextDeltaFrame",
+      "type": "object"
+    },
+    "AgentTextFinalFrame": {
+      "additionalProperties": false,
+      "description": "Final, complete agent response text.",
+      "properties": {
+        "type": {
+          "const": "agent.text.final",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "text": {
+          "description": "Final, complete agent response text.",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "text"
+      ],
+      "title": "AgentTextFinalFrame",
+      "type": "object"
+    },
+    "AudioStartedFrame": {
+      "additionalProperties": false,
+      "description": "Audio capture started; no payload beyond the envelope.",
+      "properties": {
+        "type": {
+          "const": "audio.started",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts"
+      ],
+      "title": "AudioStartedFrame",
+      "type": "object"
+    },
+    "AvailabilityMode": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AvailabilityMode",
+      "description": "Availability mode bounding agent wording (owned by spec 07).",
+      "type": "string",
+      "enum": [
+        "informational",
+        "live",
+        "held",
+        "confirmed"
+      ]
+    },
+    "BargeInFrame": {
+      "additionalProperties": false,
+      "description": "Caller barge-in detected; no payload beyond the envelope.",
+      "properties": {
+        "type": {
+          "const": "barge_in.detected",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts"
+      ],
+      "title": "BargeInFrame",
+      "type": "object"
+    },
     "BookingDraft": {
       "additionalProperties": false,
       "description": "In-dialog typed booking draft; source of the canonical submitted payload.",
@@ -265,6 +557,17 @@
       "title": "CaptureMethod",
       "type": "string"
     },
+    "CatalogItemStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CatalogItemStatus",
+      "description": "Status codes shared by search_vendor_catalog and get_catalog_item (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "not_found",
+        "catalog_unavailable"
+      ]
+    },
     "Channel": {
       "description": "Origin channel a draft was captured on.",
       "enum": [
@@ -275,6 +578,31 @@
       ],
       "title": "Channel",
       "type": "string"
+    },
+    "CheckCandidateAvailabilityStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CheckCandidateAvailabilityStatus",
+      "description": "Status codes for check_candidate_availability (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "available",
+        "available_pending",
+        "unavailable",
+        "held",
+        "hold_failed"
+      ]
+    },
+    "CheckVerificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CheckVerificationStatus",
+      "description": "Status codes for check_verification (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "granted",
+        "pending",
+        "failed",
+        "expired"
+      ]
     },
     "CustomerRef": {
       "additionalProperties": false,
@@ -412,6 +740,49 @@
       "title": "FieldValidation",
       "type": "string"
     },
+    "FindCustomerContextStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "FindCustomerContextStatus",
+      "description": "Status codes for find_customer_context (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "found",
+        "multiple",
+        "none"
+      ]
+    },
+    "FindManageableBookingsStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "FindManageableBookingsStatus",
+      "description": "Status codes for find_manageable_bookings (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "found",
+        "multiple",
+        "none"
+      ]
+    },
+    "GetBookingDetailsStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GetBookingDetailsStatus",
+      "description": "Status codes for get_booking_details (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "requires_verification",
+        "not_found"
+      ]
+    },
+    "GetTenantContextStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GetTenantContextStatus",
+      "description": "Status codes for get_tenant_context (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "resolved",
+        "tenant_not_resolved"
+      ]
+    },
     "GreetingStatus": {
       "description": "Lifecycle status of a greeting.",
       "enum": [
@@ -451,15 +822,6 @@
       "title": "HelloInputState",
       "type": "object"
     },
-    "HelloMessageCode": {
-      "description": "Discriminator for hello-graph stream messages.",
-      "enum": [
-        "started",
-        "completed"
-      ],
-      "title": "HelloMessageCode",
-      "type": "string"
-    },
     "HelloOutputState": {
       "additionalProperties": false,
       "description": "Output of the hello graph.",
@@ -481,27 +843,6 @@
       "title": "HelloOutputState",
       "type": "object"
     },
-    "HelloStreamMessage": {
-      "additionalProperties": false,
-      "description": "A single streamed message frame from the hello graph.",
-      "properties": {
-        "code": {
-          "$ref": "#/$defs/HelloMessageCode",
-          "description": "Message code discriminator."
-        },
-        "text": {
-          "description": "Human-readable message text.",
-          "title": "Text",
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "text"
-      ],
-      "title": "HelloStreamMessage",
-      "type": "object"
-    },
     "OperationType": {
       "description": "Booking operation requested by the customer.",
       "enum": [
@@ -512,6 +853,29 @@
       ],
       "title": "OperationType",
       "type": "string"
+    },
+    "RequestHumanHandoffStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RequestHumanHandoffStatus",
+      "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "created",
+        "existing",
+        "routing_unavailable"
+      ]
+    },
+    "RequestVerificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RequestVerificationStatus",
+      "description": "Status codes for request_verification (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "sent",
+        "already_sent",
+        "rate_limited",
+        "no_verified_destination"
+      ]
     },
     "SourceInfo": {
       "additionalProperties": false,
@@ -534,6 +898,399 @@
       "title": "SourceInfo",
       "type": "object"
     },
+    "StreamFrameType": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "StreamFrameType",
+      "description": "Discriminator for streaming voice-pipeline frames (spec 01 \u00a75.1 / \u00a76.3).",
+      "type": "string",
+      "enum": [
+        "audio.started",
+        "transcript.partial",
+        "transcript.final",
+        "agent.text.delta",
+        "agent.text.final",
+        "tool.progress",
+        "tts.audio.delta",
+        "barge_in.detected",
+        "turn.cancelled"
+      ]
+    },
+    "SubmitBookingCancellationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitBookingCancellationStatus",
+      "description": "Status codes for submit_booking_cancellation (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "already_cancelled",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "stale_version",
+        "verification_required"
+      ]
+    },
+    "SubmitBookingModificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitBookingModificationStatus",
+      "description": "Status codes for submit_booking_modification (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "stale_version",
+        "verification_required",
+        "confirmation_invalid"
+      ]
+    },
+    "SubmitConfirmedIntentStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitConfirmedIntentStatus",
+      "description": "Status codes for submit_confirmed_intent (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "confirmation_invalid",
+        "policy_failed",
+        "validation_failed"
+      ]
+    },
+    "ToolProgressFrame": {
+      "additionalProperties": false,
+      "description": "Progress signal for an in-flight tool invocation.",
+      "properties": {
+        "type": {
+          "const": "tool.progress",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Name of the tool being invoked.",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "phase": {
+          "description": "Progress phase, e.g. \"checking_availability\".",
+          "title": "Phase",
+          "type": "string"
+        },
+        "elapsed_ms": {
+          "description": "Elapsed time since invocation, in milliseconds.",
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "tool_name",
+        "phase",
+        "elapsed_ms"
+      ],
+      "title": "ToolProgressFrame",
+      "type": "object"
+    },
+    "ToolResultEnvelope": {
+      "additionalProperties": false,
+      "description": "Single closed wrapper returned by every tool (spec 03 \u00a74.2).",
+      "properties": {
+        "ok": {
+          "description": "Machine-readable success/failure.",
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Per-tool status code; never raw error text.",
+          "title": "Status",
+          "type": "string"
+        },
+        "customer_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Safe customer-facing string; never raw provider text.",
+          "title": "Customer Hint"
+        },
+        "recoverable_fields": {
+          "description": "Fields the agent may re-prompt to correct.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Recoverable Fields",
+          "type": "array"
+        },
+        "suggested_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Machine hint for next move, e.g. request_alternative_time.",
+          "title": "Suggested Action"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tool-specific typed payload (per-tool Out schemas).",
+          "title": "Data"
+        },
+        "correlation_id": {
+          "description": "Propagated from the typed tool client; consumed by observability.",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0.0",
+          "description": "Cross-language contract version.",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "status",
+        "correlation_id"
+      ],
+      "title": "ToolResultEnvelope",
+      "type": "object"
+    },
+    "TranscriptFinalFrame": {
+      "additionalProperties": false,
+      "description": "Committable final transcript (Inv-1: only finals may mutate booking state).",
+      "properties": {
+        "type": {
+          "const": "transcript.final",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "text": {
+          "description": "Final recognized transcript text.",
+          "title": "Text",
+          "type": "string"
+        },
+        "asr_confidence": {
+          "description": "ASR confidence, 0..1.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Asr Confidence",
+          "type": "number"
+        },
+        "is_endpoint": {
+          "default": true,
+          "description": "Whether this marks an utterance endpoint.",
+          "title": "Is Endpoint",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "text",
+        "asr_confidence"
+      ],
+      "title": "TranscriptFinalFrame",
+      "type": "object"
+    },
+    "TranscriptPartialFrame": {
+      "additionalProperties": false,
+      "description": "Interim transcript for display/barge-in only (Inv-1: never committable).",
+      "properties": {
+        "type": {
+          "const": "transcript.partial",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "text": {
+          "description": "Interim recognized transcript text.",
+          "title": "Text",
+          "type": "string"
+        },
+        "stability": {
+          "description": "Provider stability hint (unbounded).",
+          "title": "Stability",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "text",
+        "stability"
+      ],
+      "title": "TranscriptPartialFrame",
+      "type": "object"
+    },
     "TriState": {
       "description": "Why an optional field has no concrete value (carried inline on each capture field).",
       "enum": [
@@ -543,6 +1300,192 @@
       ],
       "title": "TriState",
       "type": "string"
+    },
+    "TtsAudioDeltaFrame": {
+      "additionalProperties": false,
+      "description": "Reference to a synthesized audio chunk (bytes travel on the media plane).",
+      "properties": {
+        "type": {
+          "const": "tts.audio.delta",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "audio_chunk_ref": {
+          "description": "Opaque chunk id; raw bytes are out of band on the media plane.",
+          "title": "Audio Chunk Ref",
+          "type": "string"
+        },
+        "chunk_seq": {
+          "description": "Monotonic ordering counter for audio chunks.",
+          "minimum": 0,
+          "title": "Chunk Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "audio_chunk_ref",
+        "chunk_seq"
+      ],
+      "title": "TtsAudioDeltaFrame",
+      "type": "object"
+    },
+    "TurnCancelledFrame": {
+      "additionalProperties": false,
+      "description": "Turn cancelled; gates the Inv-16 non-authoritative rule.",
+      "properties": {
+        "type": {
+          "const": "turn.cancelled",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "seq": {
+          "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "ts": {
+          "description": "ISO-8601 timestamp with offset.",
+          "title": "Ts",
+          "type": "string"
+        },
+        "cancelled_turn_id": {
+          "description": "Identifier of the cancelled turn.",
+          "title": "Cancelled Turn Id",
+          "type": "string"
+        },
+        "material_content_delivered": {
+          "description": "Whether material content was delivered before cancellation (Inv-16: false => interrupted speech is non-authoritative).",
+          "title": "Material Content Delivered",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "seq",
+        "ts",
+        "cancelled_turn_id",
+        "material_content_delivered"
+      ],
+      "title": "TurnCancelledFrame",
+      "type": "object"
+    },
+    "ValidateBookingChangeStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ValidateBookingChangeStatus",
+      "description": "Status codes for validate_booking_change (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "valid",
+        "policy_failed",
+        "stale_version",
+        "capacity_unavailable"
+      ]
+    },
+    "ValidateBookingDraftStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ValidateBookingDraftStatus",
+      "description": "Status codes for validate_booking_draft (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "valid",
+        "minimum_notice_not_met",
+        "outside_operating_hours",
+        "party_size_unsupported",
+        "service_ineligible",
+        "field_missing",
+        "field_ambiguous"
+      ]
     }
   }
 }

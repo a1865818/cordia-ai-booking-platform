@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GetTenantContextStatus",
+  "description": "Status codes for get_tenant_context (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "resolved",
+    "tenant_not_resolved"
+  ]
+}

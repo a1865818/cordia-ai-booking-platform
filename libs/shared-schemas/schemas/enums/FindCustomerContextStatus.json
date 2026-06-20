@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FindCustomerContextStatus",
+  "description": "Status codes for find_customer_context (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "found",
+    "multiple",
+    "none"
+  ]
+}

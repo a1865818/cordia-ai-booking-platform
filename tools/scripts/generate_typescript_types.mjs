@@ -137,6 +137,106 @@ function applyStrictToClosedSchemas(content, closedTitles) {
 }
 
 /**
+ * Recursively collect per-property numeric bounds (`minimum`/`maximum`/
+ * `exclusiveMinimum`/`exclusiveMaximum`) declared on `number`/`integer`
+ * properties of every titled object schema, keyed by `"<title>.<propertyName>"`.
+ *
+ * quicktype's `typescript-zod` target emits plain `z.number()` and drops these
+ * range keywords entirely, so a bounded field like `asr_confidence` (0..1) would
+ * validate any number at web runtime. We re-apply them as Zod refinements (see
+ * {@link applyNumericBoundsToSchemas}) so the source-of-truth constraint is
+ * actually enforced. The object `title` maps 1:1 onto the emitted
+ * `export const <title>Schema` const, exactly like {@link collectClosedSchemaTitles}.
+ *
+ * @param {string[]} absoluteSchemaFiles - Absolute paths to every schema JSON
+ *   file (including shared-def files, whose `$defs` carry the flattened props).
+ * @returns {Map<string, {gte?: number, lte?: number, gt?: number, lt?: number}>}
+ */
+function collectNumericBounds(absoluteSchemaFiles) {
+  const bounds = new Map();
+
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+
+    if (typeof node.title === "string" && node.properties && typeof node.properties === "object") {
+      for (const [propName, prop] of Object.entries(node.properties)) {
+        if (!prop || typeof prop !== "object") continue;
+        if (prop.type !== "number" && prop.type !== "integer") continue;
+        const constraint = {};
+        if (typeof prop.minimum === "number") constraint.gte = prop.minimum;
+        if (typeof prop.maximum === "number") constraint.lte = prop.maximum;
+        if (typeof prop.exclusiveMinimum === "number") constraint.gt = prop.exclusiveMinimum;
+        if (typeof prop.exclusiveMaximum === "number") constraint.lt = prop.exclusiveMaximum;
+        if (Object.keys(constraint).length > 0) {
+          bounds.set(`${node.title}.${propName}`, constraint);
+        }
+      }
+    }
+
+    for (const value of Object.values(node)) walk(value);
+  };
+
+  for (const file of absoluteSchemaFiles) {
+    try {
+      walk(JSON.parse(fs.readFileSync(file, "utf8")));
+    } catch (err) {
+      console.warn(`Warning: could not parse ${file} for numeric-bound detection: ${err.message}`);
+    }
+  }
+
+  return bounds;
+}
+
+/**
+ * Re-apply numeric range refinements that `typescript-zod` drops: append
+ * `.gte()/.lte()/.gt()/.lt()` to the `z.number()` of each property whose source
+ * JSON Schema declared a `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`
+ * (see {@link collectNumericBounds}). Chained refinements are inserted directly
+ * after `z.number()`, so they compose with any trailing `.optional()` quicktype
+ * already emitted (`z.number().optional()` → `z.number().gte(0).lte(1).optional()`).
+ *
+ * @param {string} content - The zod.ts source.
+ * @param {Map<string, {gte?: number, lte?: number, gt?: number, lt?: number}>} bounds
+ * @returns {{content: string, applied: number, unmatched: string[]}}
+ */
+function applyNumericBoundsToSchemas(content, bounds) {
+  let applied = 0;
+  const unmatched = [];
+
+  for (const [key, constraint] of bounds) {
+    const [title, propName] = key.split(/\.(.+)/);
+    const refinements =
+      (constraint.gte !== undefined ? `.gte(${constraint.gte})` : "") +
+      (constraint.lte !== undefined ? `.lte(${constraint.lte})` : "") +
+      (constraint.gt !== undefined ? `.gt(${constraint.gt})` : "") +
+      (constraint.lt !== undefined ? `.lt(${constraint.lt})` : "");
+
+    const escTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escProp = propName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Scope the match to the property line inside this title's z.object block,
+    // anchoring on the const declaration so a same-named property on another
+    // schema isn't touched.
+    const re = new RegExp(
+      String.raw`(export const ${escTitle}Schema = z\.object\(\{[\s\S]*?"${escProp}":\s*z\.number\(\))`,
+      "m"
+    );
+    const next = content.replace(re, `$1${refinements}`);
+    if (next !== content) {
+      applied += 1;
+      content = next;
+    } else {
+      unmatched.push(key);
+    }
+  }
+
+  return { content, applied, unmatched };
+}
+
+/**
  * Replace quicktype's `Date` interface type (emitted in the `--just-types`
  * `index.ts` for every `format: date-time` / `date` / `time` field) with
  * `string`, so the canonical TS types match both the JSON wire (datetimes are
@@ -251,6 +351,28 @@ async function generateZodSchemas(relativeSchemaFiles) {
         `with no matching z.object const in zod.ts: ${unmatched.join(", ")}. ` +
         `Each closed schema's "title" must match quicktype's generated type name, ` +
         `otherwise its closed contract is not enforced at web runtime.`
+    );
+  }
+
+  // Re-apply numeric range refinements that `typescript-zod` drops: append
+  // `.gte()/.lte()/.gt()/.lt()` to `z.number()` properties whose source JSON
+  // Schema declared min/max bounds (e.g. asr_confidence 0..1). See
+  // {@link applyNumericBoundsToSchemas}.
+  const numericBounds = collectNumericBounds(findJsonFiles(SCHEMAS_DIR));
+  const {
+    content: boundedContent,
+    applied: boundsApplied,
+    unmatched: boundsUnmatched,
+  } = applyNumericBoundsToSchemas(content, numericBounds);
+  content = boundedContent;
+  console.log(
+    `Applied numeric bounds to ${boundsApplied} field(s) ` +
+      `(${numericBounds.size} bounded field(s) detected).`
+  );
+  if (boundsUnmatched.length > 0) {
+    console.warn(
+      `Warning: numeric bounds NOT applied to ${boundsUnmatched.length} field(s) ` +
+        `with no matching z.number() property in zod.ts: ${boundsUnmatched.join(", ")}.`
     );
   }
 

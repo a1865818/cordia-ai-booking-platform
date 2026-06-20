@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SubmitBookingModificationStatus",
+  "description": "Status codes for submit_booking_modification (spec 03 \u00a74.4).",
+  "type": "string",
+  "enum": [
+    "accepted",
+    "duplicate_accepted",
+    "idempotency_conflict",
+    "stale_version",
+    "verification_required",
+    "confirmation_invalid"
+  ]
+}

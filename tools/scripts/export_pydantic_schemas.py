@@ -38,9 +38,38 @@ from cordia_agent.state import (
     HelloInputState,
     HelloOutputState,
     OperationType,
+    StreamFrameType,
     TriState,
 )
-from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
+from cordia_agent.streaming_models import (
+    AgentTextDeltaFrame,
+    AgentTextFinalFrame,
+    AudioStartedFrame,
+    BargeInFrame,
+    ToolProgressFrame,
+    TranscriptFinalFrame,
+    TranscriptPartialFrame,
+    TtsAudioDeltaFrame,
+    TurnCancelledFrame,
+)
+from cordia_agent.tools.contracts import ToolResultEnvelope
+from cordia_agent.tools.status_codes import (
+    AvailabilityMode,
+    CatalogItemStatus,
+    CheckCandidateAvailabilityStatus,
+    CheckVerificationStatus,
+    FindCustomerContextStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    GetTenantContextStatus,
+    RequestHumanHandoffStatus,
+    RequestVerificationStatus,
+    SubmitBookingCancellationStatus,
+    SubmitBookingModificationStatus,
+    SubmitConfirmedIntentStatus,
+    ValidateBookingChangeStatus,
+    ValidateBookingDraftStatus,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,19 +83,44 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     "graph-inputs": [HelloInputState],
     "graph-outputs": [HelloOutputState],
     "configurations": [HelloConfiguration],
-    "streaming": [HelloStreamMessage],
-    "models": [BookingDraft, BookingRequest, CanonicalBookingDraft],
+    "streaming": [
+        AudioStartedFrame,
+        TranscriptPartialFrame,
+        TranscriptFinalFrame,
+        AgentTextDeltaFrame,
+        AgentTextFinalFrame,
+        ToolProgressFrame,
+        TtsAudioDeltaFrame,
+        BargeInFrame,
+        TurnCancelledFrame,
+    ],
+    "models": [BookingDraft, BookingRequest, CanonicalBookingDraft, ToolResultEnvelope],
 }
 
 # Standalone string enums emitted into schemas/enums/.
 ENUM_REGISTRY: list[type[Enum]] = [
     GreetingStatus,
-    HelloMessageCode,
+    StreamFrameType,
     TriState,
     OperationType,
     CaptureMethod,
     FieldValidation,
     Channel,
+    AvailabilityMode,
+    GetTenantContextStatus,
+    FindCustomerContextStatus,
+    CatalogItemStatus,
+    ValidateBookingDraftStatus,
+    CheckCandidateAvailabilityStatus,
+    RequestVerificationStatus,
+    CheckVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    RequestHumanHandoffStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    ValidateBookingChangeStatus,
+    SubmitBookingModificationStatus,
+    SubmitBookingCancellationStatus,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
