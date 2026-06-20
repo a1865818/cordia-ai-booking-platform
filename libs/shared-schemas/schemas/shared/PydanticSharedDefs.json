@@ -2,6 +2,416 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pydantic Shared Definitions",
   "$defs": {
+    "BookingDraft": {
+      "additionalProperties": false,
+      "description": "In-dialog typed booking draft; source of the canonical submitted payload.",
+      "properties": {
+        "tenant_id": {
+          "description": "Tenant scope (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Dialog session ID.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "description": "Draft schema version carried into the intent.",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tenant_policy_version": {
+          "description": "Tenant configuration/policy version.",
+          "title": "Tenant Policy Version",
+          "type": "string"
+        },
+        "customer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CustomerRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer reference, if known."
+        },
+        "request": {
+          "$ref": "#/$defs/BookingRequest",
+          "description": "The booking request."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceInfo",
+          "description": "Origin channel + language."
+        },
+        "field_provenance": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FieldProvenance"
+          },
+          "description": "Internal capture metadata keyed by field; stripped on submit.",
+          "title": "Field Provenance",
+          "type": "object"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id",
+        "schema_version",
+        "tenant_policy_version",
+        "request",
+        "source"
+      ],
+      "title": "BookingDraft",
+      "type": "object"
+    },
+    "BookingRequest": {
+      "additionalProperties": false,
+      "description": "A single booking request captured during a dialog.",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/OperationType",
+          "description": "Booking operation requested."
+        },
+        "service_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable service ID, a TriState, or absent.",
+          "title": "Service Id"
+        },
+        "location_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable location ID, a TriState, or absent.",
+          "title": "Location Id"
+        },
+        "starts_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset-aware start, a TriState, or absent.",
+          "title": "Starts At"
+        },
+        "party_size": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Party size, a TriState, or absent.",
+          "title": "Party Size"
+        },
+        "duration_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Duration minutes, a TriState, or absent.",
+          "title": "Duration Minutes"
+        },
+        "special_requests": {
+          "description": "Free-form special requests.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Special Requests",
+          "type": "array"
+        },
+        "target_booking_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Target booking; required for modify/cancel/reschedule.",
+          "title": "Target Booking Id"
+        },
+        "target_booking_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optimistic-concurrency version of the target.",
+          "title": "Target Booking Version"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "title": "BookingRequest",
+      "type": "object"
+    },
+    "CanonicalBookingDraft": {
+      "additionalProperties": false,
+      "description": "Submitted payload: BookingDraft minus field_provenance (DQ2=B).",
+      "properties": {
+        "tenant_id": {
+          "description": "Tenant scope (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Dialog session ID.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "description": "Draft schema version carried into the intent.",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tenant_policy_version": {
+          "description": "Tenant configuration/policy version.",
+          "title": "Tenant Policy Version",
+          "type": "string"
+        },
+        "customer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CustomerRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer reference, if known."
+        },
+        "request": {
+          "$ref": "#/$defs/BookingRequest",
+          "description": "The booking request."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceInfo",
+          "description": "Origin channel + language."
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id",
+        "schema_version",
+        "tenant_policy_version",
+        "request",
+        "source"
+      ],
+      "title": "CanonicalBookingDraft",
+      "type": "object"
+    },
+    "CaptureMethod": {
+      "description": "How a field value was captured during the dialog.",
+      "enum": [
+        "speech",
+        "dtmf",
+        "tool_selection",
+        "channel_verified"
+      ],
+      "title": "CaptureMethod",
+      "type": "string"
+    },
+    "Channel": {
+      "description": "Origin channel a draft was captured on.",
+      "enum": [
+        "voice",
+        "sms",
+        "web",
+        "email"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "CustomerRef": {
+      "additionalProperties": false,
+      "description": "Reference to the customer; all optional (anonymous sessions).",
+      "properties": {
+        "customer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable customer ID where known.",
+          "title": "Customer Id"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer display name.",
+          "title": "Display Name"
+        },
+        "phone_e164": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "E.164 phone; plain str (no pattern).",
+          "title": "Phone E164"
+        }
+      },
+      "title": "CustomerRef",
+      "type": "object"
+    },
+    "FieldProvenance": {
+      "additionalProperties": false,
+      "description": "Internal-only capture metadata for one field. Stripped on submit.",
+      "properties": {
+        "source_turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Turn/message ID the value came from.",
+          "title": "Source Turn Id"
+        },
+        "stt_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "STT/ASR confidence (internal-only).",
+          "title": "Stt Confidence"
+        },
+        "model_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Model confidence (internal-only).",
+          "title": "Model Confidence"
+        },
+        "capture_method": {
+          "$ref": "#/$defs/CaptureMethod",
+          "description": "How the value was captured."
+        },
+        "normalized_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Normalized form of the captured value.",
+          "title": "Normalized Value"
+        },
+        "validation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldValidation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Validation outcome for the field."
+        }
+      },
+      "required": [
+        "capture_method"
+      ],
+      "title": "FieldProvenance",
+      "type": "object"
+    },
+    "FieldValidation": {
+      "description": "Validation outcome for a captured field.",
+      "enum": [
+        "valid",
+        "invalid",
+        "needs_clarification"
+      ],
+      "title": "FieldValidation",
+      "type": "string"
+    },
     "GreetingStatus": {
       "description": "Lifecycle status of a greeting.",
       "enum": [
@@ -91,6 +501,48 @@
       ],
       "title": "HelloStreamMessage",
       "type": "object"
+    },
+    "OperationType": {
+      "description": "Booking operation requested by the customer.",
+      "enum": [
+        "create",
+        "reschedule",
+        "modify",
+        "cancel"
+      ],
+      "title": "OperationType",
+      "type": "string"
+    },
+    "SourceInfo": {
+      "additionalProperties": false,
+      "description": "Channel + language the draft originated from.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/Channel",
+          "description": "Origin channel."
+        },
+        "language": {
+          "description": "BCP-47 language tag, e.g. 'en-AU'.",
+          "title": "Language",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "language"
+      ],
+      "title": "SourceInfo",
+      "type": "object"
+    },
+    "TriState": {
+      "description": "Why an optional field has no concrete value (carried inline on each capture field).",
+      "enum": [
+        "absent",
+        "unknown",
+        "declined"
+      ],
+      "title": "TriState",
+      "type": "string"
     }
   }
 }

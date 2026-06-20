@@ -27,7 +27,19 @@ from pathlib import Path
 from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
-from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
+from cordia_agent.state import (
+    BookingDraft,
+    BookingRequest,
+    CanonicalBookingDraft,
+    CaptureMethod,
+    Channel,
+    FieldValidation,
+    GreetingStatus,
+    HelloInputState,
+    HelloOutputState,
+    OperationType,
+    TriState,
+)
 from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
 
 
@@ -43,11 +55,19 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     "graph-outputs": [HelloOutputState],
     "configurations": [HelloConfiguration],
     "streaming": [HelloStreamMessage],
-    "models": [],
+    "models": [BookingDraft, BookingRequest, CanonicalBookingDraft],
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode]
+ENUM_REGISTRY: list[type[Enum]] = [
+    GreetingStatus,
+    HelloMessageCode,
+    TriState,
+    OperationType,
+    CaptureMethod,
+    FieldValidation,
+    Channel,
+]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [

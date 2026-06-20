@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TriState",
+  "description": "Why an optional field has no concrete value (carried inline on each capture field).",
+  "type": "string",
+  "enum": [
+    "absent",
+    "unknown",
+    "declined"
+  ]
+}

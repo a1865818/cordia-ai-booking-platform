@@ -1,0 +1,4 @@
+{
+  "title": "BookingRequest",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/BookingRequest"
+}
