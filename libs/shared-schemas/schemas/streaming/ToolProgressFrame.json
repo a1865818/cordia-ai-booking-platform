@@ -1,0 +1,4 @@
+{
+  "title": "ToolProgressFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/ToolProgressFrame"
+}

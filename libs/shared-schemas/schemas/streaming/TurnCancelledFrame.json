@@ -1,0 +1,4 @@
+{
+  "title": "TurnCancelledFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TurnCancelledFrame"
+}

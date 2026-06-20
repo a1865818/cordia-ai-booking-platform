@@ -1,4 +1,0 @@
-{
-  "title": "HelloStreamMessage",
-  "$ref": "../shared/PydanticSharedDefs.json#/$defs/HelloStreamMessage"
-}
