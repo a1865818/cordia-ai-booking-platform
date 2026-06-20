@@ -72,12 +72,20 @@ def test_envelope_rejects_unknown_keys() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("missing", ["schema_version", "correlation_id"])
+@pytest.mark.parametrize("missing", ["correlation_id"])
 def test_envelope_required_fields(missing: str) -> None:
     payload = _minimal_payload()
     del payload[missing]
     with pytest.raises(ValidationError):
         ToolResultEnvelope.model_validate(payload)
+
+
+@pytest.mark.unit
+def test_envelope_schema_version_defaults_to_constant() -> None:
+    payload = _minimal_payload()
+    del payload["schema_version"]
+    envelope = ToolResultEnvelope.model_validate(payload)
+    assert envelope.schema_version == SCHEMA_VERSION
 
 
 @pytest.mark.unit

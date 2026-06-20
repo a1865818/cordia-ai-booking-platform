@@ -36,4 +36,6 @@ class ToolResultEnvelope(BaseModel):
     correlation_id: str = Field(
         description="Propagated from the typed tool client; consumed by observability."
     )
-    schema_version: str = Field(description="Cross-language contract version.")
+    schema_version: str = Field(
+        default=SCHEMA_VERSION, description="Cross-language contract version."
+    )
