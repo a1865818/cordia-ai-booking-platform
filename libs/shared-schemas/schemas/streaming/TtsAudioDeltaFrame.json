@@ -1,0 +1,4 @@
+{
+  "title": "TtsAudioDeltaFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TtsAudioDeltaFrame"
+}
