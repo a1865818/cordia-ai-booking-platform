@@ -7,9 +7,10 @@
       "description": "Incremental agent response text chunk.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "agent.text.delta",
-          "description": "Frame type discriminator."
+          "const": "agent.text.delta",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -46,6 +47,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -61,6 +63,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -77,9 +80,10 @@
       "description": "Final, complete agent response text.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "agent.text.final",
-          "description": "Frame type discriminator."
+          "const": "agent.text.final",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -116,6 +120,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -131,6 +136,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -147,9 +153,10 @@
       "description": "Audio capture started; no payload beyond the envelope.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "audio.started",
-          "description": "Frame type discriminator."
+          "const": "audio.started",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -186,6 +193,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -196,6 +204,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -211,9 +220,10 @@
       "description": "Caller barge-in detected; no payload beyond the envelope.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "barge_in.detected",
-          "description": "Frame type discriminator."
+          "const": "barge_in.detected",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -250,6 +260,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -260,6 +271,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -331,7 +343,10 @@
       "type": "object"
     },
     "StreamFrameType": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "StreamFrameType",
       "description": "Discriminator for streaming voice-pipeline frames (spec 01 \u00a75.1 / \u00a76.3).",
+      "type": "string",
       "enum": [
         "audio.started",
         "transcript.partial",
@@ -342,18 +357,17 @@
         "tts.audio.delta",
         "barge_in.detected",
         "turn.cancelled"
-      ],
-      "title": "StreamFrameType",
-      "type": "string"
+      ]
     },
     "ToolProgressFrame": {
       "additionalProperties": false,
       "description": "Progress signal for an in-flight tool invocation.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "tool.progress",
-          "description": "Frame type discriminator."
+          "const": "tool.progress",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -390,6 +404,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -410,11 +425,13 @@
         },
         "elapsed_ms": {
           "description": "Elapsed time since invocation, in milliseconds.",
+          "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -433,9 +450,10 @@
       "description": "Committable final transcript (Inv-1: only finals may mutate booking state).",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "transcript.final",
-          "description": "Frame type discriminator."
+          "const": "transcript.final",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -472,6 +490,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -500,6 +519,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -517,9 +537,10 @@
       "description": "Interim transcript for display/barge-in only (Inv-1: never committable).",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "transcript.partial",
-          "description": "Frame type discriminator."
+          "const": "transcript.partial",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -556,6 +577,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -576,6 +598,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -593,9 +616,10 @@
       "description": "Reference to a synthesized audio chunk (bytes travel on the media plane).",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "tts.audio.delta",
-          "description": "Frame type discriminator."
+          "const": "tts.audio.delta",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -632,6 +656,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -647,11 +672,13 @@
         },
         "chunk_seq": {
           "description": "Monotonic ordering counter for audio chunks.",
+          "minimum": 0,
           "title": "Chunk Seq",
           "type": "integer"
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",
@@ -669,9 +696,10 @@
       "description": "Turn cancelled; gates the Inv-16 non-authoritative rule.",
       "properties": {
         "type": {
-          "$ref": "#/$defs/StreamFrameType",
-          "default": "turn.cancelled",
-          "description": "Frame type discriminator."
+          "const": "turn.cancelled",
+          "description": "Frame type discriminator.",
+          "title": "Type",
+          "type": "string"
         },
         "tenant_id": {
           "description": "Opaque tenant scope, propagated not resolved (Inv-13).",
@@ -708,6 +736,7 @@
         },
         "seq": {
           "description": "Monotonic per-session ordering counter.",
+          "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
@@ -728,6 +757,7 @@
         }
       },
       "required": [
+        "type",
         "tenant_id",
         "session_id",
         "turn_id",

@@ -16,6 +16,7 @@ from cordia_agent.streaming_models import (
     TurnCancelledFrame,
 )
 
+
 # Minimal valid envelope fields shared across constructions below.
 ENVELOPE_FIELDS = {
     "tenant_id": "t",
@@ -26,7 +27,20 @@ ENVELOPE_FIELDS = {
     "ts": "2026-06-18T00:00:00+00:00",
 }
 
-# Per-variant payload fields required (beyond the envelope) to construct each frame.
+# The fixed `type` discriminator member each variant pins itself to.
+VARIANT_TYPE: dict[type[BaseModel], StreamFrameType] = {
+    AudioStartedFrame: StreamFrameType.AUDIO_STARTED,
+    TranscriptPartialFrame: StreamFrameType.TRANSCRIPT_PARTIAL,
+    TranscriptFinalFrame: StreamFrameType.TRANSCRIPT_FINAL,
+    AgentTextDeltaFrame: StreamFrameType.AGENT_TEXT_DELTA,
+    AgentTextFinalFrame: StreamFrameType.AGENT_TEXT_FINAL,
+    ToolProgressFrame: StreamFrameType.TOOL_PROGRESS,
+    TtsAudioDeltaFrame: StreamFrameType.TTS_AUDIO_DELTA,
+    BargeInFrame: StreamFrameType.BARGE_IN_DETECTED,
+    TurnCancelledFrame: StreamFrameType.TURN_CANCELLED,
+}
+
+# Per-variant payload fields required beyond the envelope + `type` discriminator.
 VARIANT_PAYLOADS: dict[type[BaseModel], dict[str, object]] = {
     AudioStartedFrame: {},
     TranscriptPartialFrame: {"text": "hi", "stability": 0.4},
@@ -47,6 +61,15 @@ VARIANT_PAYLOADS: dict[type[BaseModel], dict[str, object]] = {
 }
 
 ALL_VARIANTS = list(VARIANT_PAYLOADS)
+
+
+def _valid_fields(variant: type[BaseModel]) -> dict[str, object]:
+    """Full set of valid construction kwargs for a variant (envelope + type + payload)."""
+    return {
+        "type": VARIANT_TYPE[variant],
+        **ENVELOPE_FIELDS,
+        **VARIANT_PAYLOADS[variant],
+    }
 
 
 @pytest.mark.unit
@@ -80,23 +103,42 @@ def test_stream_frame_type_has_exactly_nine_members() -> None:
 def test_extra_field_forbidden(variant: type[BaseModel]) -> None:
     """AC2: unknown fields raise ValidationError (extra='forbid' inherited)."""
     with pytest.raises(ValidationError):
-        variant(**ENVELOPE_FIELDS, **VARIANT_PAYLOADS[variant], bogus="x")
+        variant(**_valid_fields(variant), bogus="x")
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("variant", ALL_VARIANTS)
 def test_round_trip(variant: type[BaseModel]) -> None:
     """AC4: model_validate(model_dump()) round-trips for every variant."""
-    frame = variant(**ENVELOPE_FIELDS, **VARIANT_PAYLOADS[variant])
+    frame = variant(**_valid_fields(variant))
     assert variant.model_validate(frame.model_dump()) == frame
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("variant", ALL_VARIANTS)
-def test_variant_default_type(variant: type[BaseModel]) -> None:
-    """AC1/AC3: each variant defaults `type` to its own StreamFrameType member."""
-    frame = variant(**ENVELOPE_FIELDS, **VARIANT_PAYLOADS[variant])
-    assert isinstance(frame.type, StreamFrameType)
+def test_variant_type_is_fixed_discriminator(variant: type[BaseModel]) -> None:
+    """AC1/AC3: each variant pins `type` to its own StreamFrameType member."""
+    frame = variant(**_valid_fields(variant))
+    assert frame.type == VARIANT_TYPE[variant]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+def test_type_discriminator_is_required(variant: type[BaseModel]) -> None:
+    """The `type` discriminator has no default and must be supplied explicitly."""
+    fields = {**ENVELOPE_FIELDS, **VARIANT_PAYLOADS[variant]}
+    with pytest.raises(ValidationError):
+        variant(**fields)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+def test_wrong_type_value_rejected(variant: type[BaseModel]) -> None:
+    """A `type` value other than the variant's own member is rejected (single-value const)."""
+    wrong = next(m for m in StreamFrameType if m is not VARIANT_TYPE[variant])
+    fields = {**_valid_fields(variant), "type": wrong}
+    with pytest.raises(ValidationError):
+        variant(**fields)
 
 
 @pytest.mark.unit
@@ -104,7 +146,10 @@ def test_variant_default_type(variant: type[BaseModel]) -> None:
 def test_asr_confidence_accepts_in_range(confidence: float) -> None:
     """AC3: asr_confidence accepts values in 0..1."""
     frame = TranscriptFinalFrame(
-        **ENVELOPE_FIELDS, text="hi", asr_confidence=confidence
+        type=StreamFrameType.TRANSCRIPT_FINAL,
+        **ENVELOPE_FIELDS,
+        text="hi",
+        asr_confidence=confidence,
     )
     assert frame.asr_confidence == confidence
 
@@ -115,39 +160,76 @@ def test_asr_confidence_rejects_out_of_range(confidence: float) -> None:
     """AC3: asr_confidence out of 0..1 raises ValidationError."""
     with pytest.raises(ValidationError):
         TranscriptFinalFrame(
-            **ENVELOPE_FIELDS, text="hi", asr_confidence=confidence
+            type=StreamFrameType.TRANSCRIPT_FINAL,
+            **ENVELOPE_FIELDS,
+            text="hi",
+            asr_confidence=confidence,
         )
+
+
+@pytest.mark.unit
+def test_seq_rejects_negative() -> None:
+    """seq is a non-negative monotonic counter (ge=0)."""
+    with pytest.raises(ValidationError):
+        AudioStartedFrame(
+            type=StreamFrameType.AUDIO_STARTED, **{**ENVELOPE_FIELDS, "seq": -1}
+        )
+
+
+@pytest.mark.unit
+def test_seq_accepts_zero() -> None:
+    """seq accepts the lower bound of zero."""
+    frame = AudioStartedFrame(
+        type=StreamFrameType.AUDIO_STARTED, **{**ENVELOPE_FIELDS, "seq": 0}
+    )
+    assert frame.seq == 0
+
+
+@pytest.mark.unit
+def test_elapsed_ms_rejects_negative() -> None:
+    """elapsed_ms is non-negative elapsed time (ge=0)."""
+    fields = {**_valid_fields(ToolProgressFrame), "elapsed_ms": -1}
+    with pytest.raises(ValidationError):
+        ToolProgressFrame(**fields)
+
+
+@pytest.mark.unit
+def test_chunk_seq_rejects_negative() -> None:
+    """chunk_seq is a non-negative monotonic counter (ge=0)."""
+    fields = {**_valid_fields(TtsAudioDeltaFrame), "chunk_seq": -1}
+    with pytest.raises(ValidationError):
+        TtsAudioDeltaFrame(**fields)
 
 
 @pytest.mark.unit
 def test_turn_cancelled_requires_payload() -> None:
     """AC3: TurnCancelledFrame requires cancelled_turn_id + material_content_delivered."""
     with pytest.raises(ValidationError):
-        TurnCancelledFrame(**ENVELOPE_FIELDS)
+        TurnCancelledFrame(type=StreamFrameType.TURN_CANCELLED, **ENVELOPE_FIELDS)
 
 
 @pytest.mark.unit
 def test_tool_progress_requires_payload() -> None:
     """AC3: ToolProgressFrame requires tool_name, phase, and elapsed_ms."""
     with pytest.raises(ValidationError):
-        ToolProgressFrame(**ENVELOPE_FIELDS)
+        ToolProgressFrame(type=StreamFrameType.TOOL_PROGRESS, **ENVELOPE_FIELDS)
 
 
 @pytest.mark.unit
 def test_tts_audio_delta_requires_payload() -> None:
     """AC3: TtsAudioDeltaFrame requires audio_chunk_ref + chunk_seq."""
     with pytest.raises(ValidationError):
-        TtsAudioDeltaFrame(**ENVELOPE_FIELDS)
+        TtsAudioDeltaFrame(type=StreamFrameType.TTS_AUDIO_DELTA, **ENVELOPE_FIELDS)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("variant", [AudioStartedFrame, BargeInFrame])
-def test_no_payload_variants_validate_with_envelope_only(
+def test_no_payload_variants_need_only_envelope_and_type(
     variant: type[BaseModel],
 ) -> None:
-    """AC3: AudioStartedFrame/BargeInFrame validate with envelope fields only."""
-    frame = variant(**ENVELOPE_FIELDS)
-    assert isinstance(frame.type, StreamFrameType)
+    """AC3: AudioStartedFrame/BargeInFrame validate with envelope + type only."""
+    frame = variant(type=VARIANT_TYPE[variant], **ENVELOPE_FIELDS)
+    assert frame.type == VARIANT_TYPE[variant]
 
 
 @pytest.mark.unit
@@ -155,11 +237,19 @@ def test_partial_rejects_committable_only_fields() -> None:
     """AC5: TranscriptPartialFrame rejects committable-only fields."""
     with pytest.raises(ValidationError):
         TranscriptPartialFrame(
-            **ENVELOPE_FIELDS, text="hi", stability=0.4, asr_confidence=0.9
+            type=StreamFrameType.TRANSCRIPT_PARTIAL,
+            **ENVELOPE_FIELDS,
+            text="hi",
+            stability=0.4,
+            asr_confidence=0.9,
         )
     with pytest.raises(ValidationError):
         TranscriptPartialFrame(
-            **ENVELOPE_FIELDS, text="hi", stability=0.4, is_endpoint=True
+            type=StreamFrameType.TRANSCRIPT_PARTIAL,
+            **ENVELOPE_FIELDS,
+            text="hi",
+            stability=0.4,
+            is_endpoint=True,
         )
 
 
@@ -168,5 +258,9 @@ def test_final_rejects_partial_only_fields() -> None:
     """AC5: TranscriptFinalFrame rejects partial-only fields (stability)."""
     with pytest.raises(ValidationError):
         TranscriptFinalFrame(
-            **ENVELOPE_FIELDS, text="hi", asr_confidence=0.9, stability=0.4
+            type=StreamFrameType.TRANSCRIPT_FINAL,
+            **ENVELOPE_FIELDS,
+            text="hi",
+            asr_confidence=0.9,
+            stability=0.4,
         )

@@ -7,6 +7,8 @@ and a per-variant payload. These are a pure data contract — no behavior.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from cordia_agent.state import StreamFrameType
@@ -29,23 +31,22 @@ class StreamFrameEnvelope(BaseModel):
     causation_id: str | None = Field(
         default=None, description="Event-lineage parent id."
     )
-    seq: int = Field(description="Monotonic per-session ordering counter.")
+    seq: int = Field(ge=0, description="Monotonic per-session ordering counter.")
     ts: str = Field(description="ISO-8601 timestamp with offset.")
 
 
 class AudioStartedFrame(StreamFrameEnvelope):
     """Audio capture started; no payload beyond the envelope."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.AUDIO_STARTED, description="Frame type discriminator."
+    type: Literal[StreamFrameType.AUDIO_STARTED] = Field(
+        description="Frame type discriminator."
     )
 
 
 class TranscriptPartialFrame(StreamFrameEnvelope):
     """Interim transcript for display/barge-in only (Inv-1: never committable)."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.TRANSCRIPT_PARTIAL,
+    type: Literal[StreamFrameType.TRANSCRIPT_PARTIAL] = Field(
         description="Frame type discriminator.",
     )
     text: str = Field(description="Interim recognized transcript text.")
@@ -55,8 +56,7 @@ class TranscriptPartialFrame(StreamFrameEnvelope):
 class TranscriptFinalFrame(StreamFrameEnvelope):
     """Committable final transcript (Inv-1: only finals may mutate booking state)."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.TRANSCRIPT_FINAL,
+    type: Literal[StreamFrameType.TRANSCRIPT_FINAL] = Field(
         description="Frame type discriminator.",
     )
     text: str = Field(description="Final recognized transcript text.")
@@ -69,8 +69,7 @@ class TranscriptFinalFrame(StreamFrameEnvelope):
 class AgentTextDeltaFrame(StreamFrameEnvelope):
     """Incremental agent response text chunk."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.AGENT_TEXT_DELTA,
+    type: Literal[StreamFrameType.AGENT_TEXT_DELTA] = Field(
         description="Frame type discriminator.",
     )
     delta: str = Field(description="Incremental agent response text chunk.")
@@ -79,8 +78,7 @@ class AgentTextDeltaFrame(StreamFrameEnvelope):
 class AgentTextFinalFrame(StreamFrameEnvelope):
     """Final, complete agent response text."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.AGENT_TEXT_FINAL,
+    type: Literal[StreamFrameType.AGENT_TEXT_FINAL] = Field(
         description="Frame type discriminator.",
     )
     text: str = Field(description="Final, complete agent response text.")
@@ -89,33 +87,34 @@ class AgentTextFinalFrame(StreamFrameEnvelope):
 class ToolProgressFrame(StreamFrameEnvelope):
     """Progress signal for an in-flight tool invocation."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.TOOL_PROGRESS, description="Frame type discriminator."
+    type: Literal[StreamFrameType.TOOL_PROGRESS] = Field(
+        description="Frame type discriminator."
     )
     tool_name: str = Field(description="Name of the tool being invoked.")
     phase: str = Field(description='Progress phase, e.g. "checking_availability".')
     elapsed_ms: int = Field(
-        description="Elapsed time since invocation, in milliseconds."
+        ge=0, description="Elapsed time since invocation, in milliseconds."
     )
 
 
 class TtsAudioDeltaFrame(StreamFrameEnvelope):
     """Reference to a synthesized audio chunk (bytes travel on the media plane)."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.TTS_AUDIO_DELTA, description="Frame type discriminator."
+    type: Literal[StreamFrameType.TTS_AUDIO_DELTA] = Field(
+        description="Frame type discriminator."
     )
     audio_chunk_ref: str = Field(
         description="Opaque chunk id; raw bytes are out of band on the media plane."
     )
-    chunk_seq: int = Field(description="Monotonic ordering counter for audio chunks.")
+    chunk_seq: int = Field(
+        ge=0, description="Monotonic ordering counter for audio chunks."
+    )
 
 
 class BargeInFrame(StreamFrameEnvelope):
     """Caller barge-in detected; no payload beyond the envelope."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.BARGE_IN_DETECTED,
+    type: Literal[StreamFrameType.BARGE_IN_DETECTED] = Field(
         description="Frame type discriminator.",
     )
 
@@ -123,8 +122,8 @@ class BargeInFrame(StreamFrameEnvelope):
 class TurnCancelledFrame(StreamFrameEnvelope):
     """Turn cancelled; gates the Inv-16 non-authoritative rule."""
 
-    type: StreamFrameType = Field(
-        default=StreamFrameType.TURN_CANCELLED, description="Frame type discriminator."
+    type: Literal[StreamFrameType.TURN_CANCELLED] = Field(
+        description="Frame type discriminator."
     )
     cancelled_turn_id: str = Field(description="Identifier of the cancelled turn.")
     material_content_delivered: bool = Field(
