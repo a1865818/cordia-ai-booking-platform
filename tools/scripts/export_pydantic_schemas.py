@@ -28,10 +28,18 @@ from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
 from cordia_agent.state import (
+    BookingDraft,
+    BookingRequest,
+    CanonicalBookingDraft,
+    CaptureMethod,
+    Channel,
+    FieldValidation,
     GreetingStatus,
     HelloInputState,
     HelloOutputState,
+    OperationType,
     StreamFrameType,
+    TriState,
 )
 from cordia_agent.streaming_models import (
     AgentTextDeltaFrame,
@@ -86,13 +94,18 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BargeInFrame,
         TurnCancelledFrame,
     ],
-    "models": [ToolResultEnvelope],
+    "models": [BookingDraft, BookingRequest, CanonicalBookingDraft, ToolResultEnvelope],
 }
 
 # Standalone string enums emitted into schemas/enums/.
 ENUM_REGISTRY: list[type[Enum]] = [
     GreetingStatus,
     StreamFrameType,
+    TriState,
+    OperationType,
+    CaptureMethod,
+    FieldValidation,
+    Channel,
     AvailabilityMode,
     GetTenantContextStatus,
     FindCustomerContextStatus,

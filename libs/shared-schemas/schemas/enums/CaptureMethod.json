@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CaptureMethod",
+  "description": "How a field value was captured during the dialog.",
+  "type": "string",
+  "enum": [
+    "speech",
+    "dtmf",
+    "tool_selection",
+    "channel_verified"
+  ]
+}
