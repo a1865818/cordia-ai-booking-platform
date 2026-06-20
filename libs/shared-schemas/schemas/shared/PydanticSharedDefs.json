@@ -14,6 +14,63 @@
         "confirmed"
       ]
     },
+    "CatalogItemStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CatalogItemStatus",
+      "description": "Status codes shared by search_vendor_catalog and get_catalog_item (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "not_found",
+        "catalog_unavailable"
+      ]
+    },
+    "CheckCandidateAvailabilityStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CheckCandidateAvailabilityStatus",
+      "description": "Status codes for check_candidate_availability (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "available",
+        "available_pending",
+        "unavailable",
+        "held",
+        "hold_failed"
+      ]
+    },
+    "CheckVerificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CheckVerificationStatus",
+      "description": "Status codes for check_verification (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "granted",
+        "pending",
+        "failed",
+        "expired"
+      ]
+    },
+    "FindCustomerContextStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "FindCustomerContextStatus",
+      "description": "Status codes for find_customer_context (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "found",
+        "multiple",
+        "none"
+      ]
+    },
+    "GetTenantContextStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GetTenantContextStatus",
+      "description": "Status codes for get_tenant_context (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "resolved",
+        "tenant_not_resolved"
+      ]
+    },
     "GreetingStatus": {
       "description": "Lifecycle status of a greeting.",
       "enum": [
@@ -104,6 +161,43 @@
       "title": "HelloStreamMessage",
       "type": "object"
     },
+    "RequestHumanHandoffStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RequestHumanHandoffStatus",
+      "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "created",
+        "existing",
+        "routing_unavailable"
+      ]
+    },
+    "RequestVerificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RequestVerificationStatus",
+      "description": "Status codes for request_verification (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "sent",
+        "already_sent",
+        "rate_limited",
+        "no_verified_destination"
+      ]
+    },
+    "SubmitConfirmedIntentStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitConfirmedIntentStatus",
+      "description": "Status codes for submit_confirmed_intent (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "confirmation_invalid",
+        "policy_failed",
+        "validation_failed"
+      ]
+    },
     "ToolResultEnvelope": {
       "additionalProperties": false,
       "description": "Single closed wrapper returned by every tool (spec 03 \u00a74.2).",
@@ -185,6 +279,21 @@
       ],
       "title": "ToolResultEnvelope",
       "type": "object"
+    },
+    "ValidateBookingDraftStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ValidateBookingDraftStatus",
+      "description": "Status codes for validate_booking_draft (spec 03 \u00a74.3).",
+      "type": "string",
+      "enum": [
+        "valid",
+        "minimum_notice_not_met",
+        "outside_operating_hours",
+        "party_size_unsupported",
+        "service_ineligible",
+        "field_missing",
+        "field_ambiguous"
+      ]
     }
   }
 }

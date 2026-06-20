@@ -6,7 +6,18 @@ import pytest
 from pydantic import ValidationError
 
 from cordia_agent.tools.contracts import SCHEMA_VERSION, ToolResultEnvelope
-from cordia_agent.tools.status_codes import AvailabilityMode
+from cordia_agent.tools.status_codes import (
+    AvailabilityMode,
+    CatalogItemStatus,
+    CheckCandidateAvailabilityStatus,
+    CheckVerificationStatus,
+    FindCustomerContextStatus,
+    GetTenantContextStatus,
+    RequestHumanHandoffStatus,
+    RequestVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    ValidateBookingDraftStatus,
+)
 
 
 def _minimal_payload(**overrides: object) -> dict:
@@ -77,6 +88,42 @@ def test_envelope_optional_field_defaults() -> None:
 # Phases 2-3 extend this table with the per-tool status enums.
 STATUS_ENUM_CASES: list[tuple[type[Enum], set[str]]] = [
     (AvailabilityMode, {"informational", "live", "held", "confirmed"}),
+    (GetTenantContextStatus, {"resolved", "tenant_not_resolved"}),
+    (FindCustomerContextStatus, {"found", "multiple", "none"}),
+    (CatalogItemStatus, {"ok", "not_found", "catalog_unavailable"}),
+    (
+        ValidateBookingDraftStatus,
+        {
+            "valid",
+            "minimum_notice_not_met",
+            "outside_operating_hours",
+            "party_size_unsupported",
+            "service_ineligible",
+            "field_missing",
+            "field_ambiguous",
+        },
+    ),
+    (
+        CheckCandidateAvailabilityStatus,
+        {"available", "available_pending", "unavailable", "held", "hold_failed"},
+    ),
+    (
+        RequestVerificationStatus,
+        {"sent", "already_sent", "rate_limited", "no_verified_destination"},
+    ),
+    (CheckVerificationStatus, {"granted", "pending", "failed", "expired"}),
+    (
+        SubmitConfirmedIntentStatus,
+        {
+            "accepted",
+            "duplicate_accepted",
+            "idempotency_conflict",
+            "confirmation_invalid",
+            "policy_failed",
+            "validation_failed",
+        },
+    ),
+    (RequestHumanHandoffStatus, {"created", "existing", "routing_unavailable"}),
 ]
 
 

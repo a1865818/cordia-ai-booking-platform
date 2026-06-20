@@ -30,7 +30,18 @@ from cordia_agent.configurations import HelloConfiguration
 from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
 from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
 from cordia_agent.tools.contracts import ToolResultEnvelope
-from cordia_agent.tools.status_codes import AvailabilityMode
+from cordia_agent.tools.status_codes import (
+    AvailabilityMode,
+    CatalogItemStatus,
+    CheckCandidateAvailabilityStatus,
+    CheckVerificationStatus,
+    FindCustomerContextStatus,
+    GetTenantContextStatus,
+    RequestHumanHandoffStatus,
+    RequestVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    ValidateBookingDraftStatus,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +60,20 @@ MODEL_REGISTRY: dict[str, list[type]] = {
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode, AvailabilityMode]
+ENUM_REGISTRY: list[type[Enum]] = [
+    GreetingStatus,
+    HelloMessageCode,
+    AvailabilityMode,
+    GetTenantContextStatus,
+    FindCustomerContextStatus,
+    CatalogItemStatus,
+    ValidateBookingDraftStatus,
+    CheckCandidateAvailabilityStatus,
+    RequestVerificationStatus,
+    CheckVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    RequestHumanHandoffStatus,
+]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [
