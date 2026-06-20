@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RequestVerificationStatus",
+  "description": "Status codes for request_verification (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "sent",
+    "already_sent",
+    "rate_limited",
+    "no_verified_destination"
+  ]
+}

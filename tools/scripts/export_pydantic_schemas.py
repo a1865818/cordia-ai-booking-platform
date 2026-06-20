@@ -44,6 +44,24 @@ from cordia_agent.streaming_models import (
     TtsAudioDeltaFrame,
     TurnCancelledFrame,
 )
+from cordia_agent.tools.contracts import ToolResultEnvelope
+from cordia_agent.tools.status_codes import (
+    AvailabilityMode,
+    CatalogItemStatus,
+    CheckCandidateAvailabilityStatus,
+    CheckVerificationStatus,
+    FindCustomerContextStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    GetTenantContextStatus,
+    RequestHumanHandoffStatus,
+    RequestVerificationStatus,
+    SubmitBookingCancellationStatus,
+    SubmitBookingModificationStatus,
+    SubmitConfirmedIntentStatus,
+    ValidateBookingChangeStatus,
+    ValidateBookingDraftStatus,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,11 +86,29 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BargeInFrame,
         TurnCancelledFrame,
     ],
-    "models": [],
+    "models": [ToolResultEnvelope],
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, StreamFrameType]
+ENUM_REGISTRY: list[type[Enum]] = [
+    GreetingStatus,
+    StreamFrameType,
+    AvailabilityMode,
+    GetTenantContextStatus,
+    FindCustomerContextStatus,
+    CatalogItemStatus,
+    ValidateBookingDraftStatus,
+    CheckCandidateAvailabilityStatus,
+    RequestVerificationStatus,
+    CheckVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    RequestHumanHandoffStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    ValidateBookingChangeStatus,
+    SubmitBookingModificationStatus,
+    SubmitBookingCancellationStatus,
+]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [

@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SubmitBookingCancellationStatus",
+  "description": "Status codes for submit_booking_cancellation (spec 03 \u00a74.4).",
+  "type": "string",
+  "enum": [
+    "accepted",
+    "already_cancelled",
+    "duplicate_accepted",
+    "idempotency_conflict",
+    "stale_version",
+    "verification_required"
+  ]
+}

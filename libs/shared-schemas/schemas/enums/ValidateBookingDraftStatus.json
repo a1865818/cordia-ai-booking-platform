@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ValidateBookingDraftStatus",
+  "description": "Status codes for validate_booking_draft (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "valid",
+    "minimum_notice_not_met",
+    "outside_operating_hours",
+    "party_size_unsupported",
+    "service_ineligible",
+    "field_missing",
+    "field_ambiguous"
+  ]
+}

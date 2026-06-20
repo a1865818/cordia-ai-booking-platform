@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CatalogItemStatus",
+  "description": "Status codes shared by search_vendor_catalog and get_catalog_item (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "ok",
+    "not_found",
+    "catalog_unavailable"
+  ]
+}
