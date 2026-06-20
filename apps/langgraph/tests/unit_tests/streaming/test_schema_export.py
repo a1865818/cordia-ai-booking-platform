@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from cordia_agent.state import StreamFrameType
+from cordia_agent.streaming.dtmf import MaskedDtmfSignal
 from cordia_agent.streaming_models import (
     AgentTextDeltaFrame,
     AgentTextFinalFrame,
@@ -53,6 +54,16 @@ def _load_exporter() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.unit
+def test_masked_dtmf_signal_is_registered_as_model_not_stream_frame() -> None:
+    """Masked DTMF input stays out of the 9-variant streaming frame registry."""
+    exporter = _load_exporter()
+
+    assert MaskedDtmfSignal in exporter.MODEL_REGISTRY["models"]
+    assert MaskedDtmfSignal not in exporter.MODEL_REGISTRY["streaming"]
+    assert len(exporter.MODEL_REGISTRY["streaming"]) == 9
 
 
 @pytest.mark.unit
