@@ -77,10 +77,10 @@
         "service_id": {
           "anyOf": [
             {
-              "type": "string"
+              "$ref": "#/$defs/TriState"
             },
             {
-              "$ref": "#/$defs/TriState"
+              "type": "string"
             },
             {
               "type": "null"
@@ -93,10 +93,10 @@
         "location_id": {
           "anyOf": [
             {
-              "type": "string"
+              "$ref": "#/$defs/TriState"
             },
             {
-              "$ref": "#/$defs/TriState"
+              "type": "string"
             },
             {
               "type": "null"

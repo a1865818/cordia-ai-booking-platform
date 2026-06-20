@@ -87,11 +87,19 @@ class BookingRequest(BaseModel):
 
     operation: OperationType = Field(description="Booking operation requested.")
     # Customer-volunteered scalar optionals carry value | TriState | None inline (DQ1=A).
-    service_id: str | TriState | None = Field(
-        default=None, description="Stable service ID, a TriState, or absent."
+    # TriState is listed before str with union_mode="left_to_right": since TriState is a
+    # str-subclass enum, smart-mode unions resolve sentinel strings ("unknown"/"declined"/
+    # "absent") to the plain str branch, silently losing TriState semantics on deserialization.
+    # Left-to-right tries TriState first (matches only the 3 sentinels) then falls back to str.
+    service_id: TriState | str | None = Field(
+        default=None,
+        union_mode="left_to_right",
+        description="Stable service ID, a TriState, or absent.",
     )
-    location_id: str | TriState | None = Field(
-        default=None, description="Stable location ID, a TriState, or absent."
+    location_id: TriState | str | None = Field(
+        default=None,
+        union_mode="left_to_right",
+        description="Stable location ID, a TriState, or absent.",
     )
     starts_at: AwareDatetime | TriState | None = Field(
         default=None, description="Offset-aware start, a TriState, or absent."

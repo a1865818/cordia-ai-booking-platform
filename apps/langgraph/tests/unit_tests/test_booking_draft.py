@@ -68,6 +68,35 @@ def test_booking_request_accepts_tristate_inline() -> None:  # DQ1=A
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("sentinel", ["unknown", "declined", "absent"])
+def test_str_tristate_fields_deserialize_sentinels_as_tristate(sentinel: str) -> None:
+    """Raw sentinel strings must validate to TriState, not plain str (DQ1=A).
+
+    service_id/location_id are str-subclass-enum unions; smart-mode would
+    downgrade the sentinel strings to plain str. union_mode=left_to_right keeps them.
+    """
+    req = BookingRequest.model_validate(
+        {"operation": "create", "service_id": sentinel, "location_id": sentinel}
+    )
+    assert isinstance(req.service_id, TriState)
+    assert req.service_id is TriState(sentinel)
+    assert isinstance(req.location_id, TriState)
+    assert req.location_id is TriState(sentinel)
+
+
+@pytest.mark.unit
+def test_str_tristate_fields_keep_real_ids_as_str() -> None:
+    """Non-sentinel strings still validate as plain str values (DQ1=A)."""
+    req = BookingRequest.model_validate(
+        {"operation": "create", "service_id": "svc_1", "location_id": "loc_1"}
+    )
+    assert req.service_id == "svc_1"
+    assert not isinstance(req.service_id, TriState)
+    assert req.location_id == "loc_1"
+    assert not isinstance(req.location_id, TriState)
+
+
+@pytest.mark.unit
 def test_target_optional_for_create() -> None:  # AC4 / DQ4
     req = BookingRequest(operation=OperationType.create)
     assert req.target_booking_id is None
