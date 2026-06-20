@@ -27,8 +27,23 @@ from pathlib import Path
 from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
-from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
-from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
+from cordia_agent.state import (
+    GreetingStatus,
+    HelloInputState,
+    HelloOutputState,
+    StreamFrameType,
+)
+from cordia_agent.streaming_models import (
+    AgentTextDeltaFrame,
+    AgentTextFinalFrame,
+    AudioStartedFrame,
+    BargeInFrame,
+    ToolProgressFrame,
+    TranscriptFinalFrame,
+    TranscriptPartialFrame,
+    TtsAudioDeltaFrame,
+    TurnCancelledFrame,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,12 +57,22 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     "graph-inputs": [HelloInputState],
     "graph-outputs": [HelloOutputState],
     "configurations": [HelloConfiguration],
-    "streaming": [HelloStreamMessage],
+    "streaming": [
+        AudioStartedFrame,
+        TranscriptPartialFrame,
+        TranscriptFinalFrame,
+        AgentTextDeltaFrame,
+        AgentTextFinalFrame,
+        ToolProgressFrame,
+        TtsAudioDeltaFrame,
+        BargeInFrame,
+        TurnCancelledFrame,
+    ],
     "models": [],
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode]
+ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, StreamFrameType]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [

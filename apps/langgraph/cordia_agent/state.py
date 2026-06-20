@@ -18,6 +18,20 @@ class GreetingStatus(str, Enum):
     GREETED = "greeted"
 
 
+class StreamFrameType(str, Enum):
+    """Discriminator for streaming voice-pipeline frames (spec 01 §5.1 / §6.3)."""
+
+    AUDIO_STARTED = "audio.started"
+    TRANSCRIPT_PARTIAL = "transcript.partial"
+    TRANSCRIPT_FINAL = "transcript.final"
+    AGENT_TEXT_DELTA = "agent.text.delta"
+    AGENT_TEXT_FINAL = "agent.text.final"
+    TOOL_PROGRESS = "tool.progress"
+    TTS_AUDIO_DELTA = "tts.audio.delta"
+    BARGE_IN_DETECTED = "barge_in.detected"
+    TURN_CANCELLED = "turn.cancelled"
+
+
 class HelloInputState(BaseModel):
     """Input to the hello graph."""
 

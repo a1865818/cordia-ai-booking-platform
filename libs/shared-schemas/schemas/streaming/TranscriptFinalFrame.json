@@ -1,0 +1,4 @@
+{
+  "title": "TranscriptFinalFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TranscriptFinalFrame"
+}
