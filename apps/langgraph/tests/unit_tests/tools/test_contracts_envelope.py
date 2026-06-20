@@ -12,10 +12,15 @@ from cordia_agent.tools.status_codes import (
     CheckCandidateAvailabilityStatus,
     CheckVerificationStatus,
     FindCustomerContextStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
     GetTenantContextStatus,
     RequestHumanHandoffStatus,
     RequestVerificationStatus,
+    SubmitBookingCancellationStatus,
+    SubmitBookingModificationStatus,
     SubmitConfirmedIntentStatus,
+    ValidateBookingChangeStatus,
     ValidateBookingDraftStatus,
 )
 
@@ -124,6 +129,34 @@ STATUS_ENUM_CASES: list[tuple[type[Enum], set[str]]] = [
         },
     ),
     (RequestHumanHandoffStatus, {"created", "existing", "routing_unavailable"}),
+    (FindManageableBookingsStatus, {"found", "multiple", "none"}),
+    (GetBookingDetailsStatus, {"ok", "requires_verification", "not_found"}),
+    (
+        ValidateBookingChangeStatus,
+        {"valid", "policy_failed", "stale_version", "capacity_unavailable"},
+    ),
+    (
+        SubmitBookingModificationStatus,
+        {
+            "accepted",
+            "duplicate_accepted",
+            "idempotency_conflict",
+            "stale_version",
+            "verification_required",
+            "confirmation_invalid",
+        },
+    ),
+    (
+        SubmitBookingCancellationStatus,
+        {
+            "accepted",
+            "already_cancelled",
+            "duplicate_accepted",
+            "idempotency_conflict",
+            "stale_version",
+            "verification_required",
+        },
+    ),
 ]
 
 

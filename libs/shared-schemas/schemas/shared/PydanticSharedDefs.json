@@ -61,6 +61,28 @@
         "none"
       ]
     },
+    "FindManageableBookingsStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "FindManageableBookingsStatus",
+      "description": "Status codes for find_manageable_bookings (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "found",
+        "multiple",
+        "none"
+      ]
+    },
+    "GetBookingDetailsStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GetBookingDetailsStatus",
+      "description": "Status codes for get_booking_details (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "requires_verification",
+        "not_found"
+      ]
+    },
     "GetTenantContextStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "GetTenantContextStatus",
@@ -184,6 +206,34 @@
         "no_verified_destination"
       ]
     },
+    "SubmitBookingCancellationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitBookingCancellationStatus",
+      "description": "Status codes for submit_booking_cancellation (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "already_cancelled",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "stale_version",
+        "verification_required"
+      ]
+    },
+    "SubmitBookingModificationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SubmitBookingModificationStatus",
+      "description": "Status codes for submit_booking_modification (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "duplicate_accepted",
+        "idempotency_conflict",
+        "stale_version",
+        "verification_required",
+        "confirmation_invalid"
+      ]
+    },
     "SubmitConfirmedIntentStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "SubmitConfirmedIntentStatus",
@@ -279,6 +329,18 @@
       ],
       "title": "ToolResultEnvelope",
       "type": "object"
+    },
+    "ValidateBookingChangeStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ValidateBookingChangeStatus",
+      "description": "Status codes for validate_booking_change (spec 03 \u00a74.4).",
+      "type": "string",
+      "enum": [
+        "valid",
+        "policy_failed",
+        "stale_version",
+        "capacity_unavailable"
+      ]
     },
     "ValidateBookingDraftStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",

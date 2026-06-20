@@ -36,10 +36,15 @@ from cordia_agent.tools.status_codes import (
     CheckCandidateAvailabilityStatus,
     CheckVerificationStatus,
     FindCustomerContextStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
     GetTenantContextStatus,
     RequestHumanHandoffStatus,
     RequestVerificationStatus,
+    SubmitBookingCancellationStatus,
+    SubmitBookingModificationStatus,
     SubmitConfirmedIntentStatus,
+    ValidateBookingChangeStatus,
     ValidateBookingDraftStatus,
 )
 
@@ -73,6 +78,11 @@ ENUM_REGISTRY: list[type[Enum]] = [
     CheckVerificationStatus,
     SubmitConfirmedIntentStatus,
     RequestHumanHandoffStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    ValidateBookingChangeStatus,
+    SubmitBookingModificationStatus,
+    SubmitBookingCancellationStatus,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.

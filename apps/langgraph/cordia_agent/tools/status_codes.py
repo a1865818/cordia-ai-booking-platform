@@ -2,7 +2,6 @@
 
 These ``(str, Enum)`` types are the source of truth for the shared status codes
 exported to C# and TypeScript/Zod via ``tools/scripts/export_pydantic_schemas.py``.
-Per-tool status enums are added in Phases 2-3.
 """
 
 from __future__ import annotations
@@ -90,6 +89,53 @@ class RequestHumanHandoffStatus(str, Enum):
     CREATED = "created"
     EXISTING = "existing"
     ROUTING_UNAVAILABLE = "routing_unavailable"
+
+
+class FindManageableBookingsStatus(str, Enum):
+    """Status codes for find_manageable_bookings (spec 03 §4.4)."""
+
+    FOUND = "found"
+    MULTIPLE = "multiple"
+    NONE = "none"
+
+
+class GetBookingDetailsStatus(str, Enum):
+    """Status codes for get_booking_details (spec 03 §4.4)."""
+
+    OK = "ok"
+    REQUIRES_VERIFICATION = "requires_verification"
+    NOT_FOUND = "not_found"
+
+
+class ValidateBookingChangeStatus(str, Enum):
+    """Status codes for validate_booking_change (spec 03 §4.4)."""
+
+    VALID = "valid"
+    POLICY_FAILED = "policy_failed"
+    STALE_VERSION = "stale_version"
+    CAPACITY_UNAVAILABLE = "capacity_unavailable"
+
+
+class SubmitBookingModificationStatus(str, Enum):
+    """Status codes for submit_booking_modification (spec 03 §4.4)."""
+
+    ACCEPTED = "accepted"
+    DUPLICATE_ACCEPTED = "duplicate_accepted"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    STALE_VERSION = "stale_version"
+    VERIFICATION_REQUIRED = "verification_required"
+    CONFIRMATION_INVALID = "confirmation_invalid"
+
+
+class SubmitBookingCancellationStatus(str, Enum):
+    """Status codes for submit_booking_cancellation (spec 03 §4.4)."""
+
+    ACCEPTED = "accepted"
+    ALREADY_CANCELLED = "already_cancelled"
+    DUPLICATE_ACCEPTED = "duplicate_accepted"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    STALE_VERSION = "stale_version"
+    VERIFICATION_REQUIRED = "verification_required"
 
 
 # AvailabilityMode is OWNED by spec 07 (07-capacity-and-holds.md). It is bound
