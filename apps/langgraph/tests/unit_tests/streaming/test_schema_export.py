@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming.dtmf import MaskedDtmfSignal
 from cordia_agent.streaming_models import (
@@ -54,6 +55,58 @@ def _load_exporter() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+CANONICAL_NORMALIZED_OPERATION_STATUSES = {
+    "accepted",
+    "in_progress",
+    "awaiting_user_action",
+    "alternatives_required",
+    "booked",
+    "waitlisted",
+    "rejected",
+    "expired",
+    "failed",
+}
+
+
+@pytest.mark.unit
+def test_normalized_operation_status_matches_frozen_contract() -> None:
+    """Spec 06 D2 / docs/specs/README.md D2 — nine cross-service values only."""
+    exporter = _load_exporter()
+
+    assert NormalizedOperationStatus in exporter.ENUM_REGISTRY
+    assert {member.value for member in NormalizedOperationStatus} == (
+        CANONICAL_NORMALIZED_OPERATION_STATUSES
+    )
+
+
+@pytest.mark.unit
+def test_exporter_emits_canonical_normalized_operation_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exporter = _load_exporter()
+    schemas_dir = tmp_path / "schemas"
+    shared_dir = schemas_dir / "shared"
+    enums_dir = schemas_dir / "enums"
+    enums_dir.mkdir(parents=True)
+
+    langgraph_json = tmp_path / "langgraph.json"
+    langgraph_json.write_text(json.dumps({"graphs": {"agent": "./cordia_agent/graph.py"}}))
+
+    monkeypatch.setattr(exporter, "SCHEMAS_DIR", schemas_dir)
+    monkeypatch.setattr(exporter, "SHARED_DIR", shared_dir)
+    monkeypatch.setattr(exporter, "SHARED_DEFS_FILE", shared_dir / "PydanticSharedDefs.json")
+    monkeypatch.setattr(exporter, "LANGGRAPH_JSON", langgraph_json)
+    monkeypatch.setattr(exporter, "REPO_ROOT", tmp_path)
+
+    exporter.main()
+    capsys.readouterr()
+
+    enum_schema = json.loads((enums_dir / "NormalizedOperationStatus.json").read_text())
+    assert set(enum_schema["enum"]) == CANONICAL_NORMALIZED_OPERATION_STATUSES
 
 
 @pytest.mark.unit
