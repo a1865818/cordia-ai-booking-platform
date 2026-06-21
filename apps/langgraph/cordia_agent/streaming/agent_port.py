@@ -27,8 +27,9 @@ type AgentOutputFrame = AgentTextDeltaFrame | AgentTextFinalFrame | ToolProgress
 class AgentPort(Protocol):
     """Consume a committed final transcript and stream agent output frames.
 
-    Implementations own their own envelope (tenant/session/turn/correlation/seq);
-    the pipeline passes their frames through unchanged.
+    Implementations own tenant/session/turn/correlation envelope fields; the
+    pipeline restamps ``seq`` from the shared ``TurnManager`` before emission so
+    every wire frame is monotonic per session.
     """
 
     def process(self, frame: TranscriptFinalFrame) -> AsyncIterator[AgentOutputFrame]:

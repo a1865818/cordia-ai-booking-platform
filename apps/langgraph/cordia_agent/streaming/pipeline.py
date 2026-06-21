@@ -25,7 +25,7 @@ from cordia_agent.streaming_models import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, AsyncIterator
 
-    from cordia_agent.streaming.agent_port import AgentPort
+    from cordia_agent.streaming.agent_port import AgentOutputFrame, AgentPort
     from cordia_agent.streaming.providers import STTProvider, TTSProvider
     from cordia_agent.streaming.turn_manager import StreamFrame
 
@@ -88,15 +88,23 @@ class Pipeline:
     ) -> AsyncIterator[StreamFrame]:
         async for output in self._agent.process(final):
             if isinstance(output, ToolProgressFrame):
-                yield output
-                phrase = self._filler.fill(output)
+                stamped = self._restamp_seq(output)
+                yield stamped
+                phrase = self._filler.fill(stamped)
                 if phrase is not None:
-                    async for tts in self._render_filler(output, phrase):
+                    async for tts in self._render_filler(stamped, phrase):
                         yield tts
             elif isinstance(output, AgentTextDeltaFrame | AgentTextFinalFrame):
-                yield output
-                async for tts in self._tts.process_frame(output):
+                stamped = self._restamp_seq(output)
+                yield stamped
+                async for tts in self._tts.process_frame(stamped):
                     yield tts
+
+    def _restamp_seq(self, frame: AgentOutputFrame) -> AgentOutputFrame:
+        """Assign the next wire ``seq`` from the shared session sequencer."""
+        return frame.model_copy(
+            update={"seq": self._turn_manager.next_seq(frame.session_id)}
+        )
 
     async def _render_filler(
         self, progress: ToolProgressFrame, phrase: str

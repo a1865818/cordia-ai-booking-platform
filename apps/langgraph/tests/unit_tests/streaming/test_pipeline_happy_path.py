@@ -120,6 +120,18 @@ async def test_audio_started_emitted_once_and_carries_session_ids() -> None:
 
 
 @pytest.mark.unit
+async def test_wire_seq_is_monotonic_per_session_despite_agent_owned_seq() -> None:
+    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
+    seqs = [frame.seq for frame in frames]
+    assert seqs == list(range(len(frames)))
+    assert frames[3].type == StreamFrameType.AGENT_TEXT_DELTA
+    assert frames[3].seq == 3
+    assert frames[5].type == StreamFrameType.AGENT_TEXT_FINAL
+    assert frames[5].seq == 5
+
+
+@pytest.mark.unit
 async def test_pipeline_sourced_frames_share_session_identity() -> None:
     agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
