@@ -847,6 +847,16 @@
       "title": "HelloOutputState",
       "type": "object"
     },
+    "NormalizedOperationStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "NormalizedOperationStatus",
+      "description": "Stub for the agent-resume hook return (spec 06).",
+      "type": "string",
+      "enum": [
+        "found",
+        "not_found"
+      ]
+    },
     "OperationType": {
       "description": "Booking operation requested by the customer.",
       "enum": [
@@ -857,6 +867,17 @@
       ],
       "title": "OperationType",
       "type": "string"
+    },
+    "ReconnectOutcome": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ReconnectOutcome",
+      "description": "Result of a reconnect attempt.",
+      "type": "string",
+      "enum": [
+        "resumed",
+        "failed",
+        "handoff_signalled"
+      ]
     },
     "RequestHumanHandoffStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",

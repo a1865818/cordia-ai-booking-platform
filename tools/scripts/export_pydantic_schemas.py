@@ -53,6 +53,7 @@ from cordia_agent.streaming_models import (
     TurnCancelledFrame,
 )
 from cordia_agent.tools.contracts import ToolResultEnvelope
+from cordia_agent.streaming.reconnect import NormalizedOperationStatus, ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
     CatalogItemStatus,
@@ -121,6 +122,8 @@ ENUM_REGISTRY: list[type[Enum]] = [
     ValidateBookingChangeStatus,
     SubmitBookingModificationStatus,
     SubmitBookingCancellationStatus,
+    NormalizedOperationStatus,
+    ReconnectOutcome,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
