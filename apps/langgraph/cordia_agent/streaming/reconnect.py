@@ -8,14 +8,8 @@ from typing import TYPE_CHECKING, Protocol
 
 
 if TYPE_CHECKING:
+    from cordia_agent.contracts.operation_status import NormalizedOperationStatus
     from cordia_agent.streaming.turn_manager import TurnManager
-
-
-class NormalizedOperationStatus(str, Enum):
-    """Stub for the agent-resume hook return (spec 06)."""
-
-    FOUND = "found"
-    NOT_FOUND = "not_found"
 
 
 class ReconnectOutcome(str, Enum):
@@ -43,7 +37,11 @@ class SessionLookup(Protocol):
 
 
 class AgentResumeHook(Protocol):
-    """Port: signal the agent to resume from persisted draft (§8.9)."""
+    """Port: signal the agent to resume from persisted draft (§8.9).
+
+    Returns the recovered operation status from ``get_operation_status``, or
+    ``None`` when no in-flight operation exists.
+    """
 
     async def resume(
         self, context: ReconnectSessionContext

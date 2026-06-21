@@ -8,11 +8,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, AsyncIterator, Iterable
 
+    from cordia_agent.contracts.operation_status import NormalizedOperationStatus
     from cordia_agent.streaming.providers.types import STTProviderEvent
-    from cordia_agent.streaming.reconnect import (
-        NormalizedOperationStatus,
-        ReconnectSessionContext,
-    )
+    from cordia_agent.streaming.reconnect import ReconnectSessionContext
 
 
 class FakeSTTProvider:

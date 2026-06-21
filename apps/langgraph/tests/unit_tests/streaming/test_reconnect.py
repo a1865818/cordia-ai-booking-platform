@@ -8,8 +8,8 @@ import pytest
 
 import cordia_agent.streaming.reconnect as reconnect_module
 
+from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.streaming.reconnect import (
-    NormalizedOperationStatus,
     ReconnectHandler,
     ReconnectOutcome,
     ReconnectSessionContext,
@@ -336,15 +336,15 @@ async def test_multiple_successful_reconnects_preserve_same_ids() -> None:
 
 
 @pytest.mark.unit
-async def test_reconnect_with_existing_operation_status() -> None:
-    handler = _handler(resume_status=NormalizedOperationStatus.FOUND)
+async def test_reconnect_with_recovered_operation_status() -> None:
+    handler = _handler(resume_status=NormalizedOperationStatus.ACCEPTED)
     outcome = await handler.attempt_reconnect(channel_ref="ch_1")
     assert outcome == ReconnectOutcome.RESUMED
 
 
 @pytest.mark.unit
-async def test_reconnect_with_not_found_operation_status() -> None:
-    handler = _handler(resume_status=NormalizedOperationStatus.NOT_FOUND)
+async def test_reconnect_with_no_recovered_operation_status() -> None:
+    handler = _handler(resume_status=None)
     outcome = await handler.attempt_reconnect(channel_ref="ch_1")
     assert outcome == ReconnectOutcome.RESUMED
 
