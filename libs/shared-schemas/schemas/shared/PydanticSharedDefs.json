@@ -655,6 +655,17 @@
       "title": "CustomerRef",
       "type": "object"
     },
+    "DtmfCaptureMethod": {
+      "const": "dtmf",
+      "type": "string"
+    },
+    "DtmfFieldKind": {
+      "enum": [
+        "verification_code",
+        "numeric"
+      ],
+      "type": "string"
+    },
     "FieldProvenance": {
       "additionalProperties": false,
       "description": "Internal-only capture metadata for one field. Stripped on submit.",
@@ -845,6 +856,82 @@
         "message"
       ],
       "title": "HelloOutputState",
+      "type": "object"
+    },
+    "MaskedDtmfSignal": {
+      "additionalProperties": false,
+      "description": "Structured masked DTMF signal \u2014 never carries cleartext digits.",
+      "properties": {
+        "tenant_id": {
+          "description": "Opaque tenant scope, propagated not resolved.",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Identifies one call/conversation.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Identifies one customer/agent contribution.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation id, begins at channel ingress.",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event-lineage parent id.",
+          "title": "Causation Id"
+        },
+        "field_id": {
+          "description": "Target field identifier, e.g. verification_code or party_size.",
+          "title": "Field Id",
+          "type": "string"
+        },
+        "field_kind": {
+          "$ref": "#/$defs/DtmfFieldKind",
+          "description": "Semantic kind of the captured field."
+        },
+        "capture_method": {
+          "$ref": "#/$defs/DtmfCaptureMethod",
+          "description": "How the field value was captured."
+        },
+        "masked_value": {
+          "description": "Display-safe masked representation of captured digits.",
+          "title": "Masked Value",
+          "type": "string"
+        },
+        "digit_count": {
+          "description": "Number of digits captured, without exposing values.",
+          "minimum": 1,
+          "title": "Digit Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id",
+        "turn_id",
+        "correlation_id",
+        "field_id",
+        "field_kind",
+        "capture_method",
+        "masked_value",
+        "digit_count"
+      ],
+      "title": "MaskedDtmfSignal",
       "type": "object"
     },
     "NormalizedOperationStatus": {
