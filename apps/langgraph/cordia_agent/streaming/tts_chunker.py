@@ -44,7 +44,9 @@ class TTSChunker:
         self._buffer = ""
         self._text_seen = ""
         self._chunk_seq = 0
+        self._tracked_turn_id: str | None = None
         self._active_turn: ActiveTTSTurn | None = None
+        self._cancelled_turn_ids: set[str] = set()
 
     @property
     def active_turn(self) -> ActiveTTSTurn | None:
@@ -55,8 +57,11 @@ class TTSChunker:
         if self._active_turn is None:
             return None
 
+        cancelled_turn_id = self._active_turn.turn_id
         self._active_turn.cancellation.cancel()
-        return self._active_turn.turn_id
+        self._cancelled_turn_ids.add(cancelled_turn_id)
+        self._active_turn = None
+        return cancelled_turn_id
 
     async def process(
         self, frames: AsyncIterable[AgentTextFrame]
@@ -70,6 +75,8 @@ class TTSChunker:
         self, frame: AgentTextFrame
     ) -> AsyncIterator[TtsAudioDeltaFrame]:
         """Process one agent text frame and yield zero or more TTS frames."""
+        self._ensure_turn(frame.turn_id)
+
         if isinstance(frame, AgentTextDeltaFrame):
             self._buffer += frame.delta
             self._text_seen += frame.delta
@@ -79,8 +86,35 @@ class TTSChunker:
             chunks = self._pop_all_chunks()
 
         for chunk in chunks:
+            if self._should_stop_synthesis(frame.turn_id):
+                break
             async for tts_frame in self._synthesize_chunk(chunk, frame):
                 yield tts_frame
+
+        if isinstance(frame, AgentTextFinalFrame):
+            self._complete_turn()
+
+    def _should_stop_synthesis(self, turn_id: str) -> bool:
+        if turn_id in self._cancelled_turn_ids:
+            return True
+        if self._active_turn is None or self._active_turn.turn_id != turn_id:
+            return False
+        return self._active_turn.cancellation.is_cancelled
+
+    def _ensure_turn(self, turn_id: str) -> None:
+        if self._tracked_turn_id == turn_id:
+            return
+
+        self._buffer = ""
+        self._text_seen = ""
+        self._chunk_seq = 0
+        self._tracked_turn_id = turn_id
+
+    def _complete_turn(self) -> None:
+        self._buffer = ""
+        self._text_seen = ""
+        self._tracked_turn_id = None
+        self._active_turn = None
 
     def _pop_ready_chunks(self) -> list[str]:
         chunks: list[str] = []
@@ -107,11 +141,24 @@ class TTSChunker:
             return final_text
         if final_text.startswith(self._text_seen):
             return final_text[len(self._text_seen) :]
-        return ""
+        if self._text_seen.startswith(final_text):
+            return ""
+
+        common_prefix_len = 0
+        limit = min(len(self._text_seen), len(final_text))
+        while (
+            common_prefix_len < limit
+            and self._text_seen[common_prefix_len] == final_text[common_prefix_len]
+        ):
+            common_prefix_len += 1
+        return final_text[common_prefix_len:]
 
     async def _synthesize_chunk(
         self, text: str, source_frame: AgentTextFrame
     ) -> AsyncIterator[TtsAudioDeltaFrame]:
+        if self._should_stop_synthesis(source_frame.turn_id):
+            return
+
         cancellation = self._active_turn.cancellation if self._active_turn else None
         if (
             self._active_turn is None
@@ -125,6 +172,9 @@ class TTSChunker:
 
         chunk_seq = self._chunk_seq
         self._chunk_seq += 1
+
+        if cancellation is not None and cancellation.is_cancelled:
+            return
 
         async for audio_chunk_ref in self._provider.synthesize(
             text,

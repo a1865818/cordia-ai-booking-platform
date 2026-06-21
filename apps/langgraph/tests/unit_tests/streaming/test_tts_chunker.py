@@ -166,3 +166,75 @@ def test_tts_provider_port_and_fake_do_not_import_real_network_dependencies() ->
         "websocket",
     ]
     assert not any(token in source for token in forbidden_tokens)
+
+
+@pytest.mark.unit
+async def test_final_text_with_prefix_drift_is_still_synthesized() -> None:
+    provider = FakeTTSProvider()
+    chunker = TTSChunker(provider=provider, turn_manager=TurnManager())
+
+    await anext(chunker.process_frame(_delta("Hello.")))
+    frames = [
+        frame
+        async for frame in chunker.process_frame(
+            _final("Hello! How are you?")
+        )
+    ]
+
+    assert [frame.audio_chunk_ref for frame in frames] == [
+        "tts://fake/assistant_turn_1/1",
+        "tts://fake/assistant_turn_1/2",
+    ]
+    assert provider.history == [
+        ("Hello.", "assistant_turn_1", 0),
+        ("!", "assistant_turn_1", 1),
+        ("How are you?", "assistant_turn_1", 2),
+    ]
+
+
+@pytest.mark.unit
+async def test_final_only_response_after_streamed_turn_still_synthesizes() -> None:
+    provider = FakeTTSProvider()
+    chunker = TTSChunker(provider=provider, turn_manager=TurnManager())
+
+    turn_one = {**ENVELOPE_FIELDS, "turn_id": "assistant_turn_1"}
+    turn_two = {**ENVELOPE_FIELDS, "turn_id": "assistant_turn_2"}
+
+    await anext(
+        chunker.process_frame(
+            AgentTextDeltaFrame(
+                type=StreamFrameType.AGENT_TEXT_DELTA,
+                **turn_one,
+                seq=0,
+                delta="Hello. I can help with that",
+            )
+        )
+    )
+    await anext(
+        chunker.process_frame(
+            AgentTextFinalFrame(
+                type=StreamFrameType.AGENT_TEXT_FINAL,
+                **turn_one,
+                seq=1,
+                text="Hello. I can help with that",
+            )
+        )
+    )
+
+    frames = [
+        frame
+        async for frame in chunker.process_frame(
+            AgentTextFinalFrame(
+                type=StreamFrameType.AGENT_TEXT_FINAL,
+                **turn_two,
+                seq=2,
+                text="Hello.",
+            )
+        )
+    ]
+
+    assert [frame.turn_id for frame in frames] == ["assistant_turn_2"]
+    assert [frame.audio_chunk_ref for frame in frames] == [
+        "tts://fake/assistant_turn_2/0",
+    ]
+    assert provider.history[-1] == ("Hello.", "assistant_turn_2", 0)
