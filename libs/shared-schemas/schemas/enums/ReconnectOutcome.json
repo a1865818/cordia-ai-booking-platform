@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReconnectOutcome",
+  "description": "Result of a reconnect attempt.",
+  "type": "string",
+  "enum": [
+    "resumed",
+    "failed",
+    "handoff_signalled"
+  ]
+}
