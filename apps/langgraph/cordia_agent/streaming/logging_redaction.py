@@ -34,7 +34,7 @@ def redact_for_logging_json(value: Any) -> str:
 
 def _redact_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
-        return _redact_mapping(value.model_dump())
+        return _redact_mapping(value.model_dump(mode="json"))
     if isinstance(value, dict):
         return _redact_mapping(value)
     if isinstance(value, list):

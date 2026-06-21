@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -155,6 +156,25 @@ def test_redacted_logs_do_not_contain_raw_digits_for_pydantic_payload() -> None:
 
     assert RAW_DIGITS not in serialized
     assert redacted["raw_digits"] == {"redacted": True, "length": 6}
+
+
+@pytest.mark.unit
+def test_redacted_logs_json_serializes_pydantic_datetime_fields() -> None:
+    class SensitiveLogPayload(BaseModel):
+        occurred_at: datetime
+        raw_digits: str
+
+    occurred_at = datetime(2026, 6, 21, 3, 59, 7, 621642, tzinfo=UTC)
+    payload = SensitiveLogPayload(occurred_at=occurred_at, raw_digits=RAW_DIGITS)
+
+    redacted = redact_for_logging(payload)
+    serialized = redact_for_logging_json(payload)
+
+    assert isinstance(redacted["occurred_at"], str)
+    assert redacted["occurred_at"] == occurred_at.isoformat().replace("+00:00", "Z")
+    assert redacted["raw_digits"] == {"redacted": True, "length": 6}
+    assert RAW_DIGITS not in serialized
+    json.loads(serialized)
 
 
 @pytest.mark.unit
