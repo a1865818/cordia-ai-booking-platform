@@ -1,6 +1,9 @@
 """Streaming pipeline behavior helpers."""
 
+from cordia_agent.streaming.agent_port import AgentOutputFrame, AgentPort
 from cordia_agent.streaming.barge_in import BargeInController, BargeInResult
+from cordia_agent.streaming.pipeline import Pipeline, PipelineSession
+from cordia_agent.streaming.progress_filler import ProgressFiller
 from cordia_agent.streaming.reconnect import (
     ReconnectHandler,
     ReconnectOutcome,
@@ -13,8 +16,13 @@ from cordia_agent.streaming.turn_manager import StreamFrame, TurnManager, is_com
 
 __all__ = [
     "ActiveTTSTurn",
+    "AgentOutputFrame",
+    "AgentPort",
     "BargeInController",
     "BargeInResult",
+    "Pipeline",
+    "PipelineSession",
+    "ProgressFiller",
     "ReconnectHandler",
     "ReconnectOutcome",
     "ReconnectSessionContext",
