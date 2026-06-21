@@ -41,6 +41,7 @@ from cordia_agent.state import (
     StreamFrameType,
     TriState,
 )
+from cordia_agent.streaming.dtmf import MaskedDtmfSignal
 from cordia_agent.streaming_models import (
     AgentTextDeltaFrame,
     AgentTextFinalFrame,
@@ -94,7 +95,13 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BargeInFrame,
         TurnCancelledFrame,
     ],
-    "models": [BookingDraft, BookingRequest, CanonicalBookingDraft, ToolResultEnvelope],
+    "models": [
+        BookingDraft,
+        BookingRequest,
+        CanonicalBookingDraft,
+        MaskedDtmfSignal,
+        ToolResultEnvelope,
+    ],
 }
 
 # Standalone string enums emitted into schemas/enums/.
