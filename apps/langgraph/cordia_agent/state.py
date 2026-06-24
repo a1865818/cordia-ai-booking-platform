@@ -318,6 +318,32 @@ class AgentState(BaseModel):
     customer_context: CustomerContext | None = Field(
         default=None, description="Minimized customer context (§9.2)."
     )
+    # --- Internal clarification channels (02-G, §8.5) ---
+    # These fields are NOT exported to AgentInputState/AgentOutputState and do
+    # not appear in the generated JSON schemas.  They are purely internal
+    # LangGraph channels consumed by the clarify → capture_fields loop.
+    clarification_attempts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Internal: per-field clarification attempt counts, "
+            "keyed by BookingRequest field name (§8.5)."
+        ),
+    )
+    pending_clarify_action: str | None = Field(
+        default=None,
+        description=(
+            "Internal: ClarifyAction value decided by the clarify node (§8.5). "
+            "ESCALATE_HANDOFF is surfaced here; it does NOT add a graph edge."
+        ),
+    )
+    pending_clarify_prompt: str | None = Field(
+        default=None,
+        description="Internal: the clarifying-question prompt for the current turn (§8.5).",
+    )
+    pending_clarify_field: str | None = Field(
+        default=None,
+        description="Internal: BookingRequest field name targeted by the active clarification (§8.5).",
+    )
 
 
 class AgentInputState(BaseModel):
