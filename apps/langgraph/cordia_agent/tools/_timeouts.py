@@ -81,9 +81,11 @@ TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
 ALL_TOOLS: frozenset[str] = frozenset(TOOL_DEADLINES)
 
 # Internal consistency guard — both tables must cover exactly the same 17 tools.
-assert set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == set(ALL_TOOLS), (
-    "TOOL_DEADLINES and TOOL_SIDE_EFFECT_CLASS must have identical key sets."
-)
+# A real raise (not assert) so the guard survives `python -O` bytecode stripping.
+if not (set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == set(ALL_TOOLS)):
+    raise RuntimeError(
+        "TOOL_DEADLINES and TOOL_SIDE_EFFECT_CLASS must have identical key sets."
+    )
 
 # ---------------------------------------------------------------------------
 # Grant-required mutations — Inv-11.

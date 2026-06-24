@@ -29,6 +29,8 @@ is updated to match.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from cordia_agent.state import AgentState, DialogIntent, OperationType
 
 
@@ -137,9 +139,10 @@ async def identify_intent(state: AgentState) -> dict:
                 update["draft"] = state.draft.model_copy(
                     update={"request": new_request}
                 )
-            except Exception:
-                # If the model copy fails (e.g. model validator rejects missing
-                # target_booking_id for mutations), leave the draft untouched.
+            except ValidationError:
+                # If revalidation rejects the update (e.g. a mutation operation
+                # whose target_booking_id is still missing), leave the draft
+                # untouched — IdentifyIntent only sets the intent, not slots.
                 pass
 
     return update

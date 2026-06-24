@@ -278,8 +278,10 @@ class ToolClient:
                 raw_status = err_body.get("status")
                 if isinstance(raw_status, str) and raw_status:
                     typed_status = raw_status
-        except Exception:
-            pass
+        except ValueError:
+            # Body is not valid JSON (json.JSONDecodeError is a ValueError) —
+            # fall back to the generic per-class status; never read raw text.
+            typed_status = None
 
         return map_http_error(
             response.status_code,
