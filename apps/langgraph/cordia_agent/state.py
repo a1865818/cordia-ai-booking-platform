@@ -370,6 +370,58 @@ class AgentState(BaseModel):
             "(§6.6, Inv-16). Advisory only — NEVER treated as held/confirmed/success."
         ),
     )
+    # --- Read-back + confirmation channels (02-I, §8.6/§8.8/§8.9) ---
+    # Stored as plain types (str/bool/dict/list) to avoid a circular import:
+    # state.py MUST NOT import IntentRevision/Confirmation (models.intent imports
+    # BookingRequest from state → cycle).  Nodes build the typed models locally
+    # and persist .model_dump(mode="json") here.
+    read_back_text: str | None = Field(
+        default=None,
+        description="Internal: rendered read-back text for the current draft (§8.6).",
+    )
+    read_back_version: str | None = Field(
+        default=None,
+        description=(
+            "Internal: deterministic sha256 content hash of the read-back render "
+            "(§8.6); used by await_confirmation to bind the Confirmation."
+        ),
+    )
+    read_back_interrupted: bool = Field(
+        default=False,
+        description=(
+            "Internal: True when the read-back was interrupted/cancelled before "
+            "the customer heard the full text (§8.9).  NEVER confirmed when True."
+        ),
+    )
+    disclosures_presented: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Internal: consent + policy disclosure IDs shown to the customer "
+            "(§5.5 / §14).  Empty → consent gate refuses to record a Confirmation."
+        ),
+    )
+    verification_level: str | None = Field(
+        default=None,
+        description="Internal: verification level recorded at confirmation time (§9.3).",
+    )
+    current_intent_id: str | None = Field(
+        default=None,
+        description="Internal: stable intent identity across revisions (§8.7).",
+    )
+    current_revision: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: IntentRevision.model_dump(mode='json') for the current revision "
+            "(§8.7 / Inv-10).  Stored as dict to avoid circular import with models.intent."
+        ),
+    )
+    confirmation: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: Confirmation.model_dump(mode='json') recorded by await_confirmation "
+            "(§8.8).  None until the customer gives explicit confirmation (Inv-1)."
+        ),
+    )
 
 
 class AgentInputState(BaseModel):
