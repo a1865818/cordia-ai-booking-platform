@@ -6,6 +6,7 @@ from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming import ProgressFiller, TurnManager
 from cordia_agent.streaming_models import ToolProgressFrame
 
+
 ENVELOPE_FIELDS = {
     "tenant_id": "tenant_1",
     "session_id": "session_1",
@@ -16,9 +17,14 @@ ENVELOPE_FIELDS = {
 }
 
 
-def _progress(elapsed_ms: int, *, tool_name: str = "check_candidate_availability",
-              phase: str = "checking", turn_id: str = "assistant_turn_1",
-              seq: int = 0) -> ToolProgressFrame:
+def _progress(
+    elapsed_ms: int,
+    *,
+    tool_name: str = "check_candidate_availability",
+    phase: str = "checking",
+    turn_id: str = "assistant_turn_1",
+    seq: int = 0,
+) -> ToolProgressFrame:
     return ToolProgressFrame(
         type=StreamFrameType.TOOL_PROGRESS,
         **{**ENVELOPE_FIELDS, "turn_id": turn_id},
@@ -76,10 +82,16 @@ def test_distinct_tools_each_get_their_own_announcement() -> None:
 def test_no_band_phrase_implies_success() -> None:
     # Inv-16: never imply the booking succeeded while a tool is still pending.
     filler = ProgressFiller(turn_manager=TurnManager())
-    forbidden = ("confirmed", "booked", "you're all set", "great news", "done", "success")
+    forbidden = (
+        "confirmed",
+        "booked",
+        "you're all set",
+        "great news",
+        "done",
+        "success",
+    )
     phrases = [
-        filler.fill(_progress(ms, tool_name=f"tool_{ms}"))
-        for ms in (300, 1000, 5000)
+        filler.fill(_progress(ms, tool_name=f"tool_{ms}")) for ms in (300, 1000, 5000)
     ]
     for phrase in phrases:
         assert phrase is not None

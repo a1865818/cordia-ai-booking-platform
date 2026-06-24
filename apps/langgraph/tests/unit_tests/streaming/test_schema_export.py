@@ -50,7 +50,9 @@ if TYPE_CHECKING:
 
 
 def _load_exporter() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("export_pydantic_schemas", EXPORTER_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "export_pydantic_schemas", EXPORTER_PATH
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -94,11 +96,15 @@ def test_exporter_emits_canonical_normalized_operation_status(
     enums_dir.mkdir(parents=True)
 
     langgraph_json = tmp_path / "langgraph.json"
-    langgraph_json.write_text(json.dumps({"graphs": {"agent": "./cordia_agent/graph.py"}}))
+    langgraph_json.write_text(
+        json.dumps({"graphs": {"agent": "./cordia_agent/graph.py"}})
+    )
 
     monkeypatch.setattr(exporter, "SCHEMAS_DIR", schemas_dir)
     monkeypatch.setattr(exporter, "SHARED_DIR", shared_dir)
-    monkeypatch.setattr(exporter, "SHARED_DEFS_FILE", shared_dir / "PydanticSharedDefs.json")
+    monkeypatch.setattr(
+        exporter, "SHARED_DEFS_FILE", shared_dir / "PydanticSharedDefs.json"
+    )
     monkeypatch.setattr(exporter, "LANGGRAPH_JSON", langgraph_json)
     monkeypatch.setattr(exporter, "REPO_ROOT", tmp_path)
 
@@ -155,11 +161,15 @@ def test_exporter_emits_clean_streaming_contract(
     (enums_dir / "HelloMessageCode.json").write_text("{}")
 
     langgraph_json = tmp_path / "langgraph.json"
-    langgraph_json.write_text(json.dumps({"graphs": {"agent": "./cordia_agent/graph.py"}}))
+    langgraph_json.write_text(
+        json.dumps({"graphs": {"agent": "./cordia_agent/graph.py"}})
+    )
 
     monkeypatch.setattr(exporter, "SCHEMAS_DIR", schemas_dir)
     monkeypatch.setattr(exporter, "SHARED_DIR", shared_dir)
-    monkeypatch.setattr(exporter, "SHARED_DEFS_FILE", shared_dir / "PydanticSharedDefs.json")
+    monkeypatch.setattr(
+        exporter, "SHARED_DEFS_FILE", shared_dir / "PydanticSharedDefs.json"
+    )
     monkeypatch.setattr(exporter, "LANGGRAPH_JSON", langgraph_json)
     monkeypatch.setattr(exporter, "REPO_ROOT", tmp_path)
 
@@ -174,7 +184,9 @@ def test_exporter_emits_clean_streaming_contract(
     stream_frame_type = json.loads((enums_dir / "StreamFrameType.json").read_text())
     assert stream_frame_type["enum"] == [member.value for member in StreamFrameType]
 
-    shared_defs = json.loads((shared_dir / "PydanticSharedDefs.json").read_text())["$defs"]
+    shared_defs = json.loads((shared_dir / "PydanticSharedDefs.json").read_text())[
+        "$defs"
+    ]
     for variant in STREAMING_VARIANTS:
         definition = shared_defs[variant.__name__]
         assert definition["additionalProperties"] is False

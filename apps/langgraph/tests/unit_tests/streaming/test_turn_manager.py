@@ -155,9 +155,7 @@ def test_duplicate_frame_key_is_detected_per_session() -> None:
 def test_undelivered_cancellation_marks_cancelled_turn_non_authoritative() -> None:
     manager = TurnManager()
 
-    manager.handle_cancellation(
-        _turn_cancelled(cancelled_turn_id="assistant_turn_1")
-    )
+    manager.handle_cancellation(_turn_cancelled(cancelled_turn_id="assistant_turn_1"))
 
     assert not manager.is_authoritative_turn("assistant_turn_1")
     assert manager.is_authoritative_turn("customer_turn_2")
@@ -180,9 +178,7 @@ def test_delivered_cancellation_does_not_invalidate_turn() -> None:
 @pytest.mark.unit
 def test_subsequent_commit_must_come_from_authoritative_new_turn() -> None:
     manager = TurnManager()
-    manager.handle_cancellation(
-        _turn_cancelled(cancelled_turn_id="assistant_turn_1")
-    )
+    manager.handle_cancellation(_turn_cancelled(cancelled_turn_id="assistant_turn_1"))
     cancelled_turn_commit = _agent_text_final(turn_id="assistant_turn_1")
     new_customer_commit = _transcript_final(turn_id="customer_turn_2", seq=1)
 

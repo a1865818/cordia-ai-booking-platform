@@ -55,7 +55,9 @@ async def test_first_tts_delta_emits_at_sentence_boundary_before_agent_final() -
     chunker = TTSChunker(provider=provider, turn_manager=TurnManager())
 
     no_boundary = [frame async for frame in chunker.process_frame(_delta("Hello"))]
-    first_sentence = [frame async for frame in chunker.process_frame(_delta(".", seq=1))]
+    first_sentence = [
+        frame async for frame in chunker.process_frame(_delta(".", seq=1))
+    ]
 
     assert no_boundary == []
     assert [frame.type for frame in first_sentence] == [StreamFrameType.TTS_AUDIO_DELTA]
@@ -123,9 +125,7 @@ async def test_seq_values_are_sourced_from_shared_turn_manager() -> None:
     assert turn_manager.next_seq("session_1") == 0
     frames = [
         frame
-        async for frame in chunker.process(
-            _frames([_delta("Ready. Set.", seq=1)])
-        )
+        async for frame in chunker.process(_frames([_delta("Ready. Set.", seq=1)]))
     ]
 
     assert [frame.seq for frame in frames] == [1, 2]
@@ -175,10 +175,7 @@ async def test_final_text_with_prefix_drift_is_still_synthesized() -> None:
 
     await anext(chunker.process_frame(_delta("Hello.")))
     frames = [
-        frame
-        async for frame in chunker.process_frame(
-            _final("Hello! How are you?")
-        )
+        frame async for frame in chunker.process_frame(_final("Hello! How are you?"))
     ]
 
     assert [frame.audio_chunk_ref for frame in frames] == [

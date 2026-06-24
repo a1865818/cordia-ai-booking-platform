@@ -7,14 +7,7 @@ from inspect import getsource
 import pytest
 
 import cordia_agent.streaming.reconnect as reconnect_module
-
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
-from cordia_agent.streaming.reconnect import (
-    ReconnectHandler,
-    ReconnectOutcome,
-    ReconnectSessionContext,
-)
-from cordia_agent.streaming.turn_manager import TurnManager
 
 # --- Protocols are tested via fakes imported from providers ---
 from cordia_agent.streaming.providers import (
@@ -22,6 +15,12 @@ from cordia_agent.streaming.providers import (
     FakeHandoffHook,
     FakeSessionLookup,
 )
+from cordia_agent.streaming.reconnect import (
+    ReconnectHandler,
+    ReconnectOutcome,
+    ReconnectSessionContext,
+)
+from cordia_agent.streaming.turn_manager import TurnManager
 
 
 # ---------------------------------------------------------------------------

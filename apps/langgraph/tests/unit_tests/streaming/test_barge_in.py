@@ -194,9 +194,7 @@ async def test_completed_assistant_turn_does_not_trigger_barge_in() -> None:
 
     async for _frame in chunker.process_frame(_agent_delta("All done.")):
         pass
-    async for _frame in chunker.process_frame(
-        _agent_final("All done.")
-    ):
+    async for _frame in chunker.process_frame(_agent_final("All done.")):
         pass
 
     assert chunker.active_turn is None

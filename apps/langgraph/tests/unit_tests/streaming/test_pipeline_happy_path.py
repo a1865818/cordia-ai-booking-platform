@@ -7,7 +7,7 @@ from inspect import getsource
 import pytest
 
 from cordia_agent.state import StreamFrameType
-from cordia_agent.streaming import Pipeline, PipelineSession, TurnManager
+from cordia_agent.streaming import Pipeline, PipelineSession
 from cordia_agent.streaming import agent_port as agent_port_module
 from cordia_agent.streaming.providers import (
     FakeSTTProvider,
@@ -22,6 +22,7 @@ from cordia_agent.streaming_models import (
 )
 from tests.unit_tests.streaming.fakes import fake_agent as fake_agent_module
 from tests.unit_tests.streaming.fakes.fake_agent import FakeAgent
+
 
 SESSION = PipelineSession(
     tenant_id="tenant_1",
@@ -60,8 +61,11 @@ def _agent_final(text: str, *, seq: int) -> AgentTextFinalFrame:
 
 def _tool_progress(elapsed_ms: int, *, seq: int) -> ToolProgressFrame:
     return ToolProgressFrame(
-        type=StreamFrameType.TOOL_PROGRESS, **AGENT_ENVELOPE, seq=seq,
-        tool_name="check_candidate_availability", phase="checking",
+        type=StreamFrameType.TOOL_PROGRESS,
+        **AGENT_ENVELOPE,
+        seq=seq,
+        tool_name="check_candidate_availability",
+        phase="checking",
         elapsed_ms=elapsed_ms,
     )
 
@@ -81,7 +85,9 @@ def _pipeline(agent: FakeAgent) -> Pipeline:
 
 @pytest.mark.unit
 async def test_happy_path_frame_sequence() -> None:
-    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    agent = FakeAgent(
+        [_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)]
+    )
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
 
     assert [f.type for f in frames] == [
@@ -96,7 +102,9 @@ async def test_happy_path_frame_sequence() -> None:
 
 @pytest.mark.unit
 async def test_first_tts_delta_precedes_agent_text_final() -> None:
-    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    agent = FakeAgent(
+        [_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)]
+    )
     types = [f.type async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
     assert types.index(StreamFrameType.TTS_AUDIO_DELTA) < types.index(
         StreamFrameType.AGENT_TEXT_FINAL
@@ -105,7 +113,9 @@ async def test_first_tts_delta_precedes_agent_text_final() -> None:
 
 @pytest.mark.unit
 async def test_audio_started_emitted_once_and_carries_session_ids() -> None:
-    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    agent = FakeAgent(
+        [_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)]
+    )
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
 
     started = [f for f in frames if f.type == StreamFrameType.AUDIO_STARTED]
@@ -121,7 +131,9 @@ async def test_audio_started_emitted_once_and_carries_session_ids() -> None:
 
 @pytest.mark.unit
 async def test_wire_seq_is_monotonic_per_session_despite_agent_owned_seq() -> None:
-    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    agent = FakeAgent(
+        [_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)]
+    )
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
     seqs = [frame.seq for frame in frames]
     assert seqs == list(range(len(frames)))
@@ -133,7 +145,9 @@ async def test_wire_seq_is_monotonic_per_session_despite_agent_owned_seq() -> No
 
 @pytest.mark.unit
 async def test_pipeline_sourced_frames_share_session_identity() -> None:
-    agent = FakeAgent([_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)])
+    agent = FakeAgent(
+        [_agent_delta("Hello.", seq=100), _agent_final("Hello.", seq=101)]
+    )
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
     for f in frames:
         assert f.session_id == SESSION.session_id
@@ -160,21 +174,20 @@ async def test_tool_progress_is_emitted_and_rendered_through_tts() -> None:
     assert progress_idx < first_tts_idx
     # filler audio rides a dedicated filler turn, not the assistant turn
     filler_tts = next(
-        f for f in frames
-        if f.type == StreamFrameType.TTS_AUDIO_DELTA
-        and f.turn_id != SESSION.turn_id
+        f
+        for f in frames
+        if f.type == StreamFrameType.TTS_AUDIO_DELTA and f.turn_id != SESSION.turn_id
     )
     assert filler_tts.turn_id == "turn_1:filler:check_candidate_availability"
 
 
 @pytest.mark.unit
 async def test_subthreshold_tool_progress_renders_no_filler_audio() -> None:
-    agent = FakeAgent(
-        [_tool_progress(100, seq=100), _agent_final("Hi.", seq=101)]
-    )
+    agent = FakeAgent([_tool_progress(100, seq=100), _agent_final("Hi.", seq=101)])
     frames = [f async for f in _pipeline(agent).run(_pcm(2), session=SESSION)]
     filler_audio = [
-        f for f in frames
+        f
+        for f in frames
         if f.type == StreamFrameType.TTS_AUDIO_DELTA and f.turn_id != SESSION.turn_id
     ]
     assert filler_audio == []
@@ -182,11 +195,16 @@ async def test_subthreshold_tool_progress_renders_no_filler_audio() -> None:
 
 @pytest.mark.unit
 def test_agent_port_and_fake_do_not_import_real_network_dependencies() -> None:
-    source = "\n".join(
-        [getsource(agent_port_module), getsource(fake_agent_module)]
-    )
+    source = "\n".join([getsource(agent_port_module), getsource(fake_agent_module)])
     forbidden_tokens = [
-        "boto3", "deepgram", "google.cloud", "httpx", "openai",
-        "langchain", "requests", "socket", "websocket",
+        "boto3",
+        "deepgram",
+        "google.cloud",
+        "httpx",
+        "openai",
+        "langchain",
+        "requests",
+        "socket",
+        "websocket",
     ]
     assert not any(token in source for token in forbidden_tokens)
