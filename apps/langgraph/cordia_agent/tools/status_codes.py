@@ -149,3 +149,18 @@ class AvailabilityMode(str, Enum):
     LIVE = "live"
     HELD = "held"
     CONFIRMED = "confirmed"
+
+
+# VerificationAction is the cross-service set OWNED by spec 08. It is bound here
+# as a frozen value set so tool contracts can type allowed_action now.
+# DO NOT redefine elsewhere: spec 08 must IMPORT this symbol, not re-declare it
+# (export_pydantic_schemas.validate_no_duplicates fails on a duplicate title).
+class VerificationAction(str, Enum):
+    """Allowed action types for a verification grant (owned by spec 08)."""
+
+    READ_SENSITIVE = "read_sensitive"
+    MODIFY = "modify"
+    CANCEL = "cancel"
+    USE_PAYMENT_METHOD = "use_payment_method"
+    REFUND = "refund"
+    OWNER_OVERRIDE = "owner_override"

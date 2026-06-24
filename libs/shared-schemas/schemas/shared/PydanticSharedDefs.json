@@ -296,16 +296,15 @@
       "type": "object"
     },
     "AvailabilityMode": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "AvailabilityMode",
       "description": "Availability mode bounding agent wording (owned by spec 07).",
-      "type": "string",
       "enum": [
         "informational",
         "live",
         "held",
         "confirmed"
-      ]
+      ],
+      "title": "AvailabilityMode",
+      "type": "string"
     },
     "BargeInFrame": {
       "additionalProperties": false,
@@ -1184,10 +1183,7 @@
       "type": "object"
     },
     "NormalizedOperationStatus": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "NormalizedOperationStatus",
       "description": "Customer/agent-facing operation status from get_operation_status (spec 06).",
-      "type": "string",
       "enum": [
         "accepted",
         "in_progress",
@@ -1198,7 +1194,93 @@
         "rejected",
         "expired",
         "failed"
-      ]
+      ],
+      "title": "NormalizedOperationStatus",
+      "type": "string"
+    },
+    "OperationStatusView": {
+      "additionalProperties": false,
+      "description": "Output payload for get_operation_status (spec 03 \u00a74.3 / spec 06 D2).\n\n``status`` is typed as NormalizedOperationStatus (9-value public projection,\nInv-16). Internal substates (e.g. 'validating', 'held', 'awaiting_payment')\nare never surfaced here; Pydantic will reject them at validation time.",
+      "properties": {
+        "operation_id": {
+          "description": "Stable operation identifier.",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/NormalizedOperationStatus",
+          "description": "Normalized 9-value operation status (Inv-16). Internal substates are NEVER valid here."
+        },
+        "booking_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Booking ID once confirmed, if available.",
+          "title": "Booking Id"
+        },
+        "booking_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable booking reference, if available.",
+          "title": "Booking Reference"
+        },
+        "availability_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AvailabilityMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Availability mode at last status update."
+        },
+        "customer_message": {
+          "description": "Safe customer-facing status description.",
+          "title": "Customer Message",
+          "type": "string"
+        },
+        "pending": {
+          "description": "True iff the operation is still in a non-terminal state.",
+          "title": "Pending",
+          "type": "boolean"
+        },
+        "terminal": {
+          "description": "True iff the operation has reached a terminal state.",
+          "title": "Terminal",
+          "type": "boolean"
+        },
+        "updated_at": {
+          "description": "Last status update time (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "status",
+        "customer_message",
+        "pending",
+        "terminal",
+        "updated_at"
+      ],
+      "title": "OperationStatusView",
+      "type": "object"
     },
     "OperationType": {
       "description": "Booking operation requested by the customer.",
@@ -1210,6 +1292,60 @@
       ],
       "title": "OperationType",
       "type": "string"
+    },
+    "PolicyValidationResult": {
+      "additionalProperties": false,
+      "description": "Output payload for validate_booking_draft (spec 03 \u00a76.1).\n\nAll six fields must round-trip from the spec \u00a76.1 JSON fixture exactly.",
+      "properties": {
+        "valid": {
+          "description": "True iff the draft passes all policy checks.",
+          "title": "Valid",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ValidateBookingDraftStatus",
+          "description": "Structured policy/validation outcome code."
+        },
+        "customer_message": {
+          "description": "Safe customer-facing explanation of the validation outcome.",
+          "title": "Customer Message",
+          "type": "string"
+        },
+        "recoverable_fields": {
+          "description": "Draft fields the agent may re-prompt to correct.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Recoverable Fields",
+          "type": "array"
+        },
+        "suggested_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Machine hint for the agent's next move, e.g. request_alternative_time.",
+          "title": "Suggested Action"
+        },
+        "policy_version": {
+          "description": "Tenant policy version the validation was run against.",
+          "title": "Policy Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "valid",
+        "code",
+        "customer_message",
+        "policy_version"
+      ],
+      "title": "PolicyValidationResult",
+      "type": "object"
     },
     "ReconnectOutcome": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1846,10 +1982,7 @@
       ]
     },
     "ValidateBookingDraftStatus": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "ValidateBookingDraftStatus",
       "description": "Status codes for validate_booking_draft (spec 03 \u00a74.3).",
-      "type": "string",
       "enum": [
         "valid",
         "minimum_notice_not_met",
@@ -1858,7 +1991,99 @@
         "service_ineligible",
         "field_missing",
         "field_ambiguous"
-      ]
+      ],
+      "title": "ValidateBookingDraftStatus",
+      "type": "string"
+    },
+    "VerificationAction": {
+      "description": "Allowed action types for a verification grant (owned by spec 08).",
+      "enum": [
+        "read_sensitive",
+        "modify",
+        "cancel",
+        "use_payment_method",
+        "refund",
+        "owner_override"
+      ],
+      "title": "VerificationAction",
+      "type": "string"
+    },
+    "VerificationGrantView": {
+      "additionalProperties": false,
+      "description": "Output payload for check_verification (spec 03 \u00a74.3).",
+      "properties": {
+        "grant_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opaque grant identifier; None if not yet issued.",
+          "title": "Grant Id"
+        },
+        "tenant_id": {
+          "description": "Tenant scope for this grant.",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "customer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer the grant belongs to, if identified.",
+          "title": "Customer Id"
+        },
+        "target_booking_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Booking this grant targets, if operation-scoped.",
+          "title": "Target Booking Id"
+        },
+        "allowed_action": {
+          "$ref": "#/$defs/VerificationAction",
+          "description": "The single action this grant permits."
+        },
+        "expires_at": {
+          "description": "Grant expiry time (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "scope": {
+          "description": "'session' for broad session scope; 'operation' for a single operation.",
+          "enum": [
+            "session",
+            "operation"
+          ],
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "allowed_action",
+        "expires_at",
+        "scope"
+      ],
+      "title": "VerificationGrantView",
+      "type": "object"
     }
   }
 }
