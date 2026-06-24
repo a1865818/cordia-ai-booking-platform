@@ -1,0 +1,4 @@
+{
+  "title": "IntentRevision",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/IntentRevision"
+}

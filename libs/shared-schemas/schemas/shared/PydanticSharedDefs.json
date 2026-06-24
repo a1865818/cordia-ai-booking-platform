@@ -608,6 +608,91 @@
         "expired"
       ]
     },
+    "Confirmation": {
+      "additionalProperties": false,
+      "description": "Immutable confirmation evidence bound to exactly one IntentRevision (spec 02 \u00a75.2 / \u00a78.8).",
+      "properties": {
+        "confirmation_id": {
+          "description": "Stable confirmation identity.",
+          "title": "Confirmation Id",
+          "type": "string"
+        },
+        "intent_id": {
+          "description": "Intent this confirmation is bound to.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Revision number this confirmation binds.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "intent_payload_hash": {
+          "description": "MUST equal the bound revision's payload_hash (\u00a78.8).",
+          "title": "Intent Payload Hash",
+          "type": "string"
+        },
+        "identity": {
+          "description": "Verified identity, or 'anonymous_session' sentinel.",
+          "title": "Identity",
+          "type": "string"
+        },
+        "confirmation_channel": {
+          "description": "Channel confirmation was given on.",
+          "enum": [
+            "voice",
+            "sms",
+            "web",
+            "email"
+          ],
+          "title": "Confirmation Channel",
+          "type": "string"
+        },
+        "confirmed_at": {
+          "description": "Confirmation time (offset-aware).",
+          "format": "date-time",
+          "title": "Confirmed At",
+          "type": "string"
+        },
+        "source_turn_id": {
+          "description": "transcript.final turn that carried the confirmation (Inv-1).",
+          "title": "Source Turn Id",
+          "type": "string"
+        },
+        "read_back_version": {
+          "description": "Exact deterministic read-back version confirmed (\u00a78.6).",
+          "title": "Read Back Version",
+          "type": "string"
+        },
+        "disclosures_presented": {
+          "description": "Consent + policy disclosures shown (\u00a75.5/\u00a714).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Disclosures Presented",
+          "type": "array"
+        },
+        "verification_level": {
+          "description": "Verification level recorded at confirmation (\u00a79.3).",
+          "title": "Verification Level",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_id",
+        "intent_id",
+        "intent_revision",
+        "intent_payload_hash",
+        "identity",
+        "confirmation_channel",
+        "confirmed_at",
+        "source_turn_id",
+        "read_back_version",
+        "verification_level"
+      ],
+      "title": "Confirmation",
+      "type": "object"
+    },
     "CustomerRef": {
       "additionalProperties": false,
       "description": "Reference to the customer; all optional (anonymous sessions).",
@@ -807,6 +892,55 @@
       "title": "GreetingStatus",
       "type": "string"
     },
+    "HandoffPackage": {
+      "additionalProperties": false,
+      "description": "Structured payload for request_human_handoff (spec 02; Inv-11 packager input).",
+      "properties": {
+        "reason": {
+          "description": "Why the conversation is being handed to a human.",
+          "title": "Reason",
+          "type": "string"
+        },
+        "draft_snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookingDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Draft state at handoff (provenance retained internally)."
+        },
+        "source_turn_ids": {
+          "description": "Turn IDs pointing to the relevant transcript context.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Turn Ids",
+          "type": "array"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional human-readable summary for the agent picking up.",
+          "title": "Summary"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "HandoffPackage",
+      "type": "object"
+    },
     "HelloConfiguration": {
       "additionalProperties": false,
       "description": "Configurable parameters for the hello graph.",
@@ -856,6 +990,90 @@
         "message"
       ],
       "title": "HelloOutputState",
+      "type": "object"
+    },
+    "IntentRevision": {
+      "additionalProperties": false,
+      "description": "Immutable submitted booking revision (spec 02 \u00a75.2 / \u00a78.7).",
+      "properties": {
+        "intent_id": {
+          "description": "Stable intent identity across revisions.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "revision": {
+          "description": "Monotonic revision number for this intent.",
+          "title": "Revision",
+          "type": "integer"
+        },
+        "canonical_payload": {
+          "$ref": "#/$defs/BookingRequest",
+          "description": "Normalized request, no provenance."
+        },
+        "schema_version": {
+          "description": "Draft schema version carried into the intent.",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tenant_policy_version": {
+          "description": "Tenant configuration/policy version.",
+          "title": "Tenant Policy Version",
+          "type": "string"
+        },
+        "payload_hash": {
+          "description": "Canonical payload hash; algorithm fixed by \u00a710.2.",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Revision creation time (offset-aware).",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "source_session_id": {
+          "description": "Dialog session that produced this revision.",
+          "title": "Source Session Id",
+          "type": "string"
+        },
+        "prior_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Superseded revision number.",
+          "title": "Prior Revision"
+        },
+        "supersession_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why the prior revision was superseded (\u00a78.7).",
+          "title": "Supersession Reason"
+        }
+      },
+      "required": [
+        "intent_id",
+        "revision",
+        "canonical_payload",
+        "schema_version",
+        "tenant_policy_version",
+        "payload_hash",
+        "created_at",
+        "source_session_id"
+      ],
+      "title": "IntentRevision",
       "type": "object"
     },
     "MaskedDtmfSignal": {

@@ -53,6 +53,8 @@ from cordia_agent.streaming_models import (
     TtsAudioDeltaFrame,
     TurnCancelledFrame,
 )
+from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.models.handoff import HandoffPackage
 from cordia_agent.tools.contracts import ToolResultEnvelope
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.streaming.reconnect import ReconnectOutcome
@@ -101,6 +103,9 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BookingDraft,
         BookingRequest,
         CanonicalBookingDraft,
+        Confirmation,
+        HandoffPackage,
+        IntentRevision,
         MaskedDtmfSignal,
         ToolResultEnvelope,
     ],
