@@ -55,10 +55,25 @@ from cordia_agent.streaming_models import (
 from cordia_agent.models.intent import Confirmation, IntentRevision
 from cordia_agent.models.handoff import HandoffPackage
 from cordia_agent.tools.contracts import (
+    AcceptanceResult,
+    AvailabilityCandidate,
+    AvailabilityRequest,
+    AvailabilityResult,
+    BookingChangeValidation,
+    BookingProjectionRef,
+    HandoffRequest,
+    HandoffResult,
+    HoldResult,
+    ManageableBooking,
     OperationStatusView,
     PolicyValidationResult,
+    SubmitCancellationInput,
+    SubmitConfirmedIntentInput,
+    SubmitModificationInput,
     ToolResultEnvelope,
     VerificationGrantView,
+    VerificationRequest,
+    VerificationSentResult,
 )
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.streaming.reconnect import ReconnectOutcome
@@ -105,17 +120,32 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         TurnCancelledFrame,
     ],
     "models": [
+        AcceptanceResult,
+        AvailabilityCandidate,
+        AvailabilityRequest,
+        AvailabilityResult,
+        BookingChangeValidation,
         BookingDraft,
+        BookingProjectionRef,
         BookingRequest,
         CanonicalBookingDraft,
         Confirmation,
         HandoffPackage,
+        HandoffRequest,
+        HandoffResult,
+        HoldResult,
         IntentRevision,
+        ManageableBooking,
         MaskedDtmfSignal,
         OperationStatusView,
         PolicyValidationResult,
+        SubmitCancellationInput,
+        SubmitConfirmedIntentInput,
+        SubmitModificationInput,
         ToolResultEnvelope,
         VerificationGrantView,
+        VerificationRequest,
+        VerificationSentResult,
     ],
 }
 

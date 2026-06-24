@@ -1,0 +1,4 @@
+{
+  "title": "VerificationRequest",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/VerificationRequest"
+}

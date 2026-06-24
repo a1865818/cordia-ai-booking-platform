@@ -2,6 +2,53 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pydantic Shared Definitions",
   "$defs": {
+    "AcceptanceResult": {
+      "additionalProperties": false,
+      "description": "Output payload for submit_confirmed_intent \u2014 \u00a710.4 acceptance shape.",
+      "properties": {
+        "operation_id": {
+          "description": "Stable operation identifier.",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "intent_id": {
+          "description": "Stable intent identifier.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Revision number that was accepted.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "status": {
+          "description": "Acceptance status string, e.g. 'accepted' (\u00a710.4).",
+          "title": "Status",
+          "type": "string"
+        },
+        "status_url": {
+          "description": "URL to poll for operation status, e.g. '/api/booking-operations/{operation_id}'.",
+          "title": "Status Url",
+          "type": "string"
+        },
+        "submitted_at": {
+          "description": "When the intent was accepted by the platform (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Submitted At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "intent_id",
+        "intent_revision",
+        "status",
+        "status_url",
+        "submitted_at"
+      ],
+      "title": "AcceptanceResult",
+      "type": "object"
+    },
     "AgentInputState": {
       "additionalProperties": false,
       "description": "Boundary input contract for the foreground agent (extra fields rejected).\n\n``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).\nA plain ``tenant_id`` field is intentionally absent \u2014 the tenant is resolved\nexclusively from the verified signed token by the resolve_tenant node.",
@@ -295,6 +342,34 @@
       "title": "AudioStartedFrame",
       "type": "object"
     },
+    "AvailabilityCandidate": {
+      "additionalProperties": false,
+      "description": "A single available candidate slot (spec 03 \u00a74.3).",
+      "properties": {
+        "starts_at": {
+          "description": "Candidate slot start time (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Starts At",
+          "type": "string"
+        },
+        "duration_minutes": {
+          "description": "Duration of the candidate slot in minutes.",
+          "title": "Duration Minutes",
+          "type": "integer"
+        },
+        "availability_mode": {
+          "$ref": "#/$defs/AvailabilityMode",
+          "description": "Availability confidence mode for this candidate."
+        }
+      },
+      "required": [
+        "starts_at",
+        "duration_minutes",
+        "availability_mode"
+      ],
+      "title": "AvailabilityCandidate",
+      "type": "object"
+    },
     "AvailabilityMode": {
       "description": "Availability mode bounding agent wording (owned by spec 07).",
       "enum": [
@@ -305,6 +380,104 @@
       ],
       "title": "AvailabilityMode",
       "type": "string"
+    },
+    "AvailabilityRequest": {
+      "additionalProperties": false,
+      "description": "Input payload for check_candidate_availability (spec 03 \u00a74.3).",
+      "properties": {
+        "draft": {
+          "$ref": "#/$defs/BookingDraft",
+          "description": "Booking draft to check availability for."
+        },
+        "want_hold": {
+          "default": false,
+          "description": "Whether to request a hold on the candidate slot.",
+          "title": "Want Hold",
+          "type": "boolean"
+        },
+        "hold_ttl_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How long (seconds) to hold the slot; None uses tenant default.",
+          "title": "Hold Ttl Seconds"
+        },
+        "hold_idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Idempotency key for the hold request; None if want_hold is False.",
+          "title": "Hold Idempotency Key"
+        }
+      },
+      "required": [
+        "draft"
+      ],
+      "title": "AvailabilityRequest",
+      "type": "object"
+    },
+    "AvailabilityResult": {
+      "additionalProperties": false,
+      "description": "Output payload for check_candidate_availability (spec 03 \u00a74.3).",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/AvailabilityMode",
+          "description": "Overall availability mode for the response."
+        },
+        "candidates": {
+          "description": "Available candidate slots; empty when unavailable.",
+          "items": {
+            "$ref": "#/$defs/AvailabilityCandidate"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "hold": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HoldResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hold details; only present when mode=held."
+        },
+        "invalid_fields": {
+          "description": "Draft fields that prevented availability lookup.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Invalid Fields",
+          "type": "array"
+        },
+        "alternatives": {
+          "description": "Alternative slots suggested when the requested time is unavailable.",
+          "items": {
+            "$ref": "#/$defs/AvailabilityCandidate"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "AvailabilityResult",
+      "type": "object"
     },
     "BargeInFrame": {
       "additionalProperties": false,
@@ -374,6 +547,84 @@
       "title": "BargeInFrame",
       "type": "object"
     },
+    "BookingChangeValidation": {
+      "additionalProperties": false,
+      "description": "Output payload for validate_booking_change (spec 03 \u00a79.4.3).",
+      "properties": {
+        "valid": {
+          "description": "True iff the proposed change passes all policy checks.",
+          "title": "Valid",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/ValidateBookingChangeStatus",
+          "description": "Structured outcome code for the change validation."
+        },
+        "fees_minor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Change fee in the currency's minor unit (e.g. cents), if applicable.",
+          "title": "Fees Minor"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "ISO 4217 currency code for fees_minor, if applicable.",
+          "title": "Currency"
+        },
+        "requires_confirmation": {
+          "default": false,
+          "description": "Whether the agent must obtain explicit customer confirmation before proceeding.",
+          "title": "Requires Confirmation",
+          "type": "boolean"
+        },
+        "requires_payment": {
+          "default": false,
+          "description": "Whether additional payment is required to complete the change.",
+          "title": "Requires Payment",
+          "type": "boolean"
+        },
+        "recoverable_fields": {
+          "description": "Fields the agent may re-prompt to correct.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Recoverable Fields",
+          "type": "array"
+        },
+        "policy_version": {
+          "description": "Tenant policy version the validation was run against.",
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "capacity_mode": {
+          "$ref": "#/$defs/AvailabilityMode",
+          "description": "Availability mode at the time the change validation was run."
+        }
+      },
+      "required": [
+        "valid",
+        "code",
+        "policy_version",
+        "capacity_mode"
+      ],
+      "title": "BookingChangeValidation",
+      "type": "object"
+    },
     "BookingDraft": {
       "additionalProperties": false,
       "description": "In-dialog typed booking draft; source of the canonical submitted payload.",
@@ -436,6 +687,75 @@
         "source"
       ],
       "title": "BookingDraft",
+      "type": "object"
+    },
+    "BookingProjectionRef": {
+      "additionalProperties": false,
+      "description": "Minimal verification-leveled booking projection placeholder (\u00a74.4 / \u00a79.4).\n\nFuller projection to be added in a later spec track.",
+      "properties": {
+        "booking_id": {
+          "description": "Stable booking identifier.",
+          "title": "Booking Id",
+          "type": "string"
+        },
+        "booking_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable booking reference if available.",
+          "title": "Booking Reference"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Booking status string if available.",
+          "title": "Status"
+        },
+        "starts_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Booking start time (offset-aware ISO-8601) if available.",
+          "title": "Starts At"
+        },
+        "party_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of people in the booking if available.",
+          "title": "Party Size"
+        }
+      },
+      "required": [
+        "booking_id"
+      ],
+      "title": "BookingProjectionRef",
       "type": "object"
     },
     "BookingRequest": {
@@ -1008,6 +1328,74 @@
       "title": "HandoffPackage",
       "type": "object"
     },
+    "HandoffRequest": {
+      "additionalProperties": false,
+      "description": "Input payload for request_human_handoff (spec 03 \u00a74.3).",
+      "properties": {
+        "session_id": {
+          "description": "Current dialog session identifier.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "description": "Structured reason code for the handoff, e.g. 'complaint'.",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "handoff_idempotency_key": {
+          "description": "Idempotency key preventing duplicate work-item creation.",
+          "title": "Handoff Idempotency Key",
+          "type": "string"
+        },
+        "recommended_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional machine hint for the human agent's first action.",
+          "title": "Recommended Action"
+        }
+      },
+      "required": [
+        "session_id",
+        "reason_code",
+        "handoff_idempotency_key"
+      ],
+      "title": "HandoffRequest",
+      "type": "object"
+    },
+    "HandoffResult": {
+      "additionalProperties": false,
+      "description": "Output payload for request_human_handoff (spec 03 \u00a74.3).",
+      "properties": {
+        "work_item_id": {
+          "description": "Stable work-item identifier in the handoff queue.",
+          "title": "Work Item Id",
+          "type": "string"
+        },
+        "queue": {
+          "description": "Queue the work item was routed to.",
+          "title": "Queue",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RequestHumanHandoffStatus",
+          "description": "Outcome status: created, existing, or routing_unavailable."
+        }
+      },
+      "required": [
+        "work_item_id",
+        "queue",
+        "status"
+      ],
+      "title": "HandoffResult",
+      "type": "object"
+    },
     "HelloConfiguration": {
       "additionalProperties": false,
       "description": "Configurable parameters for the hello graph.",
@@ -1020,6 +1408,29 @@
         }
       },
       "title": "HelloConfiguration",
+      "type": "object"
+    },
+    "HoldResult": {
+      "additionalProperties": false,
+      "description": "Hold confirmation present only inside a 'held' availability response (spec 03 \u00a74.3).",
+      "properties": {
+        "hold_id": {
+          "description": "Opaque hold identifier assigned by the platform.",
+          "title": "Hold Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "When the hold expires (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hold_id",
+        "expires_at"
+      ],
+      "title": "HoldResult",
       "type": "object"
     },
     "IntentRevision": {
@@ -1104,6 +1515,52 @@
         "source_session_id"
       ],
       "title": "IntentRevision",
+      "type": "object"
+    },
+    "ManageableBooking": {
+      "additionalProperties": false,
+      "description": "Minimized non-sensitive disambiguator for a booking manageable by the customer (\u00a79.4.1).",
+      "properties": {
+        "booking_id": {
+          "description": "Stable booking identifier.",
+          "title": "Booking Id",
+          "type": "string"
+        },
+        "booking_reference": {
+          "description": "Human-readable booking reference, e.g. 'CORD-20260615-001'.",
+          "title": "Booking Reference",
+          "type": "string"
+        },
+        "business": {
+          "description": "Business name for this booking.",
+          "title": "Business",
+          "type": "string"
+        },
+        "date": {
+          "description": "Booking date as a display string, e.g. '2026-06-15'.",
+          "title": "Date",
+          "type": "string"
+        },
+        "approx_time": {
+          "description": "Approximate booking time as a display string, e.g. '10:30 AM'.",
+          "title": "Approx Time",
+          "type": "string"
+        },
+        "party_size": {
+          "description": "Number of people in the booking.",
+          "title": "Party Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "booking_id",
+        "booking_reference",
+        "business",
+        "date",
+        "approx_time",
+        "party_size"
+      ],
+      "title": "ManageableBooking",
       "type": "object"
     },
     "MaskedDtmfSignal": {
@@ -1359,15 +1816,14 @@
       ]
     },
     "RequestHumanHandoffStatus": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RequestHumanHandoffStatus",
       "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
-      "type": "string",
       "enum": [
         "created",
         "existing",
         "routing_unavailable"
-      ]
+      ],
+      "title": "RequestHumanHandoffStatus",
+      "type": "string"
     },
     "RequestVerificationStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1447,6 +1903,109 @@
         "confirmation_invalid"
       ]
     },
+    "SubmitCancellationInput": {
+      "additionalProperties": false,
+      "description": "Input for submit_booking_cancellation \u2014 ALL identity fields REQUIRED, NO defaults (Inv-2, Inv-11).\n\nexpected_booking_version and grant_id enforce optimistic concurrency and authorization (Inv-11).\nconfirmation is optional per \u00a74.4 (some cancellations do not require explicit confirmation).",
+      "properties": {
+        "target_booking_id": {
+          "description": "Booking to cancel; no default (Inv-11).",
+          "title": "Target Booking Id",
+          "type": "string"
+        },
+        "expected_booking_version": {
+          "description": "Optimistic concurrency version; must match current booking version (Inv-11).",
+          "title": "Expected Booking Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "description": "Stable operation identifier; no default (Inv-2).",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "cancellation_idempotency_key": {
+          "description": "Idempotency key for this cancellation request; no default (Inv-2).",
+          "title": "Cancellation Idempotency Key",
+          "type": "string"
+        },
+        "reason_code": {
+          "description": "Structured reason code for the cancellation, e.g. 'customer_request'.",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "grant_id": {
+          "description": "Authorization grant for this cancellation operation (Inv-11).",
+          "title": "Grant Id",
+          "type": "string"
+        },
+        "confirmation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Confirmation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional confirmation evidence; required only when policy demands it (\u00a74.4)."
+        }
+      },
+      "required": [
+        "target_booking_id",
+        "expected_booking_version",
+        "operation_id",
+        "cancellation_idempotency_key",
+        "reason_code",
+        "grant_id"
+      ],
+      "title": "SubmitCancellationInput",
+      "type": "object"
+    },
+    "SubmitConfirmedIntentInput": {
+      "additionalProperties": false,
+      "description": "Input for submit_confirmed_intent \u2014 ALL fields REQUIRED, NO defaults (Inv-2, spec 03 \u00a74.3 / \u00a710.4).\n\noperation_id, idempotency_key, and intent_payload_hash are opaque strings minted by spec 04.",
+      "properties": {
+        "operation_id": {
+          "description": "Stable operation identifier minted by spec 04; no default (Inv-2).",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Request idempotency key; no default (Inv-2).",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "intent_id": {
+          "description": "Stable intent identifier across revisions.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Monotonic revision number being submitted.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "intent_payload_hash": {
+          "description": "Canonical payload hash; must equal the bound revision's hash (Inv-2).",
+          "title": "Intent Payload Hash",
+          "type": "string"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/Confirmation",
+          "description": "Immutable confirmation evidence bound to this revision (\u00a78.8)."
+        }
+      },
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "intent_id",
+        "intent_revision",
+        "intent_payload_hash",
+        "confirmation"
+      ],
+      "title": "SubmitConfirmedIntentInput",
+      "type": "object"
+    },
     "SubmitConfirmedIntentStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "SubmitConfirmedIntentStatus",
@@ -1460,6 +2019,63 @@
         "policy_failed",
         "validation_failed"
       ]
+    },
+    "SubmitModificationInput": {
+      "additionalProperties": false,
+      "description": "Input for submit_booking_modification \u2014 ALL identity fields REQUIRED, NO defaults (Inv-2, Inv-11).\n\nexpected_booking_version and grant_id enforce optimistic concurrency and authorization (Inv-11).",
+      "properties": {
+        "target_booking_id": {
+          "description": "Booking to modify; no default (Inv-11).",
+          "title": "Target Booking Id",
+          "type": "string"
+        },
+        "expected_booking_version": {
+          "description": "Optimistic concurrency version; must match current booking version (Inv-11).",
+          "title": "Expected Booking Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "description": "Stable operation identifier; no default (Inv-2).",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "modification_idempotency_key": {
+          "description": "Idempotency key for this modification request; no default (Inv-2).",
+          "title": "Modification Idempotency Key",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Monotonic revision number being submitted.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "intent_payload_hash": {
+          "description": "Canonical payload hash for the modification intent (Inv-2).",
+          "title": "Intent Payload Hash",
+          "type": "string"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/Confirmation",
+          "description": "Immutable confirmation evidence bound to this revision (\u00a78.8)."
+        },
+        "grant_id": {
+          "description": "Authorization grant for this modification operation (Inv-11).",
+          "title": "Grant Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_booking_id",
+        "expected_booking_version",
+        "operation_id",
+        "modification_idempotency_key",
+        "intent_revision",
+        "intent_payload_hash",
+        "confirmation",
+        "grant_id"
+      ],
+      "title": "SubmitModificationInput",
+      "type": "object"
     },
     "ToolProgressFrame": {
       "additionalProperties": false,
@@ -1970,16 +2586,15 @@
       "type": "object"
     },
     "ValidateBookingChangeStatus": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "ValidateBookingChangeStatus",
       "description": "Status codes for validate_booking_change (spec 03 \u00a74.4).",
-      "type": "string",
       "enum": [
         "valid",
         "policy_failed",
         "stale_version",
         "capacity_unavailable"
-      ]
+      ],
+      "title": "ValidateBookingChangeStatus",
+      "type": "string"
     },
     "ValidateBookingDraftStatus": {
       "description": "Status codes for validate_booking_draft (spec 03 \u00a74.3).",
@@ -2083,6 +2698,102 @@
         "scope"
       ],
       "title": "VerificationGrantView",
+      "type": "object"
+    },
+    "VerificationRequest": {
+      "additionalProperties": false,
+      "description": "Input payload for request_verification (spec 03 \u00a74.3). No card/payment fields (Inv-12).",
+      "properties": {
+        "target_booking_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Booking the verification is scoped to, if operation-scoped.",
+          "title": "Target Booking Id"
+        },
+        "customer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer to send verification to, if identified.",
+          "title": "Customer Id"
+        },
+        "channel": {
+          "description": "Channel to send the verification on.",
+          "enum": [
+            "sms",
+            "email"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/VerificationAction",
+          "description": "The action this verification request will authorize."
+        },
+        "verification_idempotency_key": {
+          "description": "Idempotency key for this verification send request.",
+          "title": "Verification Idempotency Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "action",
+        "verification_idempotency_key"
+      ],
+      "title": "VerificationRequest",
+      "type": "object"
+    },
+    "VerificationSentResult": {
+      "additionalProperties": false,
+      "description": "Output payload for request_verification (spec 03 \u00a74.3). No card/payment fields (Inv-12).",
+      "properties": {
+        "verification_id": {
+          "description": "Opaque verification identifier assigned by the platform.",
+          "title": "Verification Id",
+          "type": "string"
+        },
+        "channel": {
+          "description": "Channel the verification was sent on.",
+          "enum": [
+            "sms",
+            "email"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "When the verification code expires (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "masked_destination": {
+          "description": "Masked destination address, e.g. '+61 4** *** 321' or 'j***@example.com'.",
+          "title": "Masked Destination",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verification_id",
+        "channel",
+        "expires_at",
+        "masked_destination"
+      ],
+      "title": "VerificationSentResult",
       "type": "object"
     }
   }
