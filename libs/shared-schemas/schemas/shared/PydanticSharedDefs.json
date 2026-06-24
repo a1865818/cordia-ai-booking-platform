@@ -2,6 +2,83 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pydantic Shared Definitions",
   "$defs": {
+    "AgentInputState": {
+      "additionalProperties": false,
+      "description": "Boundary input contract for the foreground agent (extra fields rejected).",
+      "properties": {
+        "tenant_id": {
+          "description": "Tenant scope (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Dialog session ID.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceInfo",
+          "description": "Origin channel + language."
+        },
+        "customer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CustomerRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Customer reference if known."
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id",
+        "source"
+      ],
+      "title": "AgentInputState",
+      "type": "object"
+    },
+    "AgentOutputState": {
+      "additionalProperties": false,
+      "description": "Boundary output contract for the foreground agent (extra fields rejected).",
+      "properties": {
+        "terminal_state": {
+          "anyOf": [
+            {
+              "enum": [
+                "submitted",
+                "human_handoff"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reached terminal state.",
+          "title": "Terminal State"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Durably-accepted operation id, if submitted.",
+          "title": "Operation Id"
+        }
+      },
+      "title": "AgentOutputState",
+      "type": "object"
+    },
     "AgentTextDeltaFrame": {
       "additionalProperties": false,
       "description": "Incremental agent response text chunk.",
@@ -883,15 +960,6 @@
         "tenant_not_resolved"
       ]
     },
-    "GreetingStatus": {
-      "description": "Lifecycle status of a greeting.",
-      "enum": [
-        "pending",
-        "greeted"
-      ],
-      "title": "GreetingStatus",
-      "type": "string"
-    },
     "HandoffPackage": {
       "additionalProperties": false,
       "description": "Structured payload for request_human_handoff (spec 02; Inv-11 packager input).",
@@ -953,43 +1021,6 @@
         }
       },
       "title": "HelloConfiguration",
-      "type": "object"
-    },
-    "HelloInputState": {
-      "additionalProperties": false,
-      "description": "Input to the hello graph.",
-      "properties": {
-        "name": {
-          "description": "Name of the person to greet.",
-          "title": "Name",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "title": "HelloInputState",
-      "type": "object"
-    },
-    "HelloOutputState": {
-      "additionalProperties": false,
-      "description": "Output of the hello graph.",
-      "properties": {
-        "message": {
-          "description": "The rendered greeting message.",
-          "title": "Message",
-          "type": "string"
-        },
-        "status": {
-          "$ref": "#/$defs/GreetingStatus",
-          "default": "greeted",
-          "description": "Resulting greeting status."
-        }
-      },
-      "required": [
-        "message"
-      ],
-      "title": "HelloOutputState",
       "type": "object"
     },
     "IntentRevision": {

@@ -1,4 +1,4 @@
-"""Core state models for the Cordia hello graph.
+"""Core state models for the Cordia agent.
 
 These Pydantic models are the source of truth for the shared types exported to
 C# and TypeScript via ``tools/scripts/export_pydantic_schemas.py``.
@@ -7,15 +7,11 @@ C# and TypeScript via ``tools/scripts/export_pydantic_schemas.py``.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
 
-
-class GreetingStatus(str, Enum):
-    """Lifecycle status of a greeting."""
-
-    PENDING = "pending"
-    GREETED = "greeted"
+from cordia_agent.tools.status_codes import AvailabilityMode
 
 
 class StreamFrameType(str, Enum):
@@ -30,25 +26,6 @@ class StreamFrameType(str, Enum):
     TTS_AUDIO_DELTA = "tts.audio.delta"
     BARGE_IN_DETECTED = "barge_in.detected"
     TURN_CANCELLED = "turn.cancelled"
-
-
-class HelloInputState(BaseModel):
-    """Input to the hello graph."""
-
-    model_config = {"extra": "forbid"}
-
-    name: str = Field(description="Name of the person to greet.")
-
-
-class HelloOutputState(BaseModel):
-    """Output of the hello graph."""
-
-    model_config = {"extra": "forbid"}
-
-    message: str = Field(description="The rendered greeting message.")
-    status: GreetingStatus = Field(
-        default=GreetingStatus.GREETED, description="Resulting greeting status."
-    )
 
 
 class TriState(str, Enum):
@@ -248,3 +225,55 @@ class BookingDraft(BaseModel):
         return CanonicalBookingDraft.model_validate(
             self.model_dump(exclude={"field_provenance"})
         )
+
+
+# ---------------------------------------------------------------------------
+# Foreground agent state (§8.3)
+# ---------------------------------------------------------------------------
+
+
+class AgentState(BaseModel):
+    """Internal LangGraph channel state — all fields defaulted (no extra="forbid").
+
+    LangGraph merges node return dicts into the channel state; requiring all
+    fields to have defaults lets partial updates work without tripping
+    required-field validation.
+    """
+
+    tenant_id: str | None = None
+    tenant_policy_version: str | None = None
+    session_id: str | None = None
+    draft: BookingDraft | None = None
+    operation: OperationType | None = None
+    operation_id: str | None = None
+    idempotency_key: str | None = None
+    last_confirmed_revision: int | None = None
+    availability_mode: AvailabilityMode | None = None
+    verification_grant_id: str | None = None
+    terminal_state: Literal["submitted", "human_handoff"] | None = None
+
+
+class AgentInputState(BaseModel):
+    """Boundary input contract for the foreground agent (extra fields rejected)."""
+
+    model_config = {"extra": "forbid"}
+
+    tenant_id: str = Field(description="Tenant scope (Inv-13).")
+    session_id: str = Field(description="Dialog session ID.")
+    source: SourceInfo = Field(description="Origin channel + language.")
+    customer: CustomerRef | None = Field(
+        default=None, description="Customer reference if known."
+    )
+
+
+class AgentOutputState(BaseModel):
+    """Boundary output contract for the foreground agent (extra fields rejected)."""
+
+    model_config = {"extra": "forbid"}
+
+    terminal_state: Literal["submitted", "human_handoff"] | None = Field(
+        default=None, description="Reached terminal state."
+    )
+    operation_id: str | None = Field(
+        default=None, description="Durably-accepted operation id, if submitted."
+    )

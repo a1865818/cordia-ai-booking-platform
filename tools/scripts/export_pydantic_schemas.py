@@ -28,15 +28,14 @@ from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
 from cordia_agent.state import (
+    AgentInputState,
+    AgentOutputState,
     BookingDraft,
     BookingRequest,
     CanonicalBookingDraft,
     CaptureMethod,
     Channel,
     FieldValidation,
-    GreetingStatus,
-    HelloInputState,
-    HelloOutputState,
     OperationType,
     StreamFrameType,
     TriState,
@@ -85,8 +84,8 @@ LANGGRAPH_JSON = REPO_ROOT / "apps" / "langgraph" / "langgraph.json"
 
 # Category directory -> list of Pydantic BaseModel subclasses to export as wrappers.
 MODEL_REGISTRY: dict[str, list[type]] = {
-    "graph-inputs": [HelloInputState],
-    "graph-outputs": [HelloOutputState],
+    "graph-inputs": [AgentInputState],
+    "graph-outputs": [AgentOutputState],
     "configurations": [HelloConfiguration],
     "streaming": [
         AudioStartedFrame,
@@ -113,7 +112,6 @@ MODEL_REGISTRY: dict[str, list[type]] = {
 
 # Standalone string enums emitted into schemas/enums/.
 ENUM_REGISTRY: list[type[Enum]] = [
-    GreetingStatus,
     StreamFrameType,
     TriState,
     OperationType,

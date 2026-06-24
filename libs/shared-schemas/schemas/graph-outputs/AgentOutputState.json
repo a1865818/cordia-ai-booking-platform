@@ -1,0 +1,4 @@
+{
+  "title": "AgentOutputState",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/AgentOutputState"
+}
