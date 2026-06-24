@@ -23,17 +23,22 @@ import logging
 from typing import TYPE_CHECKING
 
 from cordia_agent.tools.contracts import (
+    AcceptanceResult,
     AvailabilityRequest,
     AvailabilityResult,
     CustomerContextView,
+    OperationStatusView,
     PolicyValidationResult,
+    SubmitConfirmedIntentInput,
     TenantContextView,
     ToolResultEnvelope,
 )
 from cordia_agent.tools.foreground import (
     check_candidate_availability,
     find_customer_context,
+    get_operation_status,
     get_tenant_context,
+    submit_confirmed_intent,
     validate_booking_draft,
 )
 
@@ -260,4 +265,86 @@ def parse_availability(env: ToolResultEnvelope) -> AvailabilityResult | None:
         return AvailabilityResult.model_validate(_payload(env.data, AvailabilityResult))
     except Exception:
         _log.exception("Failed to parse AvailabilityResult from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# submit_confirmed_intent wrapper (02-J)
+# ---------------------------------------------------------------------------
+
+
+async def submit_intent_call(inp: SubmitConfirmedIntentInput) -> ToolResultEnvelope:
+    """Invoke the submit_confirmed_intent tool and return the raw envelope.
+
+    Passes ``inp`` verbatim — operation_id and idempotency_key are NEVER
+    re-minted here (Inv-2).  The tool itself forwards them to the platform
+    unchanged.
+
+    Args:
+        inp: The ``SubmitConfirmedIntentInput`` carrying the stable op+idem ids.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await submit_confirmed_intent.ainvoke(inp.model_dump(mode="json"))
+
+
+def parse_acceptance(env: ToolResultEnvelope) -> AcceptanceResult | None:
+    """Parse an ``AcceptanceResult`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`submit_intent_call`.
+
+    Returns:
+        A validated ``AcceptanceResult`` when ``env.ok`` and ``env.data`` is
+        present, otherwise ``None``.
+    """
+    if not env.ok or env.data is None:
+        _log.warning("submit_intent_call returned non-ok or empty data: %s", env.status)
+        return None
+    try:
+        return AcceptanceResult.model_validate(_payload(env.data, AcceptanceResult))
+    except Exception:
+        _log.exception("Failed to parse AcceptanceResult from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# get_operation_status wrapper (02-J)
+# ---------------------------------------------------------------------------
+
+
+async def get_operation_status_call(operation_id: str) -> ToolResultEnvelope:
+    """Invoke the get_operation_status tool and return the raw envelope.
+
+    Args:
+        operation_id: The stable operation identifier to poll.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await get_operation_status.ainvoke({"operation_id": operation_id})
+
+
+def parse_operation_status(env: ToolResultEnvelope) -> OperationStatusView | None:
+    """Parse an ``OperationStatusView`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`get_operation_status_call`.
+
+    Returns:
+        A validated ``OperationStatusView`` when ``env.ok`` and ``env.data`` is
+        present, otherwise ``None``.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "get_operation_status_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return OperationStatusView.model_validate(
+            _payload(env.data, OperationStatusView)
+        )
+    except Exception:
+        _log.exception("Failed to parse OperationStatusView from envelope data")
         return None

@@ -422,6 +422,33 @@ class AgentState(BaseModel):
             "(§8.8).  None until the customer gives explicit confirmation (Inv-1)."
         ),
     )
+    # --- Submission outcome channels (02-J, §8.9/§10.1) ---
+    # Stored as plain types (str/dict) to avoid circular imports.
+    submission_status: str | None = Field(
+        default=None,
+        description=(
+            "Internal: machine-readable submission outcome "
+            "('accepted', 'duplicate_accepted', 'validation_failed', "
+            "'confirmation_invalid', 'policy_failed', 'idempotency_conflict', "
+            "'checkpoint_failed', 'nonrecoverable', 'unavailable'). "
+            "Set by submit_intent (02-J)."
+        ),
+    )
+    submission_message: str | None = Field(
+        default=None,
+        description=(
+            "Internal: safe customer-facing wording for the submission outcome "
+            "(Inv-16).  Set by submit_intent on acceptance (02-J)."
+        ),
+    )
+    operation_status: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: OperationStatusView.model_dump(mode='json') recovered via "
+            "get_operation_status on a reconnect (02-J / Inv-5).  "
+            "Stored as dict to avoid circular import with tools.contracts."
+        ),
+    )
 
 
 class AgentInputState(BaseModel):
