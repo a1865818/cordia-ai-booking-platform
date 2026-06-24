@@ -344,6 +344,32 @@ class AgentState(BaseModel):
         default=None,
         description="Internal: BookingRequest field name targeted by the active clarification (§8.5).",
     )
+    # --- Availability tracking (02-H, §8.7) ---
+    # Stored as plain types to avoid a circular import:
+    # state.py MUST NOT import tools.contracts / tools.foreground.
+    # availability_mode is already imported from tools.status_codes (leaf module — OK).
+    availability_candidates: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Internal: serialised AvailabilityCandidate dicts from the last "
+            "check_candidate_availability call (§8.7). Stored as list[dict] to "
+            "avoid a circular import with tools.contracts."
+        ),
+    )
+    availability_invalid_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Internal: invalid draft fields returned by the availability tool (§8.7). "
+            "Non-empty → router sends back to capture_fields."
+        ),
+    )
+    availability_pending: bool = Field(
+        default=False,
+        description=(
+            "Internal: True when the availability response has status 'available_pending' "
+            "(§6.6, Inv-16). Advisory only — NEVER treated as held/confirmed/success."
+        ),
+    )
 
 
 class AgentInputState(BaseModel):

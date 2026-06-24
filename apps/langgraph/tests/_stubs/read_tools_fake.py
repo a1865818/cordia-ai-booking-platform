@@ -1,78 +1,23 @@
-"""FROZEN SPEC-03 READ-TOOL FAKE — replace when 02-H binds the concrete client.
+"""Test-only stubs for the ``SlotExtractor`` port (02-F).
 
-Test-only stubs for the ``ReadContextClient`` and ``SlotExtractor`` ports
-(02-F).  These are deterministic, side-effect-free fakes used in unit tests.
+The ``FakeReadContextClient`` and ``ReadContextClient`` port have been removed as
+part of ticket 02-H, which replaced the abstract read-context port with the
+concrete 03 tool client (``cordia_agent.tools.client_binding``).
+
+This module now contains ONLY:
+- ``FakeSlotExtractor`` — deterministic fake for the ``SlotExtractor`` port used
+  by ``capture_fields`` unit tests.
+- ``make_service_id_capture`` / ``make_date_capture`` — factory helpers used
+  across the ``capture_fields`` and ``check_candidates`` test suites.
 
 DO NOT import this module from production code.  It must only be referenced
-from test fixtures (``register_read_client`` / ``clear_read_client`` and
-``register_slot_extractor`` / ``clear_slot_extractor`` calls).
-
-When 02-H lands the concrete HTTP-backed client, replace ``FakeReadContextClient``
-with the real implementation and remove this module.
+from test fixtures via ``register_slot_extractor`` / ``clear_slot_extractor``.
 """
 
 from __future__ import annotations
 
-from cordia_agent.nodes.load_context import ReadContextClient
 from cordia_agent.slots.capture import SlotCapture, SlotExtractor
-from cordia_agent.state import CaptureMethod, CustomerContext, CustomerRef
-
-
-class FakeReadContextClient:
-    """FROZEN SPEC-03 READ-TOOL FAKE — deterministic, test-only.
-
-    Returns a fixed tenant policy dict and a ``CustomerContext`` that INCLUDES
-    ``recent_booking_summaries`` — this makes the minimization test meaningful
-    (the node must strip them when ``verification_grant_id`` is ``None``).
-
-    Implements the ``ReadContextClient`` protocol without importing from
-    production code.
-    """
-
-    def get_tenant_context(self, tenant_id: str) -> dict:
-        """Return a fixed minimal tenant policy dict.
-
-        Args:
-            tenant_id: Ignored in this fake (single-tenant stub).
-
-        Returns:
-            A dict representing a minimized tenant policy.
-        """
-        return {
-            "tenant_id": tenant_id,
-            "policy_version": "v1-fake",
-            "max_party_size": 20,
-        }
-
-    def find_customer_context(
-        self, tenant_id: str, customer: CustomerRef | None
-    ) -> CustomerContext:
-        """Return a ``CustomerContext`` with sensitive history populated.
-
-        The returned context INCLUDES ``recent_booking_summaries`` so that
-        the ``load_context`` minimization test (§9.2) is meaningful.
-
-        Args:
-            tenant_id: Ignored in this fake.
-            customer: Ignored in this fake.
-
-        Returns:
-            A ``CustomerContext`` with a non-empty ``recent_booking_summaries``.
-        """
-        return CustomerContext(
-            customer_id="cust_fake_001",
-            display_name="Test Customer",
-            recent_booking_summaries=[
-                "Booking #100 — Haircut, 2026-01-10",
-                "Booking #101 — Colour, 2026-02-14",
-            ],
-        )
-
-
-# Runtime Protocol check: this class must satisfy ReadContextClient.
-assert isinstance(FakeReadContextClient(), ReadContextClient), (
-    "FakeReadContextClient does not satisfy the ReadContextClient Protocol"
-)
+from cordia_agent.state import CaptureMethod
 
 
 class FakeSlotExtractor:
