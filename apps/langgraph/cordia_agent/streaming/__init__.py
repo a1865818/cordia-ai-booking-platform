@@ -9,6 +9,7 @@ from cordia_agent.streaming.reconnect import (
     ReconnectOutcome,
     ReconnectSessionContext,
 )
+from cordia_agent.streaming.s2s_escalation import S2SEscalationAdapter
 from cordia_agent.streaming.stt_adapter import STTAdapter, STTFrameEnvelope
 from cordia_agent.streaming.tts_chunker import ActiveTTSTurn, TTSChunker
 from cordia_agent.streaming.turn_manager import StreamFrame, TurnManager, is_committable
@@ -26,6 +27,7 @@ __all__ = [
     "ReconnectHandler",
     "ReconnectOutcome",
     "ReconnectSessionContext",
+    "S2SEscalationAdapter",
     "STTAdapter",
     "STTFrameEnvelope",
     "StreamFrame",
