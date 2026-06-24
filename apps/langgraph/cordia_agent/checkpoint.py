@@ -176,3 +176,42 @@ class SessionCheckpointer:
             ``True`` if a checkpoint is still required before submitting.
         """
         return not self.is_pre_submit_checkpoint_durable(state)
+
+
+# ---------------------------------------------------------------------------
+# Module-default accessor (shared across nodes; replaceable in tests)
+# ---------------------------------------------------------------------------
+
+_default_checkpointer: SessionCheckpointer | None = None
+
+
+def get_session_checkpointer() -> SessionCheckpointer:
+    """Return the module-default ``SessionCheckpointer``, creating one lazily.
+
+    Nodes call this to share a single checkpointer instance for the process.
+    Tests replace the instance via :func:`set_session_checkpointer` and reset it
+    via :func:`reset_session_checkpointer` in teardown.
+
+    Returns:
+        The current module-default ``SessionCheckpointer``.
+    """
+    global _default_checkpointer
+    if _default_checkpointer is None:
+        _default_checkpointer = SessionCheckpointer()
+    return _default_checkpointer
+
+
+def set_session_checkpointer(cp: SessionCheckpointer) -> None:
+    """Replace the module-default checkpointer — call in test setup.
+
+    Args:
+        cp: The ``SessionCheckpointer`` to install as the module default.
+    """
+    global _default_checkpointer
+    _default_checkpointer = cp
+
+
+def reset_session_checkpointer() -> None:
+    """Clear the module-default checkpointer — call in test teardown to isolate tests."""
+    global _default_checkpointer
+    _default_checkpointer = None

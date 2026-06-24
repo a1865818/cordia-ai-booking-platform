@@ -232,6 +232,47 @@ class BookingDraft(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class DialogIntent(str, Enum):
+    """Customer dialog intent — broader than OperationType (includes inquire).
+
+    ``inquire`` is informational only; it does not correspond to a booking
+    operation and leaves ``AgentState.operation`` as ``None``.
+    Distinct from ``OperationType``, which has no ``inquire`` variant.
+    """
+
+    create = "create"
+    reschedule = "reschedule"
+    modify = "modify"
+    cancel = "cancel"
+    inquire = "inquire"
+
+
+class CustomerContext(BaseModel):
+    """Minimized personalization context for the current dialog session.
+
+    This is a local placeholder until the 03 ``find_customer_context`` output
+    model lands (ticket 03-B/02-H).  The ``recent_booking_summaries`` field
+    carries sensitive history and is populated **only** when
+    ``AgentState.verification_grant_id`` is set (§9.2 — no sensitive history
+    without a verification grant).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    customer_id: str | None = Field(
+        default=None, description="Stable customer ID, if known."
+    )
+    display_name: str | None = Field(
+        default=None, description="Customer display name, if known."
+    )
+    recent_booking_summaries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sensitive history; only populated with a verification grant (§9.2)."
+        ),
+    )
+
+
 class AgentState(BaseModel):
     """Internal LangGraph channel state — all fields defaulted (no extra="forbid").
 
@@ -257,6 +298,26 @@ class AgentState(BaseModel):
     correlation_id: str | None = None
     channel_endpoint_id: str | None = None
     allowed_policy_ids: list[str] = Field(default_factory=list)
+    # Dialog-front fields (02-F)
+    transcript_text: str | None = Field(
+        default=None, description="Current turn transcript text."
+    )
+    transcript_is_final: bool = Field(
+        default=False,
+        description=(
+            "True iff the transcript is a final (not partial) STT result. "
+            "ONLY transcript.final frames may mutate the draft (Inv-1)."
+        ),
+    )
+    current_turn_id: str | None = Field(
+        default=None, description="Turn/message ID for the current dialog turn."
+    )
+    dialog_intent: DialogIntent | None = Field(
+        default=None, description="Classified dialog intent for the current turn."
+    )
+    customer_context: CustomerContext | None = Field(
+        default=None, description="Minimized customer context (§9.2)."
+    )
 
 
 class AgentInputState(BaseModel):
