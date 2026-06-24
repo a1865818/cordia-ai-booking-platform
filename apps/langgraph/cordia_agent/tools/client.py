@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cordia_agent.tools._timeouts import (
+    GRANT_REQUIRED_TOOLS,
     TOOL_DEADLINES,
     TOOL_SIDE_EFFECT_CLASS,
     SideEffectClass,
@@ -39,6 +40,7 @@ from cordia_agent.tools.errors import (
     map_http_error,
     map_transport_failure,
     tenant_not_resolved_envelope,
+    verification_required_envelope,
 )
 
 
@@ -100,20 +102,27 @@ class ToolClient:
         params: dict[str, Any] | None = None,
         operation_id: str | None = None,
         idempotency_key: str | None = None,
+        grant_id: str | None = None,
     ) -> ToolResultEnvelope:
         """Execute a single tool HTTP request and return a typed envelope.
 
         Steps (spec 03 §3.3 / §6.6):
         1. Inv-13 gate — returns ``tenant_not_resolved`` without touching the
            transport for any data tool when no context has been set.
-        2. Build headers — injects tenant/correlation IDs from the context and
+        2. Inv-11 grant gate — returns ``verification_required`` without
+           touching the transport for grant-required mutation tools when
+           ``grant_id`` is absent or empty.
+        3. Build headers — injects tenant/correlation IDs from the context,
            verbatim ``operation_id``/``idempotency_key`` for mutation tools
-           (Inv-2).
-        3. Look up the per-tool deadline and retry flag from ``_timeouts``.
-        4. Attempt the request; on timeout/transport error retry exactly once for
+           (Inv-2), and ``X-Grant-Id`` when ``grant_id`` is present.
+        4. Look up the per-tool deadline and retry flag from ``_timeouts``.
+        5. Attempt the request; on timeout/transport error retry exactly once for
            PURE_READ tools (Inv-5).
-        5. Map non-2xx responses to a typed envelope via ``errors`` — raw body
-           text NEVER reaches ``customer_hint`` (Inv-14).
+        6. Map non-2xx responses to a typed envelope via ``errors``.
+           If the JSON body carries a string ``status`` field, that machine code
+           is used as the envelope status (e.g. ``stale_version``,
+           ``already_cancelled``); raw body text NEVER reaches ``customer_hint``
+           (Inv-14).
 
         Args:
             tool_name: One of the 17 canonical tool names (keys in
@@ -128,6 +137,10 @@ class ToolClient:
                 verbatim as ``X-Operation-Id`` (Inv-2).  Never re-minted.
             idempotency_key: Request idempotency key — injected verbatim as
                 ``X-Idempotency-Key`` (Inv-2).  Never re-minted.
+            grant_id: Authorization grant for manage-booking mutations (Inv-11).
+                When present, injected verbatim as ``X-Grant-Id``.  When absent
+                for a grant-required tool, returns ``verification_required``
+                without touching the transport.
 
         Returns:
             A ``ToolResultEnvelope`` with ``ok=True`` on success, or
@@ -148,12 +161,22 @@ class ToolClient:
             )
 
         # ------------------------------------------------------------------
-        # 2. Build request headers.
+        # 1b. Inv-11 grant gate: refuse grant-required mutations without a
+        # grant_id — transport is NEVER hit in this case.
         # ------------------------------------------------------------------
         correlation_id = (
             ctx.correlation_id if ctx is not None else fallback_correlation_id
         )
 
+        if tool_name in GRANT_REQUIRED_TOOLS and not grant_id:
+            return verification_required_envelope(
+                tool_name=tool_name,
+                correlation_id=correlation_id,
+            )
+
+        # ------------------------------------------------------------------
+        # 2. Build request headers.
+        # ------------------------------------------------------------------
         headers: dict[str, str] = {
             "X-Correlation-Id": correlation_id,
             # Per-call causation ID — always a fresh UUID4.
@@ -175,6 +198,10 @@ class ToolClient:
             # Pass through caller idempotency key if supplied.
             if idempotency_key is not None:
                 headers["X-Idempotency-Key"] = idempotency_key
+
+        # Inject grant_id verbatim when present (Inv-11).
+        if grant_id:
+            headers["X-Grant-Id"] = grant_id
 
         # ------------------------------------------------------------------
         # 3. Look up per-tool deadline and retry flag.
@@ -241,10 +268,24 @@ class ToolClient:
             )
 
         # Non-2xx — safe error mapping; raw body NEVER read into hint (Inv-14).
+        # If the JSON body carries a string `status` field, use it as the
+        # machine code (e.g. stale_version, already_cancelled) while keeping
+        # the customer_hint as the safe per-class generic (Inv-14/Inv-16).
+        typed_status: str | None = None
+        try:
+            err_body: Any = response.json()
+            if isinstance(err_body, dict):
+                raw_status = err_body.get("status")
+                if isinstance(raw_status, str) and raw_status:
+                    typed_status = raw_status
+        except Exception:
+            pass
+
         return map_http_error(
             response.status_code,
             tool_name=tool_name,
             correlation_id=correlation_id,
+            typed_status=typed_status,
         )
 
 

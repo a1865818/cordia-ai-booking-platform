@@ -85,6 +85,19 @@ assert set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == set(ALL_TOOLS), (
     "TOOL_DEADLINES and TOOL_SIDE_EFFECT_CLASS must have identical key sets."
 )
 
+# ---------------------------------------------------------------------------
+# Grant-required mutations — Inv-11.
+# Calling these without a grant_id returns a verification_required envelope
+# without hitting the transport.
+# ---------------------------------------------------------------------------
+
+GRANT_REQUIRED_TOOLS: frozenset[str] = frozenset(
+    {
+        "submit_booking_modification",
+        "submit_booking_cancellation",
+    }
+)
+
 
 def is_retryable(tool_name: str) -> bool:
     """Return True iff *tool_name* is a PURE_READ tool (safe to retry on timeout).

@@ -25,6 +25,9 @@ _HINT_RATE_LIMITED = (
 _HINT_UNAVAILABLE = "I'm having trouble reaching the system right now."
 _HINT_NOT_FOUND = "The requested resource could not be found."
 _HINT_TENANT_NOT_RESOLVED = "I'm having trouble reaching this business right now."
+_HINT_VERIFICATION_REQUIRED = (
+    "I need to verify your identity before I can make that change."
+)
 
 
 def map_http_error(
@@ -32,41 +35,54 @@ def map_http_error(
     *,
     tool_name: str,
     correlation_id: str,
+    typed_status: str | None = None,
 ) -> ToolResultEnvelope:
     """Map a non-2xx HTTP status code to a typed ``ToolResultEnvelope``.
 
     The raw response body is NOT read and NEVER included in ``customer_hint``
-    (Inv-14).  Only the status code is used to select the safe hint.
+    (Inv-14).  Only the status code selects the safe hint.
+
+    If ``typed_status`` is provided (a machine code extracted from the JSON
+    body ``status`` field, e.g. ``stale_version``, ``already_cancelled``), it
+    is used as the envelope ``status`` instead of the generic HTTP-code mapping.
+    The ``customer_hint`` always remains the safe per-class generic (Inv-14/Inv-16).
 
     Args:
         status_code: The HTTP response status code (e.g. 409, 429, 500).
         tool_name: The tool that received the error (for logging correlation).
         correlation_id: Propagated correlation ID for observability.
+        typed_status: Optional machine code from the JSON body ``status`` field;
+            when present, overrides the generic HTTP-code status string while
+            the hint stays safe.
 
     Returns:
         A ``ToolResultEnvelope`` with ``ok=False``, a safe ``status`` string,
         and a generic ``customer_hint``.
     """
     if status_code == 404:
-        status = "not_found"
+        generic_status = "not_found"
         hint = _HINT_NOT_FOUND
     elif status_code == 409:
-        status = "conflict"
+        generic_status = "conflict"
         hint = _HINT_CONFLICT
     elif status_code == 429:
-        status = "rate_limited"
+        generic_status = "rate_limited"
         hint = _HINT_RATE_LIMITED
     elif status_code >= 500:
-        status = "unavailable"
+        generic_status = "unavailable"
         hint = _HINT_UNAVAILABLE
     elif status_code >= 400:
         # Catch-all for other 4xx (400, 401, 403, 422, etc.)
-        status = "request_error"
+        generic_status = "request_error"
         hint = _HINT_UNAVAILABLE
     else:
         # Should not be reachable — only called for non-2xx.
-        status = "unavailable"
+        generic_status = "unavailable"
         hint = _HINT_UNAVAILABLE
+
+    # Use the typed machine code from the body when available; the hint
+    # stays safe regardless (Inv-14/Inv-16).
+    status = typed_status if typed_status else generic_status
 
     return ToolResultEnvelope(
         ok=False,
@@ -99,6 +115,34 @@ def map_transport_failure(
         ok=False,
         status="unavailable",
         customer_hint=_HINT_UNAVAILABLE,
+        data=None,
+        correlation_id=correlation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def verification_required_envelope(
+    *,
+    tool_name: str,
+    correlation_id: str,
+) -> ToolResultEnvelope:
+    """Return a ``verification_required`` envelope when the Inv-11 grant gate fires.
+
+    Called by ``ToolClient.call_tool`` before touching the transport when
+    ``grant_id`` is absent for a grant-required tool (spec 03 §4.4, Inv-11).
+
+    Args:
+        tool_name: The grant-gated tool that was called without a grant.
+        correlation_id: Best-effort correlation ID.
+
+    Returns:
+        A ``ToolResultEnvelope`` with ``ok=False``,
+        ``status="verification_required"``, and a safe identity-check hint.
+    """
+    return ToolResultEnvelope(
+        ok=False,
+        status="verification_required",
+        customer_hint=_HINT_VERIFICATION_REQUIRED,
         data=None,
         correlation_id=correlation_id,
         schema_version=SCHEMA_VERSION,
