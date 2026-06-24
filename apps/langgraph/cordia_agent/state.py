@@ -422,6 +422,13 @@ class AgentState(BaseModel):
             "(§8.8).  None until the customer gives explicit confirmation (Inv-1)."
         ),
     )
+    # --- Verification + handoff channels (02-K, §8.6/§8.11) ---
+    # Stored as plain types (str/dict) to avoid circular imports.
+    verification_id: str | None = None
+    verification_outcome: str | None = None
+    handoff_reason_code: str | None = None
+    handoff_package: dict | None = None
+    handoff_result: dict | None = None
     # --- Submission outcome channels (02-J, §8.9/§10.1) ---
     # Stored as plain types (str/dict) to avoid circular imports.
     submission_status: str | None = Field(

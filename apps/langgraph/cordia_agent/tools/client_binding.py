@@ -27,17 +27,22 @@ from cordia_agent.tools.contracts import (
     AvailabilityRequest,
     AvailabilityResult,
     CustomerContextView,
+    HandoffRequest,
+    HandoffResult,
     OperationStatusView,
     PolicyValidationResult,
     SubmitConfirmedIntentInput,
     TenantContextView,
     ToolResultEnvelope,
+    VerificationGrantView,
 )
 from cordia_agent.tools.foreground import (
     check_candidate_availability,
+    check_verification,
     find_customer_context,
     get_operation_status,
     get_tenant_context,
+    request_human_handoff,
     submit_confirmed_intent,
     validate_booking_draft,
 )
@@ -347,4 +352,97 @@ def parse_operation_status(env: ToolResultEnvelope) -> OperationStatusView | Non
         )
     except Exception:
         _log.exception("Failed to parse OperationStatusView from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# check_verification wrapper (02-K)
+# ---------------------------------------------------------------------------
+
+
+async def check_verification_call(
+    verification_id: str,
+    code: str | None = None,
+) -> ToolResultEnvelope:
+    """Invoke the check_verification tool and return the raw envelope.
+
+    Passes ``verification_id`` always; adds ``code`` only when provided so the
+    tool can either poll status (GET) or attempt grant issuance (POST).
+
+    Args:
+        verification_id: The opaque verification identifier assigned by the platform.
+        code: The customer-supplied code to verify; ``None`` for a status poll.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    params: dict = {"verification_id": verification_id}
+    if code is not None:
+        params["code"] = code
+    return await check_verification.ainvoke(params)
+
+
+def parse_verification_grant(env: ToolResultEnvelope) -> VerificationGrantView | None:
+    """Parse a ``VerificationGrantView`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`check_verification_call`.
+
+    Returns:
+        A validated ``VerificationGrantView`` when ``env.ok`` and ``env.data`` is
+        present, otherwise ``None``.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "check_verification_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return VerificationGrantView.model_validate(
+            _payload(env.data, VerificationGrantView)
+        )
+    except Exception:
+        _log.exception("Failed to parse VerificationGrantView from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# request_human_handoff wrapper (02-K)
+# ---------------------------------------------------------------------------
+
+
+async def request_human_handoff_call(req: HandoffRequest) -> ToolResultEnvelope:
+    """Invoke the request_human_handoff tool and return the raw envelope.
+
+    Passes ``req`` verbatim — handoff_idempotency_key is NEVER re-minted here
+    (Inv-9).  The tool itself forwards it to the platform unchanged.
+
+    Args:
+        req: The ``HandoffRequest`` carrying the stable session + idempotency key.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await request_human_handoff.ainvoke(req.model_dump(mode="json"))
+
+
+def parse_handoff_result(env: ToolResultEnvelope) -> HandoffResult | None:
+    """Parse a ``HandoffResult`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`request_human_handoff_call`.
+
+    Returns:
+        A validated ``HandoffResult`` when ``env.ok`` and ``env.data`` is
+        present, otherwise ``None``.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "request_human_handoff_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return HandoffResult.model_validate(_payload(env.data, HandoffResult))
+    except Exception:
+        _log.exception("Failed to parse HandoffResult from envelope data")
         return None
