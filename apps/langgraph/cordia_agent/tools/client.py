@@ -97,6 +97,7 @@ class ToolClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         operation_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> ToolResultEnvelope:
@@ -120,6 +121,9 @@ class ToolClient:
             method: HTTP method string, e.g. ``"GET"``, ``"POST"``.
             path: URL path relative to the client ``base_url``.
             json: Optional request body serialised as JSON.
+            params: Optional URL query-string parameters dict (for GET tools
+                that accept query params, e.g. find_customer_context).
+                Default ``None`` — no query string appended.
             operation_id: Durable-mutation operation identifier — injected
                 verbatim as ``X-Operation-Id`` (Inv-2).  Never re-minted.
             idempotency_key: Request idempotency key — injected verbatim as
@@ -190,6 +194,7 @@ class ToolClient:
                     method,
                     path,
                     json=json,
+                    params=params,
                     headers=headers,
                     timeout=deadline,
                 )
@@ -241,3 +246,43 @@ class ToolClient:
             tool_name=tool_name,
             correlation_id=correlation_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Module-level client registry (mirrors the port pattern used by other tickets).
+# Defined AFTER ToolClient so the type annotation resolves at module load time.
+# ---------------------------------------------------------------------------
+
+_tool_client: ToolClient | None = None
+
+
+def set_tool_client(client: ToolClient) -> None:
+    """Register the session-scoped ``ToolClient`` instance.
+
+    Called once during graph initialisation (spec 03 §3.3 / §4.2).
+
+    Args:
+        client: The configured ``ToolClient`` to make available to foreground tools.
+    """
+    global _tool_client
+    _tool_client = client
+
+
+def get_tool_client() -> ToolClient:
+    """Return the registered ``ToolClient`` instance.
+
+    Raises:
+        RuntimeError: if no client has been registered via ``set_tool_client``.
+
+    Returns:
+        The session-scoped ``ToolClient``.
+    """
+    if _tool_client is None:
+        raise RuntimeError("no ToolClient configured")
+    return _tool_client
+
+
+def reset_tool_client() -> None:
+    """Clear the registered ``ToolClient`` (test teardown helper)."""
+    global _tool_client
+    _tool_client = None
