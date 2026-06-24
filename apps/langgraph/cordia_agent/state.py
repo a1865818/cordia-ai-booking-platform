@@ -251,14 +251,30 @@ class AgentState(BaseModel):
     availability_mode: AvailabilityMode | None = None
     verification_grant_id: str | None = None
     terminal_state: Literal["submitted", "human_handoff"] | None = None
+    # Tenant-context guard fields (02-D)
+    signed_tenant_context: str | None = None
+    tenant_context_verified: bool = False
+    correlation_id: str | None = None
+    channel_endpoint_id: str | None = None
+    allowed_policy_ids: list[str] = Field(default_factory=list)
 
 
 class AgentInputState(BaseModel):
-    """Boundary input contract for the foreground agent (extra fields rejected)."""
+    """Boundary input contract for the foreground agent (extra fields rejected).
+
+    ``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).
+    A plain ``tenant_id`` field is intentionally absent — the tenant is resolved
+    exclusively from the verified signed token by the resolve_tenant node.
+    """
 
     model_config = {"extra": "forbid"}
 
-    tenant_id: str = Field(description="Tenant scope (Inv-13).")
+    signed_tenant_context: str = Field(
+        description=(
+            "Signed TenantContext token from the channel gateway (§7); "
+            "the ONLY source of tenant identity, Inv-13."
+        )
+    )
     session_id: str = Field(description="Dialog session ID.")
     source: SourceInfo = Field(description="Origin channel + language.")
     customer: CustomerRef | None = Field(

@@ -4,11 +4,11 @@
   "$defs": {
     "AgentInputState": {
       "additionalProperties": false,
-      "description": "Boundary input contract for the foreground agent (extra fields rejected).",
+      "description": "Boundary input contract for the foreground agent (extra fields rejected).\n\n``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).\nA plain ``tenant_id`` field is intentionally absent \u2014 the tenant is resolved\nexclusively from the verified signed token by the resolve_tenant node.",
       "properties": {
-        "tenant_id": {
-          "description": "Tenant scope (Inv-13).",
-          "title": "Tenant Id",
+        "signed_tenant_context": {
+          "description": "Signed TenantContext token from the channel gateway (\u00a77); the ONLY source of tenant identity, Inv-13.",
+          "title": "Signed Tenant Context",
           "type": "string"
         },
         "session_id": {
@@ -34,7 +34,7 @@
         }
       },
       "required": [
-        "tenant_id",
+        "signed_tenant_context",
         "session_id",
         "source"
       ],
