@@ -13,7 +13,10 @@ from cordia_agent.streaming.dtmf import (
     capture_dtmf_signal,
     project_masked_field_input,
 )
-from cordia_agent.streaming.logging_redaction import redact_for_logging, redact_for_logging_json
+from cordia_agent.streaming.logging_redaction import (
+    redact_for_logging,
+    redact_for_logging_json,
+)
 from cordia_agent.streaming_models import StreamFrameEnvelope, TranscriptFinalFrame
 
 
@@ -43,7 +46,9 @@ FROZEN_VERIFICATION_CODE_SAMPLE = {
 @pytest.mark.unit
 def test_dtmf_capture_returns_masked_structured_signal_not_stream_frame() -> None:
     """DTMF input becomes a masked signal, not a streaming frame variant."""
-    signal = capture_dtmf_signal(field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY)
+    signal = capture_dtmf_signal(
+        field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY
+    )
 
     assert isinstance(signal, MaskedDtmfSignal)
     assert not isinstance(signal, StreamFrameEnvelope)
@@ -53,7 +58,9 @@ def test_dtmf_capture_returns_masked_structured_signal_not_stream_frame() -> Non
 @pytest.mark.unit
 def test_dtmf_input_does_not_produce_transcript_final_frame() -> None:
     """Inv-12: DTMF digits must never be surfaced as transcript.final."""
-    signal = capture_dtmf_signal(field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY)
+    signal = capture_dtmf_signal(
+        field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY
+    )
 
     assert TranscriptFinalFrame not in type(signal).__mro__
     assert signal.capture_method == "dtmf"
@@ -74,13 +81,12 @@ def test_raw_digits_are_not_logged_in_signal_representations(
     serialized: object,
 ) -> None:
     """Raw digits must not appear in repr/str/dump/json for the masked signal."""
-    signal = capture_dtmf_signal(field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY)
+    signal = capture_dtmf_signal(
+        field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY
+    )
     output = serialized(signal)  # type: ignore[operator]
 
-    if isinstance(output, dict):
-        payload = json.dumps(output)
-    else:
-        payload = str(output)
+    payload = json.dumps(output) if isinstance(output, dict) else str(output)
 
     assert RAW_DIGITS not in payload
 
@@ -103,7 +109,9 @@ def test_round_trip_preserves_masked_metadata_not_cleartext_digits() -> None:
 @pytest.mark.unit
 def test_frozen_verification_code_sample_matches_spec_stub() -> None:
     """Frozen sample for spec 03 / spec 08 masked verification-code input."""
-    signal = capture_dtmf_signal(field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY)
+    signal = capture_dtmf_signal(
+        field_id="verification_code", raw_digits=RAW_DIGITS, **IDENTITY
+    )
 
     assert signal.model_dump() == FROZEN_VERIFICATION_CODE_SAMPLE
     assert project_masked_field_input(signal) == FROZEN_VERIFICATION_CODE_SAMPLE
@@ -113,7 +121,9 @@ def test_frozen_verification_code_sample_matches_spec_stub() -> None:
 @pytest.mark.parametrize("raw_digits", ["", "12a456", "12 456", "12.5"])
 def test_capture_rejects_empty_and_non_digit_input(raw_digits: str) -> None:
     with pytest.raises(ValueError):
-        capture_dtmf_signal(field_id="verification_code", raw_digits=raw_digits, **IDENTITY)
+        capture_dtmf_signal(
+            field_id="verification_code", raw_digits=raw_digits, **IDENTITY
+        )
 
 
 @pytest.mark.unit

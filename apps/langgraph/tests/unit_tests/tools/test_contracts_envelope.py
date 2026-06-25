@@ -170,5 +170,7 @@ STATUS_ENUM_CASES: list[tuple[type[Enum], set[str]]] = [
 
 @pytest.mark.unit
 @pytest.mark.parametrize("enum_cls, expected", STATUS_ENUM_CASES)
-def test_status_enum_values_match_spec(enum_cls: type[Enum], expected: set[str]) -> None:
+def test_status_enum_values_match_spec(
+    enum_cls: type[Enum], expected: set[str]
+) -> None:
     assert {m.value for m in enum_cls} == expected

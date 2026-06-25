@@ -1,0 +1,4 @@
+{
+  "title": "SubmitCancellationInput",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/SubmitCancellationInput"
+}

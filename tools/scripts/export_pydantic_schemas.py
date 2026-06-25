@@ -28,15 +28,14 @@ from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
 from cordia_agent.state import (
+    AgentInputState,
+    AgentOutputState,
     BookingDraft,
     BookingRequest,
     CanonicalBookingDraft,
     CaptureMethod,
     Channel,
     FieldValidation,
-    GreetingStatus,
-    HelloInputState,
-    HelloOutputState,
     OperationType,
     StreamFrameType,
     TriState,
@@ -53,7 +52,29 @@ from cordia_agent.streaming_models import (
     TtsAudioDeltaFrame,
     TurnCancelledFrame,
 )
-from cordia_agent.tools.contracts import ToolResultEnvelope
+from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.models.handoff import HandoffPackage
+from cordia_agent.tools.contracts import (
+    AcceptanceResult,
+    AvailabilityCandidate,
+    AvailabilityRequest,
+    AvailabilityResult,
+    BookingChangeValidation,
+    BookingProjectionRef,
+    HandoffRequest,
+    HandoffResult,
+    HoldResult,
+    ManageableBooking,
+    OperationStatusView,
+    PolicyValidationResult,
+    SubmitCancellationInput,
+    SubmitConfirmedIntentInput,
+    SubmitModificationInput,
+    ToolResultEnvelope,
+    VerificationGrantView,
+    VerificationRequest,
+    VerificationSentResult,
+)
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
@@ -72,6 +93,7 @@ from cordia_agent.tools.status_codes import (
     SubmitConfirmedIntentStatus,
     ValidateBookingChangeStatus,
     ValidateBookingDraftStatus,
+    VerificationAction,
 )
 
 
@@ -83,8 +105,8 @@ LANGGRAPH_JSON = REPO_ROOT / "apps" / "langgraph" / "langgraph.json"
 
 # Category directory -> list of Pydantic BaseModel subclasses to export as wrappers.
 MODEL_REGISTRY: dict[str, list[type]] = {
-    "graph-inputs": [HelloInputState],
-    "graph-outputs": [HelloOutputState],
+    "graph-inputs": [AgentInputState],
+    "graph-outputs": [AgentOutputState],
     "configurations": [HelloConfiguration],
     "streaming": [
         AudioStartedFrame,
@@ -98,17 +120,37 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         TurnCancelledFrame,
     ],
     "models": [
+        AcceptanceResult,
+        AvailabilityCandidate,
+        AvailabilityRequest,
+        AvailabilityResult,
+        BookingChangeValidation,
         BookingDraft,
+        BookingProjectionRef,
         BookingRequest,
         CanonicalBookingDraft,
+        Confirmation,
+        HandoffPackage,
+        HandoffRequest,
+        HandoffResult,
+        HoldResult,
+        IntentRevision,
+        ManageableBooking,
         MaskedDtmfSignal,
+        OperationStatusView,
+        PolicyValidationResult,
+        SubmitCancellationInput,
+        SubmitConfirmedIntentInput,
+        SubmitModificationInput,
         ToolResultEnvelope,
+        VerificationGrantView,
+        VerificationRequest,
+        VerificationSentResult,
     ],
 }
 
 # Standalone string enums emitted into schemas/enums/.
 ENUM_REGISTRY: list[type[Enum]] = [
-    GreetingStatus,
     StreamFrameType,
     TriState,
     OperationType,
@@ -132,6 +174,7 @@ ENUM_REGISTRY: list[type[Enum]] = [
     SubmitBookingCancellationStatus,
     NormalizedOperationStatus,
     ReconnectOutcome,
+    VerificationAction,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.

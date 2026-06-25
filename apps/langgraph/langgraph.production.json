@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "hello_graph": "cordia_agent/__init__.py:hello_graph"
+    "foreground_agent": "cordia_agent/__init__.py:agent_graph"
   },
   "env": ".env",
   "python_version": "3.12",
