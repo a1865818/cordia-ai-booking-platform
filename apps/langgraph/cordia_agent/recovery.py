@@ -11,6 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import OrderedDict
+
+
+# Bound the per-key result cache so it cannot grow without limit (one entry per
+# operation_id otherwise lives forever). The dedup window is short and a resubmit
+# under the same key is idempotent (the API returns duplicate_accepted → one
+# operation, Inv-5), so evicting the oldest entries is safe.
+_MAX_CACHED_RESULTS = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +64,10 @@ class SingleFlight:
     the lock (Inv-5).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_cached: int = _MAX_CACHED_RESULTS) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
-        self._results: dict[str, object] = {}
+        self._results: OrderedDict[str, object] = OrderedDict()
+        self._max_cached = max_cached
 
     async def run(self, key: str, factory) -> object:
         """Run *factory* exactly once for *key*; return the cached result on retry.
@@ -74,9 +83,16 @@ class SingleFlight:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if key in self._results:
+                self._results.move_to_end(key)
                 return self._results[key]
             result = await factory()
             self._results[key] = result
+            self._results.move_to_end(key)
+            # Evict the oldest entries (and their locks) once the cache is full.
+            # The just-stored key is newest, so an in-flight key is never evicted.
+            while len(self._results) > self._max_cached:
+                evicted, _ = self._results.popitem(last=False)
+                self._locks.pop(evicted, None)
             return result
 
 
