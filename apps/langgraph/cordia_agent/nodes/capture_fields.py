@@ -93,7 +93,10 @@ def route_after_capture_fields(state: AgentState) -> str:
     if state.draft is None or not required_candidate_fields_present(state.draft):
         return "clarify"
 
-    operation = state.operation
+    # Route from the VALIDATED draft, not state.operation — the draft's request
+    # is the authoritative captured state (Inv-1); the two can diverge and the
+    # router must follow the draft.
+    operation = state.draft.request.operation
 
     mutation_ops = {
         OperationType.modify,

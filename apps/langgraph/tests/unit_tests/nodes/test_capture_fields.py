@@ -505,3 +505,45 @@ async def test_capture_fields_node_skip_when_draft_none() -> None:
 
     result = await capture_fields(state)
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Fix B — route_after_capture_fields follows draft.request.operation, NOT
+#          state.operation (the two can diverge after identify_intent)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_route_follows_draft_operation_not_state_operation() -> None:
+    """Fix B: router reads draft.request.operation, not state.operation.
+
+    Build a state where state.operation is ``create`` (would route to
+    check_candidates) but draft.request.operation is ``cancel`` with a
+    target_booking_id present and no verification_grant_id.  The router
+    MUST follow the draft and return ``"verify_identity"``.
+    """
+    cancel_draft = BookingDraft(
+        tenant_id="tenant_a",
+        session_id="session_1",
+        schema_version="1.0",
+        tenant_policy_version="v2",
+        request=BookingRequest(
+            operation=OperationType.cancel,
+            target_booking_id="bk_diverge_001",
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+
+    state = _make_state(
+        draft=cancel_draft,
+        # state.operation diverges — intentionally set to create.
+        operation=OperationType.create,
+        verification_grant_id=None,
+    )
+
+    route = route_after_capture_fields(state)
+
+    assert route == "verify_identity", (
+        "Fix B: router must follow draft.request.operation (cancel → verify_identity), "
+        f"not state.operation (create → check_candidates); got {route!r}"
+    )
