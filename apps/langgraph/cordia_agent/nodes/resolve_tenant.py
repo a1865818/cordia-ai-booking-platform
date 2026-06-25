@@ -8,12 +8,14 @@ the graph cannot advance to ``load_context`` (hard gate, no extra edges).
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from cordia_agent.safety.tenant_context import (
     InvalidTenantContext,
     verify_signed_context,
 )
+from cordia_agent.tools.client import get_tool_client
 
 
 if TYPE_CHECKING:
@@ -41,6 +43,14 @@ async def resolve_tenant(state: AgentState) -> dict:
 
     # May raise InvalidTenantContext — intentionally propagated to halt the graph.
     ctx = verify_signed_context(token)
+
+    # Install the verified context on the session ToolClient so downstream data
+    # tools pass the Inv-13 gate (ToolClient.call_tool returns tenant_not_resolved
+    # otherwise). Best-effort: if no client is registered in this context (e.g.
+    # unit tests of the guard), skip — the production graph registers one before
+    # invoking the agent.
+    with contextlib.suppress(RuntimeError):
+        get_tool_client().set_tenant_context(ctx)
 
     return {
         "tenant_id": ctx.tenant_id,

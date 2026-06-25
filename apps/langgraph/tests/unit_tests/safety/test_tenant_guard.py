@@ -6,6 +6,9 @@ keeping tests fully isolated.
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from cordia_agent.nodes.resolve_tenant import resolve_tenant
@@ -15,6 +18,7 @@ from cordia_agent.safety.tenant_context import (
     register_verifier,
 )
 from cordia_agent.state import AgentState, Channel
+from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 from tests._stubs.tenant_context_stub import StubTenantContextVerifier, sign
 
 
@@ -155,3 +159,82 @@ async def test_resolve_tenant_ignores_state_tenant_id() -> None:
     # The result must use only the verified context's tenant_id.
     assert result["tenant_id"] == "tenant_abc"
     assert result["tenant_context_verified"] is True
+
+
+# ---------------------------------------------------------------------------
+# Fix A — resolve_tenant injects verified ctx into ToolClient (Inv-13 gate)
+# ---------------------------------------------------------------------------
+
+
+def _make_200_transport() -> httpx.MockTransport:
+    """Return a MockTransport that answers every request with 200 + minimal JSON."""
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps({"status": "ok", "ok": True}).encode(),
+        )
+
+    return httpx.MockTransport(_handler)
+
+
+@pytest.fixture()
+def _reset_tool_client():
+    """Ensure the tool client is cleared after each test in this block."""
+    yield
+    reset_tool_client()
+
+
+@pytest.mark.unit
+async def test_resolve_tenant_injects_ctx_so_tool_calls_pass_inv13_gate(
+    _reset_tool_client,
+) -> None:
+    """Fix A: after resolve_tenant, a ToolClient call MUST NOT return tenant_not_resolved.
+
+    Registers a real ToolClient backed by MockTransport BEFORE calling
+    resolve_tenant.  The node injects the verified TenantContext via
+    ``set_tenant_context``; afterwards, ``call_tool`` routes past the Inv-13
+    gate and hits the transport (returns ok, not tenant_not_resolved).
+    """
+    transport = _make_200_transport()
+    http = httpx.AsyncClient(transport=transport, base_url="http://test")
+    # No tenant context yet — gate would block any call at this point.
+    client = ToolClient(http, tenant_context=None)
+    set_tool_client(client)
+
+    token = sign(_VALID_CLAIMS)
+    state = _make_state(token)
+
+    # Run resolve_tenant — it must inject the verified ctx into the client.
+    await resolve_tenant(state)
+
+    # Now a data-tool call must pass the Inv-13 gate (status != "tenant_not_resolved").
+    result = await client.call_tool(
+        "find_customer_context", "GET", "/api/customers/context"
+    )
+    assert result.status != "tenant_not_resolved", (
+        "Fix A: after resolve_tenant, call_tool must NOT return tenant_not_resolved"
+    )
+
+
+@pytest.mark.unit
+async def test_tool_call_returns_tenant_not_resolved_without_resolve_tenant(
+    _reset_tool_client,
+) -> None:
+    """Control: a ToolClient with NO tenant context DOES return tenant_not_resolved.
+
+    This confirms the gate is live and the previous test is not a false positive.
+    """
+    transport = _make_200_transport()
+    http = httpx.AsyncClient(transport=transport, base_url="http://test")
+    client = ToolClient(http, tenant_context=None)
+    set_tool_client(client)
+
+    # No resolve_tenant call — context is never injected.
+    result = await client.call_tool(
+        "find_customer_context", "GET", "/api/customers/context"
+    )
+    assert result.status == "tenant_not_resolved", (
+        "Control: without resolve_tenant the gate must block and return tenant_not_resolved"
+    )
