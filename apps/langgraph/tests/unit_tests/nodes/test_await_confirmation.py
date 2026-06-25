@@ -115,6 +115,74 @@ def test_is_explicit_confirmation_negatives(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fix D — is_explicit_confirmation rejects negations + word-boundary match
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "yes",
+        "yes confirm please",
+        "go ahead",
+        "that's right",
+        "correct",
+        "okay",
+    ],
+)
+def test_is_explicit_confirmation_fix_d_affirmatives(text: str) -> None:
+    """Fix D: extended affirmative set — all must return True."""
+    assert is_explicit_confirmation(text) is True, (
+        f"Fix D: {text!r} should be an explicit confirmation"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not correct",
+        "don't go ahead",
+        "no",
+        "nope",
+        "incorrect",
+        "cancel",
+        "that's wrong",
+        "",
+    ],
+)
+def test_is_explicit_confirmation_fix_d_negations_rejected(text: str) -> None:
+    """Fix D: negation-bearing or empty utterances must return False.
+
+    Covers:
+    - ``not correct`` — negation token rejects even though "correct" is affirmative.
+    - ``don't go ahead`` — negation contraction rejects even though "go ahead" is affirmative.
+    - ``incorrect`` — word-boundary prevents "correct" from matching inside "incorrect".
+    - ``that's wrong`` — "wrong" is a negation token.
+    """
+    assert is_explicit_confirmation(text) is False, (
+        f"Fix D: {text!r} must NOT be an explicit confirmation"
+    )
+
+
+@pytest.mark.unit
+async def test_await_confirmation_negated_phrase_does_not_confirm() -> None:
+    """Fix D node-level: 'not correct' on a final transcript with full read-back
+    and disclosures must NOT record a Confirmation.
+    """
+    state = _base_state(
+        transcript_text="not correct",
+        transcript_is_final=True,
+        read_back_interrupted=False,
+    )
+    result = await await_confirmation(state)
+    assert result.get("confirmation") is None or "confirmation" not in result, (
+        "Fix D: 'not correct' must NOT produce a Confirmation"
+    )
+
+
+# ---------------------------------------------------------------------------
 # consent_satisfied helper tests
 # ---------------------------------------------------------------------------
 

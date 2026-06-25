@@ -7,6 +7,7 @@ capture_fields so the customer can amend details.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -37,17 +38,51 @@ _AFFIRMATIVES: frozenset[str] = frozenset(
     }
 )
 
+# A negation anywhere in the utterance disqualifies it as a clean confirmation
+# (e.g. "not correct", "don't go ahead", "no", "cancel that", "that's wrong").
+# Conservative by design: a mixed/negated utterance is never treated as an
+# explicit confirmation (Inv-1 — only unambiguous confirmation advances).
+_NEGATIONS: frozenset[str] = frozenset(
+    {
+        "no",
+        "nope",
+        "not",
+        "don't",
+        "dont",
+        "never",
+        "cancel",
+        "stop",
+        "wait",
+        "wrong",
+        "incorrect",
+        "n't",
+    }
+)
+
+_WORD_RE = re.compile(r"[a-z']+")
+
 
 def is_explicit_confirmation(text: str) -> bool:
-    """Return True iff ``text`` contains an unambiguous affirmation (Inv-1).
+    """Return True iff ``text`` is an unambiguous affirmation (Inv-1).
 
-    Deterministic — no LLM.  Matches lowercased token/phrase against a fixed
-    affirmative set.  Negatives or ambiguous text → False.
+    Deterministic — no LLM. Rejects any utterance containing a negation token
+    (so "not correct" / "don't go ahead" / "no" never confirm) and matches
+    affirmatives on WORD boundaries (so "incorrect" never matches "correct").
     """
     lowered = text.lower().strip()
-    # Direct match or phrase-in-text match (e.g. "yes, go ahead please")
-    return lowered in _AFFIRMATIVES or any(
-        affirmative in lowered for affirmative in _AFFIRMATIVES
+    if not lowered:
+        return False
+
+    tokens = set(_WORD_RE.findall(lowered))
+    # Reject negated/ambiguous utterances outright.
+    if tokens & _NEGATIONS or any("n't" in tok for tok in tokens):
+        return False
+
+    # Word-boundary match for each affirmative phrase (avoids substring false
+    # positives like "incorrect" → "correct").
+    return any(
+        re.search(rf"\b{re.escape(affirmative)}\b", lowered)
+        for affirmative in _AFFIRMATIVES
     )
 
 
