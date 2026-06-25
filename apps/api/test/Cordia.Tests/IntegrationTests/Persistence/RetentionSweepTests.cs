@@ -219,4 +219,77 @@ public class RetentionSweepTests(PostgresFixture fixture)
             Assert.NotNull(remaining);
         }
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // (4) Cross-tenant safety (P1 regression): a context scoped to tenant-A holds a
+    //     protected (non-terminal) record; sweeping under a DIFFERENT tenantId must
+    //     touch nothing of tenant-A's — never load it via the ambient filter and
+    //     mis-classify it as an orphan to prune.
+    // ──────────────────────────────────────────────────────────────────────────
+    [Fact]
+    public async Task Sweep_WithMismatchedContextTenant_DoesNotTouchContextTenantRecords()
+    {
+        var protectedTenant = $"t6-prot-{Guid.NewGuid():N}";
+        var otherTenant = $"t6-other-{Guid.NewGuid():N}";
+        var iKey = $"ikey-{Guid.NewGuid():N}";
+
+        // Seed protectedTenant: a NON-terminal op + a past-deadline record (would be SKIPPED
+        // if swept correctly under protectedTenant; would be wrongly pruned by the old bug
+        // when swept under a different tenantId via this context).
+        string operationId;
+        await using (var ctx = fixture.CreateContext(protectedTenant))
+        {
+            operationId = await TestData.SeedOperationAsync(
+                ctx, protectedTenant, OperationStatus.ManualReview, TestContext.Current.CancellationToken);
+            ctx.IdempotencyRecords.Add(new IdempotencyRecord
+            {
+                TenantId = protectedTenant,
+                IdempotencyKey = iKey,
+                OperationType = Domain.Generated.OperationTypeEnum.Create,
+                RequestHash = "h",
+                OperationId = operationId,
+                ProcessingStatus = IdempotencyStatus.Completed,
+                CreatedAt = Now.AddDays(-10),
+                LastSeenAt = Now.AddDays(-10),
+                RetentionDeadline = Now.AddDays(-1),
+            });
+            await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Run the sweep for a DIFFERENT tenant, but using a context scoped to protectedTenant.
+        RetentionSweepResult result;
+        await using (var ctx = fixture.CreateContext(protectedTenant))
+        {
+            var handler = new RetentionSweepHandler(ctx);
+            result = await handler.SweepIdempotencyRecordsAsync(
+                otherTenant, Now, TestContext.Current.CancellationToken);
+        }
+
+        // The sweep targeted otherTenant (which has nothing): no prune, no skip.
+        Assert.Equal(0, result.Pruned);
+        Assert.Equal(0, result.Skipped);
+
+        // protectedTenant's record must be untouched.
+        await using (var readCtx = fixture.CreateContext(protectedTenant))
+        {
+            var remaining = await readCtx.IdempotencyRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    r => r.IdempotencyKey == iKey,
+                    TestContext.Current.CancellationToken);
+            Assert.NotNull(remaining);
+        }
+
+        // No audit row should have been written under EITHER tenant for this key.
+        await using (var readCtx = fixture.CreateContext(otherTenant))
+        {
+            var auditUnderOther = await readCtx.AuditEvents
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    e => e.SubjectRef == iKey,
+                    TestContext.Current.CancellationToken);
+            Assert.Null(auditUnderOther);
+        }
+    }
 }

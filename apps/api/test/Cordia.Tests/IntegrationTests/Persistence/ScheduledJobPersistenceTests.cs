@@ -1,6 +1,7 @@
 ﻿#pragma warning disable xUnit1051
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Persistence;
@@ -65,5 +66,55 @@ public class ScheduledJobPersistenceTests(PostgresFixture fixture)
         Assert.Single(due);
         Assert.Equal(ScheduledJobStatus.Pending, due[0].Status);
         Assert.Equal("q-due", due[0].DestinationQueue);
+    }
+
+    // (3) P2 regression: ListDueAsync is authoritative on the tenantId ARGUMENT, not the
+    //     ambient context tenant. A worker context scoped to tenant-B asking for tenant-A's
+    //     due jobs must get ONLY tenant-A's jobs (never tenant-B's).
+    [Fact]
+    public async Task ListDueAsync_ScopesToTenantArgument_NotAmbientContext()
+    {
+        var tenantA = $"t3-sjA-{Guid.NewGuid():N}";
+        var tenantB = $"t3-sjB-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+
+        await using (var ctxA = fixture.CreateContext(tenantA))
+        {
+            ctxA.ScheduledJobs.Add(new ScheduledJob
+            {
+                TenantId = tenantA,
+                JobId = $"job-{Guid.NewGuid():N}",
+                JobType = "hold.expiry",
+                RunAfter = now.AddMinutes(-5),
+                DestinationQueue = "q-A",
+                Status = ScheduledJobStatus.Pending,
+                Payload = "{}",
+            });
+            await ctxA.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using (var ctxB = fixture.CreateContext(tenantB))
+        {
+            ctxB.ScheduledJobs.Add(new ScheduledJob
+            {
+                TenantId = tenantB,
+                JobId = $"job-{Guid.NewGuid():N}",
+                JobType = "hold.expiry",
+                RunAfter = now.AddMinutes(-5),
+                DestinationQueue = "q-B",
+                Status = ScheduledJobStatus.Pending,
+                Payload = "{}",
+            });
+            await ctxB.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Context scoped to tenant-B, but ask for tenant-A's due jobs.
+        await using var workerCtx = fixture.CreateContext(tenantB);
+        var repo = new ScheduledJobRepository(workerCtx);
+        var due = await repo.ListDueAsync(tenantA, now, 10, TestContext.Current.CancellationToken);
+
+        Assert.Single(due);
+        Assert.Equal(tenantA, due[0].TenantId);
+        Assert.Equal("q-A", due[0].DestinationQueue);
     }
 }

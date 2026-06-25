@@ -34,9 +34,12 @@ public class RetentionSweepHandler(ApplicationDbContext db)
     /// Both prune and audit are committed atomically.
     /// </summary>
     /// <param name="tenantId">
-    /// The tenant whose records to sweep.  The context's global query filter already scopes
-    /// all queries to this tenant; the parameter is accepted explicitly so the audit subject
-    /// is correct and the intent is clear to callers.
+    /// The tenant whose records to sweep. This is a background-job entry point and is
+    /// AUTHORITATIVE on this argument: every query bypasses the ambient context's tenant
+    /// filter (<c>IgnoreQueryFilters</c>) and re-asserts <c>TenantId == tenantId</c>, so the
+    /// candidate scope, the linked-operation lookup, and the audit rows are all keyed to the
+    /// SAME tenant. A worker whose context is scoped to a different tenant (or unset) can
+    /// therefore never mis-classify another tenant's record as an orphan and prune it.
     /// </param>
     /// <param name="now">Reference clock value (injected for testability).</param>
     /// <param name="ct">Cancellation token.</param>
@@ -45,9 +48,13 @@ public class RetentionSweepHandler(ApplicationDbContext db)
         DateTimeOffset now,
         CancellationToken ct = default)
     {
-        // Step 1: load candidates past their retention deadline (global filter scopes to tenant).
+        // Step 1: load candidates past their retention deadline for the REQUESTED tenant.
+        // Authoritative on tenantId (IgnoreQueryFilters + explicit predicate) so the candidate
+        // scope matches the linked-operation lookup below — preventing a context/argument
+        // mismatch from loading one tenant's records and pruning them under another (P1).
         var candidates = await db.IdempotencyRecords
-            .Where(r => r.RetentionDeadline < now)
+            .IgnoreQueryFilters()
+            .Where(r => r.TenantId == tenantId && r.RetentionDeadline < now)
             .ToListAsync(ct);
 
         int pruned = 0;
@@ -55,11 +62,13 @@ public class RetentionSweepHandler(ApplicationDbContext db)
 
         foreach (var record in candidates)
         {
-            // Step 2: resolve linked operation status (AsNoTracking; may be null for orphan records).
-            // The global tenant query filter scopes this to the swept tenant; the explicit
-            // TenantId predicate is a second, load-bearing guard (do not remove either).
+            // Step 2: resolve linked operation status for the SAME requested tenant. Authoritative
+            // on tenantId (IgnoreQueryFilters + explicit predicate) so an ambient context scoped
+            // to a different tenant cannot null-out this lookup and mis-prune a non-orphan (P1).
+            // A genuine null here means a true orphan (no operation for this tenant+id).
             var linkedOp = await db.BookingOperations
                 .AsNoTracking()
+                .IgnoreQueryFilters()
                 .Where(o => o.TenantId == tenantId && o.OperationId == record.OperationId)
                 .Select(o => (Domain.Enums.OperationStatus?)o.Status)
                 .FirstOrDefaultAsync(ct);

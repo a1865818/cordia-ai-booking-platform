@@ -19,16 +19,18 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
         int limit,
         CancellationToken ct = default)
     {
-        // The `tenant_id = {0}` predicate is LOAD-BEARING and must stay inside this raw SQL.
-        // EF composes the global tenant filter as an OUTER query over this statement, so the
-        // inner FOR UPDATE SKIP LOCKED scans/locks rows BEFORE the outer filter applies. Without
-        // the inner predicate, the claim would lock every tenant's unpublished rows (tenant
-        // isolation + lock-amplification bug). Parameters are bound (no SQL injection).
+        // Background-worker claim: authoritative on the tenantId argument. The raw SQL's
+        // `tenant_id = {0}` is the LOAD-BEARING tenant scope (it bounds the FOR UPDATE SKIP
+        // LOCKED scan/lock to this tenant — never lock every tenant's rows). IgnoreQueryFilters
+        // drops the ambient context filter, which EF would otherwise compose as an OUTER
+        // `WHERE tenant_id = <context>`: for a worker not scoped to this tenant (or unset) that
+        // outer filter would silently eliminate the just-claimed rows. Parameters are bound.
         var results = await db.Set<OutboxMessage>()
             .FromSqlRaw(
                 "SELECT * FROM public.outbox_messages WHERE tenant_id = {0} AND published_at IS NULL ORDER BY occurred_at LIMIT {1} FOR UPDATE SKIP LOCKED",
                 tenantId,
                 limit)
+            .IgnoreQueryFilters()
             .ToListAsync(ct);
 
         return results;

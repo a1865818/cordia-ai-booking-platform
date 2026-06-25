@@ -21,9 +21,14 @@ public class ScheduledJobRepository(ApplicationDbContext db) : IScheduledJobRepo
         int limit,
         CancellationToken ct = default)
     {
+        // Background-worker claim: authoritative on the tenantId argument. A worker is not
+        // request-scoped to one tenant, so bypass the ambient context filter (IgnoreQueryFilters)
+        // and re-assert TenantId == tenantId — otherwise a context scoped to another tenant (or
+        // unset) would silently return the wrong tenant's jobs / nothing (P2).
         var results = await db.ScheduledJobs
             .AsNoTracking()
-            .Where(j => j.Status == ScheduledJobStatus.Pending && j.RunAfter <= now)
+            .IgnoreQueryFilters()
+            .Where(j => j.TenantId == tenantId && j.Status == ScheduledJobStatus.Pending && j.RunAfter <= now)
             .OrderBy(j => j.RunAfter)
             .Take(limit)
             .ToListAsync(ct);
