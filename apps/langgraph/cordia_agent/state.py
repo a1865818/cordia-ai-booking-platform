@@ -298,6 +298,15 @@ class AgentState(BaseModel):
     correlation_id: str | None = None
     channel_endpoint_id: str | None = None
     allowed_policy_ids: list[str] = Field(default_factory=list)
+    # Session bootstrap fields, mapped from AgentInputState so downstream nodes
+    # (e.g. identify_intent) can construct the initial BookingDraft.
+    source: SourceInfo | None = Field(
+        default=None, description="Origin channel + language (from AgentInputState)."
+    )
+    customer: CustomerRef | None = Field(
+        default=None,
+        description="Customer reference from the channel gateway, if known.",
+    )
     # Dialog-front fields (02-F)
     transcript_text: str | None = Field(
         default=None, description="Current turn transcript text."
