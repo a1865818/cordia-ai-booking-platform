@@ -6,5 +6,26 @@
       "members": { "Pending": "pending", "Greeted": "greeted" }
     }
   },
-  "enums": {}
+  "enums": {
+    "OperationTypeEnum": {
+      "pgEnumName": "operation_type_enum",
+      "members": {
+        "Cancel": "cancel",
+        "Create": "create",
+        "Modify": "modify",
+        "Reschedule": "reschedule"
+      }
+    },
+    "VerificationActionEnum": {
+      "pgEnumName": "verification_action_enum",
+      "members": {
+        "Cancel": "cancel",
+        "Modify": "modify",
+        "OwnerOverride": "owner_override",
+        "ReadSensitive": "read_sensitive",
+        "Refund": "refund",
+        "UsePaymentMethod": "use_payment_method"
+      }
+    }
+  }
 }
