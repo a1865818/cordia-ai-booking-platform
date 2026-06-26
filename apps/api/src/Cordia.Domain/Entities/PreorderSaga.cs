@@ -19,8 +19,9 @@ public class PreorderSaga : ITenantScoped
 
     public PreorderSagaState SagaState { get; set; }
 
-    /// <summary>jsonb — preorder reference payload; not null.</summary>
-    public string PreorderReference { get; set; } = string.Empty;
+    /// <summary>jsonb — preorder reference payload; not null. Defaults to a valid empty
+    /// JSON object — an empty string is not valid jsonb and would fail on insert.</summary>
+    public string PreorderReference { get; set; } = "{}";
 
     public string? HoldId { get; set; }
 

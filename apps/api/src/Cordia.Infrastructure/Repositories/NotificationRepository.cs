@@ -25,12 +25,13 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
         string tenantId,
         string notificationId,
         long expectedVersion,
+        NotificationState expectedState,
         NotificationState next,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<Notification>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.NotificationId == notificationId,
+            e => e.TenantId == tenantId && e.NotificationId == notificationId && e.State == expectedState,
             s => s.SetProperty(x => x.State, next),
             ct);
 }

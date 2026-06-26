@@ -18,13 +18,14 @@ public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWo
         string tenantId,
         string workItemId,
         long expectedVersion,
+        string expectedState,
         string nextState,
         string? assignee,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<OperationWorkItem>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.WorkItemId == workItemId,
+            e => e.TenantId == tenantId && e.WorkItemId == workItemId && e.State == expectedState,
             s => s
                 .SetProperty(x => x.State, nextState)
                 .SetProperty(x => x.Assignee, assignee),

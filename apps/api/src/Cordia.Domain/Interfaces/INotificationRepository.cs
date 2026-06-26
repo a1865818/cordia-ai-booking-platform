@@ -11,14 +11,15 @@ public interface INotificationRepository
     Task<Notification?> GetAsync(string notificationId, CancellationToken ct = default);
 
     /// <summary>
-    /// Version-token conditional transition: sets <paramref name="next"/> state and increments
-    /// version where the current version equals <paramref name="expectedVersion"/>.
-    /// Returns rows-affected (1 = success, 0 = lost race → caller should reload).
+    /// Version-token conditional transition (§6.2): sets <paramref name="next"/> state only when
+    /// the row is in <paramref name="expectedState"/> AND at <paramref name="expectedVersion"/>.
+    /// Returns rows-affected (1 = success, 0 = lost race / wrong state → caller should reload).
     /// </summary>
     Task<int> TryTransitionStateAsync(
         string tenantId,
         string notificationId,
         long expectedVersion,
+        NotificationState expectedState,
         NotificationState next,
         CancellationToken ct = default);
 }

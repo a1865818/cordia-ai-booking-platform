@@ -11,13 +11,15 @@ public interface IWorkflowStepRepository
     Task<WorkflowStep?> GetAsync(string workflowStepId, CancellationToken ct = default);
 
     /// <summary>
-    /// Conditional version-token UPDATE: transitions status from <paramref name="expectedVersion"/>
-    /// to <paramref name="next"/>. Returns rows-affected (1 = won race, 0 = lost race → reload).
+    /// Conditional version-token UPDATE (§6.2): transitions to <paramref name="next"/> only when
+    /// the row is in <paramref name="expectedStatus"/> AND at <paramref name="expectedVersion"/>.
+    /// Returns rows-affected (1 = won race, 0 = lost race / wrong state → reload).
     /// </summary>
     Task<int> TryTransitionStatusAsync(
         string tenantId,
         string workflowStepId,
         long expectedVersion,
+        WorkflowStepStatus expectedStatus,
         WorkflowStepStatus next,
         CancellationToken ct = default);
 }

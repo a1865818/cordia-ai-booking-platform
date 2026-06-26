@@ -3,6 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Infrastructure.EntityFramework.Concurrency;
+using Cordia.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Persistence;
@@ -98,5 +99,69 @@ public class BookingOperationConcurrencyTests(PostgresFixture fixture)
 
         Assert.Equal(OperationStatus.Validating, reloaded.Status);
         Assert.Equal(1, reloaded.Version);
+    }
+
+    // ── Status guard (§6.2): a transition with the WRONG expected status returns 0 even when
+    //    the version matches, and does not mutate the row; the correct expected status wins. ──
+    [Fact]
+    public async Task TryTransitionStatus_WrongExpectedStatus_ReturnsZero_AndDoesNotMutate()
+    {
+        var tenantId = $"t1-opg-{Guid.NewGuid():N}";
+        var intentId = $"int-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+            await SeedPrerequisitesAsync(seedCtx, tenantId, intentId);
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.BookingOperations.Add(new BookingOperation
+            {
+                TenantId = tenantId,
+                OperationId = operationId,
+                IntentId = intentId,
+                IntentRevision = 1,
+                OperationType = OperationTypeEnum.Create,
+                Status = OperationStatus.Accepted,
+                Version = 0,
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        // Wrong expected status (Validating) but matching version (0) → must NOT transition.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var repo = new BookingOperationRepository(ctx);
+            var rows = await repo.TryTransitionStatusAsync(
+                tenantId, operationId, expectedVersion: 0,
+                expectedStatus: OperationStatus.Validating, next: OperationStatus.Booked);
+            Assert.Equal(0, rows);
+        }
+
+        await using (var verifyCtx = fixture.CreateContext(tenantId))
+        {
+            var unchanged = await verifyCtx.BookingOperations.AsNoTracking()
+                .SingleAsync(o => o.OperationId == operationId);
+            Assert.Equal(OperationStatus.Accepted, unchanged.Status); // untouched
+            Assert.Equal(0, unchanged.Version);
+        }
+
+        // Correct expected status (Accepted) + version 0 → transitions.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var repo = new BookingOperationRepository(ctx);
+            var rows = await repo.TryTransitionStatusAsync(
+                tenantId, operationId, expectedVersion: 0,
+                expectedStatus: OperationStatus.Accepted, next: OperationStatus.Validating);
+            Assert.Equal(1, rows);
+        }
+
+        await using (var verifyCtx = fixture.CreateContext(tenantId))
+        {
+            var moved = await verifyCtx.BookingOperations.AsNoTracking()
+                .SingleAsync(o => o.OperationId == operationId);
+            Assert.Equal(OperationStatus.Validating, moved.Status);
+            Assert.Equal(1, moved.Version);
+        }
     }
 }

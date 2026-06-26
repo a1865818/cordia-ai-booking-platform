@@ -11,13 +11,16 @@ public interface IBookingOperationRepository
     Task<BookingOperation?> GetAsync(string operationId, CancellationToken ct = default);
 
     /// <summary>
-    /// Conditional version-token UPDATE: transitions status from <paramref name="expectedVersion"/>
-    /// to <paramref name="next"/>. Returns rows-affected (1 = won race, 0 = lost race → reload).
+    /// Conditional version-token UPDATE (§6.2): transitions to <paramref name="next"/> only when
+    /// the row is in <paramref name="expectedStatus"/> AND at <paramref name="expectedVersion"/>.
+    /// Guarding both the expected status and version makes an illegal state-graph transition
+    /// return 0 even if versions coincide. Returns rows-affected (1 = won race, 0 = lost race → reload).
     /// </summary>
     Task<int> TryTransitionStatusAsync(
         string tenantId,
         string operationId,
         long expectedVersion,
+        OperationStatus expectedStatus,
         OperationStatus next,
         CancellationToken ct = default);
 }

@@ -25,12 +25,13 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
         string tenantId,
         string operationId,
         long expectedVersion,
+        OperationStatus expectedStatus,
         OperationStatus next,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<BookingOperation>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.OperationId == operationId,
+            e => e.TenantId == tenantId && e.OperationId == operationId && e.Status == expectedStatus,
             s => s
                 .SetProperty(x => x.Status, next)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),

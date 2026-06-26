@@ -20,12 +20,13 @@ public class WaitlistOfferRepository(ApplicationDbContext db) : IWaitlistOfferRe
         string tenantId,
         string offerId,
         long expectedVersion,
+        WaitlistOfferStatus expectedStatus,
         WaitlistOfferStatus next,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<WaitlistOffer>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.OfferId == offerId,
+            e => e.TenantId == tenantId && e.OfferId == offerId && e.Status == expectedStatus,
             s => s.SetProperty(x => x.Status, next),
             ct);
 }

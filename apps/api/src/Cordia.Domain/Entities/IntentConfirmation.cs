@@ -25,8 +25,9 @@ public class IntentConfirmation : ITenantScoped
 
     public string ReadbackVersion { get; set; } = string.Empty;
 
-    /// <summary>Consent and policy disclosures shown, stored as jsonb.</summary>
-    public string Disclosures { get; set; } = string.Empty;
+    /// <summary>Consent and policy disclosures shown, stored as jsonb. Defaults to a valid
+    /// empty JSON array — an empty string is not valid jsonb and would fail on insert.</summary>
+    public string Disclosures { get; set; } = "[]";
 
     public VerificationLevel VerificationLevel { get; set; }
 

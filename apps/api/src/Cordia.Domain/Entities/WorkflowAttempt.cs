@@ -34,9 +34,10 @@ public class WorkflowAttempt : ITenantScoped
 
     public string? ProviderRef { get; set; }
 
-    public string RequestMeta { get; set; } = string.Empty;
+    // jsonb (not null): default to a valid empty JSON object — '' is not valid jsonb.
+    public string RequestMeta { get; set; } = "{}";
 
-    public string ResponseMeta { get; set; } = string.Empty;
+    public string ResponseMeta { get; set; } = "{}";
 
     public string? ErrorCode { get; set; }
 

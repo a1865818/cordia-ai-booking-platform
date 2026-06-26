@@ -40,7 +40,12 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
         CancellationToken ct = default)
         => db.VerificationGrants
             .IgnoreQueryFilters()
-            .Where(g => g.TenantId == tenantId && g.GrantId == grantId && g.ConsumedAt == null)
+            // Reject expired grants atomically (§9.3 now < expires_at), closing the TOCTOU
+            // window between FindValidGrantAsync and consumption.
+            .Where(g => g.TenantId == tenantId
+                && g.GrantId == grantId
+                && g.ConsumedAt == null
+                && consumedAt < g.ExpiresAt)
             .ExecuteUpdateAsync(
                 s => s.SetProperty(x => x.ConsumedAt, consumedAt),
                 ct);

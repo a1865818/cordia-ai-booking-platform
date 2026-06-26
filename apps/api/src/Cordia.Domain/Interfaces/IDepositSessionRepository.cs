@@ -11,14 +11,15 @@ public interface IDepositSessionRepository
     Task<DepositSession?> GetAsync(string tenantId, string depositSessionId, CancellationToken ct = default);
 
     /// <summary>
-    /// Version-token conditional transition: sets <paramref name="next"/> status and increments
-    /// version where the current version equals <paramref name="expectedVersion"/>.
-    /// Returns rows-affected (1 = success, 0 = lost race → caller should reload).
+    /// Version-token conditional transition (§6.2): sets <paramref name="next"/> status only when
+    /// the row is in <paramref name="expectedStatus"/> AND at <paramref name="expectedVersion"/>.
+    /// Returns rows-affected (1 = success, 0 = lost race / wrong state → caller should reload).
     /// </summary>
     Task<int> TryTransitionStatusAsync(
         string tenantId,
         string depositSessionId,
         long expectedVersion,
+        DepositStatus expectedStatus,
         DepositStatus next,
         CancellationToken ct = default);
 }

@@ -25,12 +25,13 @@ public class DepositSessionRepository(ApplicationDbContext db) : IDepositSession
         string tenantId,
         string depositSessionId,
         long expectedVersion,
+        DepositStatus expectedStatus,
         DepositStatus next,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<DepositSession>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.DepositSessionId == depositSessionId,
+            e => e.TenantId == tenantId && e.DepositSessionId == depositSessionId && e.Status == expectedStatus,
             s => s.SetProperty(x => x.Status, next),
             ct);
 }

@@ -198,6 +198,34 @@ public class VerificationGrantPersistenceTests(PostgresFixture fixture)
         Assert.NotNull(found);
     }
 
+    // (4e) ConsumeAsync must reject an EXPIRED grant atomically (§9.3 now < expires_at):
+    //      rows=0 and consumed_at stays null so the caller is forced to re-verify.
+    [Fact]
+    public async Task ConsumeAsync_ExpiredGrant_ReturnsZero_AndLeavesUnconsumed()
+    {
+        var tenantId = $"t4-vg-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        var grant = MakeGrant(
+            tenantId, "cust-9", VerificationActionEnum.Modify,
+            VerificationLevel.IdentityVerified, now.AddHours(-1)); // already expired
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VerificationGrants.Add(grant);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var ctx1 = fixture.CreateContext(tenantId);
+        var repo = new VerificationGrantRepository(ctx1);
+        var rows = await repo.ConsumeAsync(tenantId, grant.GrantId, now);
+        Assert.Equal(0, rows); // expired → not consumed
+
+        await using var verifyCtx = fixture.CreateContext(tenantId);
+        var reloaded = await verifyCtx.VerificationGrants.AsNoTracking()
+            .SingleAsync(g => g.GrantId == grant.GrantId);
+        Assert.Null(reloaded.ConsumedAt);
+    }
+
     // (5) ConsumeAsync sets consumed_at (rows=1); second ConsumeAsync → rows=0 (single-use).
     //     Assert AllowedAction + VerificationLevel round-trip.
     [Fact]

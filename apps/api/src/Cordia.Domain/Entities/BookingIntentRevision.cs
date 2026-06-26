@@ -11,8 +11,9 @@ public class BookingIntentRevision : ITenantScoped
 
     public int Revision { get; set; }
 
-    /// <summary>Canonical booking payload stored as jsonb.</summary>
-    public string CanonicalPayload { get; set; } = string.Empty;
+    /// <summary>Canonical booking payload stored as jsonb. Defaults to a valid empty
+    /// JSON object — an empty string is not valid jsonb and would fail on insert.</summary>
+    public string CanonicalPayload { get; set; } = "{}";
 
     public string PayloadHash { get; set; } = string.Empty;
 

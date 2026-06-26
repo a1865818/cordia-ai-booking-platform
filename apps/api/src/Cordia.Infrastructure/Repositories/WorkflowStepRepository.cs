@@ -25,12 +25,13 @@ public class WorkflowStepRepository(ApplicationDbContext db) : IWorkflowStepRepo
         string tenantId,
         string workflowStepId,
         long expectedVersion,
+        WorkflowStepStatus expectedStatus,
         WorkflowStepStatus next,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<WorkflowStep>(
             db,
             expectedVersion,
-            e => e.TenantId == tenantId && e.WorkflowStepId == workflowStepId,
+            e => e.TenantId == tenantId && e.WorkflowStepId == workflowStepId && e.Status == expectedStatus,
             s => s
                 .SetProperty(x => x.Status, next)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),

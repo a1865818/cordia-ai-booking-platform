@@ -23,8 +23,9 @@ public interface IVerificationGrantRepository
         CancellationToken ct = default);
 
     /// <summary>
-    /// Single-use consumption: sets consumed_at where consumed_at is null.
-    /// Returns rows-affected (1 = consumed, 0 = already consumed — single-use guarantee).
+    /// Single-use consumption: atomically sets consumed_at where consumed_at is null AND the grant
+    /// is not yet expired (<paramref name="consumedAt"/> &lt; expires_at, §9.3). Returns rows-affected
+    /// (1 = consumed, 0 = already consumed OR expired → caller must force re-verification).
     /// </summary>
     Task<int> ConsumeAsync(
         string tenantId,
