@@ -30,4 +30,17 @@ public interface IDeadLetterRepository
         string consumerName,
         DlqReplayState state,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomic state transition <c>Quarantined → Replayed</c>: a single conditional UPDATE guarded by
+    /// <c>replay_state = 'quarantined'</c>. Returns rows-affected — exactly ONE caller wins the
+    /// transition, so concurrent replays of the same row cannot both claim it. Returns 0 if the row
+    /// is already Replayed/Discarded (lost the race) so the caller can suppress duplicate side effects
+    /// (e.g. a second audit event).
+    /// </summary>
+    Task<int> TryMarkReplayedAsync(
+        string tenantId,
+        string messageId,
+        string consumerName,
+        CancellationToken ct = default);
 }

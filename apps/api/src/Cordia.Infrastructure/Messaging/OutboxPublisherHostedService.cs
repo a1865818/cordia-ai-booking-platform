@@ -1,4 +1,6 @@
-﻿using Cordia.Domain.Interfaces;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
+using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -26,6 +28,9 @@ public sealed class OutboxPublisherHostedService(
     IOptions<MessagingOptions> options,
     ILogger<OutboxPublisherHostedService> logger) : BackgroundService
 {
+    // Synthetic consumer_name for publisher-side dead-letter rows (no real consumer was reached).
+    private const string PublisherConsumerName = "outbox.publisher";
+
     // Stable per-instance identity for lease ownership; unique across restarts (Guid suffix).
     private readonly string _workerId =
         $"outbox-pub-{Environment.MachineName}-{Guid.NewGuid():N}";
@@ -72,21 +77,27 @@ public sealed class OutboxPublisherHostedService(
         logger.LogDebug(
             "Outbox publisher {WorkerId}: claimed {Count} row(s)", _workerId, claimed.Count);
 
+        var maxAttempts = pub.MaxPublishAttempts;
+
         // ── Publish + Mark phase (per message, fresh scope each) ────────────────────
         var published = 0;
         foreach (var row in claimed)
         {
-            // Route first; skip unroutable types without opening a scope.
+            await using var scope = scopeFactory.CreateAsyncScope();
+
+            // An unroutable message_type is a PERMANENT producer defect — it will never route, so
+            // leaving it unpublished would reclaim it forever. Dead-letter it (so it stops looping
+            // and stays visible/replayable) instead of waiting out the attempt cap.
             if (!LogicalQueueRegistry.TryResolve(row.MessageType, out var queue))
             {
+                await DeadLetterPoisonAsync(scope, row, "unroutable_message_type", ct);
                 logger.LogError(
                     "Outbox publisher {WorkerId}: unroutable message_type {MessageType} " +
-                    "message_id={MessageId}; leaving unpublished (producer defect, DLQ in T7)",
+                    "message_id={MessageId}; dead-lettered (permanent producer defect)",
                     _workerId, row.MessageType, row.MessageId);
                 continue;
             }
 
-            await using var scope = scopeFactory.CreateAsyncScope();
             var transport = scope.ServiceProvider.GetRequiredService<IMessageTransport>();
             var markRepo = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();
 
@@ -98,13 +109,27 @@ public sealed class OutboxPublisherHostedService(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Leave row unpublished: lease will expire → reclaim on next tick (§5.2/§8).
-                logger.LogError(
-                    ex,
-                    "Outbox publisher {WorkerId}: transport.PublishAsync failed for " +
-                    "message_id={MessageId} message_type={MessageType}; " +
-                    "leaving unpublished for lease-expiry reclaim",
-                    _workerId, row.MessageId, row.MessageType);
+                // PublishAttempts is incremented on every claim. Past the cap, treat the row as
+                // poison and dead-letter it (stop the unbounded reclaim/error loop); otherwise leave
+                // it unpublished so the lease expires and a later tick reclaims it (§5.2/§8).
+                if (row.PublishAttempts >= maxAttempts)
+                {
+                    await DeadLetterPoisonAsync(scope, row, "publish_attempts_exhausted", ct);
+                    logger.LogError(
+                        ex,
+                        "Outbox publisher {WorkerId}: message_id={MessageId} message_type={MessageType} " +
+                        "exhausted {MaxAttempts} publish attempts; dead-lettered",
+                        _workerId, row.MessageId, row.MessageType, maxAttempts);
+                }
+                else
+                {
+                    logger.LogError(
+                        ex,
+                        "Outbox publisher {WorkerId}: transport.PublishAsync failed for " +
+                        "message_id={MessageId} message_type={MessageType} (attempt {Attempt}/{MaxAttempts}); " +
+                        "leaving unpublished for lease-expiry reclaim",
+                        _workerId, row.MessageId, row.MessageType, row.PublishAttempts, maxAttempts);
+                }
                 continue;
             }
 
@@ -159,6 +184,41 @@ public sealed class OutboxPublisherHostedService(
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Quarantines a poison outbox row and marks it published in ONE transaction (so the two are
+    /// atomic — a crash leaves the row reclaimable with no orphan DLQ row, and a successful run stops
+    /// the reclaim loop). The DLQ row uses the synthetic consumer_name "outbox.publisher" since no
+    /// real consumer was reached; it can later be replayed (never-admitted → original message_id).
+    /// </summary>
+    private static async Task DeadLetterPoisonAsync(
+        AsyncServiceScope scope, ClaimedRow row, string errorClass, CancellationToken ct)
+    {
+        var dlqRepo = scope.ServiceProvider.GetRequiredService<IDeadLetterRepository>();
+        var outboxRepo = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        await uow.ExecuteInTransactionAsync(async ct2 =>
+        {
+            await dlqRepo.AddAsync(new DeadLetterMessage
+            {
+                TenantId = row.TenantId,
+                MessageId = row.MessageId,
+                ConsumerName = PublisherConsumerName,
+                MessageType = row.MessageType,
+                Payload = row.Payload,
+                ErrorClass = errorClass,
+                AttemptHistory = "[]",
+                FirstFailedAt = row.OccurredAt,
+                DeadLetteredAt = DateTimeOffset.UtcNow,
+                ReplayState = DlqReplayState.Quarantined,
+            }, ct2);
+
+            // Mark the outbox row published so it is no longer claimed — its durable record now lives
+            // in dead_letter_messages.
+            await outboxRepo.MarkPublishedAsync(row.TenantId, row.MessageId, DateTimeOffset.UtcNow, ct2);
+        }, ct);
+    }
 
     private static JobEnvelope BuildEnvelope(ClaimedRow row)
     {

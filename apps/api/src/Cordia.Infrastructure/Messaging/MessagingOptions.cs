@@ -78,4 +78,11 @@ public sealed class OutboxPublisherOptions
     /// Default: 30 s.
     /// </summary>
     public int LeaseSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Max claim/publish attempts before a row is treated as poison and dead-lettered (instead of
+    /// being reclaimed forever). An unroutable message_type is dead-lettered immediately regardless.
+    /// Default: 10.
+    /// </summary>
+    public int MaxPublishAttempts { get; set; } = 10;
 }

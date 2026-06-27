@@ -23,9 +23,14 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ReplayDeadLetterResult>> Replay(
-        [FromBody] ReplayRequest body,
+        [FromBody] ReplayRequest? body,
         CancellationToken ct)
     {
+        // With SuppressImplicitRequiredAttributeForNonNullableReferenceTypes on, a missing/null JSON
+        // body binds to null rather than auto-400; guard it so we return 400 instead of NRE-ing.
+        if (body is null)
+            return Problem(statusCode: 400, title: "Missing body", detail: "A JSON body with messageId and consumerName is required.");
+
         if (string.IsNullOrWhiteSpace(tenant.TenantId))
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
 

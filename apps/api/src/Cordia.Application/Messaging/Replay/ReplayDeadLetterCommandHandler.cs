@@ -113,12 +113,17 @@ public sealed class ReplayDeadLetterCommandHandler(
             await transport.PublishAsync(envelope, queue, ct);
         }
 
-        // ── Step 7: Mark replayed + write audit (one UoW transaction) ──────────────
+        // ── Step 7: Atomically claim (Quarantined→Replayed) + write audit (one UoW txn) ──
+        // The conditional transition is the atomic claim: under concurrent replays only ONE wins
+        // (rows-affected == 1) and writes the audit; the losers (rows-affected == 0) skip the audit.
+        // The deterministic control id (Step 4) already collapses any redundant publish via inbox
+        // dedup, so the net effect is exactly one resume + one audit even under concurrency.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            await dlqRepo.SetReplayStateAsync(
-                command.TenantId, command.MessageId, command.ConsumerName,
-                DlqReplayState.Replayed, ct2);
+            var won = await dlqRepo.TryMarkReplayedAsync(
+                command.TenantId, command.MessageId, command.ConsumerName, ct2);
+            if (won == 0)
+                return; // a concurrent replay already claimed this row — do not write a duplicate audit
 
             var metadata = JsonSerializer.Serialize(new
             {

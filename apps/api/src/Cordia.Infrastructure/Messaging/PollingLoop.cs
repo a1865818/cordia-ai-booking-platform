@@ -10,11 +10,16 @@ namespace Cordia.Infrastructure.Messaging;
 /// </summary>
 internal static class PollingLoop
 {
+    /// <summary>Floor for the inter-tick delay. Guards against a misconfigured interval (0 → a
+    /// CPU-spinning loop; negative → <c>Task.Delay</c> throws and crashes the worker).</summary>
+    public const int MinDelayMs = 50;
+
     /// <summary>
     /// Runs <paramref name="tickAsync"/> repeatedly, sleeping <paramref name="pollIntervalMs"/> ms
     /// between ticks, until <paramref name="stoppingToken"/> is cancelled.  An unhandled tick
     /// exception is logged (with <paramref name="serviceName"/>/<paramref name="workerId"/>) and the
-    /// loop continues; cancellation breaks the loop cleanly.
+    /// loop continues; cancellation breaks the loop cleanly. The delay is clamped to a sane minimum
+    /// so an invalid configured interval can neither spin the CPU nor crash the loop.
     /// </summary>
     public static async Task RunAsync(
         Func<CancellationToken, Task> tickAsync,
@@ -24,6 +29,14 @@ internal static class PollingLoop
         string workerId,
         CancellationToken stoppingToken)
     {
+        var delayMs = Math.Max(MinDelayMs, pollIntervalMs);
+        if (delayMs != pollIntervalMs)
+        {
+            logger.LogWarning(
+                "{ServiceName} {WorkerId}: configured poll interval {Configured}ms is below the floor; " +
+                "using {Floor}ms", serviceName, workerId, pollIntervalMs, MinDelayMs);
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -41,7 +54,7 @@ internal static class PollingLoop
 
             try
             {
-                await Task.Delay(pollIntervalMs, stoppingToken);
+                await Task.Delay(delayMs, stoppingToken);
             }
             catch (OperationCanceledException)
             {

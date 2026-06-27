@@ -1,8 +1,10 @@
 ﻿#pragma warning disable xUnit1051
 using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Cordia.Infrastructure.Messaging;
+using Cordia.Infrastructure.Persistence;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -45,9 +47,12 @@ public class OutboxPublisherTests(PostgresFixture fixture)
         // factory to avoid re-registering all Npgsql enum mappings.
         var services = new ServiceCollection();
 
-        // Register fixture-backed DbContext factory: each Resolve creates a fresh context.
-        services.AddTransient(_ => fixture.CreateContext("publisher-worker"));
+        // Scoped DbContext so that, within one publisher scope, the repositories and the unit of
+        // work (used by the poison dead-letter path) share ONE context — i.e. one transaction.
+        services.AddScoped(_ => fixture.CreateContext("publisher-worker"));
         services.AddTransient<IOutboxRepository, OutboxRepository>();
+        services.AddTransient<IDeadLetterRepository, DeadLetterRepository>();
+        services.AddTransient<IUnitOfWork, UnitOfWork>();
         // Transport is a singleton so the same fake instance is shared across all scopes.
         services.AddSingleton<IMessageTransport>(transport);
 
@@ -437,5 +442,56 @@ public class OutboxPublisherTests(PostgresFixture fixture)
                 .FirstAsync();
             Assert.NotNull(row.PublishedAt);
         }
+    }
+
+    // ── Test 7: unroutable message_type → dead-lettered (no infinite reclaim loop) ───
+
+    [Fact]
+    public async Task PublishPendingBatchAsync_UnroutableMessageType_DeadLetters_AndMarksPublished()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+        var tenantId = $"t3-poison-{Guid.NewGuid():N}";
+        var msg = MakeMessage(tenantId, "unknown.domain.requested.v1"); // no logical-queue prefix → unroutable
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.OutboxMessages.Add(msg);
+            await ctx.SaveChangesAsync();
+        }
+
+        var fakeTransport = new Mock<IMessageTransport>();
+        fakeTransport
+            .Setup(t => t.PublishAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var service = BuildService(fakeTransport.Object);
+        await service.PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var freshCtx = fixture.CreateContext(tenantId);
+
+        // The row is marked published → removed from the claim set (no infinite reclaim).
+        var row = await freshCtx.OutboxMessages
+            .IgnoreQueryFilters()
+            .Where(m => m.MessageId == msg.MessageId)
+            .FirstAsync();
+        Assert.NotNull(row.PublishedAt);
+
+        // A dead-letter row was written (synthetic consumer, quarantined, correct error class).
+        var dlq = await freshCtx.DeadLetterMessages
+            .IgnoreQueryFilters()
+            .Where(d => d.TenantId == tenantId && d.MessageId == msg.MessageId)
+            .FirstOrDefaultAsync();
+        Assert.NotNull(dlq);
+        Assert.Equal("outbox.publisher", dlq!.ConsumerName);
+        Assert.Equal(DlqReplayState.Quarantined, dlq.ReplayState);
+        Assert.Equal("unroutable_message_type", dlq.ErrorClass);
+
+        // The transport is never invoked for an unroutable message.
+        fakeTransport.Verify(
+            t => t.PublishAsync(
+                It.Is<JobEnvelope>(e => e.MessageId == msg.MessageId),
+                It.IsAny<LogicalQueue>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

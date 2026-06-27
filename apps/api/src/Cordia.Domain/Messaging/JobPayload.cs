@@ -26,7 +26,10 @@ public static class JobPayload
     {
         try
         {
-            return JsonDocument.Parse(json).RootElement.Clone();
+            // Clone() detaches the element from the document, so the document can be disposed
+            // immediately — avoids leaking the parsed JsonDocument on every payload parse.
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.Clone();
         }
         catch
         {
@@ -42,10 +45,14 @@ public static class JobPayload
             ? prop.GetString()
             : null;
 
-    /// <summary>Returns the int32 property <paramref name="key"/>, or null if absent / not an integer.</summary>
+    /// <summary>Returns the int32 property <paramref name="key"/>, or null if absent / not a JSON number.</summary>
     public static int? GetInt32OrNull(this JsonElement payload, string key)
+        // Guard ValueKind == Number BEFORE TryGetInt32: TryGetInt32 throws (not returns false) when
+        // the token is not a number (e.g. a string "3"), which would otherwise break envelope-building
+        // on a single malformed optional field instead of treating it as absent.
         => payload.ValueKind == JsonValueKind.Object
            && payload.TryGetProperty(key, out var prop)
+           && prop.ValueKind == JsonValueKind.Number
            && prop.TryGetInt32(out var value)
             ? value
             : null;

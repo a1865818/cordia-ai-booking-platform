@@ -459,6 +459,30 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
         AssertPayloadFieldsPreserved(originalPayload, env.Payload);
     }
 
+    // ── Test 6: TryMarkReplayedAsync is an atomic single-winner claim ────────────────
+    //
+    // The Quarantined→Replayed transition is the atomic claim that makes concurrent replays safe:
+    // exactly one caller affects the row; the rest get 0 rows and suppress duplicate side effects.
+
+    [Fact]
+    public async Task TryMarkReplayedAsync_TransitionsQuarantinedExactlyOnce()
+    {
+        var tenantId = $"t7-claim-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        var consumer = "booking.finalizer";
+
+        await SeedDlqRowAsync(fixture, tenantId, messageId, consumer);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var repo = new DeadLetterRepository(ctx);
+
+        var first = await repo.TryMarkReplayedAsync(tenantId, messageId, consumer);
+        var second = await repo.TryMarkReplayedAsync(tenantId, messageId, consumer);
+
+        Assert.Equal(1, first);   // won the Quarantined→Replayed transition
+        Assert.Equal(0, second);  // already Replayed → no-op (atomic claim prevents a second winner)
+    }
+
     // ── Assertion helper ──────────────────────────────────────────────────────────
 
     /// <summary>
