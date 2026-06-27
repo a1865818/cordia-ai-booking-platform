@@ -11,15 +11,22 @@ namespace Cordia.Infrastructure.EntityFramework;
 /// </summary>
 public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<ApplicationDbContext>
 {
-    private const string DevConnectionString =
+    private const string LocalConnectionString =
         "Host=localhost;Port=5432;Database=Cordia_API;Username=cordia;Password=localdev";
+
+    // Allow `dotnet ef` to target any database (e.g. a cloud Postgres) without editing this file:
+    // set ConnectionStrings__CordiaDBConnection in the environment. Falls back to local dev.
+    private static string ConnectionString =>
+        Environment.GetEnvironmentVariable("ConnectionStrings__CordiaDBConnection") is { Length: > 0 } env
+            ? env
+            : LocalConnectionString;
 
     public ApplicationDbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<ApplicationDbContext>();
         optionsBuilder
             .UseNpgsql(
-                DevConnectionString,
+                ConnectionString,
                 o => o
                     .MapEnum<ConsentState>("consent_state")
                     .MapEnum<TenantChannel>("channel_enum")
