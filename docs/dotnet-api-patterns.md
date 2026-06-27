@@ -51,7 +51,13 @@ public class GetWidgetQueryHandler(IWidgetRepository repo)
 ## Validation
 
 FluentValidation, one validator per command/query that needs it, same folder.
-Auto-validation runs in the MVC pipeline (`SharpGrip.FluentValidation.AutoValidation`).
+Validators target the MediatR **command/query** type and run via a `ValidationPipelineBehavior`
+(`IPipelineBehavior<,>`, registered in `AddApplication()`) before the handler; failures throw
+`ValidationException`, which the global exception handler maps to HTTP 400. Validators bind to the
+command, not the controller's request DTO, so this MediatR-pipeline seam — not an MVC action filter
+— is the right place. (Note: `SuppressImplicitRequiredAttributeForNonNullableReferenceTypes` is on,
+so the validators are the **sole** source of required-field enforcement — every required field needs
+an explicit rule.)
 
 ```csharp
 public class CreateWidgetValidator : AbstractValidator<CreateWidgetCommand>

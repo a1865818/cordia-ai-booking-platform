@@ -1,4 +1,6 @@
-﻿using FluentValidation;
+﻿using Cordia.Application.Behaviours;
+using FluentValidation;
+using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Cordia.Application.Extensions;
@@ -10,7 +12,14 @@ public static class ApplicationServiceCollectionExtensions
     {
         var assembly = typeof(ApplicationServiceCollectionExtensions).Assembly;
 
-        services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(assembly));
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(assembly);
+            // Run FluentValidation validators before every MediatR handler so that
+            // structural failures (missing required fields, cross-field binding) throw
+            // ValidationException → HTTP 400 before the handler can NRE on null properties.
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationPipelineBehavior<,>));
+        });
         services.AddValidatorsFromAssembly(assembly);
 
         return services;

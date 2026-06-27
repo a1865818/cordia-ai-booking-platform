@@ -10,4 +10,12 @@ public interface IBookingIntentRepository
     Task AddRevisionAsync(BookingIntentRevision revision, CancellationToken ct = default);
 
     Task AddConfirmationAsync(IntentConfirmation confirmation, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns <c>true</c> when a <see cref="BookingIntent"/> row already exists for
+    /// <paramref name="intentId"/> under <paramref name="tenantId"/>. Explicitly scoped
+    /// in addition to the ambient global query filter as belt-and-suspenders tenant
+    /// isolation (spec 04 §10.3).
+    /// </summary>
+    Task<bool> IntentExistsAsync(string tenantId, string intentId, CancellationToken ct = default);
 }

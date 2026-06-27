@@ -1,6 +1,7 @@
 ﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Infrastructure.Repositories;
 
@@ -24,4 +25,12 @@ public class BookingIntentRepository(ApplicationDbContext db) : IBookingIntentRe
         db.IntentConfirmations.Add(confirmation);
         await db.SaveChangesAsync(ct);
     }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Filters explicitly on both <paramref name="tenantId"/> and <paramref name="intentId"/>
+    /// in addition to the ambient global query filter (belt-and-suspenders tenant isolation).
+    /// </remarks>
+    public Task<bool> IntentExistsAsync(string tenantId, string intentId, CancellationToken ct = default)
+        => db.BookingIntents.AnyAsync(i => i.TenantId == tenantId && i.IntentId == intentId, ct);
 }

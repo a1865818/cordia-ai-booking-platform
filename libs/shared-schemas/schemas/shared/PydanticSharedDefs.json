@@ -1433,6 +1433,34 @@
       "title": "HoldResult",
       "type": "object"
     },
+    "IdempotencyConflict": {
+      "additionalProperties": false,
+      "description": "409 response body when the idempotency key is already bound to a prior operation (spec 04 \u00a75.1, Inv-3).",
+      "properties": {
+        "idempotency_key": {
+          "description": "The idempotency key that is already bound.",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "existing_operation_id": {
+          "description": "The operation already bound to this idempotency key.",
+          "title": "Existing Operation Id",
+          "type": "string"
+        },
+        "message": {
+          "description": "Agent/customer-safe explanation of the conflict; no raw internal detail.",
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "existing_operation_id",
+        "message"
+      ],
+      "title": "IdempotencyConflict",
+      "type": "object"
+    },
     "IntentRevision": {
       "additionalProperties": false,
       "description": "Immutable submitted booking revision (spec 02 \u00a75.2 / \u00a78.7).",
@@ -1654,6 +1682,53 @@
       ],
       "title": "NormalizedOperationStatus",
       "type": "string"
+    },
+    "OperationAcceptedResponse": {
+      "additionalProperties": false,
+      "description": "202 response body returned when the API durably accepts a submission (spec 04 \u00a76.1/\u00a710.4).\n\n'accepted' means the operation is durably recorded \u2014 NOT booked (Inv-16).",
+      "properties": {
+        "operation_id": {
+          "description": "Stable operation identifier.",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "intent_id": {
+          "description": "Stable intent identifier.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Revision number that was accepted.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "status": {
+          "description": "Acceptance status string, e.g. 'accepted' \u2014 durably accepted, NOT booked (Inv-16).",
+          "title": "Status",
+          "type": "string"
+        },
+        "status_url": {
+          "description": "Stable pollable URL for operation status, e.g. '/api/booking-operations/{operation_id}'.",
+          "title": "Status Url",
+          "type": "string"
+        },
+        "accepted_at": {
+          "description": "Timestamp when acceptance was committed (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Accepted At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "intent_id",
+        "intent_revision",
+        "status",
+        "status_url",
+        "accepted_at"
+      ],
+      "title": "OperationAcceptedResponse",
+      "type": "object"
     },
     "OperationStatusView": {
       "additionalProperties": false,
@@ -2004,6 +2079,63 @@
         "confirmation"
       ],
       "title": "SubmitConfirmedIntentInput",
+      "type": "object"
+    },
+    "SubmitConfirmedIntentRequest": {
+      "additionalProperties": false,
+      "description": "Agent\u2192API POST body for submitting a confirmed booking intent (spec 04 \u00a74.2).\n\noperation_id and idempotency_key are minted and checkpointed exactly once (Inv-2).\nreplaces_operation_id is set only when this submission supersedes a prior operation\n(\u00a710.1/\u00a713.5).",
+      "properties": {
+        "operation_id": {
+          "description": "Stable operation identifier minted and checkpointed once (Inv-2).",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Request idempotency key minted and checkpointed once (Inv-2).",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "intent_id": {
+          "description": "Stable intent identifier across revisions.",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "intent_revision": {
+          "description": "Monotonic revision number being submitted.",
+          "title": "Intent Revision",
+          "type": "integer"
+        },
+        "replaces_operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operation ID superseded by this submission (\u00a710.1/\u00a713.5); None if no prior operation.",
+          "title": "Replaces Operation Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/IntentRevision",
+          "description": "Canonical, hashed intent revision body (spec 02 \u00a75.2/\u00a78.7)."
+        },
+        "confirmation": {
+          "$ref": "#/$defs/Confirmation",
+          "description": "Immutable confirmation evidence bound to this revision (spec 02 \u00a75.2/\u00a78.8)."
+        }
+      },
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "intent_id",
+        "intent_revision",
+        "revision",
+        "confirmation"
+      ],
+      "title": "SubmitConfirmedIntentRequest",
       "type": "object"
     },
     "SubmitConfirmedIntentStatus": {
