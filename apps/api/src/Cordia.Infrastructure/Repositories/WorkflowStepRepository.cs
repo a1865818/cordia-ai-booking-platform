@@ -36,4 +36,29 @@ public class WorkflowStepRepository(ApplicationDbContext db) : IWorkflowStepRepo
                 .SetProperty(x => x.Status, next)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
+
+    public async Task<IReadOnlyList<WorkflowStep>> ListNonTerminalAsync(
+        DateTimeOffset staleBefore,
+        DateTimeOffset now,
+        int limit,
+        CancellationToken ct = default)
+    {
+        // Cross-tenant sweep (T6, §5.1): IgnoreQueryFilters bypasses the ambient tenant filter.
+        // Returns stale non-terminal steps: status Pending or InProgress, untouched since
+        // staleBefore (actively-worked steps have UpdatedAt ≥ staleBefore and are excluded),
+        // and ready to run (NotBefore null or in the past). Oldest-first so the sweeper
+        // always makes forward progress from the most-overdue steps.
+        var results = await db.WorkflowSteps
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(s =>
+                (s.Status == WorkflowStepStatus.Pending || s.Status == WorkflowStepStatus.InProgress)
+                && s.UpdatedAt < staleBefore
+                && (s.NotBefore == null || s.NotBefore <= now))
+            .OrderBy(s => s.UpdatedAt)
+            .Take(limit)
+            .ToListAsync(ct);
+
+        return results;
+    }
 }

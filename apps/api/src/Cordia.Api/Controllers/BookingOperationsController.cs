@@ -1,4 +1,4 @@
-﻿using Cordia.Application.BookingOperations.GetOperationStatus;
+﻿using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;

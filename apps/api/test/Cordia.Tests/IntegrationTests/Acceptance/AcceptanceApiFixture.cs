@@ -2,7 +2,7 @@
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Infrastructure.EntityFramework;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;

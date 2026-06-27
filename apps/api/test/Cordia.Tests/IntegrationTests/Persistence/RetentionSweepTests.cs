@@ -1,7 +1,7 @@
 ﻿#pragma warning disable xUnit1051
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
-using Cordia.Infrastructure.Retention;
+using Cordia.Infrastructure.Services.Retention;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Persistence;

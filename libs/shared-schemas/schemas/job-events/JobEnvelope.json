@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "JobEnvelope",
+  "description": "Versioned, immutable transport envelope for durable job messaging (§4.1, §12.2). No secrets or raw payment data (Inv-12); payloads reference authoritative records by ID.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_id",
+    "message_type",
+    "occurred_at",
+    "tenant_id",
+    "correlation_id",
+    "attempt_hint",
+    "payload"
+  ],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "description": "Globally unique message identifier (e.g. msg_01J...)."
+    },
+    "message_type": {
+      "type": "string",
+      "description": "Explicit schema version in format <domain>.<event>.<verb>.vN (e.g. booking.finalize.requested.v1)."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Wall-clock timestamp when the event occurred (ISO 8601 with offset)."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope for every message."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Correlation identifier propagated across all messages in an operation chain."
+    },
+    "causation_id": {
+      "type": "string",
+      "description": "message_id of the direct cause of this message (optional)."
+    },
+    "operation_id": {
+      "type": "string",
+      "description": "Stable operation identifier (optional)."
+    },
+    "intent_id": {
+      "type": "string",
+      "description": "Agent intent identifier (optional)."
+    },
+    "intent_revision": {
+      "type": "integer",
+      "description": "Revision of the intent at time of dispatch (optional)."
+    },
+    "attempt_hint": {
+      "type": "integer",
+      "description": "Advisory attempt number; authoritative count lives in workflow_attempts/scheduled_jobs (§15.2).",
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event-specific payload; sanitised — no secrets or PAN (Inv-12). References authoritative records by ID."
+    }
+  }
+}

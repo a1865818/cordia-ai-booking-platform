@@ -347,6 +347,45 @@
         },
         "type": "object"
       },
+      "ReplayDeadLetterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ReplayDecision"
+          },
+          "dispatchedMessageId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "replayCommandId": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ReplayDecision": {
+        "enum": [
+          "PreservedOriginalMessageId",
+          "NewControlMessageId",
+          "AckedWithoutReadmit"
+        ],
+        "type": "string"
+      },
+      "ReplayRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "consumerName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "messageId": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "SubmitConfirmedIntentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -591,6 +630,94 @@
         ]
       }
     },
+    "/api/dead-letter-messages/replay": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayDeadLetterResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayDeadLetterResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayDeadLetterResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "tags": [
+          "DeadLetterMessages"
+        ]
+      }
+    },
     "/api/Health": {
       "get": {
         "responses": {
@@ -649,6 +776,9 @@
     },
     {
       "name": "Bookings"
+    },
+    {
+      "name": "DeadLetterMessages"
     },
     {
       "name": "Health"

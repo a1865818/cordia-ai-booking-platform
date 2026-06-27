@@ -1,5 +1,4 @@
-﻿using System.Reflection;
-using Cordia.Domain.Entities;
+﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
@@ -43,9 +42,9 @@ public class IdempotencyRepository(ApplicationDbContext db) : IIdempotencyReposi
                  processing_status, response_snapshot, created_at, last_seen_at, retention_deadline)
             VALUES
                 ({record.TenantId}, {record.IdempotencyKey},
-                 {PgLabel(record.OperationType)}::operation_type_enum,
+                 {PgEnum.Label(record.OperationType)}::operation_type_enum,
                  {record.RequestHash}, {record.OperationId},
-                 {PgLabel(record.ProcessingStatus)}::idempotency_status_enum,
+                 {PgEnum.Label(record.ProcessingStatus)}::idempotency_status_enum,
                  {record.ResponseSnapshot}::jsonb,
                  {record.CreatedAt}, {record.LastSeenAt}, {record.RetentionDeadline})
             ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
@@ -54,16 +53,4 @@ public class IdempotencyRepository(ApplicationDbContext db) : IIdempotencyReposi
 
         return rows == 1;
     }
-
-    /// <summary>
-    /// Returns the authoritative PostgreSQL enum label from the <c>[PgName]</c> attribute
-    /// on the enum member. Falls back to <c>ToString().ToLowerInvariant()</c> only when
-    /// the attribute is absent, so multi-word names like <c>InProgress</c> → <c>"in_progress"</c>
-    /// are always sourced from the declared <c>[PgName("in_progress")]</c> rather than
-    /// a naive lower-case transform.
-    /// </summary>
-    private static string PgLabel<TEnum>(TEnum value) where TEnum : struct, Enum
-        => typeof(TEnum).GetField(value.ToString())!
-            .GetCustomAttribute<NpgsqlTypes.PgNameAttribute>()?.PgName
-            ?? value.ToString().ToLowerInvariant();
 }

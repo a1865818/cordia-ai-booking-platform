@@ -53,7 +53,7 @@ submit_confirmed_intent tool                           POST /api/bookings  (acce
 | **Identity minter** | `apps/langgraph/cordia_agent` (submission node) | Mints `operation_id` + `idempotency_key` once when intent is first ready; checkpoints into LangGraph session state before the first call; reuses on every retry/replay. |
 | **Submission tool client** | `apps/langgraph` (`submit_confirmed_intent`) | Builds the submission payload from the confirmed revision; sends with checkpointed identity; classifies `202`/`409`/timeout; never re-mints. Schema in `03`. |
 | **Acceptance endpoint** | `Cordia.Api` controller | Thin: forwards to `SubmitConfirmedIntentCommand`, maps result to `202`/`409`/`422`. |
-| **Acceptance handler** | `Cordia.Application/BookingOperations/SubmitConfirmedIntent/` | Orchestrates validate → canonicalize → elect → atomic acceptance → response. MediatR command. |
+| **Acceptance handler** | `Cordia.Application/Handlers/BookingOperations/SubmitConfirmedIntent/` | Orchestrates validate → canonicalize → elect → atomic acceptance → response. MediatR command. |
 | **Canonicalizer + hasher** | `Cordia.Application` (`ICanonicalRequestHasher`, impl in `Cordia.Infrastructure`) | Versioned canonical serialization + cryptographic hash (§10.2). Deterministic, pure. |
 | **Idempotency store** | `Cordia.Infrastructure` (`IIdempotencyRecordRepository`) | Atomic conditional insert (creator election), load-existing, request-hash compare. Backed by `idempotency_records` + unique `(tenant_id, idempotency_key)`. |
 | **Acceptance transaction** | `Cordia.Infrastructure` (`IUnitOfWork` over `ApplicationDbContext`) | Wraps idempotency + intent revision + operation + outbox writes in one DB transaction. |
@@ -128,7 +128,7 @@ class SubmitConfirmedIntentRequest(BaseModel):
 ### 4.3 API-side records / entities (C# sketch)
 
 ```csharp
-// Cordia.Application/BookingOperations/SubmitConfirmedIntent/SubmitConfirmedIntentCommand.cs
+// Cordia.Application/Handlers/BookingOperations/SubmitConfirmedIntent/SubmitConfirmedIntentCommand.cs
 public record SubmitConfirmedIntentCommand(
     string TenantId,
     string OperationId,
@@ -365,7 +365,7 @@ Key latency principle: acceptance is fast precisely *because* it does no provide
 
 ## 11. Implementation mapping
 
-Following `docs/dotnet-api-patterns.md` (one request+handler per file under `Application/<Feature>/`, thin controllers, typed exceptions, EF via Domain repository interfaces, `IEntityTypeConfiguration<T>`).
+Following `docs/dotnet-api-patterns.md` (one request+handler per file under `Application/Handlers/<Feature>/`, thin controllers, typed exceptions, EF via Domain repository interfaces, `IEntityTypeConfiguration<T>`).
 
 **`apps/api`**
 
@@ -381,7 +381,7 @@ src/Cordia.Domain/BookingOperations/
   Exceptions/ ConfirmationHashMismatchException.cs, IdempotencyConflictException.cs,  (04 is the SOLE definer of IdempotencyConflictException; 03/08 reference it, never redefine)
               IntentPolicyViolationException.cs
 
-src/Cordia.Application/BookingOperations/SubmitConfirmedIntent/
+src/Cordia.Application/Handlers/BookingOperations/SubmitConfirmedIntent/
   SubmitConfirmedIntentCommand.cs
   SubmitConfirmedIntentCommandHandler.cs           (orchestrates §10.3 in one IUnitOfWork txn)
   SubmitConfirmedIntentValidator.cs                (FluentValidation: required fields, minor-units, modify/cancel needs target_booking_id)

@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 

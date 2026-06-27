@@ -2,11 +2,9 @@
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
-using Cordia.Infrastructure.Idempotency;
-using Cordia.Infrastructure.Persistence;
 using Cordia.Infrastructure.Repositories;
-using Cordia.Infrastructure.Retention;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
+using Cordia.Infrastructure.Services.Retention;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -67,6 +65,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IOperationWorkItemRepository, OperationWorkItemRepository>();
         services.AddScoped<IOutboxRepository, OutboxRepository>();
         services.AddScoped<IInboxRepository, InboxRepository>();
+        services.AddScoped<IDeadLetterRepository, DeadLetterRepository>();
         services.AddScoped<IScheduledJobRepository, ScheduledJobRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<IVerificationGrantRepository, VerificationGrantRepository>();
@@ -81,6 +80,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        services.AddMessaging();
 
         return services;
     }

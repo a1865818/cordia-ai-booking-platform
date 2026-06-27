@@ -63,6 +63,24 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Intent policy violation", ex.Message, cancellationToken);
                 return true;
 
+            case PoisonMessageException ex:
+                logger.LogWarning(ex, "Poison message");
+                await WriteProblemAsync(httpContext, StatusCodes.Status422UnprocessableEntity,
+                    "Poison message", ex.Message, cancellationToken);
+                return true;
+
+            case UnsupportedSchemaVersionException ex:
+                logger.LogWarning(ex, "Unsupported schema version");
+                await WriteProblemAsync(httpContext, StatusCodes.Status422UnprocessableEntity,
+                    "Unsupported schema version", ex.Message, cancellationToken);
+                return true;
+
+            case DeadLetterNotFoundException ex:
+                logger.LogWarning(ex, "Dead-letter message not found");
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Dead-letter message not found", ex.Message, cancellationToken);
+                return true;
+
             case IdempotencyConflictException ex:
                 logger.LogWarning(ex, "Idempotency conflict: key={IdempotencyKey}", ex.IdempotencyKey);
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);

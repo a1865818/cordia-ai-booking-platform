@@ -1,5 +1,5 @@
 ﻿using System.Text.Json.Nodes;
-using Cordia.Infrastructure.Idempotency;
+using Cordia.Infrastructure.Services;
 
 namespace Cordia.Tests.UnitTests.Idempotency;
 
