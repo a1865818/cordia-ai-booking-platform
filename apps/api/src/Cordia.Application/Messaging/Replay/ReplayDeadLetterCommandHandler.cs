@@ -74,8 +74,15 @@ public sealed class ReplayDeadLetterCommandHandler(
             // both land here — a Rejected row still proves admission, so reusing the original
             // message_id would hit inbox dedup and silently no-op the resume; a NEW control id
             // drives a fresh resume of the durable step (§6.1 "do not reuse message_id").
+            //
+            // The control id is DETERMINISTIC (not a fresh GUID): publish (Step 6) happens before
+            // the mark/audit txn (Step 7), so if publish succeeds but the mark fails, the row stays
+            // Quarantined and a retry republishes the SAME control id → the inbox dedups it → the
+            // resume is delivered at-most-once across the publish-before-mark window (Inv-2/Inv-15).
+            // Within one Quarantined→Replayed lifecycle there is exactly one intended replay
+            // (re-replay is blocked by the Step-2a guard once the row is Replayed).
             decision = ReplayDecision.NewControlMessageId;
-            dispatchedMessageId = $"ctl-{Guid.NewGuid():N}";
+            dispatchedMessageId = $"ctl-{command.ConsumerName}-{command.MessageId}";
         }
 
         // ── Step 5: Parse payload once + extract fields ─────────────────────────────

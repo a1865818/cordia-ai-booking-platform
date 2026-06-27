@@ -516,4 +516,55 @@ public class ScheduledJobPollerTests(PostgresFixture fixture)
         Assert.Equal(ScheduledJobStatus.Done, row.Status);
         Assert.Null(row.LeaseOwner);
     }
+
+    // ── Test 9: unroutable destination_queue → marked Dead (no infinite reclaim) ─────
+
+    [Fact]
+    public async Task PollDueBatchAsync_UnknownDestinationQueue_MarksJobDead_NoPublish()
+    {
+        await NeutralizeExistingClaimableAsync();
+        var tenantId = $"t5-bad-dest-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+
+        ScheduledJob job;
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            // A destination_queue that maps to no logical queue — a permanent producer defect.
+            job = MakeJob(tenantId, now.AddMinutes(-1), destinationQueue: "not.a.real.queue");
+            ctx.ScheduledJobs.Add(job);
+            await ctx.SaveChangesAsync();
+        }
+
+        var published = new List<JobEnvelope>();
+        var fakeTransport = new Mock<IMessageTransport>();
+        fakeTransport
+            .Setup(t => t.PublishAsync(
+                It.IsAny<JobEnvelope>(),
+                It.IsAny<LogicalQueue>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<JobEnvelope, LogicalQueue, CancellationToken>((e, _, _) => published.Add(e))
+            .Returns(Task.CompletedTask);
+
+        var service = BuildService(fakeTransport.Object);
+        await service.PollDueBatchAsync(CancellationToken.None);
+
+        // The job is terminally Dead (stops the indefinite reclaim loop), lease cleared.
+        await using var freshCtx = fixture.CreateContext(tenantId);
+        var row = await freshCtx.ScheduledJobs
+            .IgnoreQueryFilters()
+            .Where(j => j.JobId == job.JobId)
+            .FirstAsync();
+        Assert.Equal(ScheduledJobStatus.Dead, row.Status);
+        Assert.Null(row.LeaseOwner);
+        Assert.Null(row.LeaseExpiresAt);
+
+        // No envelope was published for the unroutable job.
+        Assert.DoesNotContain(published, e => e.MessageId == $"sched-{job.JobId}-att{job.Attempt}");
+
+        // A subsequent claim must NOT return it (it is Dead, excluded by status <> 'dead').
+        await using var workerCtx = fixture.CreateContext("worker-tenant");
+        var reClaim = await new ScheduledJobRepository(workerCtx)
+            .ClaimDueAsync(50, "owner-2", now.AddSeconds(60), now.AddSeconds(60));
+        Assert.DoesNotContain(reClaim, j => j.JobId == job.JobId);
+    }
 }

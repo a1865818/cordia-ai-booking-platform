@@ -10,6 +10,7 @@ using Cordia.Infrastructure.Persistence;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Moq;
 
 namespace Cordia.Tests.IntegrationTests.Messaging;
 
@@ -289,6 +290,72 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
         Assert.Equal(ReplayDecision.AckedWithoutReadmit, result.Decision);
         Assert.Null(result.DispatchedMessageId);
         Assert.Empty(transport.Published);
+    }
+
+    // ── Test 4c: control id is deterministic → retry after mark-failure dedups ────
+    //
+    // Publish (Step 6) precedes the mark/audit txn (Step 7). If publish succeeds but the mark
+    // fails, the row stays Quarantined; a retry must republish the SAME control id so the inbox
+    // dedups it to a single resume delivery (no double-fire across the publish-before-mark window).
+
+    [Fact]
+    public async Task AlreadyAdmitted_MarkFailsThenRetries_ReusesSameDeterministicControlId()
+    {
+        var tenantId = $"t7-rpl-det-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+        var consumer = "booking.finalizer";
+
+        await SeedDlqRowAsync(fixture, tenantId, messageId, consumer, operationId: operationId);
+        await SeedInboxRowAsync(fixture, tenantId, consumer, messageId, InboxOutcome.Admitted);
+
+        var transport = new ReplayFakeTransport();
+
+        // First replay: audit repo throws → the mark/audit txn rolls back → row stays Quarantined,
+        // but the transport has ALREADY published the control message once.
+        await using (var ctx1 = fixture.CreateContext(tenantId))
+        {
+            var throwingAudit = new Mock<IAuditEventRepository>();
+            throwingAudit
+                .Setup(r => r.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("simulated mark/audit failure"));
+
+            var handler1 = new ReplayDeadLetterCommandHandler(
+                new DeadLetterRepository(ctx1), new InboxRepository(ctx1), transport,
+                throwingAudit.Object, new UnitOfWork(ctx1));
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                handler1.Handle(new ReplayDeadLetterCommand(tenantId, messageId, consumer), CancellationToken.None));
+        }
+
+        // Row must still be Quarantined (the mark rolled back).
+        await using (var checkCtx = fixture.CreateContext(tenantId))
+        {
+            var dlq = await checkCtx.DeadLetterMessages.AsNoTracking()
+                .SingleAsync(e => e.TenantId == tenantId && e.MessageId == messageId && e.ConsumerName == consumer);
+            Assert.Equal(DlqReplayState.Quarantined, dlq.ReplayState);
+        }
+
+        // Retry with a working audit repo: succeeds, marks Replayed, reuses the SAME control id.
+        await using (var ctx2 = fixture.CreateContext(tenantId))
+        {
+            var handler2 = new ReplayDeadLetterCommandHandler(
+                new DeadLetterRepository(ctx2), new InboxRepository(ctx2), transport,
+                new AuditEventRepository(ctx2), new UnitOfWork(ctx2));
+            var result = await handler2.Handle(
+                new ReplayDeadLetterCommand(tenantId, messageId, consumer), CancellationToken.None);
+            Assert.Equal(ReplayDecision.NewControlMessageId, result.Decision);
+        }
+
+        // Both deliveries carried the SAME deterministic control id → a real inbox dedups them
+        // to ONE resume (effectively-once across the publish-before-mark window).
+        var ctlIds = transport.Published
+            .Select(p => p.Envelope.MessageId)
+            .Where(id => id.StartsWith("ctl-", StringComparison.Ordinal))
+            .ToList();
+        Assert.Equal(2, ctlIds.Count);
+        Assert.Single(ctlIds.Distinct());
+        Assert.Equal($"ctl-{consumer}-{messageId}", ctlIds[0]);
     }
 
     // ── Test 5: Payload preserved across both publish cases (Inv-15/§11) ──────────

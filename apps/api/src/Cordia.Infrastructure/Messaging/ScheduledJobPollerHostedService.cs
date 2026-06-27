@@ -77,12 +77,17 @@ public sealed class ScheduledJobPollerHostedService(
         var markedDone = 0;
         foreach (var job in claimed)
         {
-            // Resolve destination queue first; skip unresolvable types without opening a scope.
+            // An unknown destination_queue is a PERMANENT producer defect — it will never resolve,
+            // so leaving the job claimed would loop forever (reclaim after every lease expiry).
+            // Terminally mark it Dead to stop the loop; it stays visible for ops triage.
             if (!LogicalQueueRegistry.TryGetByWireName(job.DestinationQueue, out var queue))
             {
+                await using var deadScope = scopeFactory.CreateAsyncScope();
+                var deadRepo = deadScope.ServiceProvider.GetRequiredService<IScheduledJobRepository>();
+                await deadRepo.MarkDeadAsync(job.TenantId, job.JobId, ct);
                 logger.LogError(
                     "Scheduled-job poller {WorkerId}: unknown destination_queue '{DestinationQueue}' " +
-                    "job_id={JobId}; leaving claimed for lease-reclaim (DLQ in T7)",
+                    "job_id={JobId}; marked Dead (terminal — permanent routing defect)",
                     _workerId, job.DestinationQueue, job.JobId);
                 continue;
             }
