@@ -366,12 +366,11 @@
       },
       "ReplayDecision": {
         "enum": [
-          0,
-          1,
-          2
+          "PreservedOriginalMessageId",
+          "NewControlMessageId",
+          "AckedWithoutReadmit"
         ],
-        "format": "int32",
-        "type": "integer"
+        "type": "string"
       },
       "ReplayRequest": {
         "additionalProperties": false,

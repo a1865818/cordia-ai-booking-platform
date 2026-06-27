@@ -1,4 +1,5 @@
-﻿using MediatR;
+﻿using System.Text.Json.Serialization;
+using MediatR;
 
 namespace Cordia.Application.Messaging.Replay;
 
@@ -9,7 +10,8 @@ namespace Cordia.Application.Messaging.Replay;
 public sealed record ReplayDeadLetterCommand(string TenantId, string MessageId, string ConsumerName)
     : IRequest<ReplayDeadLetterResult>;
 
-/// <summary>Outcome of the §6.1 replay decision.</summary>
+/// <summary>Outcome of the §6.1 replay decision. Serialized by member name (string) in API responses.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum ReplayDecision
 {
     /// <summary>Message was never admitted — original message_id preserved (§6.1 row 1).</summary>
