@@ -1,12 +1,358 @@
 {
   "components": {
     "schemas": {
+      "AvailabilityModeEnum": {
+        "enum": [
+          "confirmed",
+          "held",
+          "informational",
+          "live"
+        ],
+        "type": "string"
+      },
+      "BookingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_minutes": {
+            "$ref": "#/components/schemas/DurationMinutes"
+          },
+          "location_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationTypeEnum"
+          },
+          "party_size": {
+            "$ref": "#/components/schemas/DurationMinutes"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "special_requests": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "starts_at": {
+            "$ref": "#/components/schemas/StartsAt"
+          },
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "target_booking_version": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ChannelEnum": {
+        "enum": [
+          "email",
+          "sms",
+          "voice",
+          "web"
+        ],
+        "type": "string"
+      },
+      "Confirmation": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_channel": {
+            "$ref": "#/components/schemas/ChannelEnum"
+          },
+          "confirmation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "confirmed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disclosures_presented": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "identity": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_payload_hash": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "read_back_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "source_turn_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verification_level": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "DurationMinutes": {
+        "additionalProperties": false,
+        "properties": {
+          "isNull": {
+            "readOnly": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "IdempotencyConflict": {
+        "additionalProperties": false,
+        "properties": {
+          "existing_operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "message": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "IntentRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_payload": {
+            "$ref": "#/components/schemas/BookingRequest"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "payload_hash": {
+            "nullable": true,
+            "type": "string"
+          },
+          "prior_revision": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "schema_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "source_session_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "supersession_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_policy_version": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "NormalizedOperationStatusEnum": {
+        "enum": [
+          "accepted",
+          "alternatives_required",
+          "awaiting_user_action",
+          "booked",
+          "expired",
+          "failed",
+          "in_progress",
+          "rejected",
+          "waitlisted"
+        ],
+        "type": "string"
+      },
+      "OperationAcceptedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status_url": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "OperationStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "availability_mode": {
+            "$ref": "#/components/schemas/AvailabilityModeEnum"
+          },
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_reference": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_message": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "pending": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NormalizedOperationStatusEnum"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "OperationTypeEnum": {
+        "enum": [
+          "cancel",
+          "create",
+          "modify",
+          "reschedule"
+        ],
+        "type": "string"
+      },
       "PingResult": {
         "additionalProperties": false,
         "properties": {
           "message": {
             "nullable": true,
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ProblemDetails": {
+        "additionalProperties": {},
+        "properties": {
+          "detail": {
+            "nullable": true,
+            "type": "string"
+          },
+          "instance": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "title": {
+            "nullable": true,
+            "type": "string"
+          },
+          "type": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "StartsAt": {
+        "additionalProperties": false,
+        "properties": {
+          "isNull": {
+            "readOnly": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "SubmitConfirmedIntentRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation": {
+            "$ref": "#/components/schemas/Confirmation"
+          },
+          "idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "replaces_operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/IntentRevision"
           }
         },
         "type": "object"
@@ -19,6 +365,133 @@
   },
   "openapi": "3.0.4",
   "paths": {
+    "/api/booking-operations/{operationId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatusView"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatusView"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatusView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "tags": [
+          "BookingOperations"
+        ]
+      }
+    },
+    "/api/Bookings": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitConfirmedIntentRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitConfirmedIntentRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitConfirmedIntentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationAcceptedResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationAcceptedResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationAcceptedResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdempotencyConflict"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdempotencyConflict"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdempotencyConflict"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
     "/api/Health": {
       "get": {
         "responses": {
@@ -72,6 +545,12 @@
     }
   },
   "tags": [
+    {
+      "name": "BookingOperations"
+    },
+    {
+      "name": "Bookings"
+    },
     {
       "name": "Health"
     },

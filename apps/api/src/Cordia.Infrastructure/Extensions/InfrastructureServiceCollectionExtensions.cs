@@ -2,6 +2,8 @@
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Idempotency;
+using Cordia.Infrastructure.Persistence;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Retention;
 using Cordia.Infrastructure.Tenancy;
@@ -74,6 +76,11 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
 
         services.AddScoped<RetentionSweepHandler>();
+
+        // Pure, stateless, thread-safe → Singleton (spec 04 §5).
+        services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
+
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         return services;
     }

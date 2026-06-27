@@ -15,9 +15,31 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // --- Web ---
-builder.Services.AddControllers();
+// Suppress ASP.NET's implicit [Required] on non-nullable reference-type properties.
+// The quicktype-generated C# types (SubmitConfirmedIntentRequest, IntentRevision,
+// BookingRequest, Confirmation) declare Pydantic-optional fields (e.g. ReplacesOperationId,
+// SupersessionReason, LocationId, TargetBookingId, SpecialRequests) as non-nullable strings
+// / collections because quicktype has no way to encode Pydantic's field(default=None) as
+// nullable in C# without manual annotation.  With [ApiController] + NRT enabled, ASP.NET
+// would treat every non-nullable reference-type property as implicitly [Required] and return
+// HTTP 400 whenever the real Python agent omits those absent optionals.
+// Requiredness for genuinely-required fields is enforced explicitly by FluentValidation
+// (e.g. SubmitConfirmedIntentValidator), so disabling the implicit behaviour here is correct
+// and consistent with the codebase's validation philosophy.
+builder.Services.AddControllers(options =>
+        options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true)
+    .AddJsonOptions(o =>
+    {
+        // The generated contract types (Cordia.Domain.Generated) rely on custom JsonConverters
+        // (union types like DurationMinutes/StartsAt, enum converters, ISO datetime). They live in
+        // Converter.Settings; the MVC pipeline must use them or request bodies fail to bind.
+        foreach (var converter in Cordia.Domain.Generated.Converter.Settings.Converters)
+            o.JsonSerializerOptions.Converters.Add(converter);
+    });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<Cordia.Api.Errors.GlobalExceptionHandler>();
 
 const string CorsPolicy = "CordiaCors";
 builder.Services.AddCors(options =>
@@ -29,6 +51,9 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// Exception handler wraps the full pipeline — must be first middleware.
+app.UseExceptionHandler();
+
 // --- Database bootstrap (opt-in via config) ---
 if (app.Configuration.GetValue("DatabaseBootstrap:MigrateOnStartup", false))
 {
@@ -36,6 +61,9 @@ if (app.Configuration.GetValue("DatabaseBootstrap:MigrateOnStartup", false))
     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     await db.Database.MigrateAsync();
 }
+
+// Resolve tenant from X-Tenant-Id header (dev/test shim — replaced by signed-context resolution in spec 08/15).
+app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
 
 // --- Pipeline ---
 app.UseSerilogRequestLogging();

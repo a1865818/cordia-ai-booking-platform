@@ -54,6 +54,11 @@ from cordia_agent.streaming_models import (
 )
 from cordia_agent.models.intent import Confirmation, IntentRevision
 from cordia_agent.models.handoff import HandoffPackage
+from cordia_agent.models.submission import (
+    IdempotencyConflict,
+    OperationAcceptedResponse,
+    SubmitConfirmedIntentRequest,
+)
 from cordia_agent.tools.contracts import (
     AcceptanceResult,
     AvailabilityCandidate,
@@ -134,13 +139,16 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         HandoffRequest,
         HandoffResult,
         HoldResult,
+        IdempotencyConflict,
         IntentRevision,
         ManageableBooking,
         MaskedDtmfSignal,
+        OperationAcceptedResponse,
         OperationStatusView,
         PolicyValidationResult,
         SubmitCancellationInput,
         SubmitConfirmedIntentInput,
+        SubmitConfirmedIntentRequest,
         SubmitModificationInput,
         ToolResultEnvelope,
         VerificationGrantView,
