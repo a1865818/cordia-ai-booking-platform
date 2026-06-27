@@ -3,6 +3,8 @@ name: Claude Code
 on:
   issue_comment:
     types: [created]
+  issues:
+    types: [opened, assigned, labeled]
   pull_request_review_comment:
     types: [created]
 
@@ -10,6 +12,10 @@ jobs:
   claude:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' &&
+        (contains(github.event.issue.title, '@claude') ||
+         contains(github.event.issue.body, '@claude') ||
+         (github.event.action == 'labeled' && github.event.label.name == 'claude'))) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
     permissions:
@@ -29,8 +35,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: claude-opus-4-8
-          claude_args: '--thinking-budget xhigh'
+          claude_args: |
+            --model claude-opus-4-8
+            --effort xhigh
+            --allowedTools Bash(gh issue:*),Bash(gh search issues:*)
 
           additional_permissions: |
             actions: read
