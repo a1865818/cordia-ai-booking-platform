@@ -1,0 +1,109 @@
+﻿using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
+
+namespace Cordia.Domain.Entities;
+
+/// <summary>
+/// Encodes the §11 allowed-edge set and terminal states for the booking operation state machine
+/// (spec 06 §6.1, §11). This is the single authoritative source of legal transitions in C#.
+/// </summary>
+public static class OperationStateMachine
+{
+    /// <summary>
+    /// Every legal directed edge in the §11 state machine, keyed by source state.
+    /// States absent from this dictionary have no outgoing edges (terminals).
+    /// </summary>
+    public static readonly IReadOnlyDictionary<OperationStatus, IReadOnlySet<OperationStatus>> AllowedTransitions =
+        new Dictionary<OperationStatus, IReadOnlySet<OperationStatus>>
+        {
+            [OperationStatus.Accepted] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Validating,
+            },
+            [OperationStatus.Validating] = new HashSet<OperationStatus>
+            {
+                OperationStatus.AwaitingUserAction,
+                OperationStatus.ReservingCapacity,
+                OperationStatus.Rejected,
+            },
+            [OperationStatus.AwaitingUserAction] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Accepted,
+            },
+            [OperationStatus.ReservingCapacity] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Held,
+                OperationStatus.AlternativesRequired,
+                OperationStatus.Reconciling,
+            },
+            [OperationStatus.Held] = new HashSet<OperationStatus>
+            {
+                OperationStatus.AwaitingPayment,
+                OperationStatus.Finalizing,
+            },
+            [OperationStatus.AwaitingPayment] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Finalizing,
+                OperationStatus.Expired,
+            },
+            [OperationStatus.Finalizing] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Booked,
+                OperationStatus.Reconciling,
+                OperationStatus.CompensationRequired,
+            },
+            [OperationStatus.Reconciling] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Held,
+                OperationStatus.Booked,
+                OperationStatus.AlternativesRequired,
+                OperationStatus.ManualReview,
+            },
+            [OperationStatus.CompensationRequired] = new HashSet<OperationStatus>
+            {
+                OperationStatus.FailedFinal,
+                OperationStatus.ManualReview,
+            },
+            [OperationStatus.AlternativesRequired] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Waitlisted,
+                OperationStatus.FailedFinal,
+            },
+            [OperationStatus.ManualReview] = new HashSet<OperationStatus>
+            {
+                OperationStatus.Reconciling,
+                OperationStatus.Booked,
+                OperationStatus.FailedFinal,
+            },
+            // Terminal states — no outgoing edges; absent from the dictionary.
+            // Booked, Rejected, Expired, Waitlisted, FailedFinal
+        };
+
+    private static readonly IReadOnlySet<OperationStatus> _terminalStates =
+        new HashSet<OperationStatus>
+        {
+            OperationStatus.Booked,
+            OperationStatus.Rejected,
+            OperationStatus.Expired,
+            OperationStatus.Waitlisted,
+            OperationStatus.FailedFinal,
+        };
+
+    /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
+    public static bool IsAllowed(OperationStatus from, OperationStatus to)
+        => AllowedTransitions.TryGetValue(from, out var targets) && targets.Contains(to);
+
+    /// <summary>Returns <c>true</c> if <paramref name="status"/> is a terminal state (no outgoing edges).</summary>
+    public static bool IsTerminal(OperationStatus status)
+        => _terminalStates.Contains(status);
+
+    /// <summary>
+    /// Validates that <paramref name="to"/> is a legal successor of <paramref name="from"/>.
+    /// Throws <see cref="InvalidStateTransitionException"/> if the edge is not in the §11 edge set.
+    /// </summary>
+    public static void EnsureAllowed(OperationStatus from, OperationStatus to)
+    {
+        if (!IsAllowed(from, to))
+            throw new InvalidStateTransitionException(from, to);
+    }
+}

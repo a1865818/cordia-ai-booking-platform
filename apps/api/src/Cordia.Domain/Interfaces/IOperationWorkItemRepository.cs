@@ -21,4 +21,11 @@ public interface IOperationWorkItemRepository
         string nextState,
         string? assignee,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the first open (State=="open") work item for the given operation, or null if none.
+    /// AsNoTracking; cross-tenant safe (IgnoreQueryFilters).
+    /// </summary>
+    Task<OperationWorkItem?> GetOpenByOperationAsync(
+        string tenantId, string operationId, CancellationToken ct = default);
 }

@@ -126,6 +126,38 @@ public class GlobalExceptionHandlerTests
     }
 
     // ------------------------------------------------------------------
+    // InvalidStateTransitionException → 409
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task InvalidStateTransition_Returns409()
+    {
+        var ctx = CreateContext();
+        var ex = new InvalidStateTransitionException(
+            Cordia.Domain.Enums.OperationStatus.Accepted,
+            Cordia.Domain.Enums.OperationStatus.Booked);
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
+    }
+
+    // ------------------------------------------------------------------
+    // OperationConflictException → 409
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task OperationConflict_Returns409()
+    {
+        var ctx = CreateContext();
+        var ex = new OperationConflictException("op-123", "Optimistic concurrency lost");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
+    }
+
+    // ------------------------------------------------------------------
     // Unmapped exception → returns false (default 500 pipeline takes over)
     // ------------------------------------------------------------------
     [Fact]

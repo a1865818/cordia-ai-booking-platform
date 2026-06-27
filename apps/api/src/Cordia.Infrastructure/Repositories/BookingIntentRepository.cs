@@ -33,4 +33,13 @@ public class BookingIntentRepository(ApplicationDbContext db) : IBookingIntentRe
     /// </remarks>
     public Task<bool> IntentExistsAsync(string tenantId, string intentId, CancellationToken ct = default)
         => db.BookingIntents.AnyAsync(i => i.TenantId == tenantId && i.IntentId == intentId, ct);
+
+    public Task<BookingIntentRevision?> GetRevisionAsync(
+        string tenantId,
+        string intentId,
+        int revision,
+        CancellationToken ct = default)
+        => db.BookingIntentRevisions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.IntentId == intentId && r.Revision == revision, ct);
 }

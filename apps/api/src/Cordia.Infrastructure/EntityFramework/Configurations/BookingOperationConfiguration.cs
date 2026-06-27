@@ -16,6 +16,8 @@ public class BookingOperationConfiguration : IEntityTypeConfiguration<BookingOpe
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.Version).IsConcurrencyToken().HasDefaultValue(0L);
+        builder.Property(e => e.StatusReason);
+        builder.Property(e => e.CancellationRequestedAt);
 
         // FK to the exact intent revision (tenant_id, intent_id, intent_revision) → revisions PK
         builder.HasOne<BookingIntentRevision>()

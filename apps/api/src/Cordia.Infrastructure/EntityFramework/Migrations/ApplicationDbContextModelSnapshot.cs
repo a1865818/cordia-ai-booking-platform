@@ -202,6 +202,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("booking_id");
 
+                    b.Property<DateTimeOffset?>("CancellationRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancellation_requested_at");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -224,6 +228,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<OperationStatus>("Status")
                         .HasColumnType("operation_status_enum")
                         .HasColumnName("status");
+
+                    b.Property<string>("StatusReason")
+                        .HasColumnType("text")
+                        .HasColumnName("status_reason");
 
                     b.Property<string>("SupersededOperationId")
                         .HasColumnType("text")

@@ -29,7 +29,9 @@ public sealed class GetOperationStatusQueryHandler(IBookingOperationRepository o
             Domain.Enums.OperationStatus.AwaitingUserAction => NormalizedOperationStatusEnum.AwaitingUserAction,
             Domain.Enums.OperationStatus.ReservingCapacity => NormalizedOperationStatusEnum.InProgress,
             Domain.Enums.OperationStatus.Held => NormalizedOperationStatusEnum.InProgress,
-            Domain.Enums.OperationStatus.AwaitingPayment => NormalizedOperationStatusEnum.InProgress,
+            // §5 projection table: AwaitingPayment collapses to awaiting_user_action (an action
+            // prompt — the customer must pay the deposit), NOT in_progress.
+            Domain.Enums.OperationStatus.AwaitingPayment => NormalizedOperationStatusEnum.AwaitingUserAction,
             Domain.Enums.OperationStatus.Finalizing => NormalizedOperationStatusEnum.InProgress,
             Domain.Enums.OperationStatus.Booked => NormalizedOperationStatusEnum.Booked,
             Domain.Enums.OperationStatus.AlternativesRequired => NormalizedOperationStatusEnum.AlternativesRequired,
@@ -44,11 +46,15 @@ public sealed class GetOperationStatusQueryHandler(IBookingOperationRepository o
                 "Unmapped OperationStatus — add it to the normalized-status projection."),
         };
 
+        // §6.1 terminal states: Booked, Rejected, Expired, Waitlisted, FailedFinal.
         bool terminal = normalized is
             NormalizedOperationStatusEnum.Booked or
             NormalizedOperationStatusEnum.Rejected or
             NormalizedOperationStatusEnum.Expired or
+            NormalizedOperationStatusEnum.Waitlisted or
             NormalizedOperationStatusEnum.Failed;
+
+        var customerMessage = BuildCustomerMessage(normalized, op.StatusReason, op.CancellationRequestedAt, terminal);
 
         return new OperationStatusView
         {
@@ -57,22 +63,60 @@ public sealed class GetOperationStatusQueryHandler(IBookingOperationRepository o
             Pending = !terminal,
             Terminal = terminal,
             BookingId = op.BookingId ?? string.Empty,
-            CustomerMessage = CustomerMessageFor(normalized),
+            CustomerMessage = customerMessage,
             UpdatedAt = op.UpdatedAt,
         };
     }
 
-    private static string CustomerMessageFor(NormalizedOperationStatusEnum status) => status switch
+    /// <summary>
+    /// Builds a customer-facing message that incorporates the durable <paramref name="statusReason"/>
+    /// where safe (Inv-16: Reconciling/ManualReview/CompensationRequired collapse to in_progress and
+    /// MUST NOT claim "booked", "confirmed", or "charged").
+    ///
+    /// Terminal states append the reason so the customer sees why their request ended.
+    /// Non-terminal in-progress states append safe operational context (e.g. "awaiting deposit" for
+    /// AwaitingPayment) without leaking internal substate names.
+    ///
+    /// cancellation_pending: a dedicated OperationStatusView field would require editing the Pydantic
+    /// source and regenerating shared schemas (cross-project change outside spec-06/apps-api scope)
+    /// — deferred. When a non-terminal operation has CancellationRequestedAt set, the customer is
+    /// informed via the message instead.
+    /// </summary>
+    private static string BuildCustomerMessage(
+        NormalizedOperationStatusEnum status,
+        string? statusReason,
+        DateTimeOffset? cancellationRequestedAt,
+        bool terminal)
     {
-        NormalizedOperationStatusEnum.Accepted => "Your request has been received and is being processed.",
-        NormalizedOperationStatusEnum.InProgress => "Your request is being processed.",
-        NormalizedOperationStatusEnum.AwaitingUserAction => "We need a little more information to continue.",
-        NormalizedOperationStatusEnum.AlternativesRequired => "The requested option isn't available; please choose an alternative.",
-        NormalizedOperationStatusEnum.Booked => "Your booking is confirmed.",
-        NormalizedOperationStatusEnum.Waitlisted => "You've been added to the waitlist.",
-        NormalizedOperationStatusEnum.Rejected => "Your request could not be completed.",
-        NormalizedOperationStatusEnum.Expired => "This request has expired.",
-        NormalizedOperationStatusEnum.Failed => "Your request could not be completed.",
-        _ => "Your request is being processed.",
-    };
+        // Base message per normalized status (keeps Inv-16 safe messages as the foundation).
+        var baseMessage = status switch
+        {
+            NormalizedOperationStatusEnum.Accepted => "Your request has been received and is being processed.",
+            NormalizedOperationStatusEnum.InProgress => "Your request is being processed.",
+            NormalizedOperationStatusEnum.AwaitingUserAction => "We need a little more information to continue.",
+            NormalizedOperationStatusEnum.AlternativesRequired => "The requested option isn't available; please choose an alternative.",
+            NormalizedOperationStatusEnum.Booked => "Your booking is confirmed.",
+            NormalizedOperationStatusEnum.Waitlisted => "You've been added to the waitlist.",
+            NormalizedOperationStatusEnum.Rejected => "Your request could not be completed.",
+            NormalizedOperationStatusEnum.Expired => "This request has expired.",
+            NormalizedOperationStatusEnum.Failed => "Your request could not be completed.",
+            _ => "Your request is being processed.",
+        };
+
+        // For terminal states with a durable StatusReason, append readable context.
+        // Never append reason for Booked — "Your booking is confirmed" must not be diluted.
+        if (terminal && status is not NormalizedOperationStatusEnum.Booked && !string.IsNullOrWhiteSpace(statusReason))
+        {
+            return $"{baseMessage} Reason: {statusReason}.";
+        }
+
+        // For non-terminal operations with a pending cancellation, surface it via the message.
+        // cancellation_pending as a dedicated field requires a shared-schema regen (Pydantic OperationStatusView) — deferred; surfaced via CustomerMessage for now.
+        if (!terminal && cancellationRequestedAt.HasValue)
+        {
+            return $"{baseMessage} Your cancellation is being processed.";
+        }
+
+        return baseMessage;
+    }
 }

@@ -18,4 +18,8 @@ public interface IBookingIntentRepository
     /// isolation (spec 04 §10.3).
     /// </summary>
     Task<bool> IntentExistsAsync(string tenantId, string intentId, CancellationToken ct = default);
+
+    /// <summary>Returns the revision (tenant, intentId, revision) or null. AsNoTracking. Used by fulfillment
+    /// to read the canonical payload + payload hash for the provider request + attempt request_hash (§4, Inv-2/3).</summary>
+    Task<BookingIntentRevision?> GetRevisionAsync(string tenantId, string intentId, int revision, CancellationToken ct = default);
 }

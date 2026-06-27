@@ -17,7 +17,7 @@ namespace Cordia.Infrastructure.Messaging;
 /// </summary>
 public sealed class DeadLetterHandler(
     IDeadLetterRepository dlqRepo,
-    ILogger<DeadLetterHandler> logger)
+    ILogger<DeadLetterHandler> logger) : IDeadLetterHandler
 {
     /// <summary>
     /// Inserts a quarantined dead-letter row for <paramref name="envelope"/>.

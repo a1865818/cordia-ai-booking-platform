@@ -38,10 +38,13 @@ public static class LogicalQueueRegistry
         ("booking.scheduled.",   LogicalQueue.BookingScheduled),
         ("booking.compensate.",  LogicalQueue.BookingCompensate),
         ("booking.",             LogicalQueue.BookingCommands),
+        // T7: payment.* events (deposit paid/expired) route to BookingCommands.
+        ("payment.",             LogicalQueue.BookingCommands),
         ("notification.",        LogicalQueue.NotificationCommands),
         ("waitlist.",            LogicalQueue.WaitlistCommands),
         ("menu.",                LogicalQueue.MenuCommands),
         ("operations.",          LogicalQueue.OperationsReview),
+        ("capacity.",            LogicalQueue.BookingCommands),
     ];
 
     /// <summary>All 8 logical queue metadata entries.</summary>

@@ -13,6 +13,8 @@ public sealed class MessagingOptions
     public ScheduledJobPollerOptions ScheduledJobPoller { get; set; } = new();
 
     public StepSweeperOptions StepSweeper { get; set; } = new();
+
+    public SlaOptions Sla { get; set; } = new();
 }
 
 /// <summary>Options for the scheduled-job poller hosted service (§7, T5).</summary>
@@ -56,6 +58,19 @@ public sealed class StepSweeperOptions
     /// considered stale and eligible for sweeping.  Default: 60 s.
     /// </summary>
     public int StalenessSeconds { get; set; } = 60;
+}
+
+/// <summary>Options for the SLA evaluator hosted service (§8, T9).</summary>
+public sealed class SlaOptions
+{
+    /// <summary>Set to false to disable the SLA evaluator (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Milliseconds between evaluator ticks. Default: 2000 ms.</summary>
+    public int IntervalMs { get; set; } = 2000;
+
+    /// <summary>Maximum number of non-terminal operations to evaluate per tick.</summary>
+    public int BatchSize { get; set; } = 100;
 }
 
 /// <summary>Options for the outbox publisher hosted service (§7).</summary>
