@@ -1,5 +1,5 @@
 ﻿using Cordia.Api.Middleware;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.AspNetCore.Http;
 
 namespace Cordia.Tests.UnitTests.Middleware;

@@ -1,6 +1,6 @@
 ﻿using FluentValidation;
 
-namespace Cordia.Application.Messaging.Replay;
+namespace Cordia.Application.Handlers.DeadLetters;
 
 /// <summary>Structural validator for <see cref="ReplayDeadLetterCommand"/> (T7).</summary>
 public sealed class ReplayDeadLetterValidator : AbstractValidator<ReplayDeadLetterCommand>

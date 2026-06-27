@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 
-namespace Cordia.Infrastructure.Retention;
+namespace Cordia.Infrastructure.Services.Retention;
 
 /// <summary>
 /// Pure, stateless policy helper for idempotency-record retention decisions (spec 12 §6.3, Inv-14).

@@ -336,8 +336,8 @@ Aligned to the §12.8 crash-window matrix; rows owned by this substrate:
 
 **`apps/api/src/Cordia.Application`**
 - `Messaging/InboxDeduplicationBehavior.cs` — `IPipelineBehavior<,>` opening the inbox txn for queue-driven requests.
-- `Messaging/Replay/ReplayDeadLetterCommand.cs` + handler — typed, audited replay enforcing the §6.1 ID rules (Inv-15).
-- Per-queue consumer requests live under `Application/<Feature>/` per [`docs/dotnet-api-patterns.md`](../dotnet-api-patterns.md) (one request+handler per file).
+- `Handlers/DeadLetters/ReplayDeadLetterCommand.cs` + handler — typed, audited replay enforcing the §6.1 ID rules (Inv-15).
+- Per-queue consumer requests live under `Application/Handlers/<Feature>/` per [`docs/dotnet-api-patterns.md`](../dotnet-api-patterns.md) (one request+handler per file).
 
 **`libs/shared-schemas`**
 - `schemas/job-events/JobEnvelope.json` (hand-authored, queue-only) → generated C#/TS. Never hand-edit generated outputs.

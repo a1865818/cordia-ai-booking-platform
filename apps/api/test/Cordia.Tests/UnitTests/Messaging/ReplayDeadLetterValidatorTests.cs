@@ -1,4 +1,4 @@
-﻿using Cordia.Application.Messaging.Replay;
+﻿using Cordia.Application.Handlers.DeadLetters;
 using FluentValidation.TestHelper;
 
 namespace Cordia.Tests.UnitTests.Messaging;

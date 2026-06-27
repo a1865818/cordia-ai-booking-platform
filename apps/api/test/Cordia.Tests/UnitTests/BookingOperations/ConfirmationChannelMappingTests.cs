@@ -1,4 +1,4 @@
-﻿using Cordia.Application.BookingOperations.SubmitConfirmedIntent;
+﻿using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Domain.Generated;
 
 namespace Cordia.Tests.UnitTests.BookingOperations;

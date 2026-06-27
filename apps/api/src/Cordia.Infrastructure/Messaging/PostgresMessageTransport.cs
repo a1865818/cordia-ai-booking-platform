@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.Extensions.Logging;
 
 namespace Cordia.Infrastructure.Messaging;

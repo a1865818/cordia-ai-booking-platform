@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Generated;
 
-namespace Cordia.Application.BookingOperations.SubmitConfirmedIntent;
+namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 
 /// <summary>
 /// Discriminated union returned by <see cref="SubmitConfirmedIntentCommandHandler"/> (spec 04 §4.3).

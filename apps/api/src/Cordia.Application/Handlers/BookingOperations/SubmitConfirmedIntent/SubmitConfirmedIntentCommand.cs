@@ -1,7 +1,7 @@
 ﻿using Cordia.Domain.Generated;
 using MediatR;
 
-namespace Cordia.Application.BookingOperations.SubmitConfirmedIntent;
+namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 
 /// <summary>
 /// MediatR command that carries a validated <see cref="SubmitConfirmedIntentRequest"/> into the

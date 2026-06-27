@@ -1,7 +1,7 @@
 ﻿using System.Text.Json.Serialization;
 using MediatR;
 
-namespace Cordia.Application.Messaging.Replay;
+namespace Cordia.Application.Handlers.DeadLetters;
 
 /// <summary>
 /// Command to replay a quarantined dead-letter message (spec 05 §6.1, §10, T7).

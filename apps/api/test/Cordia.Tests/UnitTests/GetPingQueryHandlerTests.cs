@@ -1,4 +1,4 @@
-﻿using Cordia.Application.Ping;
+﻿using Cordia.Application.Handlers.Ping;
 
 namespace Cordia.Tests.UnitTests;
 

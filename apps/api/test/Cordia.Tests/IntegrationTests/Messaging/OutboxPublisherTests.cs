@@ -4,7 +4,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Cordia.Infrastructure.Messaging;
-using Cordia.Infrastructure.Persistence;
+using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;

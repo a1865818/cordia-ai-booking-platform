@@ -1,4 +1,4 @@
-﻿using Cordia.Application.Ping;
+﻿using Cordia.Application.Handlers.Ping;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 

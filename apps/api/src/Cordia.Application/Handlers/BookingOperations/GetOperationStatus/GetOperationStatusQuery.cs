@@ -2,7 +2,7 @@
 using Cordia.Domain.Interfaces;
 using MediatR;
 
-namespace Cordia.Application.BookingOperations.GetOperationStatus;
+namespace Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 
 /// <summary>Query to look up the current status of a booking operation (spec 04 §3).</summary>
 public record GetOperationStatusQuery(string TenantId, string OperationId) : IRequest<OperationStatusView?>;

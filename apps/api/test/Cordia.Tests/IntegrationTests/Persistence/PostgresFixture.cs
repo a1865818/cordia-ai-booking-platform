@@ -2,7 +2,7 @@
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 

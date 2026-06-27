@@ -3,7 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
 
-namespace Cordia.Infrastructure.Retention;
+namespace Cordia.Infrastructure.Services.Retention;
 
 /// <summary>
 /// Retention / privacy-deletion sweeper for <c>idempotency_records</c>

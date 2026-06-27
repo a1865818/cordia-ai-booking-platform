@@ -1,6 +1,6 @@
 ﻿using MediatR;
 
-namespace Cordia.Application.Ping;
+namespace Cordia.Application.Handlers.Ping;
 
 /// <summary>Sample query demonstrating the Application (CQRS) layer.</summary>
 public record GetPingQuery(string Name) : IRequest<PingResult>;

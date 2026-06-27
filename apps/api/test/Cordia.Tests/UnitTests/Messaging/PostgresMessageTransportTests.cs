@@ -1,7 +1,7 @@
 ﻿using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Cordia.Infrastructure.Messaging;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System.Text.Json;

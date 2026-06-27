@@ -1,7 +1,7 @@
 ﻿using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 
-namespace Cordia.Infrastructure.Persistence;
+namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// Wraps multiple repository operations in a single <see cref="ApplicationDbContext"/> transaction

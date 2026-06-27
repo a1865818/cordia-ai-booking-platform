@@ -1,9 +1,10 @@
-﻿using Cordia.Domain.Entities;
+﻿using Cordia.Application.Messaging;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using MediatR;
 
-namespace Cordia.Application.Messaging;
+namespace Cordia.Application.Behaviours;
 
 /// <summary>
 /// MediatR pipeline behaviour that provides inbox deduplication for queue-driven consumer

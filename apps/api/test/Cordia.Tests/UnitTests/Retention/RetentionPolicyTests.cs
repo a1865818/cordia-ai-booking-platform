@@ -1,5 +1,5 @@
 ﻿using Cordia.Domain.Enums;
-using Cordia.Infrastructure.Retention;
+using Cordia.Infrastructure.Services.Retention;
 
 namespace Cordia.Tests.UnitTests.Retention;
 

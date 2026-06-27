@@ -26,8 +26,22 @@ implemented in Infrastructure.
 
 ## CQRS handlers (Application)
 
-One request + one handler per file, colocated under a feature folder
-(`Application/<Feature>/`). Commands mutate, queries read. Records for messages.
+One request + one handler per file, colocated under a feature folder beneath the
+standard `Handlers/` bucket (`Application/Handlers/<Feature>/`). Commands mutate,
+queries read. Records for messages.
+
+**Application top-level folders are standard buckets, never feature names** — feature
+names live *inside* `Handlers/`:
+
+| Folder | Holds |
+|--------|-------|
+| `Handlers/<Feature>/` | what MediatR dispatches to — request + handler + validator + result |
+| `Behaviours/` | `IPipelineBehavior<,>` middleware (validation, inbox dedup) |
+| `Messaging/` | queue↔MediatR bridge: dispatcher, consumer registry, request markers |
+| `Extensions/` | DI (`AddApplication()`) |
+
+A controller and the queue dispatcher both call `mediator.Send` yet are *not* handlers:
+"uses MediatR" is not the test for `Handlers/`; "is an `IRequestHandler<,>`" is.
 
 ```csharp
 public record GetWidgetQuery(Guid Id) : IRequest<WidgetDto>;
@@ -91,6 +105,12 @@ to HTTP status codes + a consistent problem response. Never return raw 500s for
 expected failures, never swallow exceptions.
 
 ## EF Core (Infrastructure)
+
+Infrastructure top-level folders are standard buckets too, never feature names:
+`EntityFramework/` (DbContext, `Configurations/`, migrations), `Repositories/`
+(Domain-interface impls), `Services/` (other Domain-interface impls — canonical hashing,
+tenant context, unit of work, `Retention/`), `Messaging/` (transport, hosted services,
+dead-letter handling), `Extensions/` (DI, `AddInfrastructure()`).
 
 - All DB access goes through `ApplicationDbContext`; expose it to handlers behind
   Domain repository interfaces.

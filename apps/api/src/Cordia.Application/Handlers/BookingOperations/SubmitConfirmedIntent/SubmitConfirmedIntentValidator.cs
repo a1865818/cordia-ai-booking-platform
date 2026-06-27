@@ -1,7 +1,7 @@
 ﻿using Cordia.Domain.Generated;
 using FluentValidation;
 
-namespace Cordia.Application.BookingOperations.SubmitConfirmedIntent;
+namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 
 /// <summary>
 /// Structural validator for <see cref="SubmitConfirmedIntentCommand"/> (spec 04 §10.3 / §7 Inv-1).

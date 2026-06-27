@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alba;
 using Cordia.Domain.Generated;
-using Cordia.Infrastructure.Idempotency;
+using Cordia.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Acceptance;

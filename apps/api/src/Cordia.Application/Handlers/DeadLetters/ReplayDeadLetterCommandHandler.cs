@@ -6,7 +6,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using MediatR;
 
-namespace Cordia.Application.Messaging.Replay;
+namespace Cordia.Application.Handlers.DeadLetters;
 
 /// <summary>
 /// Implements the §6.1 replay ID rules for dead-lettered messages (spec 05 §6.1, §10, §11, T7).

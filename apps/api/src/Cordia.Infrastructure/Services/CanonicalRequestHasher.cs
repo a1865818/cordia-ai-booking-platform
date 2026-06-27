@@ -6,7 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Cordia.Domain.Interfaces;
 
-namespace Cordia.Infrastructure.Idempotency;
+namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// Implements the canon.v1 canonical request hasher (spec 04 §5).

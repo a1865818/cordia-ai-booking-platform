@@ -1,4 +1,4 @@
-﻿using Cordia.Infrastructure.Tenancy;
+﻿using Cordia.Infrastructure.Services;
 
 namespace Cordia.Api.Middleware;
 

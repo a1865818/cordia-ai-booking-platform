@@ -2,11 +2,9 @@
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
-using Cordia.Infrastructure.Idempotency;
-using Cordia.Infrastructure.Persistence;
 using Cordia.Infrastructure.Repositories;
-using Cordia.Infrastructure.Retention;
-using Cordia.Infrastructure.Tenancy;
+using Cordia.Infrastructure.Services;
+using Cordia.Infrastructure.Services.Retention;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;

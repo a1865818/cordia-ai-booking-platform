@@ -1,4 +1,4 @@
-﻿namespace Cordia.Infrastructure.Retention;
+﻿namespace Cordia.Infrastructure.Services.Retention;
 
 /// <summary>Summary returned by <see cref="RetentionSweepHandler.SweepIdempotencyRecordsAsync"/>.</summary>
 /// <param name="Pruned">Records physically removed and audit-logged.</param>

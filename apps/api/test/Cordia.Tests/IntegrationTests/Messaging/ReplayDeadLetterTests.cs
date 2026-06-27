@@ -1,12 +1,12 @@
 ﻿#pragma warning disable xUnit1051
 using System.Text.Json;
-using Cordia.Application.Messaging.Replay;
+using Cordia.Application.Handlers.DeadLetters;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
-using Cordia.Infrastructure.Persistence;
+using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;

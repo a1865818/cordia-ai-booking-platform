@@ -7,7 +7,7 @@ using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
 
-namespace Cordia.Application.BookingOperations.SubmitConfirmedIntent;
+namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 
 /// <summary>
 /// Orchestrates the durable acceptance transaction (spec 04 §10.3, Inv-4).

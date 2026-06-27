@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Interfaces;
 
-namespace Cordia.Infrastructure.Tenancy;
+namespace Cordia.Infrastructure.Services;
 
 /// <summary>Scoped, settable implementation of <see cref="ITenantContext"/>.</summary>
 public sealed class TenantContext : ITenantContext
