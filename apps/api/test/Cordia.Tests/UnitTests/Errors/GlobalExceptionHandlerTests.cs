@@ -81,6 +81,51 @@ public class GlobalExceptionHandlerTests
     }
 
     // ------------------------------------------------------------------
+    // PoisonMessageException → 422
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task PoisonMessage_Returns422()
+    {
+        var ctx = CreateContext();
+        var ex = new PoisonMessageException("Message cannot be processed");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, ctx.Response.StatusCode);
+    }
+
+    // ------------------------------------------------------------------
+    // UnsupportedSchemaVersionException → 422
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task UnsupportedSchemaVersion_Returns422()
+    {
+        var ctx = CreateContext();
+        var ex = new UnsupportedSchemaVersionException("Unknown schema version v99");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, ctx.Response.StatusCode);
+    }
+
+    // ------------------------------------------------------------------
+    // DeadLetterNotFoundException → 404
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task DeadLetterNotFound_Returns404()
+    {
+        var ctx = CreateContext();
+        var ex = new DeadLetterNotFoundException("Dead-letter row not found");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status404NotFound, ctx.Response.StatusCode);
+    }
+
+    // ------------------------------------------------------------------
     // Unmapped exception → returns false (default 500 pipeline takes over)
     // ------------------------------------------------------------------
     [Fact]

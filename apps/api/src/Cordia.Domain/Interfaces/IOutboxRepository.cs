@@ -16,4 +16,27 @@ public interface IOutboxRepository
         string tenantId,
         int limit,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Cross-tenant worker claim (§5.1): atomically selects up to <paramref name="limit"/>
+    /// unpublished rows (WHERE published_at IS NULL AND lease free/expired), sets lease fields,
+    /// increments publish_attempts, and commits — all in its own short transaction.
+    /// SKIP LOCKED ensures concurrent publishers do not double-claim the same row.
+    /// </summary>
+    Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(
+        int limit,
+        string leaseOwner,
+        DateTimeOffset leaseExpiresAt,
+        DateTimeOffset now,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Marks a message as published (§5.1 mark phase): sets published_at, clears the lease.
+    /// Uses ExecuteUpdateAsync (no tracked entity needed) — runs in its own implicit transaction.
+    /// </summary>
+    Task MarkPublishedAsync(
+        string tenantId,
+        string messageId,
+        DateTimeOffset publishedAt,
+        CancellationToken ct = default);
 }

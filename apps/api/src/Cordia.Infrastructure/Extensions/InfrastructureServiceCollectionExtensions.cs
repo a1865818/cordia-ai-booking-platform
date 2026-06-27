@@ -67,6 +67,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IOperationWorkItemRepository, OperationWorkItemRepository>();
         services.AddScoped<IOutboxRepository, OutboxRepository>();
         services.AddScoped<IInboxRepository, InboxRepository>();
+        services.AddScoped<IDeadLetterRepository, DeadLetterRepository>();
         services.AddScoped<IScheduledJobRepository, ScheduledJobRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<IVerificationGrantRepository, VerificationGrantRepository>();
@@ -81,6 +82,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        services.AddMessaging();
 
         return services;
     }

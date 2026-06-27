@@ -22,4 +22,16 @@ public interface IWorkflowStepRepository
         WorkflowStepStatus expectedStatus,
         WorkflowStepStatus next,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns up to <paramref name="limit"/> STALE NON-TERMINAL steps across ALL tenants for the
+    /// step sweeper: status in (Pending, InProgress), updated before <paramref name="staleBefore"/>
+    /// (so steps being actively worked are not swept), and ready to run (NotBefore null or ≤ now).
+    /// Ordered by updated_at ascending (oldest first). AsNoTracking; cross-tenant (IgnoreQueryFilters).
+    /// </summary>
+    Task<IReadOnlyList<WorkflowStep>> ListNonTerminalAsync(
+        DateTimeOffset staleBefore,
+        DateTimeOffset now,
+        int limit,
+        CancellationToken ct = default);
 }

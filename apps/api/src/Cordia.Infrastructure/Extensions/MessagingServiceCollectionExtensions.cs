@@ -1,0 +1,46 @@
+﻿using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Messaging;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Cordia.Infrastructure.Extensions;
+
+/// <summary>Registers the Infrastructure messaging services (transport seam, §3, OD-1).</summary>
+internal static class MessagingServiceCollectionExtensions
+{
+    /// <summary>
+    /// Registers <see cref="IMessageTransport"/> and <see cref="IQueueConsumerDispatcher"/> as
+    /// Scoped services. Both live within the outbox publisher's per-tick scope (T3), avoiding
+    /// captive-dependency issues. <see cref="IQueueConsumerDispatcher"/> is implemented by
+    /// <c>MediatRQueueConsumerDispatcher</c> in Application (registered there alongside
+    /// <c>ConsumerRegistry</c>).
+    ///
+    /// Also registers:
+    ///   - <see cref="MessagingOptions"/> bound from the "Messaging" config section (T3).
+    ///   - <see cref="OutboxPublisherHostedService"/> as a hosted service (T3); disabled via
+    ///     <c>Messaging:Publisher:Enabled=false</c> in appsettings.Test.json so existing Alba
+    ///     integration tests are unaffected.
+    /// </summary>
+    internal static IServiceCollection AddMessaging(this IServiceCollection services)
+    {
+        services.AddScoped<IMessageTransport, PostgresMessageTransport>();
+
+        // T7: dead-letter handler (Scoped — uses IDeadLetterRepository which is Scoped).
+        services.AddScoped<DeadLetterHandler>();
+
+        // T3: options + publisher hosted service.
+        services.AddOptions<MessagingOptions>()
+            .BindConfiguration(MessagingOptions.SectionName);
+
+        services.AddHostedService<OutboxPublisherHostedService>();
+
+        // T5: scheduled-job poller; disabled via Messaging:ScheduledJobPoller:Enabled=false
+        // in appsettings.Test.json so existing Alba integration tests are unaffected.
+        services.AddHostedService<ScheduledJobPollerHostedService>();
+
+        // T6: step sweeper; disabled via Messaging:StepSweeper:Enabled=false in
+        // appsettings.Test.json so existing Alba integration tests are unaffected.
+        services.AddHostedService<StepSweeperHostedService>();
+
+        return services;
+    }
+}

@@ -35,4 +35,65 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
 
         return results;
     }
+
+    public async Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(
+        int limit,
+        string leaseOwner,
+        DateTimeOffset leaseExpiresAt,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+    {
+        // Cross-tenant worker claim (§5.1). Open an explicit short transaction: SELECT FOR UPDATE
+        // SKIP LOCKED acquires row locks; committing the transaction releases them so the lease
+        // fields (written by SaveChangesAsync) become visible to other workers — the committed
+        // lease is what prevents another publisher from re-claiming before expiry.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        // IgnoreQueryFilters: drop the ambient tenant filter so this cross-tenant worker
+        // sees ALL tenants' rows.  No tenant predicate in the SQL — intentional (cross-tenant).
+        // All value parameters are bound ({0}…{2}) — never string-concatenated.
+        var rows = await db.Set<OutboxMessage>()
+            .FromSqlRaw(
+                "SELECT * FROM public.outbox_messages " +
+                "WHERE published_at IS NULL AND (lease_owner IS NULL OR lease_expires_at < {0}) " +
+                "ORDER BY occurred_at " +
+                "LIMIT {1} " +
+                "FOR UPDATE SKIP LOCKED",
+                now,
+                limit)
+            .IgnoreQueryFilters()
+            .ToListAsync(ct);
+
+        foreach (var row in rows)
+        {
+            row.LeaseOwner = leaseOwner;
+            row.LeaseExpiresAt = leaseExpiresAt;
+            row.PublishAttempts++;
+        }
+
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+
+        return rows;
+    }
+
+    public Task MarkPublishedAsync(
+        string tenantId,
+        string messageId,
+        DateTimeOffset publishedAt,
+        CancellationToken ct = default)
+    {
+        // ExecuteUpdateAsync issues a single UPDATE without loading the entity.
+        // IgnoreQueryFilters: the publisher's DbContext may not be scoped to tenantId;
+        // the WHERE predicate supplies explicit tenant scope (never rely on the ambient filter).
+        return db.Set<OutboxMessage>()
+            .IgnoreQueryFilters()
+            .Where(m => m.TenantId == tenantId && m.MessageId == messageId)
+            .ExecuteUpdateAsync(
+                b => b
+                    .SetProperty(m => m.PublishedAt, publishedAt)
+                    .SetProperty(m => m.LeaseOwner, (string?)null)
+                    .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null),
+                ct);
+    }
 }
