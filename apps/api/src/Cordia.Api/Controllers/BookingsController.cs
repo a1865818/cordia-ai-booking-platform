@@ -20,6 +20,8 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
     /// </summary>
     [HttpPost]
     [ProducesResponseType(typeof(OperationAcceptedResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
     [ProducesResponseType(typeof(IdempotencyConflict), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Submit(
         [FromBody] SubmitConfirmedIntentRequest request,

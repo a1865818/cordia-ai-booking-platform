@@ -32,6 +32,8 @@ public class SubmitConfirmedIntentValidatorTests
                     Revision = 1,
                     SchemaVersion = "intent.v1",
                     TenantPolicyVersion = "policy.v1",
+                    PayloadHash = "hash_xyz",
+                    SourceSessionId = "sess_001",
                     CanonicalPayload = new BookingRequest
                     {
                         Operation = operation,
@@ -44,8 +46,10 @@ public class SubmitConfirmedIntentValidatorTests
                     IntentId = "intent_xyz",
                     IntentRevision = 1,
                     IntentPayloadHash = "abc123",
+                    Identity = "anon-session",
                     SourceTurnId = "turn_001",
                     ReadBackVersion = "v1",
+                    VerificationLevel = "unverified",
                     ConfirmedAt = DateTimeOffset.UtcNow,
                 },
             });
@@ -174,5 +178,76 @@ public class SubmitConfirmedIntentValidatorTests
             cmd, cancellationToken: TestContext.Current.CancellationToken);
 
         result.ShouldHaveValidationErrorFor(x => x.Request.Confirmation.IntentRevision);
+    }
+
+    // ------------------------------------------------------------------
+    // Null-Request regression (Fix 1): null Request must yield 400, not NRE
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Null_request_body_fails_without_NullReferenceException()
+    {
+        // A null Request body must produce a validation failure (HTTP 400),
+        // NOT a NullReferenceException (HTTP 500).
+        var cmd = new SubmitConfirmedIntentCommand("tenant-abc", null!);
+
+        // Must not throw; must not be valid.
+        var result = await _validator.TestValidateAsync(
+            cmd, cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public async Task Valid_request_still_passes_after_null_guard()
+    {
+        // Confirm the null-guard wrapping does not break the happy-path.
+        var result = await _validator.TestValidateAsync(
+            ValidCommand(), cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldNotHaveAnyValidationErrors();
+    }
+
+    // ------------------------------------------------------------------
+    // Required confirmation evidence fields (Inv-1, Fix 1)
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Missing_confirmation_id_fails()
+    {
+        // The 500-causing case: null ConfirmationId reaches AddConfirmationAsync
+        // and hits the intent_confirmations PK constraint → DB violation → 500.
+        // After this fix it must produce a 400 instead.
+        var cmd = ValidCommand();
+        cmd.Request.Confirmation.ConfirmationId = "";
+
+        var result = await _validator.TestValidateAsync(
+            cmd, cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldHaveValidationErrorFor(x => x.Request.Confirmation.ConfirmationId);
+    }
+
+    [Fact]
+    public async Task Missing_confirmation_source_turn_id_fails()
+    {
+        var cmd = ValidCommand();
+        cmd.Request.Confirmation.SourceTurnId = "";
+
+        var result = await _validator.TestValidateAsync(
+            cmd, cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldHaveValidationErrorFor(x => x.Request.Confirmation.SourceTurnId);
+    }
+
+    [Fact]
+    public async Task Missing_revision_payload_hash_fails()
+    {
+        var cmd = ValidCommand();
+        cmd.Request.Revision.PayloadHash = "";
+
+        var result = await _validator.TestValidateAsync(
+            cmd, cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldHaveValidationErrorFor(x => x.Request.Revision.PayloadHash);
     }
 }

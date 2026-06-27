@@ -26,6 +26,8 @@ builder.Services.AddInfrastructure(builder.Configuration);
 // Requiredness for genuinely-required fields is enforced explicitly by FluentValidation
 // (e.g. SubmitConfirmedIntentValidator), so disabling the implicit behaviour here is correct
 // and consistent with the codebase's validation philosophy.
+// TRACKED FOLLOW-UP: this is a mitigation for a type-generation gap — the proper fix is for the
+// quicktype pipeline to emit `string?` for Pydantic-optional fields. Revisit if that lands.
 builder.Services.AddControllers(options =>
         options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true)
     .AddJsonOptions(o =>
@@ -37,7 +39,50 @@ builder.Services.AddControllers(options =>
             o.JsonSerializerOptions.Converters.Add(converter);
     });
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    // The generated union types (Cordia.Domain.Generated) serialize via custom converters to
+    // either a scalar or a TriState sentinel string; Swashbuckle would otherwise reflect their
+    // C# struct layout ({isNull, integer, enum}). Map them to their true wire schema.
+    // Microsoft.OpenApi v2 API: Type is JsonSchemaType enum, Enum is IList<JsonNode>,
+    // nullable is expressed by adding a JsonSchemaType.Null branch to the OneOf.
+    c.MapType<Cordia.Domain.Generated.DurationMinutes>(() => new Microsoft.OpenApi.OpenApiSchema
+    {
+        OneOf = new List<Microsoft.OpenApi.IOpenApiSchema>
+        {
+            new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.Integer, Format = "int64" },
+            new Microsoft.OpenApi.OpenApiSchema
+            {
+                Type = Microsoft.OpenApi.JsonSchemaType.String,
+                Enum = new List<System.Text.Json.Nodes.JsonNode>
+                {
+                    System.Text.Json.Nodes.JsonValue.Create("absent")!,
+                    System.Text.Json.Nodes.JsonValue.Create("unknown")!,
+                    System.Text.Json.Nodes.JsonValue.Create("declined")!,
+                },
+            },
+            new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.Null },
+        },
+    });
+    c.MapType<Cordia.Domain.Generated.StartsAt>(() => new Microsoft.OpenApi.OpenApiSchema
+    {
+        OneOf = new List<Microsoft.OpenApi.IOpenApiSchema>
+        {
+            new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.String, Format = "date-time" },
+            new Microsoft.OpenApi.OpenApiSchema
+            {
+                Type = Microsoft.OpenApi.JsonSchemaType.String,
+                Enum = new List<System.Text.Json.Nodes.JsonNode>
+                {
+                    System.Text.Json.Nodes.JsonValue.Create("absent")!,
+                    System.Text.Json.Nodes.JsonValue.Create("unknown")!,
+                    System.Text.Json.Nodes.JsonValue.Create("declined")!,
+                },
+            },
+            new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.Null },
+        },
+    });
+});
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<Cordia.Api.Errors.GlobalExceptionHandler>();
 

@@ -376,7 +376,11 @@ public sealed class CanonicalRequestHasher : ICanonicalRequestHasher
                 !BigInteger.TryParse(fracPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out fracPartBig))
                 return false;
 
-            var sign = intPartBig < 0 ? BigInteger.MinusOne : BigInteger.One;
+            // Derive the sign from the raw mantissa string, NOT from intPartBig.
+            // When intPart is "-0" (e.g. mantissa "-0.5"), BigInteger.TryParse("-0")
+            // yields 0, so intPartBig < 0 is false and the sign would be lost.
+            var negative = mantissaStr.TrimStart().StartsWith("-", StringComparison.Ordinal);
+            var sign = negative ? BigInteger.MinusOne : BigInteger.One;
             mantissaInt = BigInteger.Abs(intPartBig) * BigInteger.Pow(10, mantissaScale) + fracPartBig;
             mantissaInt *= sign;
         }

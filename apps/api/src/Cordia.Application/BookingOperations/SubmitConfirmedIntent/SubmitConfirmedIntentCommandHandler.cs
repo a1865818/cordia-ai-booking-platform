@@ -193,7 +193,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 TenantId = command.TenantId,
                 IntentId = revision.IntentId,
                 Revision = (int)revision.Revision,
-                CanonicalPayload = JsonSerializer.Serialize(revision.CanonicalPayload),
+                CanonicalPayload = JsonSerializer.Serialize(revision.CanonicalPayload, Cordia.Domain.Generated.Converter.Settings),
                 // BARE hash stored on the revision — the DB trigger compares
                 // intent_confirmations.intent_payload_hash against this value (spec 12 §6).
                 PayloadHash = payloadHash,

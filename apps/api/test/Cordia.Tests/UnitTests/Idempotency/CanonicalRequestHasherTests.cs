@@ -432,4 +432,32 @@ public class CanonicalRequestHasherTests
         var utc = JsonNode.Parse("""{"ts":"2026-06-15T10:30:00.000Z"}""");
         Assert.Equal(_hasher.Hash(noColon).Value, _hasher.Hash(utc).Value);
     }
+
+    // ==================================================================
+    // Fix — Negative sign preserved for out-of-decimal-range "-0.x" exponent
+    // ==================================================================
+
+    /// <summary>
+    /// Regression for the sign-loss bug in TryParseExponentFormAsBigInteger:
+    /// when the mantissa integer part is "-0" (e.g. "-0.5e30"), BigInteger.TryParse("-0")
+    /// yields 0, so the old sign = intPartBig &lt; 0 ? -1 : 1 would drop the minus sign,
+    /// causing a negative value to canonicalize as positive.
+    ///
+    /// After the fix (sign derived from the raw mantissa string), -0.5e30 must hash
+    /// identically to -5e29 (same value) and DIFFERENTLY from 0.5e30 (positive).
+    /// </summary>
+    [Fact]
+    public void NegativeExponentFormWithZeroIntegerPart_PreservesSign()
+    {
+        // -0.5e30 == -5e29 == -500000000000000000000000000000
+        var negExp = JsonNode.Parse("""{"n":-0.5e30}""");
+        var negLit = JsonNode.Parse("""{"n":-500000000000000000000000000000}""");
+        var posExp = JsonNode.Parse("""{"n":0.5e30}""");
+
+        // Same value (negative) → equal hash.
+        Assert.Equal(_hasher.Hash(negExp).Value, _hasher.Hash(negLit).Value);
+
+        // Positive counterpart → different hash.
+        Assert.NotEqual(_hasher.Hash(negExp).Value, _hasher.Hash(posExp).Value);
+    }
 }

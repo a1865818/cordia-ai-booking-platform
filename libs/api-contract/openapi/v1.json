@@ -14,7 +14,21 @@
         "additionalProperties": false,
         "properties": {
           "duration_minutes": {
-            "$ref": "#/components/schemas/DurationMinutes"
+            "nullable": true,
+            "oneOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "absent",
+                  "unknown",
+                  "declined"
+                ],
+                "type": "string"
+              }
+            ]
           },
           "location_id": {
             "nullable": true,
@@ -24,7 +38,21 @@
             "$ref": "#/components/schemas/OperationTypeEnum"
           },
           "party_size": {
-            "$ref": "#/components/schemas/DurationMinutes"
+            "nullable": true,
+            "oneOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "absent",
+                  "unknown",
+                  "declined"
+                ],
+                "type": "string"
+              }
+            ]
           },
           "service_id": {
             "nullable": true,
@@ -38,7 +66,21 @@
             "type": "array"
           },
           "starts_at": {
-            "$ref": "#/components/schemas/StartsAt"
+            "nullable": true,
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "absent",
+                  "unknown",
+                  "declined"
+                ],
+                "type": "string"
+              }
+            ]
           },
           "target_booking_id": {
             "nullable": true,
@@ -109,16 +151,6 @@
           "verification_level": {
             "nullable": true,
             "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "DurationMinutes": {
-        "additionalProperties": false,
-        "properties": {
-          "isNull": {
-            "readOnly": true,
-            "type": "boolean"
           }
         },
         "type": "object"
@@ -315,16 +347,6 @@
         },
         "type": "object"
       },
-      "StartsAt": {
-        "additionalProperties": false,
-        "properties": {
-          "isNull": {
-            "readOnly": true,
-            "type": "boolean"
-          }
-        },
-        "type": "object"
-      },
       "SubmitConfirmedIntentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -353,6 +375,43 @@
           },
           "revision": {
             "$ref": "#/components/schemas/IntentRevision"
+          }
+        },
+        "type": "object"
+      },
+      "ValidationProblemDetails": {
+        "additionalProperties": {},
+        "properties": {
+          "detail": {
+            "nullable": true,
+            "type": "string"
+          },
+          "errors": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "nullable": true,
+            "type": "object"
+          },
+          "instance": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "title": {
+            "nullable": true,
+            "type": "string"
+          },
+          "type": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -466,6 +525,26 @@
             },
             "description": "Accepted"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -485,6 +564,26 @@
               }
             },
             "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
           }
         },
         "tags": [

@@ -898,4 +898,149 @@ public class AcceptanceEndpointTests(AcceptanceApiFixture fixture)
             .FirstOrDefaultAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
         Assert.NotNull(operationRow);
     }
+
+    // ---------------------------------------------------------------------------
+    // T14: CanonicalPayload persisted in wire shape (Fix 3)
+    //
+    // Regression guard: BookingIntentRevision.canonical_payload must be persisted
+    // using Converter.Settings (not default options), so union fields (party_size,
+    // duration_minutes) are stored as bare JSON numbers/strings (the wire shape that
+    // was hashed), NOT as the quicktype struct layout {"Integer":2,"Enum":null,...}.
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Post_CanonicalPayloadPersistedInWireShape()
+    {
+        var tenantId = $"acc-t14-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+        var idempotencyKey = $"ik-{Guid.NewGuid():N}";
+        var intentId = $"int-{Guid.NewGuid():N}";
+        var confirmationId = Guid.NewGuid().ToString();
+
+        // Canonical payload with party_size and duration_minutes as JSON numbers.
+        var canonicalPayloadJson = """
+            {
+              "operation": "create",
+              "service_id": "svc-wire-shape",
+              "party_size": 2,
+              "duration_minutes": 60
+            }
+            """;
+
+        var hash = new CanonicalRequestHasher().Hash(JsonNode.Parse(canonicalPayloadJson)).Value;
+
+        var requestJson = $$"""
+        {
+          "operation_id": "{{operationId}}",
+          "idempotency_key": "{{idempotencyKey}}",
+          "intent_id": "{{intentId}}",
+          "intent_revision": 1,
+          "replaces_operation_id": "",
+          "revision": {
+            "intent_id": "{{intentId}}",
+            "revision": 1,
+            "canonical_payload": {
+              "operation": "create",
+              "service_id": "svc-wire-shape",
+              "party_size": 2,
+              "duration_minutes": 60
+            },
+            "schema_version": "intent.v1",
+            "tenant_policy_version": "policy.v1",
+            "payload_hash": "{{hash}}",
+            "created_at": "2026-07-01T00:00:00.000Z",
+            "source_session_id": "sess-t14"
+          },
+          "confirmation": {
+            "confirmation_id": "{{confirmationId}}",
+            "intent_id": "{{intentId}}",
+            "intent_revision": 1,
+            "intent_payload_hash": "{{hash}}",
+            "identity": "anon-session",
+            "confirmation_channel": "voice",
+            "confirmed_at": "2026-07-01T00:00:00.000Z",
+            "source_turn_id": "turn-t14",
+            "read_back_version": "rb.v1",
+            "disclosures_presented": [],
+            "verification_level": "unverified"
+          }
+        }
+        """;
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(requestJson).ToUrl("/api/bookings");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.Accepted);
+        });
+
+        // Load the persisted BookingIntentRevision and verify canonical_payload shape.
+        await using var ctx = fixture.CreateContext(tenantId);
+        var revision = await ctx.BookingIntentRevisions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.IntentId == intentId);
+        Assert.NotNull(revision);
+
+        var stored = revision.CanonicalPayload;
+        // Must be valid JSON with a bare number for party_size (wire shape),
+        // not the quicktype struct layout {"Integer":2,"Enum":null,"IsNull":false}.
+        var storedNode = JsonNode.Parse(stored);
+        Assert.NotNull(storedNode);
+        var partySizeNode = storedNode["party_size"];
+        Assert.NotNull(partySizeNode);
+        // party_size must be a bare number, not a struct object.
+        Assert.Equal(JsonValueKind.Number, partySizeNode.GetValue<JsonElement>().ValueKind);
+        Assert.Equal(2, partySizeNode.GetValue<int>());
+        // Struct fields must not appear anywhere in the stored JSON.
+        Assert.DoesNotContain("IsNull", stored);
+        Assert.DoesNotContain("\"Integer\"", stored);
+    }
+
+    // ---------------------------------------------------------------------------
+    // T15: GetStatus response includes non-null customer_message (Fix 4)
+    //
+    // Regression guard: OperationStatusView.CustomerMessage must be a non-null,
+    // non-empty string.  The Pydantic contract requires customer_message: str
+    // (non-nullable); a null value causes the agent's parse_operation_status to
+    // reject the response even when HTTP 200.
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task GetStatus_Returns200WithNonNullCustomerMessage()
+    {
+        var tenantId = $"acc-t15-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+        var idempotencyKey = $"ik-{Guid.NewGuid():N}";
+        var intentId = $"int-{Guid.NewGuid():N}";
+
+        // Submit to create the operation.
+        var requestJson = BuildValidRequest(operationId, idempotencyKey, intentId);
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(requestJson).ToUrl("/api/bookings");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.Accepted);
+        });
+
+        // GET status → 200; customer_message must be present, non-null, non-empty.
+        var statusResult = await fixture.Host.Scenario(x =>
+        {
+            x.Get.Url($"/api/booking-operations/{operationId}");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        var bodyText = await statusResult.ReadAsTextAsync();
+        var doc = JsonDocument.Parse(bodyText);
+
+        // status serialises as "accepted" (string) via NormalizedOperationStatusEnumConverter.
+        Assert.Equal("accepted", doc.RootElement.GetProperty("status").GetString());
+
+        // customer_message must exist and be non-empty.
+        Assert.True(doc.RootElement.TryGetProperty("customer_message", out var cmProp),
+            "Response must contain 'customer_message' property.");
+        var customerMessage = cmProp.GetString();
+        Assert.NotNull(customerMessage);
+        Assert.NotEmpty(customerMessage);
+    }
 }
