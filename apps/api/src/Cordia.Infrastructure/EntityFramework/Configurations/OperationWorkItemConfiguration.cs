@@ -26,5 +26,13 @@ public class OperationWorkItemConfiguration : IEntityTypeConfiguration<Operation
             .HasForeignKey(e => new { e.TenantId, e.OperationId })
             .HasPrincipalKey("TenantId", "OperationId")
             .OnDelete(DeleteBehavior.Restrict);
+
+        // C9 DB backstop: at most one open work item per (tenant_id, operation_id).
+        // The partial filter prevents duplicates from all three creation paths
+        // (SLA escalator, poison-message path, ManualReviewEscalator).
+        builder.HasIndex(e => new { e.TenantId, e.OperationId })
+            .IsUnique()
+            .HasFilter("state = 'open'")
+            .HasDatabaseName("uq_open_work_item_per_operation");
     }
 }

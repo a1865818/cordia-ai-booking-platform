@@ -21,6 +21,15 @@ public class WorkflowStepRepository(ApplicationDbContext db) : IWorkflowStepRepo
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.WorkflowStepId == workflowStepId, ct);
 
+    public Task<WorkflowStep?> GetByOperationAndTypeAsync(
+        string tenantId,
+        string operationId,
+        string stepType,
+        CancellationToken ct = default)
+        => db.WorkflowSteps
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.OperationId == operationId && s.StepType == stepType, ct);
+
     public Task<int> TryTransitionStatusAsync(
         string tenantId,
         string workflowStepId,
@@ -36,6 +45,20 @@ public class WorkflowStepRepository(ApplicationDbContext db) : IWorkflowStepRepo
                 .SetProperty(x => x.Status, next)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
+
+    public Task SetNotBeforeAsync(
+        string tenantId,
+        string workflowStepId,
+        DateTimeOffset notBefore,
+        CancellationToken ct = default)
+        // NOT a version-token update — intentionally does NOT bump Version (§15.2 spec note).
+        => db.WorkflowSteps
+            .IgnoreQueryFilters()
+            .Where(s => s.TenantId == tenantId && s.WorkflowStepId == workflowStepId)
+            .ExecuteUpdateAsync(b => b
+                .SetProperty(x => x.NotBefore, notBefore)
+                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
+                ct);
 
     public async Task<IReadOnlyList<WorkflowStep>> ListNonTerminalAsync(
         DateTimeOffset staleBefore,

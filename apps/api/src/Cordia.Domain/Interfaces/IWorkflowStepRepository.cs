@@ -10,6 +10,10 @@ public interface IWorkflowStepRepository
 
     Task<WorkflowStep?> GetAsync(string workflowStepId, CancellationToken ct = default);
 
+    /// <summary>Loads the single workflow step for (tenant, operation, stepType) — the uq_workflow_step_per_type
+    /// key — or null if none exists yet. AsNoTracking (state+version read; transitions go via TryTransitionStatusAsync).</summary>
+    Task<WorkflowStep?> GetByOperationAndTypeAsync(string tenantId, string operationId, string stepType, CancellationToken ct = default);
+
     /// <summary>
     /// Conditional version-token UPDATE (§6.2): transitions to <paramref name="next"/> only when
     /// the row is in <paramref name="expectedStatus"/> AND at <paramref name="expectedVersion"/>.
@@ -33,5 +37,16 @@ public interface IWorkflowStepRepository
         DateTimeOffset staleBefore,
         DateTimeOffset now,
         int limit,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets <c>NotBefore</c> and <c>UpdatedAt</c> on the identified step WITHOUT bumping
+    /// <c>Version</c> (spec 06 §15.2 durable schedule: the sweeper must not re-enqueue the step
+    /// before the scheduled retry fires). Cross-tenant safe (IgnoreQueryFilters + tenant predicate).
+    /// </summary>
+    Task SetNotBeforeAsync(
+        string tenantId,
+        string workflowStepId,
+        DateTimeOffset notBefore,
         CancellationToken ct = default);
 }

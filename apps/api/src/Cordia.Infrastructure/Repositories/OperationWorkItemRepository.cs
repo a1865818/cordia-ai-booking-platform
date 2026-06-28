@@ -2,6 +2,7 @@
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.EntityFramework.Concurrency;
+using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Infrastructure.Repositories;
 
@@ -30,4 +31,12 @@ public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWo
                 .SetProperty(x => x.State, nextState)
                 .SetProperty(x => x.Assignee, assignee),
             ct);
+
+    public Task<OperationWorkItem?> GetOpenByOperationAsync(
+        string tenantId, string operationId, CancellationToken ct = default)
+        => db.OperationWorkItems
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(w => w.TenantId == tenantId && w.OperationId == operationId && w.State == "open")
+            .FirstOrDefaultAsync(ct);
 }

@@ -88,16 +88,18 @@ public class DeadLetterHandlerTests(PostgresFixture fixture)
         Assert.Equal(0, doc.RootElement.GetArrayLength());
     }
 
-    // ── Test 3: Inv-14 pre-DLQ ordering via fault injection ──────────────────────
+    // ── Test 3: Inv-14 pre-DLQ ordering + idempotency ────────────────────────────
     //
     // Sequence:
     //   txn1 — persist BUSINESS STATE (OperationStatus → ManualReview) + ops work-item, COMMIT.
-    //   Then — force QuarantineAsync to FAIL by calling it twice (PK unique violation on 2nd call).
-    //   Assert — business state + work-item from txn1 are still durable after the DLQ step fails.
+    //   Then — call QuarantineAsync TWICE (same PK) to simulate crash-before-ACK redelivery.
+    //   Since FIX C4 makes AddAsync idempotent (ON CONFLICT DO NOTHING), the second call must
+    //   NOT throw, must leave exactly ONE dead_letter_messages row, and business state from txn1
+    //   must remain intact.
     //
     // This proves Inv-14: the customer never becomes invisible because a message changed queues.
-    // Business state is durably persisted BEFORE dead-lettering; a dead-letter failure cannot
-    // retroactively undo already-committed business state.
+    // Business state is durably persisted BEFORE dead-lettering; a duplicate DLQ write (from
+    // redelivery) is now silently suppressed rather than aborting the consumer with a PK violation.
 
     [Fact]
     public async Task Inv14_BusinessStatePersistedBeforeDeadLettering()
@@ -140,26 +142,35 @@ public class DeadLetterHandlerTests(PostgresFixture fixture)
         }
         // txn1 committed.
 
-        // ── Force QuarantineAsync to fail on the 2nd call (PK duplicate violation) ──
+        // ── First QuarantineAsync call: quarantine the message ────────────────────
         await using (var ctx1 = fixture.CreateContext(tenantId))
         {
             var dlqRepo1 = new DeadLetterRepository(ctx1);
             var handler1 = new DeadLetterHandler(dlqRepo1, NullLogger<DeadLetterHandler>.Instance);
-            // First call succeeds
             await handler1.QuarantineAsync(envelope, consumer, "Error", "[]", DateTimeOffset.UtcNow);
         }
 
-        // Second call on same PK → DbUpdateException (unique violation)
-        await using var ctx2 = fixture.CreateContext(tenantId);
-        var dlqRepo2 = new DeadLetterRepository(ctx2);
-        var handler2 = new DeadLetterHandler(dlqRepo2, NullLogger<DeadLetterHandler>.Instance);
+        // ── Second QuarantineAsync call (same PK — crash-before-ACK redelivery) ───
+        // FIX C4: must NOT throw; ON CONFLICT DO NOTHING silently suppresses the duplicate.
+        await using (var ctx2 = fixture.CreateContext(tenantId))
+        {
+            var dlqRepo2 = new DeadLetterRepository(ctx2);
+            var handler2 = new DeadLetterHandler(dlqRepo2, NullLogger<DeadLetterHandler>.Instance);
+            var secondCallEx = await Record.ExceptionAsync(
+                () => handler2.QuarantineAsync(envelope, consumer, "Error", "[]", DateTimeOffset.UtcNow));
+            Assert.Null(secondCallEx); // idempotent — no exception on duplicate
+        }
 
-        await Assert.ThrowsAsync<Microsoft.EntityFrameworkCore.DbUpdateException>(
-            () => handler2.QuarantineAsync(envelope, consumer, "Error", "[]", DateTimeOffset.UtcNow));
-
-        // ── Assert: business state from txn1 is STILL durable after DLQ failure ──
+        // ── Assert: exactly ONE dead_letter_messages row ───────────────────────────
         await using var verifyCtx = fixture.CreateContext(tenantId);
 
+        var dlqCount = await verifyCtx.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .CountAsync(d => d.TenantId == tenantId && d.MessageId == messageId && d.ConsumerName == consumer);
+        Assert.Equal(1, dlqCount);
+
+        // ── Assert: business state from txn1 is STILL durable ────────────────────
         var operation = await verifyCtx.BookingOperations
             .IgnoreQueryFilters()
             .AsNoTracking()

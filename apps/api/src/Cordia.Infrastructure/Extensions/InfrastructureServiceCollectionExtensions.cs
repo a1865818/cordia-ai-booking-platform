@@ -1,8 +1,11 @@
 ﻿using Cordia.Domain.Enums;
+using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;
+using Cordia.Infrastructure.Retry;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
 using Microsoft.EntityFrameworkCore;
@@ -78,6 +81,22 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
+
+        // Spec 06 T2 reliability building blocks — all singletons (stateless or own thread-safe state).
+        services.AddSingleton<RetryClassifier>();
+        services.AddSingleton<IRetryPolicy, FullJitterRetryPolicy>();
+        services.AddSingleton<IProviderCircuitBreaker, InMemoryProviderCircuitBreaker>();
+        services.AddSingleton<IBookingProviderAdapter, StubBookingProviderAdapter>();
+
+        // Spec 06 T6 capacity seam — singleton (stateless stub; spec 07 replaces the impl).
+        services.AddSingleton<ICapacityService, AlwaysAvailableCapacityService>();
+
+        // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).
+        services.AddSingleton<IDepositPolicy, NoDepositPolicy>();
+        services.AddSingleton<IVerificationService, NoUserActionRequiredService>();
+
+        // Spec 06 T11 validation policy seam — singleton (always-pass stub; spec 04 real engine replaces).
+        services.AddSingleton<IValidationPolicy, AlwaysValidPolicy>();
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 

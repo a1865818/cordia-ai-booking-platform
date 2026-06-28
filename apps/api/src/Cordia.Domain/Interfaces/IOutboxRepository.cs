@@ -39,4 +39,10 @@ public interface IOutboxRepository
         string messageId,
         DateTimeOffset publishedAt,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns true if an outbox row with the given <paramref name="messageId"/> already exists
+    /// for <paramref name="tenantId"/> (published or not). Used for deterministic deduplication.
+    /// </summary>
+    Task<bool> ExistsAsync(string tenantId, string messageId, CancellationToken ct = default);
 }

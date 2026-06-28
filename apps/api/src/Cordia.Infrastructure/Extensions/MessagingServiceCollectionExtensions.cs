@@ -1,6 +1,7 @@
 ﻿using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Messaging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Infrastructure.Extensions;
 
@@ -25,7 +26,9 @@ internal static class MessagingServiceCollectionExtensions
         services.AddScoped<IMessageTransport, PostgresMessageTransport>();
 
         // T7: dead-letter handler (Scoped — uses IDeadLetterRepository which is Scoped).
+        // T11: also register via IDeadLetterHandler (domain interface) so Application layer can inject it.
         services.AddScoped<DeadLetterHandler>();
+        services.AddScoped<IDeadLetterHandler>(sp => sp.GetRequiredService<DeadLetterHandler>());
 
         // T3: options + publisher hosted service.
         services.AddOptions<MessagingOptions>()
@@ -40,6 +43,10 @@ internal static class MessagingServiceCollectionExtensions
         // T6: step sweeper; disabled via Messaging:StepSweeper:Enabled=false in
         // appsettings.Test.json so existing Alba integration tests are unaffected.
         services.AddHostedService<StepSweeperHostedService>();
+
+        // T9: SLA evaluator; disabled via Messaging:Sla:Enabled=false in
+        // appsettings.Test.json so existing Alba integration tests are unaffected.
+        services.AddHostedService<SlaEvaluatorHostedService>();
 
         return services;
     }

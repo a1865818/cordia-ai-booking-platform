@@ -86,6 +86,18 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case InvalidStateTransitionException ex:
+                logger.LogWarning(ex, "Invalid state transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid state transition", ex.Message, cancellationToken);
+                return true;
+
+            case OperationConflictException ex:
+                logger.LogWarning(ex, "Operation conflict: operationId={OperationId}", ex.OperationId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Operation conflict", ex.Message, cancellationToken);
+                return true;
+
             default:
                 // Unmapped exception — let the default pipeline produce 500 without leaking internals.
                 logger.LogError(exception, "Unhandled exception");

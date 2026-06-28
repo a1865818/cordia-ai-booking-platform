@@ -202,6 +202,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("booking_id");
 
+                    b.Property<DateTimeOffset?>("CancellationRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancellation_requested_at");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -224,6 +228,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<OperationStatus>("Status")
                         .HasColumnType("operation_status_enum")
                         .HasColumnName("status");
+
+                    b.Property<string>("StatusReason")
+                        .HasColumnType("text")
+                        .HasColumnName("status_reason");
 
                     b.Property<string>("SupersededOperationId")
                         .HasColumnType("text")
@@ -723,7 +731,9 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_operations_work_items");
 
                     b.HasIndex("TenantId", "OperationId")
-                        .HasDatabaseName("ix_operations_work_items_tenant_id_operation_id");
+                        .IsUnique()
+                        .HasDatabaseName("uq_open_work_item_per_operation")
+                        .HasFilter("state = 'open'");
 
                     b.ToTable("operations_work_items", "public");
                 });

@@ -1,6 +1,12 @@
 ﻿using Cordia.Application.Behaviours;
+using Cordia.Application.Handlers.BookingFulfillment;
+using Cordia.Application.Handlers.BookingFulfillment.AdvanceOperation;
+using Cordia.Application.Handlers.BookingFulfillment.DepositEvent;
+using Cordia.Application.Handlers.BookingFulfillment.Sla;
+using Cordia.Application.Handlers.BookingFulfillment.UserAction;
 using Cordia.Application.Messaging;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Messaging;
 using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,8 +33,60 @@ public static class ApplicationServiceCollectionExtensions
 
         // Consumer dispatch seam (§3, OD-1): registry is a singleton catalog written once at startup;
         // dispatcher is scoped because IMediator is scoped.
-        services.AddSingleton<ConsumerRegistry>();
+        // The booking driver consumer is pre-registered for the two message types that trigger
+        // operation advancement (spec 06 §6.2). The driver command is a PLAIN IRequest (not
+        // IInboxConsumerRequest) so InboxDeduplicationBehavior does not wrap the multi-step loop.
+        services.AddSingleton(_ =>
+        {
+            var registry = new ConsumerRegistry();
+            // T11: pass MessageType + Payload from the envelope so the driver can reconstruct a
+            // JobEnvelope for DLQ quarantine if a PoisonMessageException or invariant-violation
+            // exception escapes a step handler (Inv-14, §17.2).
+            Func<JobEnvelope, IBaseRequest> driver = env =>
+                new AdvanceBookingOperationCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    env.MessageId,
+                    env.MessageType,
+                    env.Payload);
+            registry.Register("booking.command.requested.v1", driver);
+            registry.Register("booking.step.continue.v1", driver);
+            // booking.reconcile.requested.v1: sweeper/external trigger for Reconciling ops.
+            // The driver routes by op.Status so this is harmless for non-Reconciling ops.
+            registry.Register("booking.reconcile.requested.v1", driver);
+
+            // T7: deposit lifecycle events — inbox-deduplicated consumers.
+            registry.Register("payment.deposit_paid.v1",
+                env => new ProcessDepositEventCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    DepositEventKind.Paid,
+                    env.MessageId));
+            registry.Register("payment.deposit_expired.v1",
+                env => new ProcessDepositEventCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    DepositEventKind.Expired,
+                    env.MessageId));
+
+            // T7: user action completed event — inbox-deduplicated consumer.
+            registry.Register("booking.user_action.completed.v1",
+                env => new ResumeFromUserActionCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    env.MessageId));
+
+            return registry;
+        });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
+
+        // Spec 06 T6 retry/escalation helpers — scoped (share the ambient DbContext / UoW).
+        services.AddScoped<RetryScheduler>();
+        services.AddScoped<ManualReviewEscalator>();
+
+        // T9: SLA evaluator seam — scoped; resolved by SlaEvaluatorHostedService through domain interface
+        // so Infrastructure does not reference Application directly.
+        services.AddScoped<ISlaEvaluator, MediatRSlaEvaluator>();
 
         return services;
     }

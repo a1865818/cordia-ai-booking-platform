@@ -96,4 +96,9 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
                     .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null),
                 ct);
     }
+
+    public Task<bool> ExistsAsync(string tenantId, string messageId, CancellationToken ct = default)
+        => db.Set<OutboxMessage>()
+            .IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageId == messageId, ct);
 }
