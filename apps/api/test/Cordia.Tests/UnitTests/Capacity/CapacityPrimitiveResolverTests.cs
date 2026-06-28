@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Capacity;
 using Cordia.Domain.Generated;
-using Cordia.Infrastructure.Capacity;
+using Cordia.Infrastructure.Services;
 
 namespace Cordia.Tests.UnitTests.Capacity;
 

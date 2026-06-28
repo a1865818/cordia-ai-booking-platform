@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Interfaces;
 
-namespace Cordia.Domain.Capacity;
+namespace Cordia.Domain.Entities;
 
 /// <summary>First-party inventory slot representing a discrete time-block of a resource (spec 07 §4.2).</summary>
 public class CapacitySlot : ITenantScoped

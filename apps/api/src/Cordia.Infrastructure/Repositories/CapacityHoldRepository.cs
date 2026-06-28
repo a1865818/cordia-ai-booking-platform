@@ -1,4 +1,4 @@
-﻿using Cordia.Domain.Capacity;
+﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;

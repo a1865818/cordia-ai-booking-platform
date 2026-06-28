@@ -1,4 +1,4 @@
-﻿using Cordia.Domain.Capacity;
+﻿using Cordia.Domain.Entities;
 
 namespace Cordia.Domain.Interfaces;
 

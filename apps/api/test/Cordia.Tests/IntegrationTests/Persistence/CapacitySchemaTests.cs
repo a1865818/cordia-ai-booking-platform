@@ -1,5 +1,5 @@
 ﻿#pragma warning disable xUnit1051
-using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 

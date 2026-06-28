@@ -1,6 +1,7 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Capacity;
+using Cordia.Domain.Enums;
 
-namespace Cordia.Domain.Capacity;
+namespace Cordia.Domain.Interfaces;
 
 /// <summary>
 /// Domain service for atomic capacity reservation, idempotent release, and conditional

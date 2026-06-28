@@ -1,4 +1,6 @@
-﻿namespace Cordia.Domain.Capacity;
+﻿using Cordia.Domain.Entities;
+
+namespace Cordia.Domain.Capacity;
 
 /// <summary>Status of a <see cref="ICapacityReservation.ReserveAsync"/> call.</summary>
 public enum ReservationStatus

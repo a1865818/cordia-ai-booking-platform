@@ -1,7 +1,8 @@
 ﻿using Cordia.Domain.Capacity;
 using Cordia.Domain.Generated;
+using Cordia.Domain.Interfaces;
 
-namespace Cordia.Infrastructure.Capacity;
+namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// Default implementation of <see cref="ICapacityPrimitiveResolver"/> (spec 07 §3, §6.3).

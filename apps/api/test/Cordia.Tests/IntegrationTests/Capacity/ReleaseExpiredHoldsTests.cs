@@ -2,8 +2,8 @@
 using Cordia.Application.Behaviours;
 using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
-using Cordia.Infrastructure.Capacity;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;

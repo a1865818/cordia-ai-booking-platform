@@ -1,6 +1,7 @@
-﻿using Cordia.Domain.Generated;
+﻿using Cordia.Domain.Capacity;
+using Cordia.Domain.Generated;
 
-namespace Cordia.Domain.Capacity;
+namespace Cordia.Domain.Interfaces;
 
 /// <summary>
 /// Resolves which capacity primitive ladder rung applies for a given (tenant, provider, slot-source)

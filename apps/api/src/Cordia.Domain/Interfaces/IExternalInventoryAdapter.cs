@@ -1,4 +1,6 @@
-﻿namespace Cordia.Domain.Capacity;
+﻿using Cordia.Domain.Capacity;
+
+namespace Cordia.Domain.Interfaces;
 
 /// <summary>
 /// Adapter interface for an external booking-provider inventory system (spec 07 §6.3).

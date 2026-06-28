@@ -1,5 +1,4 @@
 ﻿using System.Text.Json;
-using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;

@@ -1,7 +1,9 @@
 ﻿using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Interfaces;
 
-namespace Cordia.Infrastructure.Capacity.Providers;
+namespace Cordia.Infrastructure.Providers;
 
 /// <summary>
 /// Stub implementation of <see cref="IExternalInventoryAdapter"/> for the NativeHold rung

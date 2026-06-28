@@ -1,10 +1,11 @@
 ﻿using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
 
-namespace Cordia.Infrastructure.Capacity;
+namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// First-party implementation of <see cref="ICapacityReservation"/> that performs atomic

@@ -1,7 +1,7 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 
-namespace Cordia.Domain.Capacity;
+namespace Cordia.Domain.Entities;
 
 /// <summary>
 /// Durable record of a capacity hold for a booking operation (spec 07 §4.4).

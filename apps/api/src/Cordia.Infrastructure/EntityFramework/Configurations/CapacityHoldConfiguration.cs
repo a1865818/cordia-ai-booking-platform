@@ -1,4 +1,4 @@
-﻿using Cordia.Domain.Capacity;
+﻿using Cordia.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 

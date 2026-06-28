@@ -1,7 +1,8 @@
 ﻿#pragma warning disable xUnit1051 // Use TestContext.Current.CancellationToken
 using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
-using Cordia.Infrastructure.Capacity;
+using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;

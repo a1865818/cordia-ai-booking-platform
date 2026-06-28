@@ -2,11 +2,9 @@
 using System.Text.Json;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
-using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
-using Cordia.Infrastructure.Capacity;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;

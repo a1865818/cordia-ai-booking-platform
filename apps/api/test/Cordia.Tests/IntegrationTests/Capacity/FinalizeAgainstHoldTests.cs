@@ -9,7 +9,6 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
-using Cordia.Infrastructure.Capacity;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Messaging;

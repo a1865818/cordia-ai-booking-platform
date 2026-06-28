@@ -1,4 +1,4 @@
-﻿namespace Cordia.Infrastructure.Capacity;
+﻿namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// Options for the capacity reservation subsystem (spec 07 §13 open-decision §3).

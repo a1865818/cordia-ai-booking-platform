@@ -1,10 +1,7 @@
-﻿using Cordia.Domain.Capacity;
-using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
-using Cordia.Infrastructure.Capacity;
-using Cordia.Infrastructure.Capacity.Providers;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;

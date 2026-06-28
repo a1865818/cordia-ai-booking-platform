@@ -3,7 +3,7 @@ using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
-using Cordia.Infrastructure.Capacity;
+using Cordia.Infrastructure.Services;
 using MediatR;
 using Microsoft.Extensions.Options;
 

@@ -1,6 +1,6 @@
 ﻿using Cordia.Domain.Capacity;
 using Cordia.Domain.Enums;
-using Cordia.Infrastructure.Capacity.Providers;
+using Cordia.Infrastructure.Providers;
 
 #pragma warning disable xUnit1051 // Use TestContext.Current.CancellationToken
 
