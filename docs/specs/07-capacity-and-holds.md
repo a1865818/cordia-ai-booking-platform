@@ -355,3 +355,20 @@ Use Alba integration tests against a real PostgreSQL for the concurrency/race ca
 - **Default hold TTL (`expires_at` window)** — must span the confirmation/payment window (coordinate with 09) yet free inventory promptly; not specified by the design doc, must be chosen and documented.
 - **Idempotency and audit retention periods** — governs how long released/expired `capacity_holds` rows are retained for audit before pruning (coordinate with 12/14).
 - **Initial SLO values** — the reservation-latency and expiry-release-lag targets in §8 are placeholders to be ratified in 13.
+
+## 14. Open decisions resolved (implementation, `apps/api`)
+
+The §13 items are resolved as follows for the initial implementation (revisit when a real provider is onboarded):
+
+- **First-party is the authority.** `capacity_slots` is the source of truth; `FirstPartyCapacityReservation` performs the §14.1 conditional `ExecuteUpdateAsync`. The external-provider ladder ships as interfaces + `CapacityPrimitiveResolver` (defaults every `(tenant, provider, slot-source)` to the first-party rung) + a `StubExternalInventoryAdapter` (not wired into the live workflow — mirrors `StubBookingProviderAdapter`). No real provider is configured yet.
+- **Default hold TTL = 30 minutes**, configurable via `CapacityOptions.HoldTtl` (config section `Capacity`). Chosen to span the spec-09 deposit window (`RequestPaymentCommandHandler.DepositWindowMinutes = 30`) so a `Held → AwaitingPayment` op's hold outlives its deposit link.
+- **Slot identity.** The canonical payload has no `slot_id`; `CapacitySlotKey.Derive` builds a deterministic key `"{resource_id|service_id|location_id}|{requested_at:O}"`. An operation whose derived slot has **no provisioned `capacity_slots` row** is treated as **not first-party-tracked** → transitions `ReservingCapacity → Held` *without* a durable hold (availability mode `live`), preserving prior always-available behavior. Slot provisioning is out of scope (tenant onboarding).
+- **Availability mode** is the generated `Cordia.Domain.Generated.AvailabilityModeEnum` (owned by the spec-03 Pydantic contract); the resolver maps rungs → mode per §5 (FirstParty/NativeHold/IdempotentPending → `held`, AtomicBook → `confirmed`, CheckThenCreate → `live`).
+- **Retention** of released/expired `capacity_holds` is deferred to the spec-12/14 retention sweeper (no pruning added here).
+- **SLOs** remain placeholders for spec 13.
+
+### Workflow integration & seams
+- **Reserve** (`ReserveCapacityCommandHandler`): one transaction does conditional reserve + active-hold insert + `ReservingCapacity → Held` + hold-expiry job enqueue (`CapacityExpiryScheduler` → `booking.scheduled.hold_expiry.v1`) — Inv-4/Inv-6. `NoCapacity → AlternativesRequired`; external `Ambiguous → Reconciling`.
+- **Release** (`ReleaseExpiredHoldsCommand`, consumer `capacity.release`): idempotent; consumes both the scheduled `booking.scheduled.hold_expiry.v1` job (by `hold_id`) and the spec-06 `capacity.hold_release.requested.v1` deposit-expiry event (by `operation_id`). Frees capacity only; no op-status transition (no legal `Held → Expired` edge per §11).
+- **Finalize** (`FinalizeBookingCommandHandler`): in the success transaction, `FinalizeAgainstHoldAsync` flips the `(op, "create")` hold `active → finalized` and moves slot `held → booked` atomically with `Finalizing → Booked`; on `HoldNoLongerValid` (expiry won the §14.3 race) it routes `Finalizing → Reconciling` instead of booking (no double decrement).
+- **Compensation** (`CompensateOperationCommandHandler`): releases the active hold (`ReleaseReason.Compensated`) atomically with `CompensationRequired → FailedFinal`.

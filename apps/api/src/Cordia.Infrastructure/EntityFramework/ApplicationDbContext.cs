@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Entities;
+﻿using Cordia.Domain.Capacity;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -17,6 +18,10 @@ public class ApplicationDbContext : DbContext
     {
         _tenantContext = tenantContext;
     }
+
+    public DbSet<CapacitySlot> CapacitySlots => Set<CapacitySlot>();
+
+    public DbSet<CapacityHold> CapacityHolds => Set<CapacityHold>();
 
     public DbSet<ConversationSession> ConversationSessions => Set<ConversationSession>();
 

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
@@ -36,7 +37,8 @@ public sealed class CompensateOperationCommandHandler(
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     ManualReviewEscalator manualReviewEscalator,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    ICapacityReservation capacityReservation)
     : IRequestHandler<CompensateOperationCommand, StepOutcome>
 {
     private const string CompensateStepType = "compensate";
@@ -132,6 +134,12 @@ public sealed class CompensateOperationCommandHandler(
                     {
                         committed = true;
 
+                        // §6.1 T7: free first-party capacity atomically with the FailedFinal
+                        // transition. Idempotent — no-op if no active hold exists (non-tracked op
+                        // or hold already released/finalized at finalize time).
+                        await capacityReservation.ReleaseByOperationAsync(
+                            tenantId, operationId, ReleaseReason.Compensated, ct2);
+
                         await outboxRepo.AddAsync(new OutboxMessage
                         {
                             TenantId = tenantId,
@@ -226,6 +234,12 @@ public sealed class CompensateOperationCommandHandler(
             if (rows > 0)
             {
                 nullRefCommitted = true;
+
+                // §6.1 T7: free first-party capacity atomically with the FailedFinal
+                // transition. Idempotent — no-op if no active hold exists (non-tracked op
+                // or hold already released/finalized at finalize time).
+                await capacityReservation.ReleaseByOperationAsync(
+                    tenantId, operationId, ReleaseReason.Compensated, ct2);
 
                 await outboxRepo.AddAsync(new OutboxMessage
                 {

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
@@ -44,6 +45,16 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 /// Poison/DLQ (Inv-14): unexpected adapter exceptions propagate to AdvanceBookingOperationCommandHandler,
 /// which catches <see cref="Domain.Exceptions.PoisonMessageException"/> /
 /// <see cref="Domain.Exceptions.InvalidStateTransitionException"/> and handles quarantine there.
+///
+/// First-party capacity finalization (spec 07 §6.1, §6.2, T7):
+///   On the normal Finalizing→Booked success path, if the op has an active first-party hold
+///   (WorkflowStep=="create"), call <see cref="ICapacityReservation.FinalizeAgainstHoldAsync"/>
+///   INSIDE the same transaction so that hold Active→Finalized + slot held→booked + op Booked +
+///   outbox + audit all commit atomically (Inv-4).
+///   If FinalizeAgainstHoldAsync returns HoldNoLongerValid (expiry raced finalization and won,
+///   §6.2), do NOT book — route Finalizing→Reconciling (reason "hold_no_longer_valid") instead
+///   and return Continue so the driver dispatches ReconcileOperationCommand.
+///   Non-tracked ops (no active "create" hold) proceed to Booked unchanged.
 /// </summary>
 public sealed class FinalizeBookingCommandHandler(
     IBookingOperationRepository opRepo,
@@ -57,7 +68,9 @@ public sealed class FinalizeBookingCommandHandler(
     RetryClassifier classifier,
     IRetryPolicy retryPolicy,
     RetryScheduler retryScheduler,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    ICapacityReservation capacityReservation,
+    ICapacityHoldRepository holdRepo)
     : IRequestHandler<FinalizeBookingCommand, StepOutcome>
 {
     private const string StepType = "finalize";
@@ -97,17 +110,63 @@ public sealed class FinalizeBookingCommandHandler(
             var fresh = await opRepo.GetAsync(operationId, ct);
             if (fresh is not null && fresh.Status == OperationStatus.Finalizing)
             {
+                // Track whether a HoldNoLongerValid race was detected in the recovery shortcut
+                // so we can return Continue (→Reconciling) instead of Terminal after the txn.
+                var recoveryHoldExpired = false;
+
                 await uow.ExecuteInTransactionAsync(async ct2 =>
                 {
                     var current2 = await opRepo.GetAsync(operationId, ct2);
-                    if (current2 is not null && current2.Status == OperationStatus.Finalizing)
+                    if (current2 is null || current2.Status != OperationStatus.Finalizing)
+                        return;
+
+                    // §6.1/§6.2 recovery: finalize against the first-party hold if one was ever
+                    // created (regardless of current status). If active → FinalizeAgainstHoldAsync
+                    // moves it to Finalized atomically. If already expired → returns HoldNoLongerValid
+                    // (expiry raced this recovery path). If no hold row exists → non-tracked op.
+                    var hold2 = await holdRepo.GetByOperationAndStepAsync(tenantId, operationId, "create", ct2);
+                    if (hold2 is not null)
                     {
-                        await opRepo.TryTransitionStatusAsync(
-                            tenantId, operationId, current2.Version,
-                            OperationStatus.Finalizing, OperationStatus.Booked,
-                            reason: "booked", bookingId: latest.ProviderRef, ct: ct2);
+                        var finalizeOutcome2 = await capacityReservation.FinalizeAgainstHoldAsync(
+                            tenantId, hold2.HoldId, ct2);
+
+                        if (finalizeOutcome2 == FinalizeOutcome.HoldNoLongerValid)
+                        {
+                            // Expiry raced the recovery — route to Reconciling (§6.2).
+                            var holdExpiredRows = await opRepo.TryTransitionStatusAsync(
+                                tenantId, operationId, current2.Version,
+                                OperationStatus.Finalizing, OperationStatus.Reconciling,
+                                reason: "hold_no_longer_valid", ct: ct2);
+
+                            if (holdExpiredRows > 0)
+                            {
+                                recoveryHoldExpired = true;
+                                await auditRepo.AddAsync(new AuditEvent
+                                {
+                                    TenantId = tenantId,
+                                    EventId = $"evt_{Guid.NewGuid():N}",
+                                    EventType = "operation.hold_no_longer_valid",
+                                    Actor = "system",
+                                    SubjectRef = operationId,
+                                    CorrelationId = operationId,
+                                    OperationId = operationId,
+                                    Metadata = JsonSerializer.Serialize(new { hold_id = hold2.HoldId }),
+                                    OccurredAt = DateTimeOffset.UtcNow,
+                                }, ct2);
+                            }
+                            return; // do NOT book
+                        }
+                        // FinalizeOutcome.Finalized → fall through to Booked transition below.
                     }
+
+                    await opRepo.TryTransitionStatusAsync(
+                        tenantId, operationId, current2.Version,
+                        OperationStatus.Finalizing, OperationStatus.Booked,
+                        reason: "booked", bookingId: latest.ProviderRef, ct: ct2);
                 }, ct);
+
+                if (recoveryHoldExpired)
+                    return StepOutcome.Continue;
             }
             return StepOutcome.Terminal;
         }
@@ -413,6 +472,49 @@ public sealed class FinalizeBookingCommandHandler(
                 }
 
                 // No cancellation: normal Finalizing → Booked path (Inv-8 order: Booked + outbox atomically).
+                // §6.1/§6.2 (T7): finalize against the first-party hold if one was ever created
+                // for this op (regardless of current status), INSIDE this transaction so that
+                // hold Active→Finalized + slot held→booked + op Booked all commit atomically (Inv-4).
+                // On HoldNoLongerValid (expiry raced finalization — §14.3 WHERE status='active'
+                // guard, loser sees rows==0), route to Reconciling and skip the Booked transition
+                // to avoid a double slot decrement (§6.2).
+                // If no hold row exists → op is non-tracked (mode=live): fall through to Booked.
+                var hold = await holdRepo.GetByOperationAndStepAsync(tenantId, operationId, "create", ct2);
+                if (hold is not null)
+                {
+                    var finalizeOutcome = await capacityReservation.FinalizeAgainstHoldAsync(
+                        tenantId, hold.HoldId, ct2);
+
+                    if (finalizeOutcome == FinalizeOutcome.HoldNoLongerValid)
+                    {
+                        // Expiry won the §14.3 race. Do NOT book. Route to Reconciling.
+                        var holdRows = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, currentOp.Version,
+                            OperationStatus.Finalizing, OperationStatus.Reconciling,
+                            reason: "hold_no_longer_valid", ct: ct2);
+
+                        if (holdRows > 0)
+                        {
+                            await auditRepo.AddAsync(new AuditEvent
+                            {
+                                TenantId = tenantId,
+                                EventId = $"evt_{Guid.NewGuid():N}",
+                                EventType = "operation.hold_no_longer_valid",
+                                Actor = "system",
+                                SubjectRef = operationId,
+                                CorrelationId = operationId,
+                                OperationId = operationId,
+                                Metadata = JsonSerializer.Serialize(new { hold_id = hold.HoldId }),
+                                OccurredAt = now,
+                            }, ct2);
+                        }
+
+                        return; // do NOT emit booking_confirmed; driver dispatches Reconcile
+                    }
+                    // FinalizeOutcome.Finalized: slot held→booked already moved atomically above.
+                    // Fall through to the Finalizing→Booked transition below.
+                }
+
                 var rows = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, currentOp.Version,
                     OperationStatus.Finalizing, OperationStatus.Booked,
@@ -456,10 +558,12 @@ public sealed class FinalizeBookingCommandHandler(
                 }
             }, ct);
 
-            // If cancellation raced the create, the op is now CompensationRequired.
-            // Return Continue so the driver dispatches CompensateOperationCommand.
+            // Re-read op to detect routing decisions made inside TXN2.
+            // - CompensationRequired: cancellation raced the create → Compensate.
+            // - Reconciling: hold expiry raced finalization (HoldNoLongerValid, §6.2) → Reconcile.
+            // Both cases return Continue so the driver dispatches the appropriate next command.
             var postTxnOp = await opRepo.GetAsync(operationId, ct);
-            if (postTxnOp?.Status == OperationStatus.CompensationRequired)
+            if (postTxnOp?.Status is OperationStatus.CompensationRequired or OperationStatus.Reconciling)
                 return StepOutcome.Continue;
 
             return StepOutcome.Terminal;

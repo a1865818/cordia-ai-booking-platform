@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.Compensate;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
@@ -27,6 +28,7 @@ public class CompensateOperationTests
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
     private readonly Mock<IOperationWorkItemRepository> _workItemRepo = new();
+    private readonly Mock<ICapacityReservation> _capacityReservation = new();
 
     private ManualReviewEscalator CreateEscalator() =>
         new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, _auditRepo.Object);
@@ -34,7 +36,7 @@ public class CompensateOperationTests
     private CompensateOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _adapter.Object, _outboxRepo.Object, _auditRepo.Object,
-            CreateEscalator(), _uow.Object);
+            CreateEscalator(), _uow.Object, _capacityReservation.Object);
 
     private static BookingOperation MakeOp(
         string tenantId, string operationId, OperationStatus status, long version = 0,
