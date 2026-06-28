@@ -104,9 +104,47 @@ public sealed class EvaluateOperationSlaCommandHandler(
             return Unit.Value;
 
         // All writes are in one transaction.
+        // C8: re-read the op inside the transaction to guard against a concurrent
+        // transition (e.g. op moved to terminal or user-wait) between the outer read and here.
         await uow.ExecuteInTransactionAsync(async ct =>
         {
-            if (shouldEscalate)
+            var opInTxn = await opRepo.GetAsync(request.OperationId, ct);
+            if (opInTxn is null || opInTxn.TenantId != request.TenantId)
+                return;
+            if (OperationStateMachine.IsTerminal(opInTxn.Status))
+                return;
+            if (UserWaitStatuses.Contains(opInTxn.Status))
+                return;
+
+            // Re-derive thresholds for the in-txn status in case it changed between reads.
+            int? innerPendingThreshold;
+            int innerEscalationThreshold;
+            switch (opInTxn.Status)
+            {
+                case OperationStatus.Reconciling:
+                    innerPendingThreshold = ReconcilePendingSeconds;
+                    innerEscalationThreshold = ReconcileEscalationSeconds;
+                    break;
+                case OperationStatus.CompensationRequired:
+                    innerPendingThreshold = null;
+                    innerEscalationThreshold = CompensationEscalationSeconds;
+                    break;
+                default:
+                    innerPendingThreshold = InProgressPendingSeconds;
+                    innerEscalationThreshold = InProgressEscalationSeconds;
+                    break;
+            }
+
+            var innerElapsed = now - opInTxn.UpdatedAt;
+            var innerShouldEscalate = innerElapsed.TotalSeconds >= innerEscalationThreshold;
+            var innerShouldPend = !innerShouldEscalate
+                && innerPendingThreshold.HasValue
+                && innerElapsed.TotalSeconds >= innerPendingThreshold.Value;
+
+            if (!innerShouldEscalate && !innerShouldPend)
+                return;
+
+            if (innerShouldEscalate)
             {
                 await HandleEscalationAsync(request.TenantId, request.OperationId, now, ct);
             }

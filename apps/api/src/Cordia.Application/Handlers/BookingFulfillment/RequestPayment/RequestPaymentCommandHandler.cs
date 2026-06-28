@@ -93,6 +93,11 @@ public sealed class RequestPaymentCommandHandler(
         }
 
         // Deposit required path: Held → AwaitingPayment.
+        // FIX (C5): Perform the version-guarded Held→AwaitingPayment CAS FIRST.  Only if the CAS
+        // wins (rows > 0) do we create the DepositSession, outbox, and audit — this ensures a
+        // lost-race tick does not persist a DepositSession row that would cause a unique-violation
+        // on the next re-drive.  The request_payment step is created/skipped before the CAS (it is
+        // idempotent via the existing get-or-create) so it is always in place if needed.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
             var current = await opRepo.GetAsync(operationId, ct2);
@@ -103,21 +108,6 @@ public sealed class RequestPaymentCommandHandler(
             }
 
             var now = DateTimeOffset.UtcNow;
-
-            // Create the DepositSession (unique constraint prevents duplicates per operation).
-            var depositSessionId = $"dep_{Guid.NewGuid():N}";
-            await depositSessionRepo.AddAsync(new DepositSession
-            {
-                TenantId = tenantId,
-                DepositSessionId = depositSessionId,
-                OperationId = operationId,
-                AmountMinor = req.AmountMinor,
-                Currency = req.Currency,
-                Status = DepositStatus.Created,
-                ExpiresAt = now.AddMinutes(DepositWindowMinutes),
-                CreatedAt = now,
-                Version = 0,
-            }, ct2);
 
             // Create-or-skip request_payment step (Succeeded — the LINK request; waiting for payment
             // is external so the sweeper must not re-drive an AwaitingPayment operation).
@@ -138,7 +128,7 @@ public sealed class RequestPaymentCommandHandler(
                 }, ct2);
             }
 
-            // Held → AwaitingPayment (version-guarded).
+            // Held → AwaitingPayment (version-guarded CAS — must happen BEFORE DepositSession).
             var rows = await opRepo.TryTransitionStatusAsync(
                 tenantId, operationId, current.Version,
                 OperationStatus.Held, OperationStatus.AwaitingPayment,
@@ -146,9 +136,24 @@ public sealed class RequestPaymentCommandHandler(
 
             if (rows == 0)
             {
-                result = StepOutcome.Continue; // lost race → driver reloads
+                result = StepOutcome.Continue; // lost race → driver reloads; no DepositSession created
                 return;
             }
+
+            // CAS won — now create the DepositSession (unique constraint prevents duplicates per operation).
+            var depositSessionId = $"dep_{Guid.NewGuid():N}";
+            await depositSessionRepo.AddAsync(new DepositSession
+            {
+                TenantId = tenantId,
+                DepositSessionId = depositSessionId,
+                OperationId = operationId,
+                AmountMinor = req.AmountMinor,
+                Currency = req.Currency,
+                Status = DepositStatus.Created,
+                ExpiresAt = now.AddMinutes(DepositWindowMinutes),
+                CreatedAt = now,
+                Version = 0,
+            }, ct2);
 
             // Outbox: spec 09 consumes this to create the Stripe link.
             await outboxRepo.AddAsync(new OutboxMessage

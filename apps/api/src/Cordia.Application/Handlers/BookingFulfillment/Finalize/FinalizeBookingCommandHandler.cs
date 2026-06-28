@@ -25,8 +25,10 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///   TXN2 (ambiguous): Finalizing→Reconciling (§16.2 lookup before re-create) — unchanged from T5.
 ///   TXN2 (NoCapacity at finalize): anomalous (§11: Finalizing has NO edge to AlternativesRequired) →
 ///     Finalizing→Reconciling (reason "unexpected_no_capacity").
-///   TXN2 (Rejected/PermanentError/AuthError): persist attempt → Finalizing→CompensationRequired
+///   TXN2 (Rejected/PermanentError): persist attempt → Finalizing→CompensationRequired
 ///     (driver dispatches CompensateOperationCommand).
+///   TXN2 (AuthError/PaymentActionRequired): persist attempt (Abandoned) → Finalizing→Reconciling
+///     (reconcile no-effect+escalation → ManualReview; §11 forbids direct Finalizing→ManualReview).
 ///   FM#13 (cancel-before-create): if CancellationRequestedAt != null at the top of finalize and
 ///     there is no in-flight attempt, skip straight to CompensationRequired.
 ///   FM#13 (cancel-after-create): in the success TXN2, if CancellationRequestedAt != null, route
@@ -156,6 +158,25 @@ public sealed class FinalizeBookingCommandHandler(
                     if (opInTxn is null)
                         return;
 
+                    // FIX (C3): Re-read the latest attempt INSIDE the transaction so we don't act
+                    // on a stale snapshot.  If a concurrent dispatch has already moved the attempt
+                    // to Dispatching (or beyond), the effect is unknown — fall through to Continue
+                    // so the Inv-7 reconcile guard / normal path handles it.  Only proceed with the
+                    // cancel-before-create shortcut when the attempt is still null or Planned.
+                    var latestInTxn = await attemptRepo.GetLatestForStepAsync(
+                        tenantId, operationId, StepType, ct2);
+                    if (latestInTxn is not null
+                        && latestInTxn.Outcome is AttemptOutcome.Dispatching
+                            or AttemptOutcome.Ambiguous
+                            or AttemptOutcome.Succeeded
+                            or AttemptOutcome.Reconciled)
+                    {
+                        // A concurrent dispatch is in-flight or already completed — do not route
+                        // to CompensationRequired here.  Return without transition; caller returns
+                        // Continue so the driver re-evaluates (Inv-7 / success shortcut will fire).
+                        return;
+                    }
+
                     // Ensure we are in Finalizing before transitioning to CompensationRequired.
                     var currentStatus = opInTxn.Status;
                     if (currentStatus == OperationStatus.Held)
@@ -282,23 +303,28 @@ public sealed class FinalizeBookingCommandHandler(
         if (circuitBreaker.IsOpen(adapter.ProviderName, ProviderAccount))
         {
             var now = DateTimeOffset.UtcNow;
-            // Abandon the Planned attempt so it does not linger as an orphan.
-            await uow.ExecuteInTransactionAsync(async ct2 =>
-            {
-                attempt.Outcome = AttemptOutcome.Abandoned;
-                attempt.CompletedAt = now;
-                await attemptRepo.UpdateAsync(attempt, ct2);
-            }, ct);
 
-            // Compute a durable retry time; fall back to 30 s if budget is already exhausted.
+            // Compute a durable retry time before opening the transaction (pure, no I/O).
+            // Fall back to 30 s if budget is already exhausted.
             var nextEligible = retryPolicy.NextEligibleAt(
                 StepRetryBudget.ForCreateBooking,
                 attempt.AttemptNumber,
                 finalizeStep.CreatedAt,
                 now) ?? now.AddSeconds(30);
 
-            await retryScheduler.ScheduleAsync(
-                tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible, ct);
+            // FIX (X3): Abandon the attempt AND schedule the durable retry INSIDE the same
+            // transaction so a crash between the two writes cannot leave the op in Finalizing with
+            // a retryable attempt but no scheduled job / NotBefore gate.
+            // RetryScheduler uses the same scoped DbContext — its writes flush into this txn.
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                attempt.Outcome = AttemptOutcome.Abandoned;
+                attempt.CompletedAt = now;
+                await attemptRepo.UpdateAsync(attempt, ct2);
+
+                await retryScheduler.ScheduleAsync(
+                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible, ct2);
+            }, ct);
 
             return StepOutcome.Reschedule;
         }
@@ -473,6 +499,7 @@ public sealed class FinalizeBookingCommandHandler(
         if (result.Kind == ProviderResultKind.Transient)
         {
             var now = DateTimeOffset.UtcNow;
+            // Compute next eligible time before opening the transaction (pure, no I/O).
             var next = retryPolicy.NextEligibleAt(
                 StepRetryBudget.ForCreateBooking,
                 attempt.AttemptNumber,
@@ -504,15 +531,20 @@ public sealed class FinalizeBookingCommandHandler(
                             ct: ct2);
                     }
                 }
+                else
+                {
+                    // FIX (X3): Schedule the durable retry INSIDE the same transaction as the
+                    // attempt-outcome write.  RetryScheduler uses the same scoped DbContext and
+                    // does not open its own txn — its AddAsync/SetNotBeforeAsync flush into this
+                    // ambient transaction, making the job insert and NotBefore gate atomic with
+                    // the TransientFailure attempt row.
+                    await retryScheduler.ScheduleAsync(
+                        tenantId, operationId, finalizeStep.WorkflowStepId, StepType, next.Value, ct2);
+                }
             }, ct);
 
             if (next != null)
-            {
-                // Schedule a durable retry; op stays Finalizing.
-                await retryScheduler.ScheduleAsync(
-                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, next.Value, ct);
                 return StepOutcome.Reschedule;
-            }
 
             // Budget exhausted → op is now Reconciling; driver loops immediately into Reconcile.
             return StepOutcome.Continue;
@@ -547,7 +579,48 @@ public sealed class FinalizeBookingCommandHandler(
             return StepOutcome.Continue;
         }
 
-        // TXN2 (Rejected / PermanentError / AuthError): persist attempt outcome + transition
+        // TXN2 (Rejected / PermanentError): persist attempt outcome + transition
+        // Finalizing → CompensationRequired.  The driver will dispatch CompensateOperationCommand.
+        //
+        // FIX (X1): AuthError and PaymentActionRequired are NOT permanent booking failures.
+        //   AuthError = our credentials/ops issue (classifier: ManualReview).
+        //   PaymentActionRequired = action needed from the user/ops (classifier: AwaitUser).
+        //   §11 forbids Finalizing→AwaitingUserAction and Finalizing→ManualReview directly.
+        //   Route them to Reconciling instead — the reconcile handler's no-effect + escalation
+        //   path will transition to ManualReview, which is the correct destination for an ops
+        //   or action-required issue.  Only Rejected/PermanentError go to CompensationRequired.
+        if (result.Kind is ProviderResultKind.AuthError or ProviderResultKind.PaymentActionRequired)
+        {
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                attempt.Outcome = AttemptOutcome.Abandoned;
+                attempt.RetryClassification = classifier.Classify(result).Classification;
+                attempt.ErrorCode = result.ErrorCode;
+                attempt.CompletedAt = DateTimeOffset.UtcNow;
+                await attemptRepo.UpdateAsync(attempt, ct2);
+
+                circuitBreaker.RecordFailure(adapter.ProviderName, ProviderAccount);
+
+                // Finalizing → Reconciling (version-guarded).  The reconcile handler will
+                // escalate to ManualReview once it proves no effect and the budget is consumed.
+                var currentOp = await opRepo.GetAsync(operationId, ct2);
+                if (currentOp is not null && currentOp.Status == OperationStatus.Finalizing)
+                {
+                    var reason = result.Kind == ProviderResultKind.AuthError
+                        ? "finalize_auth_error"
+                        : "finalize_provider_action_required";
+                    await opRepo.TryTransitionStatusAsync(
+                        tenantId, operationId, currentOp.Version,
+                        OperationStatus.Finalizing, OperationStatus.Reconciling,
+                        reason: reason, ct: ct2);
+                }
+            }, ct);
+
+            // Continue: driver reloads → op.Status == Reconciling → ReconcileOperationCommand.
+            return StepOutcome.Continue;
+        }
+
+        // TXN2 (Rejected / PermanentError): persist attempt outcome + transition
         // Finalizing → CompensationRequired.  The driver will dispatch CompensateOperationCommand.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
@@ -555,7 +628,7 @@ public sealed class FinalizeBookingCommandHandler(
             {
                 ProviderResultKind.Rejected => AttemptOutcome.Rejected,
                 ProviderResultKind.PermanentError => AttemptOutcome.Rejected,
-                _ => AttemptOutcome.Abandoned, // AuthError
+                _ => AttemptOutcome.Abandoned,
             };
             attempt.RetryClassification = classifier.Classify(result).Classification;
             attempt.ErrorCode = result.ErrorCode;

@@ -573,6 +573,80 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
         Assert.NotNull(notification);
     }
 
+    // ── Scenario 3b: FIX (C3) in-txn re-read guard — cancel-before-create from Finalizing state ──
+
+    /// <summary>
+    /// FIX (C3) regression guard: seeds op ALREADY in Finalizing with CancellationRequestedAt
+    /// set and NO finalize attempt (latest == null).  The cancel-before-create code path must:
+    ///   1. Re-read latest attempt INSIDE the transaction (the fix).
+    ///   2. Find it still null (no concurrent dispatch changed it).
+    ///   3. Proceed with Finalizing → CompensationRequired → FailedFinal.
+    ///
+    /// This proves the "still null" branch of the in-txn guard does not break the existing
+    /// cancel-before-create behavior when the op enters Finalize already in Finalizing state
+    /// (rather than from Held as in Scenario 3).
+    /// </summary>
+    [Fact]
+    public async Task CancelBeforeCreate_AlreadyFinalizing_NoAttempt_StillReachesFailedFinal()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t8-cbc-fin-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        string operationId;
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            // Seed op in Finalizing WITH CancellationRequestedAt set and NO finalize attempt.
+            operationId = await TestData.SeedOperationAsync(seedCtx, tenantId, OperationStatus.Finalizing);
+
+            await seedCtx.BookingOperations
+                .IgnoreQueryFilters()
+                .Where(o => o.OperationId == operationId)
+                .ExecuteUpdateAsync(b => b
+                    .SetProperty(o => o.CancellationRequestedAt, DateTimeOffset.UtcNow));
+
+            // Outbox trigger.
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "booking.command.requested.v1",
+                CorrelationId = operationId,
+                OperationId = operationId,
+                Payload = $"{{\"operation_id\":\"{operationId}\",\"tenant_id\":\"{tenantId}\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+
+            await seedCtx.SaveChangesAsync();
+        }
+
+        var fakeAdapter = new T8FakeBookingProviderAdapter
+        {
+            CreateResult = ProviderResultKind.Created,
+            CancelResult = ProviderResultKind.Created,
+        };
+
+        await using var sp = BuildContainer(fakeAdapter);
+        var publisher = BuildPublisher(sp);
+        await publisher.PublishPendingBatchAsync(CancellationToken.None);
+
+        // ── Assert: cancel-before-create fired → FailedFinal, no booking created ──────────
+        Assert.Equal(0, fakeAdapter.CreateCallCount); // no booking was created
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var op = await assertCtx.BookingOperations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+
+        Assert.NotNull(op);
+        Assert.Equal(OperationStatus.FailedFinal, op!.Status);
+
+        // CancelBooking must NOT have been called (no booking was ever created).
+        Assert.Equal(0, fakeAdapter.CancelCallCount);
+    }
+
     // ── Scenario 4: Compensation ambiguous → ManualReview ────────────────────────────────────
 
     /// <summary>

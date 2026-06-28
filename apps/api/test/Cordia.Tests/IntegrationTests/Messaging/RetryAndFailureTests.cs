@@ -31,6 +31,32 @@ file sealed class NoCapacityService : ICapacityService
 /// Test-controllable adapter for T6 retry/failure tests.
 /// Supports transient failures on the first N creates, circuit-open simulation, and call counting.
 /// </summary>
+/// <summary>
+/// Test-controllable adapter that returns a configurable ProviderResultKind on every create call.
+/// Used for FIX X1 (AuthError/PaymentActionRequired → Reconciling) tests.
+/// </summary>
+file sealed class T6FixedResultAdapter : IBookingProviderAdapter
+{
+    public string ProviderName => "fake";
+
+    public ProviderResultKind ResultKind { get; set; } = ProviderResultKind.AuthError;
+
+    public Task<ProviderResult> CreateBookingAsync(ProviderBookingRequest request, CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ResultKind));
+
+    public Task<ProviderResult> LookupByIdempotencyKeyAsync(string account, string key, CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+    public Task<ProviderResult> LookupByReferenceAsync(string account, string reference, CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+    public Task<ProviderResult> GetStatusAsync(string account, string reference, CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+    public Task<ProviderResult> CancelBookingAsync(string account, string reference, CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+}
+
 file sealed class T6FakeAdapter : IBookingProviderAdapter
 {
     public string ProviderName => "fake";
@@ -511,5 +537,131 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         Assert.NotNull(scheduledJob);
         Assert.Equal("booking.commands", scheduledJob!.DestinationQueue);
+    }
+
+    // ── Test 5: AuthError → Reconciling (FIX X1) ─────────────────────────────────────────────
+
+    /// <summary>
+    /// FIX (X1): adapter returns AuthError on CreateBooking.
+    /// AuthError is NOT a permanent booking failure — it is an ops/credentials issue.
+    /// Expected: Finalizing → Reconciling (NOT CompensationRequired / FailedFinal).
+    /// The attempt must be recorded (Outcome=Abandoned) and the op reaches Reconciling.
+    /// </summary>
+    [Fact]
+    public async Task AuthError_FromFinalizing_RoutesToReconciling_NotCompensationRequired()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t6-autherr-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        string operationId;
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            operationId = await TestData.SeedOperationAsync(seedCtx, tenantId, OperationStatus.Held);
+
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "booking.command.requested.v1",
+                CorrelationId = operationId,
+                OperationId = operationId,
+                Payload = $"{{\"operation_id\":\"{operationId}\",\"tenant_id\":\"{tenantId}\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await seedCtx.SaveChangesAsync();
+        }
+
+        var fakeAdapter = new T6FixedResultAdapter { ResultKind = ProviderResultKind.AuthError };
+
+        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        var publisher = BuildPublisher(sp);
+        await publisher.PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // ── Assert: op is NOT in CompensationRequired or FailedFinal ─────────────────────────
+        // FIX X1: AuthError routes to Reconciling (NOT CompensationRequired).  The driver loop
+        // then runs Reconcile which may further advance the op (e.g. Reconciling→Held→Finalizing
+        // again, or Reconciling→ManualReview if budget exhausts) — so the exact status after one
+        // publisher tick can vary.  What matters is that CompensationRequired and FailedFinal are
+        // NEVER the outcome of an AuthError (those are reserved for Rejected/PermanentError only).
+        var op = await assertCtx.BookingOperations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+
+        Assert.NotNull(op);
+        Assert.NotEqual(OperationStatus.CompensationRequired, op!.Status);
+        Assert.NotEqual(OperationStatus.FailedFinal, op.Status);
+
+        // ── Assert: at least one finalize attempt was recorded with Outcome=Abandoned ─────────
+        var attempt = await assertCtx.WorkflowAttempts
+            .AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.OperationId == operationId
+                        && a.WorkflowStep == "finalize"
+                        && a.Outcome == AttemptOutcome.Abandoned)
+            .FirstOrDefaultAsync();
+
+        Assert.NotNull(attempt);
+    }
+
+    /// <summary>
+    /// FIX (X1): adapter returns PaymentActionRequired on CreateBooking.
+    /// PaymentActionRequired is NOT a permanent failure — must NOT route to CompensationRequired.
+    /// </summary>
+    [Fact]
+    public async Task PaymentActionRequired_FromFinalizing_DoesNotRouteToCompensationRequired()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t6-payact-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        string operationId;
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            operationId = await TestData.SeedOperationAsync(seedCtx, tenantId, OperationStatus.Held);
+
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "booking.command.requested.v1",
+                CorrelationId = operationId,
+                OperationId = operationId,
+                Payload = $"{{\"operation_id\":\"{operationId}\",\"tenant_id\":\"{tenantId}\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await seedCtx.SaveChangesAsync();
+        }
+
+        var fakeAdapter = new T6FixedResultAdapter { ResultKind = ProviderResultKind.PaymentActionRequired };
+
+        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        var publisher = BuildPublisher(sp);
+        await publisher.PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // Same reasoning as AuthError: exact post-tick status can vary but must never be
+        // CompensationRequired or FailedFinal.
+        var op = await assertCtx.BookingOperations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+
+        Assert.NotNull(op);
+        Assert.NotEqual(OperationStatus.CompensationRequired, op!.Status);
+        Assert.NotEqual(OperationStatus.FailedFinal, op.Status);
+
+        // At least one finalize attempt with Outcome=Abandoned must exist.
+        var attempt = await assertCtx.WorkflowAttempts
+            .AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.OperationId == operationId
+                        && a.WorkflowStep == "finalize"
+                        && a.Outcome == AttemptOutcome.Abandoned)
+            .FirstOrDefaultAsync();
+
+        Assert.NotNull(attempt);
     }
 }

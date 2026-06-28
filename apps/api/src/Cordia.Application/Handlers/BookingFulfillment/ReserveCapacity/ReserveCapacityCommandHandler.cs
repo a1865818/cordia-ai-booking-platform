@@ -127,7 +127,9 @@ public sealed class ReserveCapacityCommandHandler(
                 }
 
                 // AlternativesRequired requires external user input — stop and wait.
-                result = StepOutcome.Wait;
+                // But if rows==0 we lost the race; return Continue so the driver reloads
+                // and re-evaluates the current state (C13).
+                result = rows > 0 ? StepOutcome.Wait : StepOutcome.Continue;
             }
         }, ct);
 

@@ -23,6 +23,7 @@ namespace Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 /// </summary>
 public sealed class ResumeWorkflowStepCommandHandler(
     IBookingOperationRepository opRepo,
+    IOperationWorkItemRepository workItemRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow)
@@ -68,6 +69,21 @@ public sealed class ResumeWorkflowStepCommandHandler(
                     "Concurrent modification — could not transition ManualReview → Reconciling.");
 
             var now = DateTimeOffset.UtcNow;
+
+            // C10: close the open work item (if any) — open → resolved, mirroring ResolveManualReviewCommandHandler.
+            var workItem = await workItemRepo.GetOpenByOperationAsync(
+                command.TenantId, command.OperationId, ct2);
+            if (workItem is not null)
+            {
+                await workItemRepo.TryUpdateStateAsync(
+                    command.TenantId,
+                    workItem.WorkItemId,
+                    workItem.Version,
+                    expectedState: "open",
+                    nextState: "resolved",
+                    assignee: command.Actor,
+                    ct: ct2);
+            }
 
             // Emit booking.command.requested.v1 continuation so the driver re-drives from the
             // current durable state. The driver routes Reconciling → ReconcileOperationCommand

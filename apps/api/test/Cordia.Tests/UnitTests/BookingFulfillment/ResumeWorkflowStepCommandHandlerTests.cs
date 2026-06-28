@@ -16,6 +16,7 @@ namespace Cordia.Tests.UnitTests.BookingFulfillment;
 public class ResumeWorkflowStepCommandHandlerTests
 {
     private readonly Mock<IBookingOperationRepository> _opRepo = new();
+    private readonly Mock<IOperationWorkItemRepository> _workItemRepo = new();
     private readonly Mock<IOutboxRepository> _outboxRepo = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
@@ -27,10 +28,15 @@ public class ResumeWorkflowStepCommandHandlerTests
                 It.IsAny<Func<CancellationToken, Task>>(),
                 It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
+
+        // Default: no open work item.
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
     }
 
     private ResumeWorkflowStepCommandHandler CreateHandler() =>
-        new(_opRepo.Object, _outboxRepo.Object, _auditRepo.Object, _uow.Object);
+        new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, _auditRepo.Object, _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
         new()

@@ -731,7 +731,9 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_operations_work_items");
 
                     b.HasIndex("TenantId", "OperationId")
-                        .HasDatabaseName("ix_operations_work_items_tenant_id_operation_id");
+                        .IsUnique()
+                        .HasDatabaseName("uq_open_work_item_per_operation")
+                        .HasFilter("state = 'open'");
 
                     b.ToTable("operations_work_items", "public");
                 });

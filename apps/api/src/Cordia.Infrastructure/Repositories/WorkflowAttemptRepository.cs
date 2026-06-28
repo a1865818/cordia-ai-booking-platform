@@ -20,11 +20,15 @@ public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttem
             .AsNoTracking()
             .FirstOrDefaultAsync(a => a.AttemptId == attemptId, ct);
 
-    /// <summary>Callers may pass either the tracked instance they created or a fresh detached instance
-    /// with the same AttemptId; EF excludes PK columns from the SET clause so identity fields remain immutable.
+    /// <summary>
+    /// Persists all non-key columns of <paramref name="attempt"/> via <c>db.Update()</c>.
+    /// Callers MUST pass a fully-loaded attempt instance (e.g. the one they originally created
+    /// or the result of <see cref="GetLatestForStepAsync"/> / <see cref="GetAsync"/>); passing a
+    /// partially-populated detached instance will silently null out any column not set on it.
     /// If a DIFFERENT tracked instance with the same AttemptId is already in the change tracker
-    /// (e.g. from a prior Finalize step in the same scope), it is detached before the new instance
-    /// is attached — this handles the crash-after-provider reconcile path (T5).</summary>
+    /// (e.g. from a prior Finalize step in the same scope), it is detached before the supplied
+    /// instance is attached — this handles the crash-after-provider reconcile path (T5).
+    /// </summary>
     public async Task UpdateAsync(WorkflowAttempt attempt, CancellationToken ct = default)
     {
         // Detach any conflicting tracked entity with the same key so Update() can attach the new one.

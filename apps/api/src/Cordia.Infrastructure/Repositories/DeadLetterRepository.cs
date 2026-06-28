@@ -9,10 +9,30 @@ namespace Cordia.Infrastructure.Repositories;
 /// <summary>EF Core implementation of <see cref="IDeadLetterRepository"/> (spec 05 §5.3, T7).</summary>
 public class DeadLetterRepository(ApplicationDbContext db) : IDeadLetterRepository
 {
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Uses <c>INSERT … ON CONFLICT (tenant_id, message_id, consumer_name) DO NOTHING</c> so
+    /// that a duplicate poison delivery (same message redelivered after a crash-before-ACK) does
+    /// NOT throw a PK violation and does NOT cause an infinite redelivery loop.  Returns silently
+    /// on duplicate — the first quarantine row wins.
+    /// Enum column receives an explicit pg-enum cast; jsonb columns are passed as strings.
+    /// </remarks>
     public async Task AddAsync(DeadLetterMessage message, CancellationToken ct = default)
     {
-        db.DeadLetterMessages.Add(message);
-        await db.SaveChangesAsync(ct);
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO public.dead_letter_messages
+                (tenant_id, message_id, consumer_name, message_type, payload,
+                 error_class, attempt_history, first_failed_at, replay_state)
+            VALUES
+                ({message.TenantId}, {message.MessageId}, {message.ConsumerName},
+                 {message.MessageType}, {message.Payload}::jsonb,
+                 {message.ErrorClass}, {message.AttemptHistory}::jsonb,
+                 {message.FirstFailedAt},
+                 {PgEnum.Label(message.ReplayState)}::dlq_replay_state_enum)
+            ON CONFLICT (tenant_id, message_id, consumer_name) DO NOTHING
+            """,
+            ct);
     }
 
     public Task<DeadLetterMessage?> GetAsync(

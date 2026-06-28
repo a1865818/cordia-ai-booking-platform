@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Enums;
+﻿using System.Collections.Frozen;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 
 namespace Cordia.Domain.Entities;
@@ -12,6 +13,8 @@ public static class OperationStateMachine
     /// <summary>
     /// Every legal directed edge in the §11 state machine, keyed by source state.
     /// States absent from this dictionary have no outgoing edges (terminals).
+    /// Backed by <see cref="FrozenDictionary"/> / <see cref="FrozenSet"/> for true immutability
+    /// (C6 — not downcastable to mutable collections).
     /// </summary>
     public static readonly IReadOnlyDictionary<OperationStatus, IReadOnlySet<OperationStatus>> AllowedTransitions =
         new Dictionary<OperationStatus, IReadOnlySet<OperationStatus>>
@@ -19,65 +22,65 @@ public static class OperationStateMachine
             [OperationStatus.Accepted] = new HashSet<OperationStatus>
             {
                 OperationStatus.Validating,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.Validating] = new HashSet<OperationStatus>
             {
                 OperationStatus.AwaitingUserAction,
                 OperationStatus.ReservingCapacity,
                 OperationStatus.Rejected,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.AwaitingUserAction] = new HashSet<OperationStatus>
             {
                 OperationStatus.Accepted,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.ReservingCapacity] = new HashSet<OperationStatus>
             {
                 OperationStatus.Held,
                 OperationStatus.AlternativesRequired,
                 OperationStatus.Reconciling,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.Held] = new HashSet<OperationStatus>
             {
                 OperationStatus.AwaitingPayment,
                 OperationStatus.Finalizing,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.AwaitingPayment] = new HashSet<OperationStatus>
             {
                 OperationStatus.Finalizing,
                 OperationStatus.Expired,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.Finalizing] = new HashSet<OperationStatus>
             {
                 OperationStatus.Booked,
                 OperationStatus.Reconciling,
                 OperationStatus.CompensationRequired,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.Reconciling] = new HashSet<OperationStatus>
             {
                 OperationStatus.Held,
                 OperationStatus.Booked,
                 OperationStatus.AlternativesRequired,
                 OperationStatus.ManualReview,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.CompensationRequired] = new HashSet<OperationStatus>
             {
                 OperationStatus.FailedFinal,
                 OperationStatus.ManualReview,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.AlternativesRequired] = new HashSet<OperationStatus>
             {
                 OperationStatus.Waitlisted,
                 OperationStatus.FailedFinal,
-            },
+            }.ToFrozenSet(),
             [OperationStatus.ManualReview] = new HashSet<OperationStatus>
             {
                 OperationStatus.Reconciling,
                 OperationStatus.Booked,
                 OperationStatus.FailedFinal,
-            },
+            }.ToFrozenSet(),
             // Terminal states — no outgoing edges; absent from the dictionary.
             // Booked, Rejected, Expired, Waitlisted, FailedFinal
-        };
+        }.ToFrozenDictionary();
 
     private static readonly IReadOnlySet<OperationStatus> _terminalStates =
         new HashSet<OperationStatus>
@@ -87,7 +90,7 @@ public static class OperationStateMachine
             OperationStatus.Expired,
             OperationStatus.Waitlisted,
             OperationStatus.FailedFinal,
-        };
+        }.ToFrozenSet();
 
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(OperationStatus from, OperationStatus to)

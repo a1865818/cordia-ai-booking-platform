@@ -56,6 +56,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
     [HttpPost("{operationId}/cancel")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> RequestCancellation(
         string operationId,
         CancellationToken ct)
@@ -67,6 +68,16 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         var op = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
         if (op is null)
             return NotFound();
+
+        // X2: terminal operations cannot be cancelled via this endpoint.
+        // Post-booking cancellation (already-Booked) is a separate flow defined in spec 08.
+        if (op.Terminal)
+            return Conflict(new
+            {
+                operation_id = operationId,
+                detail = "Terminal operations cannot be cancelled via this endpoint. " +
+                         "Post-booking cancellation is a separate flow (spec 08).",
+            });
 
         // Idempotent: 202 whether the flag was newly set or was already pending (§15.5).
         await mediator.Send(new RequestCancellationCommand(tenant.TenantId, operationId), ct);
@@ -149,6 +160,14 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         else
             return Problem(statusCode: 400, title: "Invalid resolution",
                 detail: $"Resolution must be 'booked' or 'failed_final', got '{body.Resolution}'.");
+
+        // C7: validate provider_ref here so the controller returns 400, not 409.
+        // The handler also guards this, but a missing provider_ref is a caller error (400),
+        // not a state-conflict error (409).
+        if (resolution == ManualReviewResolution.Booked
+            && string.IsNullOrWhiteSpace(body.ProviderRef))
+            return Problem(statusCode: 400, title: "Missing provider_ref",
+                detail: "provider_ref is required when resolution is 'booked'.");
 
         // Existence check: 404 if not found.
         var existing = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);

@@ -50,18 +50,24 @@ public sealed class ManualReviewEscalator(
 
         var now = DateTimeOffset.UtcNow;
 
-        // Create the operations_work_item row.
-        await workItemRepo.AddAsync(new OperationWorkItem
+        // Idempotency check (C11): if an open work item already exists for this operation,
+        // skip creating a second one.  The unique partial index (uq_open_work_item_per_operation)
+        // is the DB backstop, but checking here avoids a spurious constraint violation.
+        var existingWorkItem = await workItemRepo.GetOpenByOperationAsync(tenantId, operationId, ct);
+        if (existingWorkItem is null)
         {
-            TenantId = tenantId,
-            WorkItemId = $"wi_{Guid.NewGuid():N}",
-            OperationId = operationId,
-            Reason = reason,
-            State = "open",
-            SlaDeadline = slaDeadline,
-            CreatedAt = now,
-            Version = 0,
-        }, ct);
+            await workItemRepo.AddAsync(new OperationWorkItem
+            {
+                TenantId = tenantId,
+                WorkItemId = $"wi_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                Reason = reason,
+                State = "open",
+                SlaDeadline = slaDeadline,
+                CreatedAt = now,
+                Version = 0,
+            }, ct);
+        }
 
         // Inv-8 / §17.5: "still confirming" notification — the operation is in_progress,
         // not booked or charged.  Emitted atomically with the ManualReview transition.

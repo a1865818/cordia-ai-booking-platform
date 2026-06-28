@@ -26,13 +26,16 @@ public sealed class RequestCancellationCommandHandler(
         if (op is null || op.TenantId != command.TenantId)
             return false;
 
-        var rows = await opRepo.SetCancellationRequestedAsync(
-            command.TenantId, command.OperationId, DateTimeOffset.UtcNow, ct);
-
-        if (rows > 0)
+        // Flag set + audit in ONE transaction so they commit or roll back together (C1).
+        var newlySet = false;
+        await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            await uow.ExecuteInTransactionAsync(async ct2 =>
+            var rows = await opRepo.SetCancellationRequestedAsync(
+                command.TenantId, command.OperationId, DateTimeOffset.UtcNow, ct2);
+
+            if (rows > 0)
             {
+                newlySet = true;
                 var now = DateTimeOffset.UtcNow;
                 await auditRepo.AddAsync(new AuditEvent
                 {
@@ -46,9 +49,9 @@ public sealed class RequestCancellationCommandHandler(
                     Metadata = JsonSerializer.Serialize(new { operation_id = command.OperationId }),
                     OccurredAt = now,
                 }, ct2);
-            }, ct);
-        }
+            }
+        }, ct);
 
-        return rows > 0;
+        return newlySet;
     }
 }
