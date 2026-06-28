@@ -329,10 +329,14 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
         Assert.Equal(0, released2);
     }
 
-    // ── Test 6: FinalizeAgainstHold success ─────────────────────────────────
+    // ── Test 6: FinalizeAgainstOperation success (active→Finalized, slot held→booked) ──────────
 
+    /// <summary>
+    /// FinalizeAgainstOperationAsync with an active hold → Finalized, slot held=0 booked=1.
+    /// The new op+step API is deterministic (no hold_id needed by caller).
+    /// </summary>
     [Fact]
-    public async Task FinalizeAgainstHoldAsync_ActiveHold_Finalizes_SlotHeldToBooked()
+    public async Task FinalizeAgainstOperationAsync_ActiveHold_Finalizes_SlotHeldToBooked()
     {
         var tenantId = $"t7-fin-ok-{Guid.NewGuid():N}";
         var (slotId, operationId) = await SeedSlotAndOperationAsync(tenantId, total: 2);
@@ -348,13 +352,13 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
             await tx.CommitAsync();
         }
 
-        // Finalize
+        // Finalize via op+step (FIX 2+3+4+8)
         FinalizeOutcome finOutcome;
         await using (var ctx = fixture.CreateContext(tenantId))
         {
             await using var tx = await ctx.Database.BeginTransactionAsync();
             var svc = MakeService(ctx);
-            finOutcome = await svc.FinalizeAgainstHoldAsync(tenantId, holdId, default);
+            finOutcome = await svc.FinalizeAgainstOperationAsync(tenantId, operationId, "create", default);
             await tx.CommitAsync();
         }
 
@@ -375,10 +379,75 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
         }
     }
 
-    // ── Test 7: FinalizeAgainstHold on already-released hold ─────────────────
+    // ── Test 6b: FinalizeAgainstOperation idempotent — already-Finalized hold returns Finalized, slot NOT moved again ──
 
+    /// <summary>
+    /// FIX 3 + FIX 8: calling FinalizeAgainstOperationAsync on a hold that is already Finalized
+    /// must return Finalized (idempotent) WITHOUT moving the slot a second time.
+    /// </summary>
     [Fact]
-    public async Task FinalizeAgainstHoldAsync_AlreadyReleasedHold_ReturnsHoldNoLongerValid()
+    public async Task FinalizeAgainstOperationAsync_AlreadyFinalizedHold_ReturnsFinalized_NoSecondSlotMove()
+    {
+        var tenantId = $"t7-fin-idem-{Guid.NewGuid():N}";
+        var (slotId, operationId) = await SeedSlotAndOperationAsync(tenantId, total: 1);
+
+        // Reserve then Finalize the first time.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await using var tx = await ctx.Database.BeginTransactionAsync();
+            var svc = MakeService(ctx);
+            await svc.ReserveAsync(MakeRequest(tenantId, operationId, slotId), default);
+            await tx.CommitAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await using var tx = await ctx.Database.BeginTransactionAsync();
+            var svc = MakeService(ctx);
+            var outcome1 = await svc.FinalizeAgainstOperationAsync(tenantId, operationId, "create", default);
+            Assert.Equal(FinalizeOutcome.Finalized, outcome1);
+            await tx.CommitAsync();
+        }
+
+        // Verify slot state after first finalize.
+        await using (var midCtx = fixture.CreateContext(tenantId))
+        {
+            var slot = await midCtx.CapacitySlots.AsNoTracking().IgnoreQueryFilters()
+                .SingleAsync(s => s.SlotId == slotId);
+            Assert.Equal(0, slot.HeldCapacity);
+            Assert.Equal(1, slot.BookedCapacity);
+        }
+
+        // Finalize again (idempotent retry) — must return Finalized, slot booked must still be 1.
+        FinalizeOutcome finOutcome2;
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await using var tx = await ctx.Database.BeginTransactionAsync();
+            var svc = MakeService(ctx);
+            finOutcome2 = await svc.FinalizeAgainstOperationAsync(tenantId, operationId, "create", default);
+            await tx.CommitAsync();
+        }
+
+        Assert.Equal(FinalizeOutcome.Finalized, finOutcome2);
+
+        // Slot: booked must still be 1 — no second decrement.
+        await using (var verifyCtx = fixture.CreateContext(tenantId))
+        {
+            var slot = await verifyCtx.CapacitySlots.AsNoTracking().IgnoreQueryFilters()
+                .SingleAsync(s => s.SlotId == slotId);
+            Assert.Equal(0, slot.HeldCapacity);
+            Assert.Equal(1, slot.BookedCapacity); // NOT 2
+        }
+    }
+
+    // ── Test 7: FinalizeAgainstOperation on already-expired hold → HoldNoLongerValid ───────────
+
+    /// <summary>
+    /// FIX 2: FinalizeAgainstOperationAsync on a hold that was expired (released) → HoldNoLongerValid.
+    /// Slot booked stays 0 (no double decrement — expiry already freed held).
+    /// </summary>
+    [Fact]
+    public async Task FinalizeAgainstOperationAsync_AlreadyReleasedHold_ReturnsHoldNoLongerValid()
     {
         var tenantId = $"t7-fin-expired-{Guid.NewGuid():N}";
         var (slotId, operationId) = await SeedSlotAndOperationAsync(tenantId, total: 1);
@@ -403,13 +472,13 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
             await tx.CommitAsync();
         }
 
-        // Finalize on the already-expired hold: must return HoldNoLongerValid
+        // FinalizeAgainstOperationAsync on the already-expired hold: must return HoldNoLongerValid
         FinalizeOutcome finOutcome;
         await using (var ctx = fixture.CreateContext(tenantId))
         {
             await using var tx = await ctx.Database.BeginTransactionAsync();
             var svc = MakeService(ctx);
-            finOutcome = await svc.FinalizeAgainstHoldAsync(tenantId, holdId, default);
+            finOutcome = await svc.FinalizeAgainstOperationAsync(tenantId, operationId, "create", default);
             await tx.CommitAsync();
         }
 
@@ -423,6 +492,30 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
             Assert.Equal(0, slot.HeldCapacity);
             Assert.Equal(0, slot.BookedCapacity);
         }
+    }
+
+    // ── Test 7b: FinalizeAgainstOperation never tracked → NotTracked ─────────────────────────────
+
+    /// <summary>
+    /// FIX 4: FinalizeAgainstOperationAsync when no hold row exists for (op, step)
+    /// returns NotTracked — non-tracked op, caller proceeds to Booked unchanged.
+    /// </summary>
+    [Fact]
+    public async Task FinalizeAgainstOperationAsync_NoHoldRow_ReturnsNotTracked()
+    {
+        var tenantId = $"t7-fin-untracked-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+
+        FinalizeOutcome finOutcome;
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await using var tx = await ctx.Database.BeginTransactionAsync();
+            var svc = MakeService(ctx);
+            finOutcome = await svc.FinalizeAgainstOperationAsync(tenantId, operationId, "create", default);
+            await tx.CommitAsync();
+        }
+
+        Assert.Equal(FinalizeOutcome.NotTracked, finOutcome);
     }
 
     // ── Test 8: Overcommit never happens via CHECK constraint ─────────────────

@@ -4,6 +4,25 @@ using MediatR;
 namespace Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 
 /// <summary>
+/// Determines how an expiry/release command targets capacity holds (spec 07 FIX 5).
+/// </summary>
+public enum ReleaseScope
+{
+    /// <summary>
+    /// Release a single hold by <see cref="ReleaseExpiredHoldsCommand.HoldId"/>.
+    /// Used by <c>booking.scheduled.hold_expiry.v1</c>. If HoldId is missing or null,
+    /// the handler FAILS CLOSED (no bulk release — prevents accidental mass release on malformed payload).
+    /// </summary>
+    Hold,
+
+    /// <summary>
+    /// Release all active holds for <see cref="ReleaseExpiredHoldsCommand.OperationId"/>.
+    /// Used by <c>capacity.hold_release.requested.v1</c> (deposit-expiry bulk-release path).
+    /// </summary>
+    Operation,
+}
+
+/// <summary>
 /// Queue-driven command that idempotently releases capacity holds on expiry (spec 07 §7, §14.3).
 ///
 /// <para>This command serves two delivery paths:</para>
@@ -43,7 +62,8 @@ public sealed record ReleaseExpiredHoldsCommand(
     string TenantId,
     string OperationId,
     string? HoldId,
-    string MessageId)
+    string MessageId,
+    ReleaseScope Scope = ReleaseScope.Hold)
     : IRequest<Unit>, IInboxConsumerRequest
 {
     public string ConsumerName => "capacity.release";

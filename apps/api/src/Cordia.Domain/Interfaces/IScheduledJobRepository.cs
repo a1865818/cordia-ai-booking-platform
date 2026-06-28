@@ -7,6 +7,13 @@ public interface IScheduledJobRepository
 {
     Task AddAsync(ScheduledJob job, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns true if a scheduled job with the given <paramref name="jobId"/> already exists
+    /// for <paramref name="tenantId"/> (any status). Used for deterministic deduplication of
+    /// expiry job enqueue (FIX 6: one expiry job per hold; re-drive is a no-op).
+    /// </summary>
+    Task<bool> ExistsAsync(string tenantId, string jobId, CancellationToken ct = default);
+
     /// <summary>Returns up to <paramref name="limit"/> pending jobs with RunAfter ≤ <paramref name="now"/>,
     /// ordered by RunAfter ascending. Uses AsNoTracking.</summary>
     Task<IReadOnlyList<ScheduledJob>> ListDueAsync(

@@ -19,7 +19,7 @@ public static class CapacitySlotKey
     /// <param name="resourceId">resource_id from canonical payload (preferred dimension).</param>
     /// <param name="serviceId">service_id from canonical payload (second choice).</param>
     /// <param name="locationId">location_id from canonical payload (fallback).</param>
-    /// <param name="startsAt">requested_at from canonical payload, as a <see cref="DateTimeOffset"/>.</param>
+    /// <param name="startsAt">starts_at (or requested_at fallback) from canonical payload, as a <see cref="DateTimeOffset"/>.</param>
     /// <returns>
     /// A deterministic slot key string, or <see langword="null"/> if no resource dimension is present.
     /// </returns>

@@ -33,8 +33,8 @@ file sealed class NoCapacityReservation : ICapacityReservation
     public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
         => Task.FromResult(0);
 
-    public Task<FinalizeOutcome> FinalizeAgainstHoldAsync(string tenantId, string holdId, CancellationToken ct = default)
-        => Task.FromResult(FinalizeOutcome.HoldNoLongerValid);
+    public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
+        => Task.FromResult(FinalizeOutcome.NotTracked);
 }
 
 // ── Fake booking provider adapter ────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     /// Assert: op.Status == AlternativesRequired, notification.alternatives_required.v1 outbox,
     ///   operation.alternatives_required audit.
     /// Seeds: a capacity_slots row (total=1, held=1 = full) and an intent revision whose
-    /// canonical_payload maps to that slot key (resource_id + requested_at).
+    /// canonical_payload maps to that slot key (resource_id + starts_at).
     /// </summary>
     [Fact]
     public async Task NoCapacity_FromAccepted_RoutesToAlternativesRequired()
@@ -225,7 +225,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
             {
                 party_size = 1,
                 resource_id = resourceId,
-                requested_at = requestedAt.ToString("O"),
+                starts_at = requestedAt.ToString("O"),
             });
 
             var intent = new BookingIntent

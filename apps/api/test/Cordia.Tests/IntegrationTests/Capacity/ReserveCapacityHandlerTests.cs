@@ -153,7 +153,7 @@ public class ReserveCapacityHandlerTests(PostgresFixture fixture)
             {
                 party_size = 1,
                 resource_id = resourceId,
-                requested_at = requestedAt.ToString("O"),
+                starts_at = requestedAt.ToString("O"),
             });
 
             await using var seedCtx = fixture.CreateContext(tenantId);
@@ -341,5 +341,167 @@ public class ReserveCapacityHandlerTests(PostgresFixture fixture)
                         && j.JobType == "booking.scheduled.hold_expiry.v1")
             .ToListAsync();
         Assert.Empty(jobs);
+    }
+
+    // ── Test 3: Tracked op with starts_at in payload → Held with hold row (FIX 1) ───────────
+
+    /// <summary>
+    /// FIX 1: a canonical payload that uses starts_at (not requested_at) still reaches the
+    /// tracked path — a hold row is created and an expiry job is enqueued.
+    /// </summary>
+    [Fact]
+    public async Task TrackedOp_StartsAtPayload_ReachesHeldWithHoldRow()
+    {
+        var tenantId = $"t7-handler-startsat-{Guid.NewGuid():N}";
+        var resourceId = $"res-{Guid.NewGuid():N}";
+        var startsAt = DateTimeOffset.UtcNow.AddHours(3);
+
+        // Seed slot + op with a starts_at payload.
+        var slotId = $"{resourceId}|{startsAt:O}";
+        var intentId = $"int-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+
+        var canonicalPayload = JsonSerializer.Serialize(new
+        {
+            party_size = 1,
+            resource_id = resourceId,
+            starts_at = startsAt.ToString("O"),
+            // NO requested_at — canonical agent format
+        });
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            seedCtx.CapacitySlots.Add(new CapacitySlot
+            {
+                TenantId = tenantId,
+                SlotId = slotId,
+                ResourceId = resourceId,
+                StartsAt = startsAt,
+                TotalCapacity = 1,
+                HeldCapacity = 0,
+                BookedCapacity = 0,
+                Version = 0,
+            });
+
+            var intent = new BookingIntent
+            {
+                TenantId = tenantId,
+                IntentId = intentId,
+                OperationType = OperationTypeEnum.Create,
+            };
+            var revision = new BookingIntentRevision
+            {
+                TenantId = tenantId,
+                IntentId = intentId,
+                Revision = 1,
+                CanonicalPayload = canonicalPayload,
+                PayloadHash = "h",
+                SchemaVersion = "1.0",
+                TenantPolicyVersion = "1.0",
+                Intent = intent,
+            };
+            var operation = new BookingOperation
+            {
+                TenantId = tenantId,
+                OperationId = operationId,
+                IntentId = intentId,
+                IntentRevision = 1,
+                OperationType = OperationTypeEnum.Create,
+                Status = OperationStatus.ReservingCapacity,
+                Version = 0,
+            };
+            seedCtx.BookingIntents.Add(intent);
+            seedCtx.BookingIntentRevisions.Add(revision);
+            seedCtx.BookingOperations.Add(operation);
+            await seedCtx.SaveChangesAsync();
+        }
+
+        StepOutcome result;
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var handler = BuildHandler(ctx);
+            result = await handler.Handle(new ReserveCapacityCommand(tenantId, operationId), default);
+        }
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        await using var verifyCtx = fixture.CreateContext(tenantId);
+
+        // op → Held.
+        var op = await verifyCtx.BookingOperations.AsNoTracking()
+            .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+        Assert.Equal(OperationStatus.Held, op.Status);
+
+        // An active hold row must exist (tracked path fired).
+        var holds = await verifyCtx.CapacityHolds.AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(h => h.TenantId == tenantId && h.OperationId == operationId)
+            .ToListAsync();
+        Assert.Single(holds);
+        Assert.Equal(HoldStatus.Active, holds[0].Status);
+        Assert.Equal(slotId, holds[0].SlotId);
+
+        // An expiry job was enqueued.
+        var expiryJob = await verifyCtx.ScheduledJobs.AsNoTracking()
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(j =>
+                j.TenantId == tenantId &&
+                j.OperationId == operationId &&
+                j.JobType == "booking.scheduled.hold_expiry.v1");
+        Assert.NotNull(expiryJob);
+        Assert.Contains(holds[0].HoldId, expiryJob!.Payload);
+
+        // Slot held_capacity == 1.
+        var slot = await verifyCtx.CapacitySlots.AsNoTracking()
+            .IgnoreQueryFilters()
+            .SingleAsync(s => s.SlotId == slotId);
+        Assert.Equal(1, slot.HeldCapacity);
+        Assert.Equal(0, slot.BookedCapacity);
+    }
+
+    // ── Test 4: Idempotent expiry enqueue — two ScheduleAsync for same hold → exactly one job (FIX 6) ──
+
+    /// <summary>
+    /// FIX 6: calling CapacityExpiryScheduler.ScheduleAsync twice for the same holdId
+    /// produces exactly one scheduled_job row (deterministic jobId "sj_holdexp_{holdId}").
+    /// </summary>
+    [Fact]
+    public async Task ExpiryScheduler_SameHold_IdempotentEnqueue_ExactlyOneJobRow()
+    {
+        var tenantId = $"t7-handler-idem-{Guid.NewGuid():N}";
+        var holdId = $"hold_{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(45);
+
+        // Call ScheduleAsync twice for the same holdId in two separate contexts.
+        await using (var ctx1 = fixture.CreateContext(tenantId))
+        {
+            var jobRepo = new ScheduledJobRepository(ctx1);
+            var scheduler = new CapacityExpiryScheduler(jobRepo);
+
+            // First call — must insert.
+            await using var tx1 = await ctx1.Database.BeginTransactionAsync();
+            await scheduler.ScheduleAsync(tenantId, operationId, holdId, expiresAt, default);
+            await tx1.CommitAsync();
+        }
+
+        await using (var ctx2 = fixture.CreateContext(tenantId))
+        {
+            var jobRepo = new ScheduledJobRepository(ctx2);
+            var scheduler = new CapacityExpiryScheduler(jobRepo);
+
+            // Second call with same holdId — must be a no-op (idempotent).
+            await using var tx2 = await ctx2.Database.BeginTransactionAsync();
+            await scheduler.ScheduleAsync(tenantId, operationId, holdId, expiresAt, default);
+            await tx2.CommitAsync();
+        }
+
+        // Verify: exactly ONE scheduled_job row for this hold.
+        await using var verifyCtx = fixture.CreateContext(tenantId);
+        var expectedJobId = $"sj_holdexp_{holdId}";
+        var jobCount = await verifyCtx.ScheduledJobs.AsNoTracking()
+            .IgnoreQueryFilters()
+            .CountAsync(j => j.TenantId == tenantId && j.JobId == expectedJobId);
+        Assert.Equal(1, jobCount);
     }
 }

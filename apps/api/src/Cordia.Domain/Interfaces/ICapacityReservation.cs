@@ -47,17 +47,31 @@ public interface ICapacityReservation
     Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default);
 
     /// <summary>
-    /// Conditionally transitions a single hold from Active to Finalized and atomically moves
+    /// Looks up the latest hold for <paramref name="operationId"/>/<paramref name="workflowStep"/>
+    /// and conditionally transitions it from Active to Finalized, atomically moving
     /// <see cref="CapacityHold.ReservedCapacity"/> units from held to booked on the associated
     /// first-party slot (when <see cref="CapacityHold.SlotId"/> is non-null), all within the
     /// caller's transaction (Inv-4).
     /// <para>
-    /// Returns <see cref="FinalizeOutcome.Finalized"/> when rows_affected == 1 (the hold was
-    /// active and is now finalized). Returns <see cref="FinalizeOutcome.HoldNoLongerValid"/> when
-    /// rows_affected == 0 (the hold was already expired or released — expiry raced finalization and
-    /// won; §14.3). The caller must route HoldNoLongerValid to Reconciling, not Booked, to avoid a
-    /// double slot decrement.
+    /// This is the SINGLE decision point for whether a hold is valid at finalize time:
+    /// <list type="bullet">
+    ///   <item><see cref="FinalizeOutcome.Finalized"/> — hold was Active and is now Finalized (slot moved),
+    ///     OR the hold was already Finalized (idempotent retry — slot NOT moved a second time).</item>
+    ///   <item><see cref="FinalizeOutcome.HoldNoLongerValid"/> — hold is Expired, Released, or
+    ///     Reconciling (capacity gone). Route the op to CompensationRequired so Compensate cancels
+    ///     the provider booking. Do NOT route to Booked.</item>
+    ///   <item><see cref="FinalizeOutcome.NotTracked"/> — no hold row found for this op/step (non-tracked
+    ///     operation, mode=live). Caller proceeds to Booked unchanged.</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// Deviation from §4.5 sketch: operation+step based (not hold-id based) so callers do not
+    /// need to pick the correct hold; deterministic latest-hold selection handles re-reserve-after-expiry.
     /// </para>
     /// </summary>
-    Task<FinalizeOutcome> FinalizeAgainstHoldAsync(string tenantId, string holdId, CancellationToken ct = default);
+    Task<FinalizeOutcome> FinalizeAgainstOperationAsync(
+        string tenantId,
+        string operationId,
+        string workflowStep,
+        CancellationToken ct = default);
 }

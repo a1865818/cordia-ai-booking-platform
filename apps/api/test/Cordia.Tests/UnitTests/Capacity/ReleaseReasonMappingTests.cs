@@ -37,7 +37,7 @@ public class ReleaseReasonMappingTests
     [Fact]
     public void Finalized_MapsTo_HoldStatusReleased_WhenPassedToRelease()
     {
-        // ReleaseReason.Finalized is owned by FinalizeAgainstHoldAsync; if it is defensively
+        // ReleaseReason.Finalized is owned by FinalizeAgainstOperationAsync; if it is defensively
         // passed to ReleaseAsync it maps to Released (not Finalized, which only FinalizeAsync uses).
         Assert.Equal(HoldStatus.Released, MapReasonToStatus(ReleaseReason.Finalized));
     }

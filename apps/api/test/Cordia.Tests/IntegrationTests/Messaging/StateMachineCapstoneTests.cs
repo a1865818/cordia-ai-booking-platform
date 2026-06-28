@@ -44,8 +44,8 @@ file sealed class CapstoneNoCapacityReservation : ICapacityReservation
     public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
         => Task.FromResult(0);
 
-    public Task<FinalizeOutcome> FinalizeAgainstHoldAsync(string tenantId, string holdId, CancellationToken ct = default)
-        => Task.FromResult(FinalizeOutcome.HoldNoLongerValid);
+    public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
+        => Task.FromResult(FinalizeOutcome.NotTracked);
 }
 
 /// <summary>IDepositPolicy that always requires a deposit (used to drive op to AwaitingPayment).</summary>
@@ -167,7 +167,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         {
             party_size = 1,
             resource_id = resourceId,
-            requested_at = requestedAt.ToString("O"),
+            starts_at = requestedAt.ToString("O"),
         });
 
         await using var seedCtx = fixture.CreateContext(tenantId);

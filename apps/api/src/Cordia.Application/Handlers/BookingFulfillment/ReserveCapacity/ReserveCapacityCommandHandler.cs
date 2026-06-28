@@ -208,13 +208,14 @@ public sealed class ReserveCapacityCommandHandler(
     /// A null slotId signals "not first-party-tracked" → non-tracked path.
     /// </summary>
     /// <remarks>
-    /// Field extraction rules (from spec 07 canonical payload definition):
+    /// Field extraction rules (from spec 07 / FIX 1 — canonical agent payloads use starts_at):
     ///   party_size (int)     → requestedCapacity; defaults to 1 if absent/invalid (a booking always needs ≥1).
     ///   resource_id          → preferred resource dimension (first non-empty wins over service_id/location_id).
     ///   service_id           → second choice resource dimension.
     ///   location_id          → fallback resource dimension.
-    ///   requested_at (ISO-8601 DateTimeOffset) → slot start time.
-    ///   slotId = CapacitySlotKey.Derive(resource, service, location, requestedAt);
+    ///   starts_at (ISO-8601 DateTimeOffset) → slot start time (canonical field; read first).
+    ///   requested_at (ISO-8601 DateTimeOffset) → back-compat fallback when starts_at is absent.
+    ///   slotId = CapacitySlotKey.Derive(resource, service, location, startsAt);
     ///            null when any required dimension is missing → not tracked.
     /// </remarks>
     private static (int requestedCapacity, string? slotId) ParseCanonicalPayload(string? json)
@@ -241,16 +242,28 @@ public sealed class ReserveCapacityCommandHandler(
             var serviceId = TryGetString(root, "service_id");
             var locationId = TryGetString(root, "location_id");
 
-            // requested_at — ISO-8601 DateTimeOffset.
-            if (!root.TryGetProperty("requested_at", out var requestedAtEl)
-                || requestedAtEl.ValueKind != JsonValueKind.String
-                || !DateTimeOffset.TryParse(requestedAtEl.GetString(), out var requestedAt))
+            // FIX 1: read starts_at first (canonical agent field); fall back to requested_at for
+            // back-compat with payloads produced before the agent was updated.
+            DateTimeOffset startsAt;
+            if (root.TryGetProperty("starts_at", out var startsAtEl)
+                && startsAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(startsAtEl.GetString(), out var parsedStartsAt))
             {
-                // Missing or unparseable requested_at → cannot derive a deterministic slot key.
+                startsAt = parsedStartsAt;
+            }
+            else if (root.TryGetProperty("requested_at", out var requestedAtEl)
+                && requestedAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(requestedAtEl.GetString(), out var parsedRequestedAt))
+            {
+                startsAt = parsedRequestedAt;
+            }
+            else
+            {
+                // Neither starts_at nor requested_at is parseable → cannot derive a slot key.
                 return (requestedCapacity, null);
             }
 
-            var slotId = CapacitySlotKey.Derive(resourceId, serviceId, locationId, requestedAt);
+            var slotId = CapacitySlotKey.Derive(resourceId, serviceId, locationId, startsAt);
             return (requestedCapacity, slotId);
         }
         catch (JsonException)

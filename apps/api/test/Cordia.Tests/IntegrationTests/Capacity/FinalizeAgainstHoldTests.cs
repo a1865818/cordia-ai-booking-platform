@@ -154,7 +154,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         {
             party_size = 1,
             resource_id = resourceId,
-            requested_at = requestedAt.ToString("O"),
+            starts_at = requestedAt.ToString("O"),
         });
 
         await using var ctx = fixture.CreateContext(tenantId);
@@ -292,7 +292,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
 
     /// <summary>
     /// §6.1 happy path: slot(total=1, held=1) + active hold + op in Finalizing → finalize
-    /// (stub provider returns Created) → FinalizeAgainstHoldAsync Finalized →
+    /// (stub provider returns Created) → FinalizeAgainstOperationAsync Finalized →
     ///   - op → Booked
     ///   - hold status → Finalized
     ///   - slot held==0, booked==1
@@ -354,20 +354,19 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
     // ── Scenario 2: Expiry races finalize (§6.2) ─────────────────────────────────────────────
 
     /// <summary>
-    /// §6.2 / §14.3 race: hold is released (Expired) BEFORE finalize runs.
-    /// FinalizeAgainstHoldAsync sees rows==0 → HoldNoLongerValid →
-    ///   - FinalizeBookingCommandHandler routes op → Reconciling (NOT Booked)
+    /// §14.3 / FIX 2 race: hold is released (Expired) BEFORE finalize runs.
+    /// FinalizeAgainstOperationAsync sees Expired status → HoldNoLongerValid →
+    ///   - FinalizeBookingCommandHandler routes op → CompensationRequired (NOT Reconciling, NOT Booked)
+    ///     because the provider effect exists but capacity is gone; Compensate will cancel the booking.
     ///   - slot booked stays 0 (no double decrement — expiry already freed held)
     ///   - NO notification.booking_confirmed.v1 emitted
     ///   - operation.hold_no_longer_valid audit event is emitted
     ///
     /// The handler is driven DIRECTLY via IMediator (one call) so we assert the immediate
-    /// routing decision without interference from the subsequent Reconcile step (the stub adapter
-    /// returns NotFound for all lookups, so Reconcile would loop the op back to Held — which is
-    /// correct system behavior but not what this test is measuring).
+    /// routing decision without interference from the subsequent Compensate step.
     /// </summary>
     [Fact]
-    public async Task ExpiryRacesFinalize_HoldNoLongerValid_OpRouted_ToReconciling_NoDoubleDecrement_NoConfirmed()
+    public async Task ExpiryRacesFinalize_HoldNoLongerValid_OpRouted_ToCompensationRequired_NoDoubleDecrement_NoConfirmed()
     {
         var tenantId = $"t7-race-{Guid.NewGuid():N}";
 
@@ -414,15 +413,16 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
                 CancellationToken.None);
         }
 
-        // Handler must return Continue (→Reconciling path detected).
+        // Handler must return Continue (→CompensationRequired path detected — FIX 2).
         Assert.Equal(StepOutcome.Continue, finalizeOutcome);
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
-        // op → Reconciling (finalize routed here due to HoldNoLongerValid).
+        // op → CompensationRequired (finalize routed here due to HoldNoLongerValid — FIX 2).
+        // Provider effect exists but capacity is gone → Compensate will cancel the provider booking.
         var op = await assertCtx.BookingOperations.AsNoTracking()
             .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
-        Assert.Equal(OperationStatus.Reconciling, op.Status);
+        Assert.Equal(OperationStatus.CompensationRequired, op.Status);
 
         // slot booked stays 0 (no double-decrement — expiry already freed held).
         var slot = await assertCtx.CapacitySlots.AsNoTracking()

@@ -115,47 +115,64 @@ public sealed class FirstPartyCapacityReservation(
     }
 
     /// <inheritdoc/>
-    public async Task<FinalizeOutcome> FinalizeAgainstHoldAsync(
+    public async Task<FinalizeOutcome> FinalizeAgainstOperationAsync(
         string tenantId,
-        string holdId,
+        string operationId,
+        string workflowStep,
         CancellationToken ct = default)
     {
-        // Read the hold to get ReservedCapacity + SlotId for the slot update.
-        var hold = await holds.GetAsync(tenantId, holdId, ct);
+        // Deterministic latest-hold lookup: handles re-reserve-after-expiry correctly.
+        var hold = await holds.GetLatestByOperationAndStepAsync(tenantId, operationId, workflowStep, ct);
         if (hold is null)
-            return FinalizeOutcome.HoldNoLongerValid;
+            return FinalizeOutcome.NotTracked; // never first-party-tracked → caller books normally
 
-        // Conditional flip: Active → Finalized, guarded by status='active' (§14.3).
-        // Exactly one of {ReleaseAsync(Expired), FinalizeAgainstHoldAsync} wins the single
-        // active row; the loser observes rows==0 and does not force (§14.3 race resolution).
-        var rows = await db.CapacityHolds
-            .IgnoreQueryFilters()
-            .Where(h => h.TenantId == tenantId && h.HoldId == holdId && h.Status == HoldStatus.Active)
-            .ExecuteUpdateAsync(
-                b => b
-                    .SetProperty(h => h.Status, HoldStatus.Finalized)
-                    .SetProperty(h => h.ReleaseReason, ReleaseReason.Finalized)
-                    .SetProperty(h => h.Version, h => h.Version + 1),
-                ct);
-
-        if (rows == 0)
-            return FinalizeOutcome.HoldNoLongerValid;
-
-        // rows == 1: move held → booked on the first-party slot (only when SlotId is set).
-        if (hold.SlotId is not null)
+        if (hold.Status == HoldStatus.Active)
         {
-            await db.CapacitySlots
+            // Conditional flip: Active → Finalized, guarded by status='active' (§14.3).
+            // Exactly one of {ReleaseAsync(Expired), FinalizeAgainstOperationAsync} wins the
+            // single active row; the loser observes rows==0 and does not force.
+            var rows = await db.CapacityHolds
                 .IgnoreQueryFilters()
-                .Where(s => s.TenantId == tenantId && s.SlotId == hold.SlotId)
+                .Where(h => h.TenantId == tenantId && h.HoldId == hold.HoldId && h.Status == HoldStatus.Active)
                 .ExecuteUpdateAsync(
                     b => b
-                        .SetProperty(s => s.HeldCapacity, s => s.HeldCapacity - hold.ReservedCapacity)
-                        .SetProperty(s => s.BookedCapacity, s => s.BookedCapacity + hold.ReservedCapacity)
-                        .SetProperty(s => s.Version, s => s.Version + 1),
+                        .SetProperty(h => h.Status, HoldStatus.Finalized)
+                        .SetProperty(h => h.ReleaseReason, ReleaseReason.Finalized)
+                        .SetProperty(h => h.Version, h => h.Version + 1),
                     ct);
+
+            if (rows == 1)
+            {
+                // rows == 1: move held → booked on the first-party slot (only when SlotId is set).
+                if (hold.SlotId is not null)
+                {
+                    await db.CapacitySlots
+                        .IgnoreQueryFilters()
+                        .Where(s => s.TenantId == tenantId && s.SlotId == hold.SlotId)
+                        .ExecuteUpdateAsync(
+                            b => b
+                                .SetProperty(s => s.HeldCapacity, s => s.HeldCapacity - hold.ReservedCapacity)
+                                .SetProperty(s => s.BookedCapacity, s => s.BookedCapacity + hold.ReservedCapacity)
+                                .SetProperty(s => s.Version, s => s.Version + 1),
+                            ct);
+                }
+
+                return FinalizeOutcome.Finalized;
+            }
+
+            // rows == 0: raced between read and flip — re-read and decide.
+            var fresh = await holds.GetAsync(tenantId, hold.HoldId, ct);
+            return fresh?.Status == HoldStatus.Finalized
+                ? FinalizeOutcome.Finalized
+                : FinalizeOutcome.HoldNoLongerValid;
         }
 
-        return FinalizeOutcome.Finalized;
+        // Already Finalized: idempotent retry — do NOT move the slot a second time (FIX 3 + FIX 8).
+        if (hold.Status == HoldStatus.Finalized)
+            return FinalizeOutcome.Finalized;
+
+        // Expired, Released, or Reconciling → capacity gone (FIX 2).
+        return FinalizeOutcome.HoldNoLongerValid;
     }
 
     /// <summary>

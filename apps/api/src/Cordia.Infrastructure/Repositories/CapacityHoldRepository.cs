@@ -35,7 +35,7 @@ public class CapacityHoldRepository(ApplicationDbContext db) : ICapacityHoldRepo
         return results;
     }
 
-    public Task<CapacityHold?> GetByOperationAndStepAsync(
+    public Task<CapacityHold?> GetLatestByOperationAndStepAsync(
         string tenantId,
         string operationId,
         string workflowStep,
@@ -43,11 +43,12 @@ public class CapacityHoldRepository(ApplicationDbContext db) : ICapacityHoldRepo
         => db.CapacityHolds
             .AsNoTracking()
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(
-                h => h.TenantId == tenantId
-                     && h.OperationId == operationId
-                     && h.WorkflowStep == workflowStep,
-                ct);
+            .Where(h => h.TenantId == tenantId
+                        && h.OperationId == operationId
+                        && h.WorkflowStep == workflowStep)
+            .OrderByDescending(h => h.CreatedAt)
+            .ThenByDescending(h => h.HoldId)
+            .FirstOrDefaultAsync(ct);
 
     public async Task<IReadOnlyList<CapacityHold>> ListExpiredActiveAsync(
         DateTimeOffset now,

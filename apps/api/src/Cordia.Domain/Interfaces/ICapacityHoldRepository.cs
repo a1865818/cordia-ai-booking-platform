@@ -18,12 +18,17 @@ public interface ICapacityHoldRepository
     Task<IReadOnlyList<CapacityHold>> GetActiveByOperationAsync(string tenantId, string operationId, CancellationToken ct = default);
 
     /// <summary>
-    /// Returns any capacity hold (regardless of status) for the given (tenantId, operationId,
-    /// workflowStep) triple, or null if none exists. Uses AsNoTracking.
-    /// Used by the finalize path to detect whether an op is first-party-tracked even after the
-    /// hold has been released or expired (§6.2 expiry-races-finalize scenario).
+    /// Returns the latest capacity hold (by CreatedAt DESC, then HoldId DESC) for the given
+    /// (tenantId, operationId, workflowStep) triple regardless of status, or null if none exists.
+    /// Uses AsNoTracking with IgnoreQueryFilters.
+    /// <para>
+    /// "Latest" is deterministic: it reflects the current capacity state even when a hold was
+    /// expired and a new one was created (re-reserve-after-expiry). Used by the finalize path
+    /// so <see cref="ICapacityReservation.FinalizeAgainstOperationAsync"/> can identify the
+    /// authoritative hold without the caller specifying a hold ID.
+    /// </para>
     /// </summary>
-    Task<CapacityHold?> GetByOperationAndStepAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default);
+    Task<CapacityHold?> GetLatestByOperationAndStepAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default);
 
     /// <summary>
     /// Cross-tenant query (uses IgnoreQueryFilters) that returns up to <paramref name="limit"/>

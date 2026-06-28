@@ -2,6 +2,7 @@
 using Cordia.Application.Behaviours;
 using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 using Cordia.Domain.Capacity;
+using Microsoft.Extensions.Logging.Abstractions;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Infrastructure.EntityFramework;
@@ -38,7 +39,7 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
         var holdRepo = new CapacityHoldRepository(ctx);
         var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo);
         var auditRepo = new AuditEventRepository(ctx);
-        return new ReleaseExpiredHoldsCommandHandler(capacityReservation, auditRepo);
+        return new ReleaseExpiredHoldsCommandHandler(capacityReservation, auditRepo, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance);
     }
 
     /// <summary>
@@ -240,8 +241,8 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
 
         await using (var ctx = fixture.CreateContext(tenantId))
         {
-            // HoldId = null → ReleaseByOperationAsync path.
-            var cmd = new ReleaseExpiredHoldsCommand(tenantId, operationId, null, messageId);
+            // HoldId = null + Scope.Operation → ReleaseByOperationAsync path (deposit-expiry).
+            var cmd = new ReleaseExpiredHoldsCommand(tenantId, operationId, null, messageId, ReleaseScope.Operation);
             await DriveWithInboxAsync(ctx, cmd);
         }
 

@@ -3,6 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 
@@ -14,14 +15,16 @@ namespace Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 /// <c>InboxDeduplicationBehavior</c>. Do NOT open a new <c>IUnitOfWork</c> transaction —
 /// all writes share the ambient scoped <c>DbContext</c>.</para>
 ///
-/// <para><b>Routing:</b>
+/// <para><b>Routing (FIX 5 — fail-closed on malformed payload):</b>
 /// <list type="bullet">
-///   <item>If <see cref="ReleaseExpiredHoldsCommand.HoldId"/> is non-null → call
-///     <c>ICapacityReservation.ReleaseAsync(tenantId, holdId, Expired)</c>. Targets the scheduled
-///     hold-expiry job path: one specific hold by ID.</item>
-///   <item>If <see cref="ReleaseExpiredHoldsCommand.HoldId"/> is null → call
-///     <c>ICapacityReservation.ReleaseByOperationAsync(tenantId, operationId, Expired)</c>. Targets
-///     the deposit-expiry path: all active holds for the operation.</item>
+///   <item><see cref="ReleaseScope.Hold"/> (<c>booking.scheduled.hold_expiry.v1</c>):
+///     if <see cref="ReleaseExpiredHoldsCommand.HoldId"/> is null or empty, log a warning and return
+///     Unit WITHOUT releasing anything (fail closed — prevents accidental bulk release on a malformed
+///     scheduled-expiry payload). Only when HoldId is present: call
+///     <c>ICapacityReservation.ReleaseAsync(tenantId, holdId, Expired)</c>.</item>
+///   <item><see cref="ReleaseScope.Operation"/> (<c>capacity.hold_release.requested.v1</c>):
+///     call <c>ICapacityReservation.ReleaseByOperationAsync(tenantId, operationId, Expired)</c>.
+///     This bulk-release-by-op is intentional for the deposit-expiry seam.</item>
 /// </list>
 /// Both release methods are idempotent — calling them on an already-released / expired / finalized
 /// hold is a no-op (rows_affected == 0), safe under duplicate delivery (§14.3, Inv-5).
@@ -33,12 +36,13 @@ namespace Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 /// (spec 06 §10). Driving an op transition from this handler would either duplicate existing logic or
 /// invent an illegal edge. If an op is still in <c>Held</c> when the scheduled TTL fires (rare edge
 /// case where the fulfillment driver stalled), the SLA sweeper owns recovery. T7's fail-closed finalize
-/// handles a stale-hold op by routing <c>HoldNoLongerValid → Reconciling</c> rather than forcing
-/// an op-status here.</para>
+/// handles a stale-hold op by routing <c>HoldNoLongerValid → CompensationRequired</c> rather than
+/// forcing an op-status here.</para>
 /// </summary>
 public sealed class ReleaseExpiredHoldsCommandHandler(
     ICapacityReservation capacityReservation,
-    IAuditEventRepository auditRepo)
+    IAuditEventRepository auditRepo,
+    ILogger<ReleaseExpiredHoldsCommandHandler> logger)
     : IRequestHandler<ReleaseExpiredHoldsCommand, Unit>
 {
     public async Task<Unit> Handle(ReleaseExpiredHoldsCommand command, CancellationToken ct)
@@ -46,12 +50,23 @@ public sealed class ReleaseExpiredHoldsCommandHandler(
         var tenantId = command.TenantId;
         var operationId = command.OperationId;
 
-        if (command.HoldId is not null)
+        if (command.Scope == ReleaseScope.Hold)
         {
+            // FIX 5: fail CLOSED — a booking.scheduled.hold_expiry.v1 message with a missing
+            // hold_id must never trigger a bulk release. Log a warning and return Unit (no-op).
+            if (string.IsNullOrEmpty(command.HoldId))
+            {
+                logger.LogWarning(
+                    "Hold expiry message for operation {OperationId} (tenant {TenantId}) is missing hold_id — ignoring to prevent accidental bulk release.",
+                    operationId, tenantId);
+                return Unit.Value;
+            }
+
             await capacityReservation.ReleaseAsync(tenantId, command.HoldId, ReleaseReason.Expired, ct);
         }
         else
         {
+            // ReleaseScope.Operation: bulk-release-by-op (deposit-expiry path — intentional).
             await capacityReservation.ReleaseByOperationAsync(tenantId, operationId, ReleaseReason.Expired, ct);
         }
 

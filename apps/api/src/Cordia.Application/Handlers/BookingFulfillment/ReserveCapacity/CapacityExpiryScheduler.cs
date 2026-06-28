@@ -21,6 +21,11 @@ public sealed class CapacityExpiryScheduler(IScheduledJobRepository jobs)
     /// <summary>
     /// Inserts a scheduled hold-expiry job for the given hold. Must be called inside the
     /// ambient <c>IUnitOfWork.ExecuteInTransactionAsync</c> block — shares the scoped DbContext.
+    /// <para>
+    /// Uses a deterministic <c>JobId = "sj_holdexp_{holdId}"</c> so that re-drives enqueuing
+    /// the same hold produce exactly one scheduled_job row (idempotent enqueue — FIX 6).
+    /// If a job for this hold already exists (any status), this method is a no-op.
+    /// </para>
     /// </summary>
     /// <param name="tenantId">Tenant owning the operation and hold.</param>
     /// <param name="operationId">Operation the hold belongs to.</param>
@@ -34,10 +39,16 @@ public sealed class CapacityExpiryScheduler(IScheduledJobRepository jobs)
         DateTimeOffset expiresAt,
         CancellationToken ct)
     {
+        var jobId = $"sj_holdexp_{holdId}";
+
+        // Idempotent enqueue: if a job for this hold already exists (e.g. re-drive), skip.
+        if (await jobs.ExistsAsync(tenantId, jobId, ct))
+            return;
+
         await jobs.AddAsync(new ScheduledJob
         {
             TenantId = tenantId,
-            JobId = $"sj_{Guid.NewGuid():N}",
+            JobId = jobId,
             JobType = "booking.scheduled.hold_expiry.v1",
             RunAfter = expiresAt,
             DestinationQueue = "booking.scheduled",

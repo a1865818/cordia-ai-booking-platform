@@ -81,22 +81,25 @@ public static class ApplicationServiceCollectionExtensions
 
             // T6 (spec 07): scheduled hold-expiry job — releases a single hold by ID.
             // hold_id is extracted from the job payload JSON (set by CapacityExpiryScheduler).
+            // Scope.Hold: if hold_id is missing the handler FAILS CLOSED (FIX 5 — no bulk release).
             registry.Register("booking.scheduled.hold_expiry.v1",
                 env => new ReleaseExpiredHoldsCommand(
                     env.TenantId,
                     env.OperationId ?? string.Empty,
                     ExtractHoldId(env.Payload),
-                    env.MessageId));
+                    env.MessageId,
+                    ReleaseScope.Hold));
 
             // T6 (spec 07): deposit-expiry capacity release — releases all active holds for the op.
             // Emitted by ProcessDepositEventCommandHandler on AwaitingPayment→Expired (spec 06 §10).
-            // HoldId is null because the deposit-expiry event carries only operation_id + tenant_id.
+            // HoldId is null; Scope.Operation triggers bulk-release-by-op (intentional).
             registry.Register("capacity.hold_release.requested.v1",
                 env => new ReleaseExpiredHoldsCommand(
                     env.TenantId,
                     env.OperationId ?? string.Empty,
                     null,
-                    env.MessageId));
+                    env.MessageId,
+                    ReleaseScope.Operation));
 
             return registry;
         });

@@ -15,6 +15,11 @@ public class ScheduledJobRepository(ApplicationDbContext db) : IScheduledJobRepo
         await db.SaveChangesAsync(ct);
     }
 
+    public Task<bool> ExistsAsync(string tenantId, string jobId, CancellationToken ct = default)
+        => db.Set<ScheduledJob>()
+            .IgnoreQueryFilters()
+            .AnyAsync(j => j.TenantId == tenantId && j.JobId == jobId, ct);
+
     public async Task<IReadOnlyList<ScheduledJob>> ListDueAsync(
         string tenantId,
         DateTimeOffset now,

@@ -105,7 +105,7 @@ public class ReserveCapacityNoCapacityTests
             {
                 party_size = partySize,
                 resource_id = resourceId,
-                requested_at = requestedAt.ToString("O"),
+                starts_at = requestedAt.ToString("O"),
             }),
             PayloadHash = "h",
             SchemaVersion = "1.0",
@@ -390,5 +390,172 @@ public class ReserveCapacityNoCapacityTests
 
         _scheduledJobRepo.Verify(r => r.AddAsync(
             It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── FIX 1: starts_at is read as the primary slot-time field ─────────────────────────────
+
+    /// <summary>
+    /// FIX 1: ParseCanonicalPayload reads starts_at first (canonical agent field).
+    /// A payload with starts_at but no requested_at must derive a slot key and reach the
+    /// tracked path (slot found → ReserveAsync called).
+    /// </summary>
+    [Fact]
+    public async Task StartsAt_IsReadFirst_TrackedPathFires()
+    {
+        var (tenantId, opId, intentId) = ("t-startsat-e", "op-startsat-e", "int-startsat-e");
+        var resourceId = "r5";
+        var startsAt = new DateTimeOffset(2026, 8, 1, 9, 0, 0, TimeSpan.Zero);
+        var slotId = $"{resourceId}|{startsAt:O}";
+        var holdId = "hold_starts_at_test";
+
+        var op = MakeOp(tenantId, opId, OperationStatus.ReservingCapacity, version: 0, intentId: intentId);
+
+        // Revision uses starts_at only — no requested_at (canonical agent payload format).
+        var rev = new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload = JsonSerializer.Serialize(new
+            {
+                party_size = 1,
+                resource_id = resourceId,
+                starts_at = startsAt.ToString("O"),
+                // NO requested_at
+            }),
+            PayloadHash = "h",
+            SchemaVersion = "1.0",
+            TenantPolicyVersion = "1.0",
+        };
+        var hold = MakeHold(tenantId, holdId, slotId);
+
+        _opRepo.SetupSequence(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(op)
+            .ReturnsAsync(op);
+
+        _intentRepo.Setup(r => r.GetRevisionAsync(tenantId, intentId, 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(rev);
+
+        // Slot row EXISTS → tracked.
+        _slotRepo.Setup(r => r.GetAsync(tenantId, slotId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacitySlot
+            {
+                TenantId = tenantId,
+                SlotId = slotId,
+                ResourceId = resourceId,
+                StartsAt = startsAt,
+                TotalCapacity = 2,
+                Version = 0,
+            });
+
+        // Reserve returns Held.
+        _capacityReservation.Setup(r => r.ReserveAsync(
+                It.Is<ReserveRequest>(req => req.TenantId == tenantId && req.SlotId == slotId),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReservationOutcome.Held(hold));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.ReservingCapacity, OperationStatus.Held,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(new ReserveCapacityCommand(tenantId, opId), CancellationToken.None);
+
+        // Tracked path fires: ReserveAsync was called with the starts_at-derived slotId.
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _capacityReservation.Verify(r => r.ReserveAsync(
+            It.Is<ReserveRequest>(req => req.SlotId == slotId),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _scheduledJobRepo.Verify(r => r.AddAsync(
+            It.Is<ScheduledJob>(j => j.Payload.Contains(holdId)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// FIX 1 back-compat: when starts_at is absent but requested_at is present, the handler
+    /// falls back to requested_at and still derives a valid slot key (backward-compatible behavior).
+    /// </summary>
+    [Fact]
+    public async Task RequestedAt_FallbackWhenStartsAtAbsent_TrackedPathFires()
+    {
+        var (tenantId, opId, intentId) = ("t-fallback-f", "op-fallback-f", "int-fallback-f");
+        var resourceId = "r6";
+        var requestedAt = new DateTimeOffset(2026, 8, 2, 10, 0, 0, TimeSpan.Zero);
+        var slotId = $"{resourceId}|{requestedAt:O}";
+        var holdId = "hold_fallback_test";
+
+        var op = MakeOp(tenantId, opId, OperationStatus.ReservingCapacity, version: 0, intentId: intentId);
+
+        // Revision uses requested_at only (back-compat payload, no starts_at).
+        var rev = new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload = JsonSerializer.Serialize(new
+            {
+                party_size = 1,
+                resource_id = resourceId,
+                requested_at = requestedAt.ToString("O"),
+                // NO starts_at
+            }),
+            PayloadHash = "h",
+            SchemaVersion = "1.0",
+            TenantPolicyVersion = "1.0",
+        };
+        var hold = MakeHold(tenantId, holdId, slotId);
+
+        _opRepo.SetupSequence(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(op)
+            .ReturnsAsync(op);
+
+        _intentRepo.Setup(r => r.GetRevisionAsync(tenantId, intentId, 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(rev);
+
+        _slotRepo.Setup(r => r.GetAsync(tenantId, slotId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacitySlot
+            {
+                TenantId = tenantId,
+                SlotId = slotId,
+                ResourceId = resourceId,
+                StartsAt = requestedAt,
+                TotalCapacity = 2,
+                Version = 0,
+            });
+
+        _capacityReservation.Setup(r => r.ReserveAsync(
+                It.Is<ReserveRequest>(req => req.SlotId == slotId),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReservationOutcome.Held(hold));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.ReservingCapacity, OperationStatus.Held,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(new ReserveCapacityCommand(tenantId, opId), CancellationToken.None);
+
+        // Back-compat fallback fires: ReserveAsync was called with the requested_at-derived slotId.
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _capacityReservation.Verify(r => r.ReserveAsync(
+            It.Is<ReserveRequest>(req => req.SlotId == slotId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── FIX 7: HoldTtl default is 45 minutes ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// FIX 7: CapacityOptions.HoldTtl default is 45 minutes (deposit window 30m + 15m buffer).
+    /// </summary>
+    [Fact]
+    public void CapacityOptions_DefaultHoldTtl_Is45Minutes()
+    {
+        var options = new CapacityOptions();
+        Assert.Equal(TimeSpan.FromMinutes(45), options.HoldTtl);
     }
 }
