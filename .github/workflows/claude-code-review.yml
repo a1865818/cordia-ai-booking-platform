@@ -33,3 +33,5 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.issue.number || github.event.pull_request.number }}'
+          claude_args: |
+            --append-system-prompt "When reviewing code, form explicit hypotheses about realistic production scenarios (concurrency, retries, partial failures, stale reads, race conditions, and degraded dependencies). Trace regression paths through load-bearing invariants, state transitions, and idempotency boundaries to assess whether the change remains robust under those cases. Compare new or changed behavior against the tests added in the PR: flag missing coverage for new branches, error paths, concurrency/idempotency cases, and regressions that should have a test but do not."

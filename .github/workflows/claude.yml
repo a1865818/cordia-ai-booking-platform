@@ -38,7 +38,7 @@ jobs:
           claude_args: |
             --model claude-opus-4-8
             --effort xhigh
-            --allowedTools Bash(gh issue:*),Bash(gh search issues:*)
+            --allowedTools "mcp__github__create_issue,mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__update_issue,Bash(gh issue create:*),Bash(gh issue view:*),Bash(gh search issues:*),Bash(gh api:*),Bash(gh label create:*)"
 
           additional_permissions: |
             actions: read
