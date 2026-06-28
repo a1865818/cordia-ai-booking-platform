@@ -43,6 +43,8 @@ public static class InfrastructureServiceCollectionExtensions
                         .MapEnum<DlqReplayState>("dlq_replay_state_enum")
                         .MapEnum<NotificationState>("notification_state_enum")
                         .MapEnum<NotificationEvent>("notification_event_enum")
+                        .MapEnum<NotificationChannel>("notification_channel_enum")
+                        .MapEnum<MessagePriority>("message_priority_enum")
                         .MapEnum<VerificationActionEnum>("verification_action_enum")
                         .MapEnum<CatalogStatus>("catalog_status_enum")
                         .MapEnum<DepositStatus>("deposit_status_enum")
@@ -110,6 +112,16 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 06 T11 validation policy seam — singleton (always-pass stub; spec 04 real engine replaces).
         services.AddSingleton<IValidationPolicy, AlwaysValidPolicy>();
+
+        // Spec 10 T2 — notification provider adapters (one per channel; injected as IEnumerable<INotificationProviderAdapter>).
+        services.AddScoped<INotificationProviderAdapter, SmsNotificationAdapter>();
+        services.AddScoped<INotificationProviderAdapter, EmailNotificationAdapter>();
+        services.AddScoped<INotificationProviderAdapter, ChannelCallbackAdapter>();
+
+        // Spec 10 T2 — notification support seams (stubs; real store/consent/minimization is §31).
+        services.AddScoped<INotificationTemplateResolver, NotificationTemplateResolver>();
+        services.AddScoped<IConsentGate, ConsentGate>();
+        services.AddScoped<INotificationRecipientResolver, NotificationRecipientResolver>();
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 

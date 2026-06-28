@@ -94,6 +94,8 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
                 ["Messaging:Publisher:Enabled"] = "false",
                 ["Messaging:ScheduledJobPoller:Enabled"] = "false",
                 ["Messaging:StepSweeper:Enabled"] = "false",
+                ["Messaging:NotificationReconcile:Enabled"] = "false",
+                ["Messaging:MissingNotificationAudit:Enabled"] = "false",
             })
             .Build();
 

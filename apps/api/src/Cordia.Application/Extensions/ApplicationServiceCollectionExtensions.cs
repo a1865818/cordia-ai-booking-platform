@@ -7,7 +7,13 @@ using Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
 using Cordia.Application.Handlers.BookingFulfillment.Sla;
 using Cordia.Application.Handlers.BookingFulfillment.UserAction;
 using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
+using Cordia.Application.Handlers.Notifications;
+using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
+using Cordia.Application.Handlers.Notifications.Reconcile;
+using Cordia.Application.Handlers.Notifications.Retry;
+using Cordia.Application.Handlers.Notifications.SendNotification;
 using Cordia.Application.Messaging;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using FluentValidation;
@@ -101,6 +107,54 @@ public static class ApplicationServiceCollectionExtensions
                     env.MessageId,
                     ReleaseScope.Operation));
 
+            // Spec 10 T2 — notification delivery lane. These factories are the concrete realization
+            // of the spec §5 notification.requested.v1 logical contract (full documentation in T6).
+            // Each message type maps an outbox-emitted notification event to a SendNotificationCommand
+            // routed through InboxDeduplicationBehavior (consumer "notification.sender").
+            //
+            // notification.sla_escalation.v1 is intentionally NOT registered here — it is an
+            // ops-internal signal; spec 06 already creates the operations_work_item on SLA breach
+            // and it is not a customer-facing catalogue message.
+            registry.Register("notification.booking_confirmed.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.BookingConfirmed, MessagePriority.High, env.CorrelationId));
+            registry.Register("notification.booking_failed.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            registry.Register("notification.still_confirming.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.StillPending, MessagePriority.Normal, env.CorrelationId));
+            registry.Register("notification.user_action_required.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.ActionRequired, MessagePriority.Critical, env.CorrelationId));
+            registry.Register("notification.alternatives_required.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.NoCapacityAlternatives, MessagePriority.High, env.CorrelationId));
+            registry.Register("notification.rejected.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            registry.Register("notification.deposit_expired.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            // notification.waitlisted.v1 maps to WaitlistOffer at HIGH (not Critical) on purpose:
+            // this is the informational "customer added to the waitlist" message emitted by
+            // RespondToAlternatives — it carries NO actionable expiry deadline, so it must not
+            // occupy the Critical lane. The catalogue's Critical WaitlistOffer (§18.4/§8) is the
+            // deadline-bound waitlist *match* offer from spec 11 (not yet implemented); marking
+            // this informational message Critical would falsely imply a deadline (Inv-16). When
+            // spec 11's waitlist-match offer arrives it will register its own Critical message type.
+            registry.Register("notification.waitlisted.v1",
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.WaitlistOffer, MessagePriority.High, env.CorrelationId));
+
+            // T5a (spec 10): durable notification retry — fired by ScheduledJobPollerHostedService
+            // after next_eligible_at has passed. notification_id is extracted from the payload.
+            registry.Register("notification.retry.requested.v1",
+                env => new RetryNotificationCommand(
+                    env.TenantId,
+                    ExtractNotificationId(env.Payload) ?? string.Empty,
+                    env.MessageId));
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
@@ -115,6 +169,19 @@ public static class ApplicationServiceCollectionExtensions
         // T9: SLA evaluator seam — scoped; resolved by SlaEvaluatorHostedService through domain interface
         // so Infrastructure does not reference Application directly.
         services.AddScoped<ISlaEvaluator, MediatRSlaEvaluator>();
+
+        // T4 (spec 10): notification reconcile seam — scoped; resolved by ReconcileNotificationsHostedService
+        // through the domain interface so Infrastructure does not reference Application directly.
+        services.AddScoped<INotificationReconciler, MediatRNotificationReconciler>();
+
+        // T5b (spec 10): missing-terminal-notification auditor seam — scoped; resolved by
+        // MissingNotificationAuditHostedService through the domain interface so Infrastructure
+        // does not reference Application directly.
+        services.AddScoped<IMissingNotificationAuditor, MediatRMissingNotificationAuditor>();
+
+        // T5a (spec 10): durable retry scheduler — scoped; injected into SendNotificationCommandHandler,
+        // ReconcileNotificationCommandHandler, and RetryNotificationCommandHandler.
+        services.AddScoped<NotificationRetryScheduler>();
 
         return services;
     }
@@ -131,6 +198,21 @@ public static class ApplicationServiceCollectionExtensions
 
         return payload.TryGetProperty("hold_id", out var h) && h.ValueKind == JsonValueKind.String
             ? h.GetString()
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts the <c>notification_id</c> string from a job-payload
+    /// <see cref="JsonElement"/>. Returns <see langword="null"/> when the element is
+    /// Undefined/Null, the property is absent, or the value is not a string.
+    /// </summary>
+    private static string? ExtractNotificationId(JsonElement payload)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty("notification_id", out var n) && n.ValueKind == JsonValueKind.String
+            ? n.GetString()
             : null;
     }
 }

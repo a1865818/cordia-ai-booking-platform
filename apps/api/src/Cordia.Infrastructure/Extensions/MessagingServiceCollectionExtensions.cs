@@ -48,6 +48,15 @@ internal static class MessagingServiceCollectionExtensions
         // appsettings.Test.json so existing Alba integration tests are unaffected.
         services.AddHostedService<SlaEvaluatorHostedService>();
 
+        // T4 (spec 10): notification reconciler; disabled via Messaging:NotificationReconcile:Enabled=false
+        // in appsettings.Test.json so existing Alba integration tests are unaffected.
+        services.AddHostedService<ReconcileNotificationsHostedService>();
+
+        // T5b (spec 10): missing-terminal-notification auditor; disabled via
+        // Messaging:MissingNotificationAudit:Enabled=false in appsettings.Test.json so existing
+        // Alba integration tests are unaffected.
+        services.AddHostedService<MissingNotificationAuditHostedService>();
+
         return services;
     }
 }

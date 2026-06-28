@@ -9,6 +9,7 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
 {
     public void Configure(EntityTypeBuilder<Notification> builder)
     {
+        // PK (tenant_id, notification_id) = §22.1 unique logical-dedup constraint (Inv-9).
         builder.HasKey(e => new { e.TenantId, e.NotificationId });
 
         builder.Property(e => e.TenantId).IsRequired();

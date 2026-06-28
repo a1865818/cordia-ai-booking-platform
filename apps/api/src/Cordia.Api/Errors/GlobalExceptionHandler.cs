@@ -92,6 +92,12 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Invalid state transition", ex.Message, cancellationToken);
                 return true;
 
+            case InvalidNotificationStateTransitionException ex:
+                logger.LogWarning(ex, "Invalid notification state transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid notification state transition", ex.Message, cancellationToken);
+                return true;
+
             case OperationConflictException ex:
                 logger.LogWarning(ex, "Operation conflict: operationId={OperationId}", ex.OperationId);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,

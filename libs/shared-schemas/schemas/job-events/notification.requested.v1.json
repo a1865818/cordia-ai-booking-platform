@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/notification.requested.v1.json",
+  "title": "NotificationRequestedV1",
+  "description": "Queue-only trigger contract (spec 10 §5) that crosses the broker from upstream producers (specs 06/09/11) to the notification consumer.\n\nKEY DESIGN NOTES:\n(a) notification_id is DERIVED by the consumer — not carried — as H(tenant, operation, event_type, recipient, template_version, material_revision). Redeliveries and republishes of the same logical event therefore always derive the same id and dedup (Inv-9).\n(b) Implementation note: the concrete producers (spec 06/09) currently emit per-event message types — notification.booking_confirmed.v1, notification.booking_failed.v1, notification.still_confirming.v1, notification.user_action_required.v1, notification.alternatives_required.v1, notification.rejected.v1, notification.deposit_expired.v1, notification.waitlisted.v1 — which the ConsumerRegistry maps to this logical contract's event_type + priority.\n(c) Carries no secrets, PAN, or CVV (Inv-12). recipient_ref is an opaque minimized handle; data_refs contains only safe reference tokens, never raw card data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "correlation_id",
+    "intent_revision",
+    "event_type",
+    "recipient_ref",
+    "template_hint",
+    "priority",
+    "data_refs"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "notification.requested.v1",
+      "description": "Explicit schema discriminator; always 'notification.requested.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes must be scoped to this tenant."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Correlation identifier propagated across all messages in an operation chain."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause of this trigger (nullable — may be absent for synthetic or system-generated triggers)."
+    },
+    "operation_id": {
+      "type": ["string", "null"],
+      "description": "Stable operation identifier. Null only for non-operation messages (e.g. system-level administrative notifications). For all booking-lifecycle events this MUST be non-null as it is an identity input to notification_id derivation."
+    },
+    "intent_revision": {
+      "type": "integer",
+      "description": "Material revision of the intent at the time the triggering state change committed. Forms part of the notification_id identity — a material intent change produces a new notification_id and a new logical notification (Inv-10).",
+      "minimum": 0
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "request_accepted",
+        "still_pending",
+        "action_required",
+        "booking_confirmed",
+        "no_capacity_alternatives",
+        "waitlist_offer",
+        "final_failure",
+        "cancel_or_modify_confirmed"
+      ],
+      "description": "Required-communication catalogue (spec 10 §18.4). Maps to NotificationEventType enum. Determines the message priority, template selection, and dedup identity."
+    },
+    "recipient_ref": {
+      "type": "string",
+      "description": "Opaque minimized recipient handle (e.g. recip_01...). NOT a raw phone number or email address in plaintext. The consumer dereferences this from the tenant-scoped recipient store to obtain the actual delivery destination. Carries no PAN/CVV (Inv-12)."
+    },
+    "template_hint": {
+      "type": "string",
+      "description": "Advisory hint passed to the template resolver (e.g. 'booking_confirmed'). The resolver maps this to a concrete template_version that becomes part of the notification_id identity."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["critical", "high", "normal"],
+      "description": "Delivery priority aligning with MessagePriority enum. Governs the dispatch latency target (§8) and retry budget: critical ≤3 s p95, high ≤10 s p95, normal ≤30 s p95."
+    },
+    "data_refs": {
+      "type": "object",
+      "description": "Safe, non-secret reference data used by the template renderer. All fields are nullable. Never contains PAN, CVV, or raw payment credentials (Inv-12).",
+      "additionalProperties": false,
+      "properties": {
+        "booking_id": {
+          "type": ["string", "null"],
+          "description": "Opaque booking identifier for template context (e.g. bk_01...). Present for booking-lifecycle events."
+        },
+        "offer_expires_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO-8601 with offset: deadline for a WaitlistOffer (§18.4). Null for all other event types. The Critical retry window for waitlist_offer must not exceed this value minus a safety margin (§8)."
+        },
+        "payment_link_token": {
+          "type": ["string", "null"],
+          "description": "Tokenized Stripe payment link reference for action_required (deposit, §09). Null for all other event types. This is a URL-safe token, never a PAN or CVV (Inv-12)."
+        }
+      }
+    }
+  }
+}

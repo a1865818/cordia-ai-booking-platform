@@ -42,6 +42,8 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
                     .MapEnum<DlqReplayState>("dlq_replay_state_enum")
                     .MapEnum<NotificationState>("notification_state_enum")
                     .MapEnum<NotificationEvent>("notification_event_enum")
+                    .MapEnum<NotificationChannel>("notification_channel_enum")
+                    .MapEnum<MessagePriority>("message_priority_enum")
                     .MapEnum<VerificationActionEnum>("verification_action_enum")
                     .MapEnum<CatalogStatus>("catalog_status_enum")
                     .MapEnum<DepositStatus>("deposit_status_enum")
