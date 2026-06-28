@@ -229,8 +229,12 @@ public sealed class ReserveCapacityCommandHandler(
             var root = doc.RootElement;
 
             // party_size — default 1 (a booking always needs ≥1 unit).
+            // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
+            // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS
+            // (InvalidOperationException, not JsonException) on a non-Number element.
             var requestedCapacity = 1;
             if (root.TryGetProperty("party_size", out var partySizeEl)
+                && partySizeEl.ValueKind == JsonValueKind.Number
                 && partySizeEl.TryGetInt32(out var ps)
                 && ps > 0)
             {

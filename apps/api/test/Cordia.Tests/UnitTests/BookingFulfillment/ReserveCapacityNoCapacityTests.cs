@@ -475,6 +475,73 @@ public class ReserveCapacityNoCapacityTests
     }
 
     /// <summary>
+    /// Regression (live-smoke): a real canonical payload serializes an ABSENT party_size as
+    /// explicit JSON <c>null</c> (also duration_minutes/target_booking_version). JsonElement.TryGetInt32
+    /// throws InvalidOperationException (NOT JsonException) on a non-Number element, so the parse must
+    /// guard ValueKind == Number first. This payload must parse cleanly (capacity defaults to 1) and
+    /// reach the tracked path — not throw.
+    /// </summary>
+    [Fact]
+    public async Task NullPartySize_DoesNotThrow_DefaultsToOne_TrackedPathFires()
+    {
+        var (tenantId, opId, intentId) = ("t-nullps", "op-nullps", "int-nullps");
+        var serviceId = "svc-nullps";
+        var startsAt = new DateTimeOffset(2026, 8, 2, 9, 0, 0, TimeSpan.Zero);
+        var slotId = $"{serviceId}|{startsAt:O}";
+        var holdId = "hold_nullps";
+
+        var op = MakeOp(tenantId, opId, OperationStatus.ReservingCapacity, version: 0, intentId: intentId);
+
+        // Mirror the real BookingRequest serialization: explicit nulls for absent fields.
+        var rev = new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload =
+                $"{{\"operation\":\"create\",\"service_id\":\"{serviceId}\",\"location_id\":\"\"," +
+                $"\"starts_at\":\"{startsAt:O}\",\"party_size\":null,\"duration_minutes\":null," +
+                "\"target_booking_id\":\"\",\"target_booking_version\":null,\"special_requests\":[]}",
+            PayloadHash = "h",
+            SchemaVersion = "1.0",
+            TenantPolicyVersion = "1.0",
+        };
+        var hold = MakeHold(tenantId, holdId, slotId);
+
+        _opRepo.SetupSequence(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(op)
+            .ReturnsAsync(op);
+        _intentRepo.Setup(r => r.GetRevisionAsync(tenantId, intentId, 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(rev);
+        _slotRepo.Setup(r => r.GetAsync(tenantId, slotId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacitySlot
+            {
+                TenantId = tenantId,
+                SlotId = slotId,
+                ResourceId = serviceId,
+                StartsAt = startsAt,
+                TotalCapacity = 2,
+                Version = 0,
+            });
+        _capacityReservation.Setup(r => r.ReserveAsync(
+                It.IsAny<ReserveRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReservationOutcome.Held(hold));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.ReservingCapacity, OperationStatus.Held,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(new ReserveCapacityCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+        // Tracked path fired with capacity defaulted to 1 (party_size was null).
+        _capacityReservation.Verify(r => r.ReserveAsync(
+            It.Is<ReserveRequest>(req => req.SlotId == slotId && req.RequestedCapacity == 1),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
     /// FIX 1 back-compat: when starts_at is absent but requested_at is present, the handler
     /// falls back to requested_at and still derives a valid slot key (backward-compatible behavior).
     /// </summary>
