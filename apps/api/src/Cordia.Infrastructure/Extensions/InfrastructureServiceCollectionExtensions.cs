@@ -49,7 +49,9 @@ public static class InfrastructureServiceCollectionExtensions
                         .MapEnum<WaitlistOfferStatus>("waitlist_offer_status_enum")
                         .MapEnum<PreorderSagaState>("preorder_saga_state_enum")
                         .MapEnum<SignalType>("signal_type_enum")
-                        .MapEnum<EndpointStatus>("endpoint_status_enum"))
+                        .MapEnum<EndpointStatus>("endpoint_status_enum")
+                        .MapEnum<HoldStatus>("hold_status_enum")
+                        .MapEnum<ReleaseReason>("release_reason_enum"))
                 .UseSnakeCaseNamingConvention();
         });
 
@@ -77,6 +79,20 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
 
+        // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
+        services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();
+        services.AddScoped<ICapacityHoldRepository, CapacityHoldRepository>();
+        services.AddScoped<ICapacityReservation, FirstPartyCapacityReservation>();
+
+        // Spec 07 T4 — primitive resolver + stub external adapter (spec 07 §13 open decision:
+        // no real provider configured yet; resolver defaults every triple to FirstParty).
+        services.AddSingleton<ICapacityPrimitiveResolver, CapacityPrimitiveResolver>();
+        services.AddSingleton<IExternalInventoryAdapter, StubExternalInventoryAdapter>();
+
+        // Spec 07 T5 — capacity options bound from "Capacity" config section.
+        services.AddOptions<CapacityOptions>()
+            .BindConfiguration(CapacityOptions.SectionName);
+
         services.AddScoped<RetentionSweepHandler>();
 
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
@@ -87,9 +103,6 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IRetryPolicy, FullJitterRetryPolicy>();
         services.AddSingleton<IProviderCircuitBreaker, InMemoryProviderCircuitBreaker>();
         services.AddSingleton<IBookingProviderAdapter, StubBookingProviderAdapter>();
-
-        // Spec 06 T6 capacity seam — singleton (stateless stub; spec 07 replaces the impl).
-        services.AddSingleton<ICapacityService, AlwaysAvailableCapacityService>();
 
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).
         services.AddSingleton<IDepositPolicy, NoDepositPolicy>();

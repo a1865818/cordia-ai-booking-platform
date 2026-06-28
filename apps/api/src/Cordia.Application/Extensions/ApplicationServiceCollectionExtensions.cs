@@ -1,9 +1,12 @@
-﻿using Cordia.Application.Behaviours;
+﻿using System.Text.Json;
+using Cordia.Application.Behaviours;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.AdvanceOperation;
 using Cordia.Application.Handlers.BookingFulfillment.DepositEvent;
+using Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
 using Cordia.Application.Handlers.BookingFulfillment.Sla;
 using Cordia.Application.Handlers.BookingFulfillment.UserAction;
+using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 using Cordia.Application.Messaging;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
@@ -76,6 +79,28 @@ public static class ApplicationServiceCollectionExtensions
                     env.OperationId ?? string.Empty,
                     env.MessageId));
 
+            // T6 (spec 07): scheduled hold-expiry job — releases a single hold by ID.
+            // hold_id is extracted from the job payload JSON (set by CapacityExpiryScheduler).
+            // Scope.Hold: if hold_id is missing the handler FAILS CLOSED (FIX 5 — no bulk release).
+            registry.Register("booking.scheduled.hold_expiry.v1",
+                env => new ReleaseExpiredHoldsCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    ExtractHoldId(env.Payload),
+                    env.MessageId,
+                    ReleaseScope.Hold));
+
+            // T6 (spec 07): deposit-expiry capacity release — releases all active holds for the op.
+            // Emitted by ProcessDepositEventCommandHandler on AwaitingPayment→Expired (spec 06 §10).
+            // HoldId is null; Scope.Operation triggers bulk-release-by-op (intentional).
+            registry.Register("capacity.hold_release.requested.v1",
+                env => new ReleaseExpiredHoldsCommand(
+                    env.TenantId,
+                    env.OperationId ?? string.Empty,
+                    null,
+                    env.MessageId,
+                    ReleaseScope.Operation));
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
@@ -84,10 +109,28 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<RetryScheduler>();
         services.AddScoped<ManualReviewEscalator>();
 
+        // Spec 07 T5 — capacity expiry scheduler; scoped to share the ambient DbContext.
+        services.AddScoped<CapacityExpiryScheduler>();
+
         // T9: SLA evaluator seam — scoped; resolved by SlaEvaluatorHostedService through domain interface
         // so Infrastructure does not reference Application directly.
         services.AddScoped<ISlaEvaluator, MediatRSlaEvaluator>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Safely extracts the <c>hold_id</c> string from a job-payload <see cref="JsonElement"/>.
+    /// Returns <see langword="null"/> when the element is Undefined/Null or the property is absent
+    /// or not a string — guards against malformed payloads without throwing.
+    /// </summary>
+    private static string? ExtractHoldId(JsonElement payload)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty("hold_id", out var h) && h.ValueKind == JsonValueKind.String
+            ? h.GetString()
+            : null;
     }
 }

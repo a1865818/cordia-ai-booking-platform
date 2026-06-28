@@ -1,8 +1,11 @@
 ﻿#pragma warning disable xUnit1051
+using System.Text.Json;
 using Cordia.Application.Extensions;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
@@ -16,13 +19,22 @@ using Microsoft.Extensions.Options;
 
 namespace Cordia.Tests.IntegrationTests.Messaging;
 
-// ── Fake capacity service ─────────────────────────────────────────────────────────────────────
+// ── Fake capacity reservation ─────────────────────────────────────────────────────────────────
 
-/// <summary>Fake ICapacityService that always returns NoCapacity (for FM#8 tests).</summary>
-file sealed class NoCapacityService : ICapacityService
+/// <summary>Fake ICapacityReservation that always returns NoCapacity (for FM#8 tests).</summary>
+file sealed class NoCapacityReservation : ICapacityReservation
 {
-    public Task<CapacityResult> TryReserveAsync(string tenantId, string operationId, CancellationToken ct = default)
-        => Task.FromResult(CapacityResult.NoCapacity);
+    public Task<ReservationOutcome> ReserveAsync(ReserveRequest req, CancellationToken ct = default)
+        => Task.FromResult(ReservationOutcome.NoCapacity());
+
+    public Task ReleaseAsync(string tenantId, string holdId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.CompletedTask;
+
+    public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.FromResult(0);
+
+    public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
+        => Task.FromResult(FinalizeOutcome.NotTracked);
 }
 
 // ── Fake booking provider adapter ────────────────────────────────────────────────────────────
@@ -104,7 +116,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
     private static ServiceProvider BuildContainer(
         IBookingProviderAdapter? fakeAdapter = null,
-        ICapacityService? fakeCapacity = null)
+        ICapacityReservation? fakeCapacity = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -126,7 +138,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
         if (fakeAdapter is not null)
             services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
         if (fakeCapacity is not null)
-            services.AddSingleton<ICapacityService>(fakeCapacity);
+            services.AddScoped<ICapacityReservation>(_ => fakeCapacity);
 
         return services.BuildServiceProvider();
     }
@@ -171,10 +183,12 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     // ── Test 1: NoCapacity → AlternativesRequired (FM#8) ────────────────────────────────────
 
     /// <summary>
-    /// FM#8 — fake ICapacityService returns NoCapacity.
+    /// FM#8 — slot is fully booked, so the real ICapacityReservation returns NoCapacity.
     /// From Accepted → ValidateOperation → ReservingCapacity → (no capacity) → AlternativesRequired.
     /// Assert: op.Status == AlternativesRequired, notification.alternatives_required.v1 outbox,
     ///   operation.alternatives_required audit.
+    /// Seeds: a capacity_slots row (total=1, held=1 = full) and an intent revision whose
+    /// canonical_payload maps to that slot key (resource_id + starts_at).
     /// </summary>
     [Fact]
     public async Task NoCapacity_FromAccepted_RoutesToAlternativesRequired()
@@ -183,11 +197,68 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         var tenantId = $"t6-nocap-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
+        var resourceId = $"res-{Guid.NewGuid():N}";
+        var requestedAt = DateTimeOffset.UtcNow.AddHours(2);
+        // Slot key mirrors CapacitySlotKey.Derive(resourceId, null, null, requestedAt).
+        var slotId = $"{resourceId}|{requestedAt:O}";
         string operationId;
 
         await using (var seedCtx = fixture.CreateContext(tenantId))
         {
-            operationId = await TestData.SeedOperationAsync(seedCtx, tenantId, OperationStatus.Accepted);
+            // Seed a FULL slot (total=1, held=1) so the reservation returns NoCapacity.
+            seedCtx.CapacitySlots.Add(new CapacitySlot
+            {
+                TenantId = tenantId,
+                SlotId = slotId,
+                ResourceId = resourceId,
+                StartsAt = requestedAt,
+                TotalCapacity = 1,
+                HeldCapacity = 1,
+                BookedCapacity = 0,
+                Version = 0,
+            });
+
+            // Seed intent + revision with canonical payload pointing to the slot.
+            var intentId = $"int-{Guid.NewGuid():N}";
+            operationId = $"op-{Guid.NewGuid():N}";
+            var canonicalPayload = JsonSerializer.Serialize(new
+            {
+                party_size = 1,
+                resource_id = resourceId,
+                starts_at = requestedAt.ToString("O"),
+            });
+
+            var intent = new BookingIntent
+            {
+                TenantId = tenantId,
+                IntentId = intentId,
+                OperationType = OperationTypeEnum.Create,
+            };
+            var revision = new BookingIntentRevision
+            {
+                TenantId = tenantId,
+                IntentId = intentId,
+                Revision = 1,
+                CanonicalPayload = canonicalPayload,
+                PayloadHash = "h",
+                SchemaVersion = "1.0",
+                TenantPolicyVersion = "1.0",
+                Intent = intent,
+            };
+            var operation = new BookingOperation
+            {
+                TenantId = tenantId,
+                OperationId = operationId,
+                IntentId = intentId,
+                IntentRevision = 1,
+                OperationType = OperationTypeEnum.Create,
+                Status = OperationStatus.Accepted,
+                Version = 0,
+            };
+
+            seedCtx.BookingIntents.Add(intent);
+            seedCtx.BookingIntentRevisions.Add(revision);
+            seedCtx.BookingOperations.Add(operation);
 
             seedCtx.OutboxMessages.Add(new OutboxMessage
             {
@@ -202,7 +273,8 @@ public class RetryAndFailureTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer(fakeCapacity: new NoCapacityService());
+        // Use the real container (real ICapacityReservation) — slot is full so NoCapacity fires.
+        await using var sp = BuildContainer();
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 

@@ -1,9 +1,12 @@
 ﻿#pragma warning disable xUnit1051
+using System.Text.Json;
 using Cordia.Application.Extensions;
 using Cordia.Application.Handlers.BookingFulfillment.Alternatives;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
@@ -29,11 +32,20 @@ file sealed class CapstoneRejectPolicy(string reason) : IValidationPolicy
         => Task.FromResult<string?>(reason);
 }
 
-/// <summary>ICapacityService that always returns NoCapacity.</summary>
-file sealed class CapstoneNoCapacityService : ICapacityService
+/// <summary>ICapacityReservation that always returns NoCapacity (for AlternativesRequired tests).</summary>
+file sealed class CapstoneNoCapacityReservation : ICapacityReservation
 {
-    public Task<CapacityResult> TryReserveAsync(string tenantId, string operationId, CancellationToken ct = default)
-        => Task.FromResult(CapacityResult.NoCapacity);
+    public Task<ReservationOutcome> ReserveAsync(ReserveRequest req, CancellationToken ct = default)
+        => Task.FromResult(ReservationOutcome.NoCapacity());
+
+    public Task ReleaseAsync(string tenantId, string holdId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.CompletedTask;
+
+    public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.FromResult(0);
+
+    public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
+        => Task.FromResult(FinalizeOutcome.NotTracked);
 }
 
 /// <summary>IDepositPolicy that always requires a deposit (used to drive op to AwaitingPayment).</summary>
@@ -68,7 +80,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
 
     private static ServiceProvider BuildContainer(
         IValidationPolicy? validationPolicy = null,
-        ICapacityService? capacityService = null,
+        ICapacityReservation? capacityReservation = null,
         IDepositPolicy? depositPolicy = null)
     {
         var config = new ConfigurationBuilder()
@@ -87,11 +99,11 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         services.AddApplication();
         services.AddInfrastructure(config);
 
-        // Override fakes AFTER AddInfrastructure to shadow registered singletons.
+        // Override fakes AFTER AddInfrastructure to shadow registered services.
         if (validationPolicy is not null)
             services.AddSingleton(validationPolicy);
-        if (capacityService is not null)
-            services.AddSingleton(capacityService);
+        if (capacityReservation is not null)
+            services.AddScoped<ICapacityReservation>(_ => capacityReservation);
         if (depositPolicy is not null)
             services.AddSingleton(depositPolicy);
 
@@ -137,6 +149,88 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
             Payload = $"{{\"operation_id\":\"{operationId}\",\"tenant_id\":\"{tenantId}\"}}",
             OccurredAt = DateTimeOffset.UtcNow,
         });
+        await seedCtx.SaveChangesAsync();
+        return operationId;
+    }
+
+    /// <summary>
+    /// Seeds a fully-booked capacity slot, an op (Accepted) whose intent revision canonical payload
+    /// maps to that slot, and a trigger outbox row. The slot is full (total=1, held=1) so the real
+    /// ICapacityReservation will return NoCapacity → AlternativesRequired. Returns operationId.
+    /// </summary>
+    private async Task<string> SeedTriggerWithFullSlotAsync(string tenantId)
+    {
+        var resourceId = $"res-{Guid.NewGuid():N}";
+        var requestedAt = DateTimeOffset.UtcNow.AddHours(3);
+        var slotId = $"{resourceId}|{requestedAt:O}";
+        var canonicalPayload = JsonSerializer.Serialize(new
+        {
+            party_size = 1,
+            resource_id = resourceId,
+            starts_at = requestedAt.ToString("O"),
+        });
+
+        await using var seedCtx = fixture.CreateContext(tenantId);
+
+        // Seed a FULL slot.
+        seedCtx.CapacitySlots.Add(new CapacitySlot
+        {
+            TenantId = tenantId,
+            SlotId = slotId,
+            ResourceId = resourceId,
+            StartsAt = requestedAt,
+            TotalCapacity = 1,
+            HeldCapacity = 1,
+            BookedCapacity = 0,
+            Version = 0,
+        });
+
+        // Seed intent + revision with canonical payload pointing to the full slot.
+        var intentId = $"int-{Guid.NewGuid():N}";
+        var operationId = $"op-{Guid.NewGuid():N}";
+        var intent = new BookingIntent
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            OperationType = OperationTypeEnum.Create,
+        };
+        var revision = new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload = canonicalPayload,
+            PayloadHash = "h",
+            SchemaVersion = "1.0",
+            TenantPolicyVersion = "1.0",
+            Intent = intent,
+        };
+        var operation = new BookingOperation
+        {
+            TenantId = tenantId,
+            OperationId = operationId,
+            IntentId = intentId,
+            IntentRevision = 1,
+            OperationType = OperationTypeEnum.Create,
+            Status = OperationStatus.Accepted,
+            Version = 0,
+        };
+
+        seedCtx.BookingIntents.Add(intent);
+        seedCtx.BookingIntentRevisions.Add(revision);
+        seedCtx.BookingOperations.Add(operation);
+
+        seedCtx.OutboxMessages.Add(new OutboxMessage
+        {
+            TenantId = tenantId,
+            MessageId = $"msg-{Guid.NewGuid():N}",
+            MessageType = "booking.command.requested.v1",
+            CorrelationId = operationId,
+            OperationId = operationId,
+            Payload = $"{{\"operation_id\":\"{operationId}\",\"tenant_id\":\"{tenantId}\"}}",
+            OccurredAt = DateTimeOffset.UtcNow,
+        });
+
         await seedCtx.SaveChangesAsync();
         return operationId;
     }
@@ -218,8 +312,8 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     }
 
     /// <summary>
-    /// Waitlisted terminal (§27.5): engine drives op to AlternativesRequired via
-    /// CapstoneNoCapacityService, then RespondToAlternativesCommand(Waitlist) completes it.
+    /// Waitlisted terminal (§27.5): engine drives op to AlternativesRequired because the slot is
+    /// fully booked (total=1, held=1), then RespondToAlternativesCommand(Waitlist) completes it.
     /// Asserts notification.waitlisted.v1 outbox + operation.waitlisted audit.
     /// </summary>
     [Fact]
@@ -227,10 +321,11 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     {
         await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-waitlisted-{Guid.NewGuid():N}";
-        var operationId = await SeedTriggerAsync(tenantId);
+        // Seed op with a canonical payload pointing to a full slot → real NoCapacity.
+        var operationId = await SeedTriggerWithFullSlotAsync(tenantId);
 
-        // Phase 1: NoCapacity service routes op to AlternativesRequired.
-        await using (var sp = BuildContainer(capacityService: new CapstoneNoCapacityService()))
+        // Phase 1: Real ICapacityReservation returns NoCapacity → AlternativesRequired.
+        await using (var sp = BuildContainer())
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -273,8 +368,8 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     }
 
     /// <summary>
-    /// FailedFinal terminal (§27.5): engine drives op to AlternativesRequired via
-    /// CapstoneNoCapacityService, then RespondToAlternativesCommand(Decline) terminates it.
+    /// FailedFinal terminal (§27.5): engine drives op to AlternativesRequired because the slot is
+    /// fully booked (total=1, held=1), then RespondToAlternativesCommand(Decline) terminates it.
     /// Asserts notification.booking_failed.v1 outbox + operation.failed_final audit.
     /// </summary>
     [Fact]
@@ -282,10 +377,11 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     {
         await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-failed-{Guid.NewGuid():N}";
-        var operationId = await SeedTriggerAsync(tenantId);
+        // Seed op with a canonical payload pointing to a full slot → real NoCapacity.
+        var operationId = await SeedTriggerWithFullSlotAsync(tenantId);
 
-        // Phase 1: NoCapacity routes op to AlternativesRequired.
-        await using (var sp = BuildContainer(capacityService: new CapstoneNoCapacityService()))
+        // Phase 1: Real ICapacityReservation returns NoCapacity → AlternativesRequired.
+        await using (var sp = BuildContainer())
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);

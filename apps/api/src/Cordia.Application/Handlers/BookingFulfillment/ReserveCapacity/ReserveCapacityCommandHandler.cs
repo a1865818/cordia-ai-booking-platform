@@ -1,31 +1,43 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
-using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Services;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
 
 /// <summary>
-/// Handles capacity reservation for a booking operation (spec 06 §6.2, reserve_capacity step).
+/// Handles capacity reservation for a booking operation (spec 07 §6.1, T5).
+///
+/// Parses the canonical payload from <c>booking_intent_revisions.canonical_payload</c> to
+/// derive the first-party slot key (<see cref="CapacitySlotKey.Derive"/>). If the slot exists
+/// in <c>capacity_slots</c>, performs an atomic conditional reserve via
+/// <see cref="ICapacityReservation.ReserveAsync"/> and enqueues a hold-expiry job
+/// inside the SAME transaction (Inv-4/Inv-6). If the slot is not provisioned, transitions
+/// directly to Held without a durable hold (availability mode = live; preserves current behavior
+/// for un-provisioned resources).
 ///
 /// Routes:
-///   <see cref="CapacityResult.Reserved"/>   → ReservingCapacity → Held (reason "held").
-///   <see cref="CapacityResult.NoCapacity"/> → ReservingCapacity → AlternativesRequired
-///                                              (FM#8, reason "no_capacity") + outbox
-///                                              notification.alternatives_required.v1 + audit.
-///
-/// TODO(spec 07): replace <see cref="ICapacityService"/> impl with the atomic conditional
-/// capacity write / external hold primitive.
+///   Tracked + <see cref="ReservationStatus.Held"/>         → ReservingCapacity → Held (reason "held") + expiry job.
+///   Tracked + <see cref="ReservationStatus.NoCapacity"/>   → ReservingCapacity → AlternativesRequired
+///                                                             (FM#8, reason "no_capacity") + outbox + audit.
+///   Tracked + <see cref="ReservationStatus.Ambiguous"/>    → ReservingCapacity → Reconciling (reason "reserve_ambiguous").
+///   NOT tracked (no slot row)                               → ReservingCapacity → Held (reason "held", no hold/expiry).
 /// </summary>
 public sealed class ReserveCapacityCommandHandler(
     IBookingOperationRepository opRepo,
     IWorkflowStepRepository stepRepo,
-    ICapacityService capacityService,
+    ICapacityReservation capacityReservation,
+    ICapacitySlotRepository slotRepo,
+    IBookingIntentRepository intentRepo,
+    CapacityExpiryScheduler expiryScheduler,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    IOptions<CapacityOptions> capacityOptions)
     : IRequestHandler<ReserveCapacityCommand, StepOutcome>
 {
     public async Task<StepOutcome> Handle(ReserveCapacityCommand command, CancellationToken ct)
@@ -41,15 +53,18 @@ public sealed class ReserveCapacityCommandHandler(
         var operationId = command.OperationId;
         var tenantId = command.TenantId;
 
-        // Call the capacity seam outside the transaction (stateless check; spec 07 will make
-        // this a conditional write inside a txn with the rest of the reservation).
-        var capacityResult = await capacityService.TryReserveAsync(tenantId, operationId, ct);
+        // Parse canonical payload BEFORE the transaction: stateless + no DB write.
+        // Any missing/unparseable field is treated as "non-tracked" (see below).
+        var rev = await intentRepo.GetRevisionAsync(tenantId, op.IntentId, op.IntentRevision, ct);
+        var (requestedCapacity, slotId) = ParseCanonicalPayload(rev?.CanonicalPayload);
+
+        var expiresAt = DateTimeOffset.UtcNow + capacityOptions.Value.HoldTtl;
 
         StepOutcome result = StepOutcome.Continue;
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            // Create-or-skip the "reserve_capacity" workflow step.
+            // 1. Create-or-skip the "reserve_capacity" workflow step.
             var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, "reserve_capacity", ct2);
             if (existingStep is null)
             {
@@ -68,6 +83,7 @@ public sealed class ReserveCapacityCommandHandler(
                 }, ct2);
             }
 
+            // 2. Re-read op inside txn; bail if not in the expected state (lost-race guard).
             var current = await opRepo.GetAsync(operationId, ct2);
             if (current is null || current.TenantId != tenantId || current.Status != OperationStatus.ReservingCapacity)
             {
@@ -75,9 +91,105 @@ public sealed class ReserveCapacityCommandHandler(
                 return;
             }
 
-            if (capacityResult == CapacityResult.Reserved)
+            // 3. Determine if first-party-tracked: slotId derived AND slot row exists.
+            var isTracked = slotId is not null
+                && await slotRepo.GetAsync(tenantId, slotId, ct2) is not null;
+
+            if (isTracked)
             {
-                // Happy path: advance to Held.
+                // 4a. Tracked path — perform atomic conditional reserve.
+                var outcome = await capacityReservation.ReserveAsync(
+                    new ReserveRequest(
+                        tenantId,
+                        operationId,
+                        "create",
+                        slotId,
+                        requestedCapacity,
+                        expiresAt,
+                        "first_party"),
+                    ct2);
+
+                switch (outcome.Status)
+                {
+                    case ReservationStatus.Held:
+                        // Enqueue expiry job inside the SAME txn (Inv-4).
+                        await expiryScheduler.ScheduleAsync(
+                            tenantId,
+                            operationId,
+                            outcome.Hold!.HoldId,
+                            outcome.Hold.ExpiresAt,
+                            ct2);
+
+                        // Transition ReservingCapacity → Held.
+                        _ = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, current.Version,
+                            OperationStatus.ReservingCapacity, OperationStatus.Held,
+                            reason: "held", ct: ct2);
+
+                        result = StepOutcome.Continue;
+                        break;
+
+                    case ReservationStatus.NoCapacity:
+                        // FM#8 — no capacity: advance to AlternativesRequired.
+                        var rows = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, current.Version,
+                            OperationStatus.ReservingCapacity, OperationStatus.AlternativesRequired,
+                            reason: "no_capacity", ct: ct2);
+
+                        if (rows > 0)
+                        {
+                            var now = DateTimeOffset.UtcNow;
+
+                            await outboxRepo.AddAsync(new OutboxMessage
+                            {
+                                TenantId = tenantId,
+                                MessageId = $"obx_{Guid.NewGuid():N}",
+                                OperationId = operationId,
+                                MessageType = "notification.alternatives_required.v1",
+                                CorrelationId = operationId,
+                                Payload = JsonSerializer.Serialize(new
+                                {
+                                    operation_id = operationId,
+                                    tenant_id = tenantId,
+                                }),
+                                OccurredAt = now,
+                            }, ct2);
+
+                            await auditRepo.AddAsync(new AuditEvent
+                            {
+                                TenantId = tenantId,
+                                EventId = $"evt_{Guid.NewGuid():N}",
+                                EventType = "operation.alternatives_required",
+                                Actor = "system",
+                                SubjectRef = operationId,
+                                CorrelationId = operationId,
+                                OperationId = operationId,
+                                Metadata = JsonSerializer.Serialize(new { reason = "no_capacity" }),
+                                OccurredAt = now,
+                            }, ct2);
+                        }
+
+                        // rows==0 → lost race; return Continue so the driver reloads (C13).
+                        result = rows > 0 ? StepOutcome.Wait : StepOutcome.Continue;
+                        break;
+
+                    case ReservationStatus.Ambiguous:
+                        // External provider returned an ambiguous outcome — route to Reconciling (Inv-7).
+                        _ = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, current.Version,
+                            OperationStatus.ReservingCapacity, OperationStatus.Reconciling,
+                            reason: "reserve_ambiguous", ct: ct2);
+
+                        result = StepOutcome.Continue;
+                        break;
+                }
+            }
+            else
+            {
+                // 4b. NOT tracked (no capacity_slots row for derived slotId, or no resource/time
+                //     dimension in the payload). Transition → Held without a durable hold.
+                //     This preserves the current always-available behavior for un-provisioned
+                //     resources (availability mode = live).
                 _ = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, current.Version,
                     OperationStatus.ReservingCapacity, OperationStatus.Held,
@@ -85,54 +197,95 @@ public sealed class ReserveCapacityCommandHandler(
 
                 result = StepOutcome.Continue;
             }
-            else
-            {
-                // FM#8 — no capacity: advance to AlternativesRequired.
-                var rows = await opRepo.TryTransitionStatusAsync(
-                    tenantId, operationId, current.Version,
-                    OperationStatus.ReservingCapacity, OperationStatus.AlternativesRequired,
-                    reason: "no_capacity", ct: ct2);
-
-                if (rows > 0)
-                {
-                    var now = DateTimeOffset.UtcNow;
-
-                    await outboxRepo.AddAsync(new OutboxMessage
-                    {
-                        TenantId = tenantId,
-                        MessageId = $"obx_{Guid.NewGuid():N}",
-                        OperationId = operationId,
-                        MessageType = "notification.alternatives_required.v1",
-                        CorrelationId = operationId,
-                        Payload = JsonSerializer.Serialize(new
-                        {
-                            operation_id = operationId,
-                            tenant_id = tenantId,
-                        }),
-                        OccurredAt = now,
-                    }, ct2);
-
-                    await auditRepo.AddAsync(new AuditEvent
-                    {
-                        TenantId = tenantId,
-                        EventId = $"evt_{Guid.NewGuid():N}",
-                        EventType = "operation.alternatives_required",
-                        Actor = "system",
-                        SubjectRef = operationId,
-                        CorrelationId = operationId,
-                        OperationId = operationId,
-                        Metadata = JsonSerializer.Serialize(new { reason = "no_capacity" }),
-                        OccurredAt = now,
-                    }, ct2);
-                }
-
-                // AlternativesRequired requires external user input — stop and wait.
-                // But if rows==0 we lost the race; return Continue so the driver reloads
-                // and re-evaluates the current state (C13).
-                result = rows > 0 ? StepOutcome.Wait : StepOutcome.Continue;
-            }
         }, ct);
 
         return result;
+    }
+
+    /// <summary>
+    /// Parses the canonical payload JSON to extract capacity-reservation fields.
+    /// Any missing or unparseable field defaults to a safe value (capacity=1, slotId=null).
+    /// A null slotId signals "not first-party-tracked" → non-tracked path.
+    /// </summary>
+    /// <remarks>
+    /// Field extraction rules (from spec 07 / FIX 1 — canonical agent payloads use starts_at):
+    ///   party_size (int)     → requestedCapacity; defaults to 1 if absent/invalid (a booking always needs ≥1).
+    ///   resource_id          → preferred resource dimension (first non-empty wins over service_id/location_id).
+    ///   service_id           → second choice resource dimension.
+    ///   location_id          → fallback resource dimension.
+    ///   starts_at (ISO-8601 DateTimeOffset) → slot start time (canonical field; read first).
+    ///   requested_at (ISO-8601 DateTimeOffset) → back-compat fallback when starts_at is absent.
+    ///   slotId = CapacitySlotKey.Derive(resource, service, location, startsAt);
+    ///            null when any required dimension is missing → not tracked.
+    /// </remarks>
+    private static (int requestedCapacity, string? slotId) ParseCanonicalPayload(string? json)
+    {
+        if (string.IsNullOrEmpty(json) || json == "{}")
+            return (1, null);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // party_size — default 1 (a booking always needs ≥1 unit).
+            // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
+            // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS
+            // (InvalidOperationException, not JsonException) on a non-Number element.
+            var requestedCapacity = 1;
+            if (root.TryGetProperty("party_size", out var partySizeEl)
+                && partySizeEl.ValueKind == JsonValueKind.Number
+                && partySizeEl.TryGetInt32(out var ps)
+                && ps > 0)
+            {
+                requestedCapacity = ps;
+            }
+
+            // Resource dimension: first non-empty of resource_id, service_id, location_id.
+            var resourceId = TryGetString(root, "resource_id");
+            var serviceId = TryGetString(root, "service_id");
+            var locationId = TryGetString(root, "location_id");
+
+            // FIX 1: read starts_at first (canonical agent field); fall back to requested_at for
+            // back-compat with payloads produced before the agent was updated.
+            DateTimeOffset startsAt;
+            if (root.TryGetProperty("starts_at", out var startsAtEl)
+                && startsAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(startsAtEl.GetString(), out var parsedStartsAt))
+            {
+                startsAt = parsedStartsAt;
+            }
+            else if (root.TryGetProperty("requested_at", out var requestedAtEl)
+                && requestedAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(requestedAtEl.GetString(), out var parsedRequestedAt))
+            {
+                startsAt = parsedRequestedAt;
+            }
+            else
+            {
+                // Neither starts_at nor requested_at is parseable → cannot derive a slot key.
+                return (requestedCapacity, null);
+            }
+
+            var slotId = CapacitySlotKey.Derive(resourceId, serviceId, locationId, startsAt);
+            return (requestedCapacity, slotId);
+        }
+        catch (JsonException)
+        {
+            // Malformed JSON → treat as non-tracked.
+            return (1, null);
+        }
+    }
+
+    private static string? TryGetString(JsonElement root, string property)
+    {
+        if (root.TryGetProperty(property, out var el)
+            && el.ValueKind == JsonValueKind.String)
+        {
+            var val = el.GetString();
+            return string.IsNullOrEmpty(val) ? null : val;
+        }
+
+        return null;
     }
 }
