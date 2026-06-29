@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CheckCandidateAvailabilityStatus",
+  "description": "Status codes for check_candidate_availability (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "available",
+    "available_pending",
+    "unavailable",
+    "held",
+    "hold_failed"
+  ]
+}

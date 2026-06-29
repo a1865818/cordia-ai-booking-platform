@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ValidateBookingChangeStatus",
+  "description": "Status codes for validate_booking_change (spec 03 \u00a74.4).",
+  "type": "string",
+  "enum": [
+    "valid",
+    "policy_failed",
+    "stale_version",
+    "capacity_unavailable"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "title": "SubmitConfirmedIntentRequest",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/SubmitConfirmedIntentRequest"
+}

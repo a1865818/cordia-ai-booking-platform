@@ -1,4 +1,4 @@
-"""Core state models for the Cordia hello graph.
+"""Core state models for the Cordia agent.
 
 These Pydantic models are the source of truth for the shared types exported to
 C# and TypeScript via ``tools/scripts/export_pydantic_schemas.py``.
@@ -7,31 +7,497 @@ C# and TypeScript via ``tools/scripts/export_pydantic_schemas.py``.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
 
-
-class GreetingStatus(str, Enum):
-    """Lifecycle status of a greeting."""
-
-    PENDING = "pending"
-    GREETED = "greeted"
+from cordia_agent.tools.status_codes import AvailabilityMode
 
 
-class HelloInputState(BaseModel):
-    """Input to the hello graph."""
+class StreamFrameType(str, Enum):
+    """Discriminator for streaming voice-pipeline frames (spec 01 §5.1 / §6.3)."""
+
+    AUDIO_STARTED = "audio.started"
+    TRANSCRIPT_PARTIAL = "transcript.partial"
+    TRANSCRIPT_FINAL = "transcript.final"
+    AGENT_TEXT_DELTA = "agent.text.delta"
+    AGENT_TEXT_FINAL = "agent.text.final"
+    TOOL_PROGRESS = "tool.progress"
+    TTS_AUDIO_DELTA = "tts.audio.delta"
+    BARGE_IN_DETECTED = "barge_in.detected"
+    TURN_CANCELLED = "turn.cancelled"
+
+
+class TriState(str, Enum):
+    """Why an optional field has no concrete value (carried inline on each capture field)."""
+
+    absent = "absent"  # never provided
+    unknown = "unknown"  # asked, customer doesn't know
+    declined = "declined"  # explicitly refused
+
+
+class OperationType(str, Enum):
+    """Booking operation requested by the customer."""
+
+    create = "create"
+    reschedule = "reschedule"
+    modify = "modify"
+    cancel = "cancel"
+
+
+class CaptureMethod(str, Enum):
+    """How a field value was captured during the dialog."""
+
+    speech = "speech"
+    dtmf = "dtmf"
+    tool_selection = "tool_selection"
+    channel_verified = "channel_verified"
+
+
+class FieldValidation(str, Enum):
+    """Validation outcome for a captured field."""
+
+    valid = "valid"
+    invalid = "invalid"
+    needs_clarification = "needs_clarification"
+
+
+class Channel(str, Enum):
+    """Origin channel a draft was captured on."""
+
+    voice = "voice"
+    sms = "sms"
+    web = "web"
+    email = "email"
+
+
+class BookingRequest(BaseModel):
+    """A single booking request captured during a dialog."""
 
     model_config = {"extra": "forbid"}
 
-    name: str = Field(description="Name of the person to greet.")
+    operation: OperationType = Field(description="Booking operation requested.")
+    # Customer-volunteered scalar optionals carry value | TriState | None inline (DQ1=A).
+    # TriState is listed before str with union_mode="left_to_right": since TriState is a
+    # str-subclass enum, smart-mode unions resolve sentinel strings ("unknown"/"declined"/
+    # "absent") to the plain str branch, silently losing TriState semantics on deserialization.
+    # Left-to-right tries TriState first (matches only the 3 sentinels) then falls back to str.
+    service_id: TriState | str | None = Field(
+        default=None,
+        union_mode="left_to_right",
+        description="Stable service ID, a TriState, or absent.",
+    )
+    location_id: TriState | str | None = Field(
+        default=None,
+        union_mode="left_to_right",
+        description="Stable location ID, a TriState, or absent.",
+    )
+    starts_at: AwareDatetime | TriState | None = Field(
+        default=None, description="Offset-aware start, a TriState, or absent."
+    )
+    party_size: PositiveInt | TriState | None = Field(
+        default=None, description="Party size, a TriState, or absent."
+    )
+    duration_minutes: PositiveInt | TriState | None = Field(
+        default=None, description="Duration minutes, a TriState, or absent."
+    )
+    special_requests: list[str] = Field(
+        default_factory=list, description="Free-form special requests."
+    )
+    # Target/system fields stay plain - TriState is meaningless here (not customer-volunteered).
+    target_booking_id: str | None = Field(
+        default=None,
+        description="Target booking; required for modify/cancel/reschedule.",
+    )
+    target_booking_version: int | None = Field(
+        default=None, description="Optimistic-concurrency version of the target."
+    )
+
+    @model_validator(mode="after")
+    def _require_target_for_mutations(self) -> BookingRequest:  # DQ4=B
+        mutations = {
+            OperationType.modify,
+            OperationType.cancel,
+            OperationType.reschedule,
+        }
+        if self.operation in mutations and not isinstance(self.target_booking_id, str):
+            raise ValueError(
+                f"target_booking_id is required for {self.operation.value}"
+            )
+        return self
 
 
-class HelloOutputState(BaseModel):
-    """Output of the hello graph."""
+class FieldProvenance(BaseModel):
+    """Internal-only capture metadata for one field. Stripped on submit."""
 
     model_config = {"extra": "forbid"}
 
-    message: str = Field(description="The rendered greeting message.")
-    status: GreetingStatus = Field(
-        default=GreetingStatus.GREETED, description="Resulting greeting status."
+    source_turn_id: str | None = Field(
+        default=None, description="Turn/message ID the value came from."
+    )
+    stt_confidence: float | None = Field(
+        default=None, description="STT/ASR confidence (internal-only)."
+    )
+    model_confidence: float | None = Field(
+        default=None, description="Model confidence (internal-only)."
+    )
+    capture_method: CaptureMethod = Field(description="How the value was captured.")
+    normalized_value: str | None = Field(
+        default=None, description="Normalized form of the captured value."
+    )
+    validation: FieldValidation | None = Field(
+        default=None, description="Validation outcome for the field."
+    )
+
+
+class CustomerRef(BaseModel):
+    """Reference to the customer; all optional (anonymous sessions)."""
+
+    model_config = {"extra": "forbid"}
+
+    customer_id: str | None = Field(
+        default=None, description="Stable customer ID where known."
+    )
+    display_name: str | None = Field(default=None, description="Customer display name.")
+    phone_e164: str | None = Field(
+        default=None, description="E.164 phone; plain str (no pattern)."
+    )
+
+
+class SourceInfo(BaseModel):
+    """Channel + language the draft originated from."""
+
+    model_config = {"extra": "forbid"}
+
+    channel: Channel = Field(description="Origin channel.")
+    language: str = Field(description="BCP-47 language tag, e.g. 'en-AU'.")
+
+
+class CanonicalBookingDraft(BaseModel):
+    """Submitted payload: BookingDraft minus field_provenance (DQ2=B)."""
+
+    model_config = {"extra": "forbid"}
+
+    tenant_id: str = Field(description="Tenant scope (Inv-13).")
+    session_id: str = Field(description="Dialog session ID.")
+    schema_version: str = Field(
+        description="Draft schema version carried into the intent."
+    )
+    tenant_policy_version: str = Field(
+        description="Tenant configuration/policy version."
+    )
+    customer: CustomerRef | None = Field(
+        default=None, description="Customer reference, if known."
+    )
+    request: BookingRequest = Field(description="The booking request.")
+    source: SourceInfo = Field(description="Origin channel + language.")
+
+
+class BookingDraft(BaseModel):
+    """In-dialog typed booking draft; source of the canonical submitted payload."""
+
+    model_config = {"extra": "forbid"}
+
+    tenant_id: str = Field(description="Tenant scope (Inv-13).")
+    session_id: str = Field(description="Dialog session ID.")
+    schema_version: str = Field(
+        description="Draft schema version carried into the intent."
+    )
+    tenant_policy_version: str = Field(
+        description="Tenant configuration/policy version."
+    )
+    customer: CustomerRef | None = Field(
+        default=None, description="Customer reference, if known."
+    )
+    request: BookingRequest = Field(description="The booking request.")
+    source: SourceInfo = Field(description="Origin channel + language.")
+    field_provenance: dict[str, FieldProvenance] = Field(
+        default_factory=dict,
+        description="Internal capture metadata keyed by field; stripped on submit.",
+    )
+
+    def to_canonical(self) -> CanonicalBookingDraft:  # DQ2=B
+        """Project to the canonical payload, dropping internal-only fields.
+
+        Strips ``field_provenance``; the TriState distinction is already inline
+        on each request field (DQ1=A), so absent/unknown/declined survive.
+        """
+        return CanonicalBookingDraft.model_validate(
+            self.model_dump(exclude={"field_provenance"})
+        )
+
+
+# ---------------------------------------------------------------------------
+# Foreground agent state (§8.3)
+# ---------------------------------------------------------------------------
+
+
+class DialogIntent(str, Enum):
+    """Customer dialog intent — broader than OperationType (includes inquire).
+
+    ``inquire`` is informational only; it does not correspond to a booking
+    operation and leaves ``AgentState.operation`` as ``None``.
+    Distinct from ``OperationType``, which has no ``inquire`` variant.
+    """
+
+    create = "create"
+    reschedule = "reschedule"
+    modify = "modify"
+    cancel = "cancel"
+    inquire = "inquire"
+
+
+class CustomerContext(BaseModel):
+    """Minimized personalization context for the current dialog session.
+
+    This is a local placeholder until the 03 ``find_customer_context`` output
+    model lands (ticket 03-B/02-H).  The ``recent_booking_summaries`` field
+    carries sensitive history and is populated **only** when
+    ``AgentState.verification_grant_id`` is set (§9.2 — no sensitive history
+    without a verification grant).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    customer_id: str | None = Field(
+        default=None, description="Stable customer ID, if known."
+    )
+    display_name: str | None = Field(
+        default=None, description="Customer display name, if known."
+    )
+    recent_booking_summaries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sensitive history; only populated with a verification grant (§9.2)."
+        ),
+    )
+
+
+class AgentState(BaseModel):
+    """Internal LangGraph channel state — all fields defaulted (no extra="forbid").
+
+    LangGraph merges node return dicts into the channel state; requiring all
+    fields to have defaults lets partial updates work without tripping
+    required-field validation.
+    """
+
+    tenant_id: str | None = None
+    tenant_policy_version: str | None = None
+    session_id: str | None = None
+    draft: BookingDraft | None = None
+    operation: OperationType | None = None
+    operation_id: str | None = None
+    idempotency_key: str | None = None
+    last_confirmed_revision: int | None = None
+    availability_mode: AvailabilityMode | None = None
+    verification_grant_id: str | None = None
+    terminal_state: Literal["submitted", "human_handoff"] | None = None
+    # Tenant-context guard fields (02-D)
+    signed_tenant_context: str | None = None
+    tenant_context_verified: bool = False
+    correlation_id: str | None = None
+    channel_endpoint_id: str | None = None
+    allowed_policy_ids: list[str] = Field(default_factory=list)
+    # Session bootstrap fields, mapped from AgentInputState so downstream nodes
+    # (e.g. identify_intent) can construct the initial BookingDraft.
+    source: SourceInfo | None = Field(
+        default=None, description="Origin channel + language (from AgentInputState)."
+    )
+    customer: CustomerRef | None = Field(
+        default=None,
+        description="Customer reference from the channel gateway, if known.",
+    )
+    # Dialog-front fields (02-F)
+    transcript_text: str | None = Field(
+        default=None, description="Current turn transcript text."
+    )
+    transcript_is_final: bool = Field(
+        default=False,
+        description=(
+            "True iff the transcript is a final (not partial) STT result. "
+            "ONLY transcript.final frames may mutate the draft (Inv-1)."
+        ),
+    )
+    current_turn_id: str | None = Field(
+        default=None, description="Turn/message ID for the current dialog turn."
+    )
+    dialog_intent: DialogIntent | None = Field(
+        default=None, description="Classified dialog intent for the current turn."
+    )
+    customer_context: CustomerContext | None = Field(
+        default=None, description="Minimized customer context (§9.2)."
+    )
+    # --- Internal clarification channels (02-G, §8.5) ---
+    # These fields are NOT exported to AgentInputState/AgentOutputState and do
+    # not appear in the generated JSON schemas.  They are purely internal
+    # LangGraph channels consumed by the clarify → capture_fields loop.
+    clarification_attempts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Internal: per-field clarification attempt counts, "
+            "keyed by BookingRequest field name (§8.5)."
+        ),
+    )
+    pending_clarify_action: str | None = Field(
+        default=None,
+        description=(
+            "Internal: ClarifyAction value decided by the clarify node (§8.5). "
+            "ESCALATE_HANDOFF is surfaced here; it does NOT add a graph edge."
+        ),
+    )
+    pending_clarify_prompt: str | None = Field(
+        default=None,
+        description="Internal: the clarifying-question prompt for the current turn (§8.5).",
+    )
+    pending_clarify_field: str | None = Field(
+        default=None,
+        description="Internal: BookingRequest field name targeted by the active clarification (§8.5).",
+    )
+    # --- Availability tracking (02-H, §8.7) ---
+    # Stored as plain types to avoid a circular import:
+    # state.py MUST NOT import tools.contracts / tools.foreground.
+    # availability_mode is already imported from tools.status_codes (leaf module — OK).
+    availability_candidates: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Internal: serialised AvailabilityCandidate dicts from the last "
+            "check_candidate_availability call (§8.7). Stored as list[dict] to "
+            "avoid a circular import with tools.contracts."
+        ),
+    )
+    availability_invalid_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Internal: invalid draft fields returned by the availability tool (§8.7). "
+            "Non-empty → router sends back to capture_fields."
+        ),
+    )
+    availability_pending: bool = Field(
+        default=False,
+        description=(
+            "Internal: True when the availability response has status 'available_pending' "
+            "(§6.6, Inv-16). Advisory only — NEVER treated as held/confirmed/success."
+        ),
+    )
+    # --- Read-back + confirmation channels (02-I, §8.6/§8.8/§8.9) ---
+    # Stored as plain types (str/bool/dict/list) to avoid a circular import:
+    # state.py MUST NOT import IntentRevision/Confirmation (models.intent imports
+    # BookingRequest from state → cycle).  Nodes build the typed models locally
+    # and persist .model_dump(mode="json") here.
+    read_back_text: str | None = Field(
+        default=None,
+        description="Internal: rendered read-back text for the current draft (§8.6).",
+    )
+    read_back_version: str | None = Field(
+        default=None,
+        description=(
+            "Internal: deterministic sha256 content hash of the read-back render "
+            "(§8.6); used by await_confirmation to bind the Confirmation."
+        ),
+    )
+    read_back_interrupted: bool = Field(
+        default=False,
+        description=(
+            "Internal: True when the read-back was interrupted/cancelled before "
+            "the customer heard the full text (§8.9).  NEVER confirmed when True."
+        ),
+    )
+    disclosures_presented: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Internal: consent + policy disclosure IDs shown to the customer "
+            "(§5.5 / §14).  Empty → consent gate refuses to record a Confirmation."
+        ),
+    )
+    verification_level: str | None = Field(
+        default=None,
+        description="Internal: verification level recorded at confirmation time (§9.3).",
+    )
+    current_intent_id: str | None = Field(
+        default=None,
+        description="Internal: stable intent identity across revisions (§8.7).",
+    )
+    current_revision: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: IntentRevision.model_dump(mode='json') for the current revision "
+            "(§8.7 / Inv-10).  Stored as dict to avoid circular import with models.intent."
+        ),
+    )
+    confirmation: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: Confirmation.model_dump(mode='json') recorded by await_confirmation "
+            "(§8.8).  None until the customer gives explicit confirmation (Inv-1)."
+        ),
+    )
+    # --- Verification + handoff channels (02-K, §8.6/§8.11) ---
+    # Stored as plain types (str/dict) to avoid circular imports.
+    verification_id: str | None = None
+    verification_outcome: str | None = None
+    handoff_reason_code: str | None = None
+    handoff_package: dict | None = None
+    handoff_result: dict | None = None
+    # --- Submission outcome channels (02-J, §8.9/§10.1) ---
+    # Stored as plain types (str/dict) to avoid circular imports.
+    submission_status: str | None = Field(
+        default=None,
+        description=(
+            "Internal: machine-readable submission outcome "
+            "('accepted', 'duplicate_accepted', 'validation_failed', "
+            "'confirmation_invalid', 'policy_failed', 'idempotency_conflict', "
+            "'checkpoint_failed', 'nonrecoverable', 'unavailable'). "
+            "Set by submit_intent (02-J)."
+        ),
+    )
+    submission_message: str | None = Field(
+        default=None,
+        description=(
+            "Internal: safe customer-facing wording for the submission outcome "
+            "(Inv-16).  Set by submit_intent on acceptance (02-J)."
+        ),
+    )
+    operation_status: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: OperationStatusView.model_dump(mode='json') recovered via "
+            "get_operation_status on a reconnect (02-J / Inv-5).  "
+            "Stored as dict to avoid circular import with tools.contracts."
+        ),
+    )
+
+
+class AgentInputState(BaseModel):
+    """Boundary input contract for the foreground agent (extra fields rejected).
+
+    ``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).
+    A plain ``tenant_id`` field is intentionally absent — the tenant is resolved
+    exclusively from the verified signed token by the resolve_tenant node.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    signed_tenant_context: str = Field(
+        description=(
+            "Signed TenantContext token from the channel gateway (§7); "
+            "the ONLY source of tenant identity, Inv-13."
+        )
+    )
+    session_id: str = Field(description="Dialog session ID.")
+    source: SourceInfo = Field(description="Origin channel + language.")
+    customer: CustomerRef | None = Field(
+        default=None, description="Customer reference if known."
+    )
+
+
+class AgentOutputState(BaseModel):
+    """Boundary output contract for the foreground agent (extra fields rejected)."""
+
+    model_config = {"extra": "forbid"}
+
+    terminal_state: Literal["submitted", "human_handoff"] | None = Field(
+        default=None, description="Reached terminal state."
+    )
+    operation_id: str | None = Field(
+        default=None, description="Durably-accepted operation id, if submitted."
     )

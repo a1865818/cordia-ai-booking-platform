@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RequestHumanHandoffStatus",
+  "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "created",
+    "existing",
+    "routing_unavailable"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "title": "HandoffRequest",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/HandoffRequest"
+}

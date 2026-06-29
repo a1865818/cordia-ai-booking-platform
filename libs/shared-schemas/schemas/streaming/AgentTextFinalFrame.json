@@ -1,0 +1,4 @@
+{
+  "title": "AgentTextFinalFrame",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/AgentTextFinalFrame"
+}

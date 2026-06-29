@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CheckVerificationStatus",
+  "description": "Status codes for check_verification (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "granted",
+    "pending",
+    "failed",
+    "expired"
+  ]
+}

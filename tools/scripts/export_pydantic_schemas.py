@@ -27,8 +27,79 @@ from pathlib import Path
 from typing import Any
 
 from cordia_agent.configurations import HelloConfiguration
-from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
-from cordia_agent.streaming_models import HelloMessageCode, HelloStreamMessage
+from cordia_agent.state import (
+    AgentInputState,
+    AgentOutputState,
+    BookingDraft,
+    BookingRequest,
+    CanonicalBookingDraft,
+    CaptureMethod,
+    Channel,
+    FieldValidation,
+    OperationType,
+    StreamFrameType,
+    TriState,
+)
+from cordia_agent.streaming.dtmf import MaskedDtmfSignal
+from cordia_agent.streaming_models import (
+    AgentTextDeltaFrame,
+    AgentTextFinalFrame,
+    AudioStartedFrame,
+    BargeInFrame,
+    ToolProgressFrame,
+    TranscriptFinalFrame,
+    TranscriptPartialFrame,
+    TtsAudioDeltaFrame,
+    TurnCancelledFrame,
+)
+from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.models.handoff import HandoffPackage
+from cordia_agent.models.submission import (
+    IdempotencyConflict,
+    OperationAcceptedResponse,
+    SubmitConfirmedIntentRequest,
+)
+from cordia_agent.tools.contracts import (
+    AcceptanceResult,
+    AvailabilityCandidate,
+    AvailabilityRequest,
+    AvailabilityResult,
+    BookingChangeValidation,
+    BookingProjectionRef,
+    HandoffRequest,
+    HandoffResult,
+    HoldResult,
+    ManageableBooking,
+    OperationStatusView,
+    PolicyValidationResult,
+    SubmitCancellationInput,
+    SubmitConfirmedIntentInput,
+    SubmitModificationInput,
+    ToolResultEnvelope,
+    VerificationGrantView,
+    VerificationRequest,
+    VerificationSentResult,
+)
+from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.streaming.reconnect import ReconnectOutcome
+from cordia_agent.tools.status_codes import (
+    AvailabilityMode,
+    CatalogItemStatus,
+    CheckCandidateAvailabilityStatus,
+    CheckVerificationStatus,
+    FindCustomerContextStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    GetTenantContextStatus,
+    RequestHumanHandoffStatus,
+    RequestVerificationStatus,
+    SubmitBookingCancellationStatus,
+    SubmitBookingModificationStatus,
+    SubmitConfirmedIntentStatus,
+    ValidateBookingChangeStatus,
+    ValidateBookingDraftStatus,
+    VerificationAction,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,15 +110,80 @@ LANGGRAPH_JSON = REPO_ROOT / "apps" / "langgraph" / "langgraph.json"
 
 # Category directory -> list of Pydantic BaseModel subclasses to export as wrappers.
 MODEL_REGISTRY: dict[str, list[type]] = {
-    "graph-inputs": [HelloInputState],
-    "graph-outputs": [HelloOutputState],
+    "graph-inputs": [AgentInputState],
+    "graph-outputs": [AgentOutputState],
     "configurations": [HelloConfiguration],
-    "streaming": [HelloStreamMessage],
-    "models": [],
+    "streaming": [
+        AudioStartedFrame,
+        TranscriptPartialFrame,
+        TranscriptFinalFrame,
+        AgentTextDeltaFrame,
+        AgentTextFinalFrame,
+        ToolProgressFrame,
+        TtsAudioDeltaFrame,
+        BargeInFrame,
+        TurnCancelledFrame,
+    ],
+    "models": [
+        AcceptanceResult,
+        AvailabilityCandidate,
+        AvailabilityRequest,
+        AvailabilityResult,
+        BookingChangeValidation,
+        BookingDraft,
+        BookingProjectionRef,
+        BookingRequest,
+        CanonicalBookingDraft,
+        Confirmation,
+        HandoffPackage,
+        HandoffRequest,
+        HandoffResult,
+        HoldResult,
+        IdempotencyConflict,
+        IntentRevision,
+        ManageableBooking,
+        MaskedDtmfSignal,
+        OperationAcceptedResponse,
+        OperationStatusView,
+        PolicyValidationResult,
+        SubmitCancellationInput,
+        SubmitConfirmedIntentInput,
+        SubmitConfirmedIntentRequest,
+        SubmitModificationInput,
+        ToolResultEnvelope,
+        VerificationGrantView,
+        VerificationRequest,
+        VerificationSentResult,
+    ],
 }
 
 # Standalone string enums emitted into schemas/enums/.
-ENUM_REGISTRY: list[type[Enum]] = [GreetingStatus, HelloMessageCode]
+ENUM_REGISTRY: list[type[Enum]] = [
+    StreamFrameType,
+    TriState,
+    OperationType,
+    CaptureMethod,
+    FieldValidation,
+    Channel,
+    AvailabilityMode,
+    GetTenantContextStatus,
+    FindCustomerContextStatus,
+    CatalogItemStatus,
+    ValidateBookingDraftStatus,
+    CheckCandidateAvailabilityStatus,
+    RequestVerificationStatus,
+    CheckVerificationStatus,
+    SubmitConfirmedIntentStatus,
+    RequestHumanHandoffStatus,
+    FindManageableBookingsStatus,
+    GetBookingDetailsStatus,
+    ValidateBookingChangeStatus,
+    SubmitBookingModificationStatus,
+    SubmitBookingCancellationStatus,
+    NormalizedOperationStatus,
+    ReconnectOutcome,
+    VerificationAction,
+]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
 OWNED_SUBDIRS = [

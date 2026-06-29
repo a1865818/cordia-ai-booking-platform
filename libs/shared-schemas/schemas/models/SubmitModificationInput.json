@@ -1,0 +1,4 @@
+{
+  "title": "SubmitModificationInput",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/SubmitModificationInput"
+}

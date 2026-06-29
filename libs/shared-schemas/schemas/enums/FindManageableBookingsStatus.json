@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FindManageableBookingsStatus",
+  "description": "Status codes for find_manageable_bookings (spec 03 \u00a74.4).",
+  "type": "string",
+  "enum": [
+    "found",
+    "multiple",
+    "none"
+  ]
+}

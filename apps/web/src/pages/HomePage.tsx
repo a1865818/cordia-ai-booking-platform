@@ -1,4 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { AvailabilityMode } from "@cordia/shared-schemas";
+import { fetchApi, isApiError } from "../api/client";
+
 
 import { LandingNav } from "../components/landing/LandingNav";
 import { HeroSection } from "../components/landing/HeroSection";
@@ -514,5 +517,11 @@ export function HomePage() {
         <StickyCTA />
       </div>
     </>
+    <section>
+      <p>API health: {health}</p>
+      {/* AvailabilityMode is imported from the generated shared-schemas package,
+          proving the Pydantic -> JSON Schema -> TypeScript pipeline works. */}
+      <p>Default availability mode: {AvailabilityMode.Confirmed}</p>
+    </section>
   );
 }

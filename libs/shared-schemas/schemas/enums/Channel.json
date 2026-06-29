@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Channel",
+  "description": "Origin channel a draft was captured on.",
+  "type": "string",
+  "enum": [
+    "voice",
+    "sms",
+    "web",
+    "email"
+  ]
+}

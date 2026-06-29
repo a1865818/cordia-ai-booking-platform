@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SubmitConfirmedIntentStatus",
+  "description": "Status codes for submit_confirmed_intent (spec 03 \u00a74.3).",
+  "type": "string",
+  "enum": [
+    "accepted",
+    "duplicate_accepted",
+    "idempotency_conflict",
+    "confirmation_invalid",
+    "policy_failed",
+    "validation_failed"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "title": "MaskedDtmfSignal",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/MaskedDtmfSignal"
+}

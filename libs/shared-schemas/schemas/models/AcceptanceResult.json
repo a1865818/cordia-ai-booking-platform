@@ -1,0 +1,4 @@
+{
+  "title": "AcceptanceResult",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/AcceptanceResult"
+}

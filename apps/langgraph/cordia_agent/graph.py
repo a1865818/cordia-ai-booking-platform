@@ -1,58 +1,113 @@
-"""The Cordia hello graph — a minimal LangGraph workflow.
+"""The Cordia foreground conversational agent graph (§8.3).
 
-A single-node graph that renders a greeting. Serves as the working template for
-real graphs and exercises the Pydantic -> JSON Schema -> C#/TS type pipeline.
+Builds the full node/edge topology from the spec; every node is a pure
+pass-through stub so the suite runs fully offline.  Real implementations will
+replace the stubs in later tickets.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel
 
-from cordia_agent.configurations import HelloConfiguration
-from cordia_agent.state import GreetingStatus, HelloInputState, HelloOutputState
-
-
-if TYPE_CHECKING:
-    from langgraph.runtime import Runtime
-
-
-class _HelloState(BaseModel):
-    """Internal graph state: input fields plus defaulted output fields.
-
-    Using a state with defaults (rather than the output schema directly) lets
-    LangGraph coerce the input — which only carries ``name`` — without tripping
-    required-field validation on the output fields.
-    """
-
-    name: str = ""
-    message: str = ""
-    status: GreetingStatus = GreetingStatus.PENDING
-
-
-async def greet(state: _HelloState, runtime: Runtime[HelloConfiguration]) -> dict:
-    """Render a greeting for the given name."""
-    greeting = runtime.context.greeting if runtime.context else "Hello"
-    return {
-        "message": f"{greeting}, {state.name}!",
-        "status": GreetingStatus.GREETED,
-    }
+from cordia_agent.nodes import (
+    await_confirmation,
+    capture_fields,
+    check_candidates,
+    clarify,
+    human_handoff,
+    identify_intent,
+    load_context,
+    read_back,
+    resolve_tenant,
+    route_after_await_confirmation,
+    route_after_capture_fields,
+    route_after_check_candidates,
+    route_after_submit_intent,
+    route_after_verify_identity,
+    submit_intent,
+    verify_identity,
+)
+from cordia_agent.state import AgentInputState, AgentOutputState, AgentState
 
 
-def build_hello_graph() -> StateGraph:
-    """Construct and compile the hello graph."""
+def build_agent_graph() -> StateGraph:
+    """Construct and compile the foreground agent graph (§8.3 topology)."""
     builder = StateGraph(
-        _HelloState,
-        input_schema=HelloInputState,
-        output_schema=HelloOutputState,
-        context_schema=HelloConfiguration,
+        AgentState,
+        input_schema=AgentInputState,
+        output_schema=AgentOutputState,
     )
-    builder.add_node("greet", greet)
-    builder.add_edge(START, "greet")
-    builder.add_edge("greet", END)
+
+    # ------------------------------------------------------------------ nodes
+    builder.add_node("resolve_tenant", resolve_tenant)
+    builder.add_node("load_context", load_context)
+    builder.add_node("identify_intent", identify_intent)
+    builder.add_node("capture_fields", capture_fields)
+    builder.add_node("clarify", clarify)
+    builder.add_node("verify_identity", verify_identity)
+    builder.add_node("check_candidates", check_candidates)
+    builder.add_node("read_back", read_back)
+    builder.add_node("await_confirmation", await_confirmation)
+    builder.add_node("submit_intent", submit_intent)
+    builder.add_node("human_handoff", human_handoff)
+
+    # -------------------------------------------------------- unconditional edges
+    builder.add_edge(START, "resolve_tenant")
+    builder.add_edge("resolve_tenant", "load_context")
+    builder.add_edge("load_context", "identify_intent")
+    builder.add_edge("identify_intent", "capture_fields")
+    builder.add_edge("clarify", "capture_fields")
+    builder.add_edge("read_back", "await_confirmation")
+    builder.add_edge("human_handoff", END)
+
+    # --------------------------------------------------------- conditional edges
+    # Each path_map must enumerate ALL allowed targets so get_graph().edges
+    # statically records every transition (required for topology tests).
+    builder.add_conditional_edges(
+        "capture_fields",
+        route_after_capture_fields,
+        {
+            "clarify": "clarify",
+            "verify_identity": "verify_identity",
+            "check_candidates": "check_candidates",
+            "read_back": "read_back",
+        },
+    )
+    builder.add_conditional_edges(
+        "verify_identity",
+        route_after_verify_identity,
+        {
+            "capture_fields": "capture_fields",
+            "human_handoff": "human_handoff",
+        },
+    )
+    builder.add_conditional_edges(
+        "check_candidates",
+        route_after_check_candidates,
+        {
+            "capture_fields": "capture_fields",
+            "read_back": "read_back",
+        },
+    )
+    builder.add_conditional_edges(
+        "await_confirmation",
+        route_after_await_confirmation,
+        {
+            "capture_fields": "capture_fields",
+            "submit_intent": "submit_intent",
+        },
+    )
+    builder.add_conditional_edges(
+        "submit_intent",
+        route_after_submit_intent,
+        {
+            END: END,
+            "capture_fields": "capture_fields",
+            "human_handoff": "human_handoff",
+        },
+    )
+
     return builder.compile()
 
 
-hello_graph = build_hello_graph()
+agent_graph = build_agent_graph()

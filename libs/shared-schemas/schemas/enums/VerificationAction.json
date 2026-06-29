@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VerificationAction",
+  "description": "Allowed action types for a verification grant (owned by spec 08).",
+  "type": "string",
+  "enum": [
+    "read_sensitive",
+    "modify",
+    "cancel",
+    "use_payment_method",
+    "refund",
+    "owner_override"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GetBookingDetailsStatus",
+  "description": "Status codes for get_booking_details (spec 03 \u00a74.4).",
+  "type": "string",
+  "enum": [
+    "ok",
+    "requires_verification",
+    "not_found"
+  ]
+}

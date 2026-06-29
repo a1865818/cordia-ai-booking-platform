@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "StreamFrameType",
+  "description": "Discriminator for streaming voice-pipeline frames (spec 01 \u00a75.1 / \u00a76.3).",
+  "type": "string",
+  "enum": [
+    "audio.started",
+    "transcript.partial",
+    "transcript.final",
+    "agent.text.delta",
+    "agent.text.final",
+    "tool.progress",
+    "tts.audio.delta",
+    "barge_in.detected",
+    "turn.cancelled"
+  ]
+}
