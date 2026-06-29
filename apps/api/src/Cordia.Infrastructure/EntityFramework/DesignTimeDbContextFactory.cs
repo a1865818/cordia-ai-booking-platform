@@ -32,6 +32,7 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
                     .MapEnum<TenantChannel>("channel_enum")
                     .MapEnum<OperationTypeEnum>("operation_type_enum")
                     .MapEnum<OperationStatus>("operation_status_enum")
+                    .MapEnum<BookingLifecycleStatus>("booking_lifecycle_status_enum")
                     .MapEnum<IdempotencyStatus>("idempotency_status_enum")
                     .MapEnum<VerificationLevel>("verification_level_enum")
                     .MapEnum<WorkflowStepStatus>("workflow_step_status_enum")

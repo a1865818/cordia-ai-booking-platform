@@ -33,6 +33,8 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<BookingOperation> BookingOperations => Set<BookingOperation>();
 
+    public DbSet<Booking> Bookings => Set<Booking>();
+
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
     public DbSet<WorkflowStep> WorkflowSteps => Set<WorkflowStep>();
@@ -52,6 +54,8 @@ public class ApplicationDbContext : DbContext
     public DbSet<Notification> Notifications => Set<Notification>();
 
     public DbSet<VerificationGrant> VerificationGrants => Set<VerificationGrant>();
+
+    public DbSet<VerificationChallenge> VerificationChallenges => Set<VerificationChallenge>();
 
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 

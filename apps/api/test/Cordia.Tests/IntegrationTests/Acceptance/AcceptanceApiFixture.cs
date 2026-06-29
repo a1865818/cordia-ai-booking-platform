@@ -70,6 +70,7 @@ public class AcceptanceApiFixture : IAsyncLifetime
                     .MapEnum<TenantChannel>("channel_enum")
                     .MapEnum<OperationTypeEnum>("operation_type_enum")
                     .MapEnum<OperationStatus>("operation_status_enum")
+                    .MapEnum<BookingLifecycleStatus>("booking_lifecycle_status_enum")
                     .MapEnum<IdempotencyStatus>("idempotency_status_enum")
                     .MapEnum<VerificationLevel>("verification_level_enum")
                     .MapEnum<WorkflowStepStatus>("workflow_step_status_enum")
@@ -88,7 +89,9 @@ public class AcceptanceApiFixture : IAsyncLifetime
                     .MapEnum<WaitlistOfferStatus>("waitlist_offer_status_enum")
                     .MapEnum<PreorderSagaState>("preorder_saga_state_enum")
                     .MapEnum<SignalType>("signal_type_enum")
-                    .MapEnum<EndpointStatus>("endpoint_status_enum"))
+                    .MapEnum<EndpointStatus>("endpoint_status_enum")
+                    .MapEnum<HoldStatus>("hold_status_enum")
+                    .MapEnum<ReleaseReason>("release_reason_enum"))
             .UseSnakeCaseNamingConvention();
 
         return new ApplicationDbContext(

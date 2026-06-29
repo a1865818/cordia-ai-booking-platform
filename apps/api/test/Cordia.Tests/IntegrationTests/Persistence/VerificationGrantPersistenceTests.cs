@@ -198,6 +198,55 @@ public class VerificationGrantPersistenceTests(PostgresFixture fixture)
         Assert.NotNull(found);
     }
 
+    [Fact]
+    public async Task FindValidGrantByIdAsync_WrongGrantId_ReturnsNull()
+    {
+        var tenantId = $"t4-vg-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        var grant = MakeGrant(
+            tenantId, "cust-1", VerificationActionEnum.Modify,
+            VerificationLevel.IdentityVerified, now.AddHours(1),
+            targetBookingId: "bk-1");
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VerificationGrants.Add(grant);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var readCtx = fixture.CreateContext(tenantId);
+        var repo = new VerificationGrantRepository(readCtx);
+        var found = await repo.FindValidGrantByIdAsync(
+            tenantId, "different-grant", "cust-1", VerificationActionEnum.Modify, "bk-1", now);
+
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public async Task FindValidGrantByIdAsync_ReturnsPresentedValidGrant()
+    {
+        var tenantId = $"t4-vg-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        var grant = MakeGrant(
+            tenantId, "cust-1", VerificationActionEnum.Modify,
+            VerificationLevel.IdentityVerified, now.AddHours(1),
+            targetBookingId: "bk-1");
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VerificationGrants.Add(grant);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var readCtx = fixture.CreateContext(tenantId);
+        var repo = new VerificationGrantRepository(readCtx);
+        var found = await repo.FindValidGrantByIdAsync(
+            tenantId, grant.GrantId, "cust-1", VerificationActionEnum.Modify, "bk-1", now);
+
+        Assert.NotNull(found);
+        Assert.Equal(grant.GrantId, found.GrantId);
+    }
+
     // (4e) ConsumeAsync must reject an EXPIRED grant atomically (§9.3 now < expires_at):
     //      rows=0 and consumed_at stays null so the caller is forced to re-verify.
     [Fact]
@@ -217,7 +266,13 @@ public class VerificationGrantPersistenceTests(PostgresFixture fixture)
 
         await using var ctx1 = fixture.CreateContext(tenantId);
         var repo = new VerificationGrantRepository(ctx1);
-        var rows = await repo.ConsumeAsync(tenantId, grant.GrantId, now);
+        var rows = await repo.ConsumeAsync(
+            tenantId,
+            grant.GrantId,
+            "cust-9",
+            VerificationActionEnum.Modify,
+            null,
+            now);
         Assert.Equal(0, rows); // expired → not consumed
 
         await using var verifyCtx = fixture.CreateContext(tenantId);
@@ -246,13 +301,25 @@ public class VerificationGrantPersistenceTests(PostgresFixture fixture)
         // First consume → rows = 1
         await using var ctx1 = fixture.CreateContext(tenantId);
         var repo1 = new VerificationGrantRepository(ctx1);
-        var rows1 = await repo1.ConsumeAsync(tenantId, grant.GrantId, now);
+        var rows1 = await repo1.ConsumeAsync(
+            tenantId,
+            grant.GrantId,
+            "cust-2",
+            VerificationActionEnum.Cancel,
+            null,
+            now);
         Assert.Equal(1, rows1);
 
         // Second consume → rows = 0
         await using var ctx2 = fixture.CreateContext(tenantId);
         var repo2 = new VerificationGrantRepository(ctx2);
-        var rows2 = await repo2.ConsumeAsync(tenantId, grant.GrantId, now.AddSeconds(1));
+        var rows2 = await repo2.ConsumeAsync(
+            tenantId,
+            grant.GrantId,
+            "cust-2",
+            VerificationActionEnum.Cancel,
+            null,
+            now.AddSeconds(1));
         Assert.Equal(0, rows2);
 
         // Verify AllowedAction + VerificationLevel round-trip from DB
@@ -263,5 +330,39 @@ public class VerificationGrantPersistenceTests(PostgresFixture fixture)
         Assert.Equal(VerificationActionEnum.Cancel, reloaded.AllowedAction);
         Assert.Equal(VerificationLevel.ChannelVerified, reloaded.VerificationLevel);
         Assert.NotNull(reloaded.ConsumedAt);
+    }
+
+    [Fact]
+    public async Task ConsumeAsync_WrongAction_ReturnsZero_AndLeavesUnconsumed()
+    {
+        var tenantId = $"t4-vg-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        var grant = MakeGrant(
+            tenantId, "cust-2", VerificationActionEnum.Cancel,
+            VerificationLevel.ChannelVerified, now.AddHours(1),
+            targetBookingId: "bk-1");
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VerificationGrants.Add(grant);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var ctx1 = fixture.CreateContext(tenantId);
+        var repo = new VerificationGrantRepository(ctx1);
+        var rows = await repo.ConsumeAsync(
+            tenantId,
+            grant.GrantId,
+            "cust-2",
+            VerificationActionEnum.Modify,
+            "bk-1",
+            now);
+
+        Assert.Equal(0, rows);
+
+        await using var verifyCtx = fixture.CreateContext(tenantId);
+        var reloaded = await verifyCtx.VerificationGrants.AsNoTracking()
+            .SingleAsync(g => g.GrantId == grant.GrantId);
+        Assert.Null(reloaded.ConsumedAt);
     }
 }

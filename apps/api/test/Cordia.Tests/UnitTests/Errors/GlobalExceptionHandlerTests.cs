@@ -157,6 +157,34 @@ public class GlobalExceptionHandlerTests
         Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
     }
 
+    [Fact]
+    public async Task VerificationRequired_Returns403()
+    {
+        var ctx = CreateContext();
+        var ex = new VerificationRequiredException(
+            "tenant-1",
+            "cust-1",
+            Cordia.Domain.Generated.VerificationActionEnum.Modify,
+            "booking-1");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status403Forbidden, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task StaleBookingVersion_Returns409()
+    {
+        var ctx = CreateContext();
+        var ex = new StaleBookingVersionException("booking-1", expectedVersion: 1, currentVersion: 2);
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
+    }
+
     // ------------------------------------------------------------------
     // Unmapped exception → returns false (default 500 pipeline takes over)
     // ------------------------------------------------------------------

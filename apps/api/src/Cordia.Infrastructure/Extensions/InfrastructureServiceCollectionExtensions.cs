@@ -33,6 +33,7 @@ public static class InfrastructureServiceCollectionExtensions
                         .MapEnum<TenantChannel>("channel_enum")
                         .MapEnum<OperationTypeEnum>("operation_type_enum")
                         .MapEnum<OperationStatus>("operation_status_enum")
+                        .MapEnum<BookingLifecycleStatus>("booking_lifecycle_status_enum")
                         .MapEnum<IdempotencyStatus>("idempotency_status_enum")
                         .MapEnum<VerificationLevel>("verification_level_enum")
                         .MapEnum<WorkflowStepStatus>("workflow_step_status_enum")
@@ -66,6 +67,8 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
         services.AddScoped<IBookingOperationRepository, BookingOperationRepository>();
+        services.AddScoped<IBookingRepository, BookingRepository>();
+        services.AddScoped<IBookingReadRepository, BookingReadRepository>();
         services.AddScoped<IBookingIntentRepository, BookingIntentRepository>();
         services.AddScoped<IWorkflowStepRepository, WorkflowStepRepository>();
         services.AddScoped<IWorkflowAttemptRepository, WorkflowAttemptRepository>();
@@ -76,6 +79,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IScheduledJobRepository, ScheduledJobRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<IVerificationGrantRepository, VerificationGrantRepository>();
+        services.AddScoped<IVerificationChallengeRepository, VerificationChallengeRepository>();
         services.AddScoped<IAuditEventRepository, AuditEventRepository>();
         services.AddScoped<IDepositSessionRepository, DepositSessionRepository>();
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();

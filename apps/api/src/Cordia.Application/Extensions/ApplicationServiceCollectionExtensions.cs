@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Application.Behaviours;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.AdvanceOperation;
 using Cordia.Application.Handlers.BookingFulfillment.DepositEvent;
@@ -153,6 +154,7 @@ public static class ApplicationServiceCollectionExtensions
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
+        services.AddScoped<IGrantAuthorizationService, GrantAuthorizationService>();
 
         // Spec 06 T6 retry/escalation helpers — scoped (share the ambient DbContext / UoW).
         services.AddScoped<RetryScheduler>();

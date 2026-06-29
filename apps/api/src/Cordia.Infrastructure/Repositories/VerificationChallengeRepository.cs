@@ -1,0 +1,49 @@
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.EntityFramework;
+using Microsoft.EntityFrameworkCore;
+
+namespace Cordia.Infrastructure.Repositories;
+
+public class VerificationChallengeRepository(ApplicationDbContext db) : IVerificationChallengeRepository
+{
+    public async Task AddAsync(VerificationChallenge challenge, CancellationToken ct = default)
+    {
+        db.VerificationChallenges.Add(challenge);
+        await db.SaveChangesAsync(ct);
+    }
+
+    public Task<VerificationChallenge?> GetByIdAsync(
+        string tenantId,
+        string verificationId,
+        CancellationToken ct = default)
+        => db.VerificationChallenges
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.VerificationId == verificationId, ct);
+
+    public Task<VerificationChallenge?> GetByIdempotencyKeyAsync(
+        string tenantId,
+        string idempotencyKey,
+        CancellationToken ct = default)
+        => db.VerificationChallenges
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.IdempotencyKey == idempotencyKey, ct);
+
+    public Task<int> MarkVerifiedAsync(
+        string tenantId,
+        string verificationId,
+        string grantId,
+        DateTimeOffset verifiedAt,
+        CancellationToken ct = default)
+        => db.VerificationChallenges
+            .IgnoreQueryFilters()
+            .Where(c => c.TenantId == tenantId
+                        && c.VerificationId == verificationId
+                        && c.VerifiedAt == null
+                        && verifiedAt < c.ExpiresAt)
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(c => c.VerifiedAt, verifiedAt)
+                    .SetProperty(c => c.GrantId, grantId),
+                ct);
+}
