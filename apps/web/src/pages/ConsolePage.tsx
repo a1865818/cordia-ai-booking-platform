@@ -92,9 +92,10 @@ export function ConsolePage() {
     if (isDesktop && screen === 'more') setScreen('today');
   }, [isDesktop, screen]);
 
-  // Sign-out
+  // Sign-out — respect the Vite base path (import.meta.env.BASE_URL) so we land
+  // on the app root even when the SPA is served under a prefix (VITE_BASE_PATH).
   function handleSignOut() {
-    window.location.href = '/';
+    window.location.href = import.meta.env.BASE_URL;
   }
 
   // Waitlist actions
