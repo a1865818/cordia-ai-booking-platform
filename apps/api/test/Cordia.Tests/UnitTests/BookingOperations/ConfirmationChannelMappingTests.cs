@@ -1,10 +1,10 @@
-﻿using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
+﻿using Cordia.Application.Common;
 using Cordia.Domain.Generated;
 
 namespace Cordia.Tests.UnitTests.BookingOperations;
 
 /// <summary>
-/// Unit tests for <see cref="SubmitConfirmedIntentCommandHandler.MapConfirmationChannel"/> (spec 04 Fix 1).
+/// Unit tests for <see cref="ConfirmationMappings.MapConfirmationChannel"/> (spec 04 Fix 1).
 /// Verifies that every <see cref="ChannelEnum"/> member maps to the lowercase wire vocabulary
 /// used by the agent (<c>email | sms | voice | web</c>) rather than the PascalCase C# member
 /// name emitted by <c>.ToString()</c>.
@@ -19,7 +19,7 @@ public class ConfirmationChannelMappingTests
     [InlineData(ChannelEnum.Web, "web")]
     public void MapConfirmationChannel_ReturnsLowercaseWireLabel(ChannelEnum channel, string expected)
     {
-        var result = SubmitConfirmedIntentCommandHandler.MapConfirmationChannel(channel);
+        var result = ConfirmationMappings.MapConfirmationChannel(channel);
 
         Assert.Equal(expected, result);
     }

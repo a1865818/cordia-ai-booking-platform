@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
+using Cordia.Application.Common;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -214,11 +215,11 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 // BARE hash — must equal revision.payload_hash so the DB trigger passes.
                 IntentPayloadHash = confirmation.IntentPayloadHash,
                 IdentityRef = confirmation.Identity ?? string.Empty,
-                ConfirmationChannel = MapConfirmationChannel(confirmation.ConfirmationChannel),
+                ConfirmationChannel = ConfirmationMappings.MapConfirmationChannel(confirmation.ConfirmationChannel),
                 SourceTurnId = confirmation.SourceTurnId ?? string.Empty,
                 ReadbackVersion = confirmation.ReadBackVersion ?? string.Empty,
                 Disclosures = JsonSerializer.Serialize(confirmation.DisclosuresPresented ?? new List<string>()),
-                VerificationLevel = MapVerificationLevel(confirmation.VerificationLevel),
+                VerificationLevel = ConfirmationMappings.MapVerificationLevel(confirmation.VerificationLevel),
                 ConfirmedAt = confirmation.ConfirmedAt,
             }, ct2);
 
@@ -294,40 +295,5 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             StatusUrl = $"/api/booking-operations/{record.OperationId}",
             AcceptedAt = record.CreatedAt,
         });
-    }
-
-    /// <summary>
-    /// Maps <see cref="ChannelEnum"/> to the lowercase wire vocabulary used by the agent
-    /// (<c>email | sms | voice | web</c>) for storage in <c>intent_confirmations.confirmation_channel</c>.
-    /// Using an explicit switch rather than <c>.ToString()</c> ensures the stored value is always
-    /// the correct wire label regardless of how the C# enum member name is capitalised.
-    /// </summary>
-    internal static string MapConfirmationChannel(ChannelEnum channel) => channel switch
-    {
-        ChannelEnum.Email => "email",
-        ChannelEnum.Sms => "sms",
-        ChannelEnum.Voice => "voice",
-        ChannelEnum.Web => "web",
-        _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, "Unrecognised ConfirmationChannel value."),
-    };
-
-    /// <summary>
-    /// Maps the string <c>verification_level</c> from the generated <c>Confirmation</c> type
-    /// to the Domain <see cref="VerificationLevel"/> enum by PgName / JSON member name.
-    /// Defaults to <see cref="VerificationLevel.Unverified"/> for null or unrecognized values.
-    /// </summary>
-    private static VerificationLevel MapVerificationLevel(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return VerificationLevel.Unverified;
-
-        return raw.ToLowerInvariant() switch
-        {
-            "channel_verified" => VerificationLevel.ChannelVerified,
-            "identity_verified" => VerificationLevel.IdentityVerified,
-            "high_assurance" => VerificationLevel.HighAssurance,
-            "unverified" => VerificationLevel.Unverified,
-            _ => VerificationLevel.Unverified,
-        };
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -189,11 +190,11 @@ public sealed class SubmitBookingModificationCommandHandler(
                 IntentRevision = (int)request.IntentRevision,
                 IntentPayloadHash = request.IntentPayloadHash,
                 IdentityRef = request.Confirmation.Identity ?? string.Empty,
-                ConfirmationChannel = MapConfirmationChannel(request.Confirmation.ConfirmationChannel),
+                ConfirmationChannel = ConfirmationMappings.MapConfirmationChannel(request.Confirmation.ConfirmationChannel),
                 SourceTurnId = request.Confirmation.SourceTurnId ?? string.Empty,
                 ReadbackVersion = request.Confirmation.ReadBackVersion ?? string.Empty,
                 Disclosures = JsonSerializer.Serialize(request.Confirmation.DisclosuresPresented ?? []),
-                VerificationLevel = MapVerificationLevel(request.Confirmation.VerificationLevel),
+                VerificationLevel = ConfirmationMappings.MapVerificationLevel(request.Confirmation.VerificationLevel),
                 ConfirmedAt = request.Confirmation.ConfirmedAt,
             }, ct2);
 
@@ -292,28 +293,4 @@ public sealed class SubmitBookingModificationCommandHandler(
             request.IntentRevision,
             $"/api/booking-operations/{request.OperationId}",
             acceptedAt);
-
-    private static string MapConfirmationChannel(ChannelEnum channel) => channel switch
-    {
-        ChannelEnum.Email => "email",
-        ChannelEnum.Sms => "sms",
-        ChannelEnum.Voice => "voice",
-        ChannelEnum.Web => "web",
-        _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, "Unrecognised ConfirmationChannel value."),
-    };
-
-    private static VerificationLevel MapVerificationLevel(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return VerificationLevel.Unverified;
-
-        return raw.ToLowerInvariant() switch
-        {
-            "channel_verified" => VerificationLevel.ChannelVerified,
-            "identity_verified" => VerificationLevel.IdentityVerified,
-            "high_assurance" => VerificationLevel.HighAssurance,
-            "unverified" => VerificationLevel.Unverified,
-            _ => VerificationLevel.Unverified,
-        };
-    }
 }

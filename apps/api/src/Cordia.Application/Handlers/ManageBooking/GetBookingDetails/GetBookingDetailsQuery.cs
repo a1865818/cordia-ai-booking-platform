@@ -33,7 +33,7 @@ public sealed class GetBookingDetailsQueryHandler(
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.NotFound, null);
 
         var minimal = ManageBookingMapper.ToContract(projection);
-        var grantId = EmptyToNull(request.GrantId);
+        var grantId = string.IsNullOrWhiteSpace(request.GrantId) ? null : request.GrantId;
         if (grantId is null)
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.Ok, minimal);
 
@@ -51,7 +51,4 @@ public sealed class GetBookingDetailsQueryHandler(
 
         return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.Ok, minimal);
     }
-
-    private static string? EmptyToNull(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value;
 }
