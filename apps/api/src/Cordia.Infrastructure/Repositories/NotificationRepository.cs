@@ -33,7 +33,9 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
             db,
             expectedVersion,
             e => e.TenantId == tenantId && e.NotificationId == notificationId && e.State == expectedState,
-            s => s.SetProperty(x => x.State, next),
+            s => s
+                .SetProperty(x => x.State, next)
+                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
 
     /// <inheritdoc/>
@@ -85,6 +87,7 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
             s => s
                 .SetProperty(x => x.State, NotificationState.Accepted)
                 .SetProperty(x => x.ProviderRef, providerRef)
+                .SetProperty(x => x.FailureCategory, (string?)null)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
 
@@ -141,18 +144,21 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
 
-    // Terminal statuses (§11) — static array used by the EF query below.
-    // arr.Contains(op.Status) translates to SQL `= ANY(...)`.
-    private static readonly OperationStatus[] TerminalStatuses =
+    // Terminal statuses that require BookingConfirmed (§F4).
+    private static readonly OperationStatus[] BookedStatuses =
     [
         OperationStatus.Booked,
-        OperationStatus.Rejected,
-        OperationStatus.Expired,
-        OperationStatus.Waitlisted,
-        OperationStatus.FailedFinal,
     ];
 
-    // Pre-built accepted/delivered state filter — reused in the subquery below.
+    // Terminal statuses that require FinalFailure (§F4).
+    private static readonly OperationStatus[] FailureStatuses =
+    [
+        OperationStatus.FailedFinal,
+        OperationStatus.Rejected,
+        OperationStatus.Expired,
+    ];
+
+    // Pre-built accepted/delivered state filter — reused in the subqueries below.
     private static readonly NotificationState[] AcceptedStates =
     [
         NotificationState.Accepted,
@@ -165,31 +171,43 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
         int limit,
         CancellationToken ct = default)
     {
-        // Build a cross-tenant set of (tenantId, operationId) pairs that already have an
-        // accepted/delivered notification.  IgnoreQueryFilters() bypasses the global tenant filter
-        // on the Notifications set so we see all tenants.
-        var accepted = db.Notifications
+        // Build cross-tenant sets of (tenantId, operationId) for each expected terminal notification type.
+        // IgnoreQueryFilters() bypasses the global tenant filter so we see all tenants.
+        // Waitlisted ops are EXCLUDED from the sweep (no notify expectation — waitlisted.v1 is not registered).
+        var acceptedConfirmed = db.Notifications
             .IgnoreQueryFilters()
-            .Where(n => AcceptedStates.Contains(n.State))
+            .Where(n => AcceptedStates.Contains(n.State) && n.EventType == NotificationEvent.BookingConfirmed)
+            .Select(n => new { n.TenantId, n.OperationId });
+
+        var acceptedFailure = db.Notifications
+            .IgnoreQueryFilters()
+            .Where(n => AcceptedStates.Contains(n.State) && n.EventType == NotificationEvent.FinalFailure)
             .Select(n => new { n.TenantId, n.OperationId });
 
         return await db.BookingOperations
             .AsNoTracking()
             .IgnoreQueryFilters()
             .Where(op =>
-                TerminalStatuses.Contains(op.Status) &&
                 op.UpdatedAt < olderThan &&
-                !accepted.Any(a => a.TenantId == op.TenantId && a.OperationId == op.OperationId))
+                (
+                    (op.Status == OperationStatus.Booked &&
+                        !acceptedConfirmed.Any(a => a.TenantId == op.TenantId && a.OperationId == op.OperationId)) ||
+                    ((op.Status == OperationStatus.FailedFinal ||
+                      op.Status == OperationStatus.Rejected ||
+                      op.Status == OperationStatus.Expired) &&
+                        !acceptedFailure.Any(a => a.TenantId == op.TenantId && a.OperationId == op.OperationId))
+                ))
             .OrderBy(op => op.UpdatedAt)
             .Take(limit)
-            .Select(op => new TerminalOperationRef(op.TenantId, op.OperationId))
+            .Select(op => new TerminalOperationRef(op.TenantId, op.OperationId, op.Status))
             .ToListAsync(ct);
     }
 
     /// <inheritdoc/>
-    public Task<bool> HasAcceptedNotificationAsync(
+    public Task<bool> HasAcceptedTerminalNotificationAsync(
         string tenantId,
         string operationId,
+        NotificationEvent expectedEvent,
         CancellationToken ct = default)
         => db.Notifications
             .AsNoTracking()
@@ -197,6 +215,7 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
             .AnyAsync(n =>
                 n.TenantId == tenantId &&
                 n.OperationId == operationId &&
+                n.EventType == expectedEvent &&
                 (n.State == NotificationState.Accepted || n.State == NotificationState.Delivered),
                 ct);
 }

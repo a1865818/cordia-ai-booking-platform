@@ -113,16 +113,17 @@ public class NotificationStateMachineTests
     }
 
     [Fact]
-    public void TransitionTo_WithoutFailureCategory_DoesNotOverwriteExisting()
+    public void TransitionTo_WithoutFailureCategory_ClearsExisting_F6()
     {
+        // F6: transitioning to a successful state with failureCategory=null must CLEAR stale metadata.
         var notification = MakeNotification(NotificationState.Sending);
         notification.FailureCategory = "previous";
 
         notification.TransitionTo(NotificationState.Accepted);
 
         Assert.Equal(NotificationState.Accepted, notification.State);
-        // FailureCategory not overwritten when null is passed
-        Assert.Equal("previous", notification.FailureCategory);
+        // FailureCategory cleared (F6: always assign, so null clears stale metadata).
+        Assert.Null(notification.FailureCategory);
     }
 
     [Fact]

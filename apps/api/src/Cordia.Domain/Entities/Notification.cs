@@ -56,7 +56,6 @@ public class Notification : ITenantScoped
         NotificationStateMachine.EnsureAllowed(State, next);
         State = next;
         UpdatedAt = DateTimeOffset.UtcNow;
-        if (failureCategory is not null)
-            FailureCategory = failureCategory;
+        FailureCategory = failureCategory;
     }
 }

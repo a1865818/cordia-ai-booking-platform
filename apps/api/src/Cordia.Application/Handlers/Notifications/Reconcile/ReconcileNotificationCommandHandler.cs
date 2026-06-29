@@ -36,6 +36,7 @@ public sealed class ReconcileNotificationCommandHandler(
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
     NotificationRetryScheduler retryScheduler,
+    INotificationTemplateResolver templateResolver,
     ILogger<ReconcileNotificationCommandHandler> logger)
     : IRequestHandler<ReconcileNotificationCommand, ReconcileOutcome>
 {
@@ -163,14 +164,15 @@ public sealed class ReconcileNotificationCommandHandler(
 
             // (b/c) Resend under the SAME stable provider_idempotency_key.
             // Body content is immaterial to provider dedup — what matters is the stable key.
-            // Build a minimal RenderedMessage from stored fields to satisfy the adapter signature.
+            // Resolve the template to render a real body (F10: reconcile resend uses non-empty body).
             // NOTE: reconcile resends always use the original provider_idempotency_key so that
             //       providers with send-idempotency can deduplicate the re-attempt correctly.
+            var reconcileTemplate = await templateResolver.ResolveAsync(n.EventType, n.Channel, "en", ct2);
             var rendered = new RenderedMessage(
                 TemplateVersion: n.TemplateVersion,
                 Channel: n.Channel,
                 Locale: "en",
-                Body: string.Empty,
+                Body: reconcileTemplate.BodyTemplate,
                 MinimizedRecipient: n.RecipientRef);
 
             var result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct2);

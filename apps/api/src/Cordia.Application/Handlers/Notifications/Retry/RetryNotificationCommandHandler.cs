@@ -27,6 +27,7 @@ public sealed class RetryNotificationCommandHandler(
     IEnumerable<INotificationProviderAdapter> adapters,
     IAuditEventRepository auditRepo,
     NotificationRetryScheduler retryScheduler,
+    INotificationTemplateResolver templateResolver,
     ILogger<RetryNotificationCommandHandler> logger)
     : IRequestHandler<RetryNotificationCommand, Unit>
 {
@@ -103,22 +104,51 @@ public sealed class RetryNotificationCommandHandler(
                 "RetryNotification: no adapter for channel {Channel}; settled FailedPermanent for {NotificationId}.",
                 n.Channel, notificationId);
 
-            await EmitAuditAsync(n, "notification.failed_permanent",
-                new { notification_id = notificationId, failure_category = "no_adapter_for_channel", channel = n.Channel.ToString() },
-                ct);
+            if (noAdapterRows > 0)
+            {
+                await EmitAuditAsync(n, "notification.failed_permanent",
+                    new { notification_id = notificationId, failure_category = "no_adapter_for_channel", channel = n.Channel.ToString() },
+                    ct);
+            }
 
             return Unit.Value;
         }
 
-        // 6. Send.
+        // 6. Resolve template + send (F10: render a real body on retry resend).
+        var template = await templateResolver.ResolveAsync(n.EventType, n.Channel, "en", ct);
         var rendered = new RenderedMessage(
             TemplateVersion: n.TemplateVersion,
             Channel: n.Channel,
             Locale: "en",
-            Body: string.Empty,
+            Body: template.BodyTemplate,
             MinimizedRecipient: n.RecipientRef);
 
-        var result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct);
+        NotificationSendResult result;
+        try
+        {
+            result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // F9: guard against adapter exceptions — treat as transient failure so the inbox
+            // transaction COMMITS (row settles to FailedTransient + durable retry scheduled)
+            // rather than rolling back and causing a poison redelivery loop.
+            logger.LogWarning(ex,
+                "RetryNotification: adapter.SendAsync threw for {NotificationId}; treating as transient.",
+                notificationId);
+            var reloadedOnEx = await repo.GetAsync(tenantId, notificationId, ct);
+            if (reloadedOnEx is not null)
+            {
+                await retryScheduler.HandleTransientAsync(reloadedOnEx, expectedVersion: sendingVersion, "send_exception", ct);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "RetryNotification: could not reload notification_id={NotificationId} after send exception.",
+                    notificationId);
+            }
+            return Unit.Value;
+        }
 
         switch (result.Outcome)
         {
@@ -135,9 +165,12 @@ public sealed class RetryNotificationCommandHandler(
                         "RetryNotification: lost race settling Sending→Accepted for {NotificationId}.",
                         notificationId);
 
-                await EmitAuditAsync(n, "notification.accepted",
-                    new { notification_id = notificationId, channel = n.Channel.ToString(), provider_ref = result.ProviderMessageId },
-                    ct);
+                if (acceptedRows > 0)
+                {
+                    await EmitAuditAsync(n, "notification.accepted",
+                        new { notification_id = notificationId, channel = n.Channel.ToString(), provider_ref = result.ProviderMessageId },
+                        ct);
+                }
                 break;
 
             case NotificationSendOutcome.FailedTransient:
@@ -173,9 +206,12 @@ public sealed class RetryNotificationCommandHandler(
                         "RetryNotification: lost race settling Sending→FailedPermanent for {NotificationId}.",
                         notificationId);
 
-                await EmitAuditAsync(n, "notification.failed_permanent",
-                    new { notification_id = notificationId, failure_category = result.FailureCategory ?? "permanent" },
-                    ct);
+                if (permanentRows > 0)
+                {
+                    await EmitAuditAsync(n, "notification.failed_permanent",
+                        new { notification_id = notificationId, failure_category = result.FailureCategory ?? "permanent" },
+                        ct);
+                }
                 break;
 
             case NotificationSendOutcome.InvalidRecipient:
@@ -192,9 +228,12 @@ public sealed class RetryNotificationCommandHandler(
                         "RetryNotification: lost race settling Sending→InvalidRecipient for {NotificationId}.",
                         notificationId);
 
-                await EmitAuditAsync(n, "notification.invalid_recipient",
-                    new { notification_id = notificationId, failure_category = "provider_invalid" },
-                    ct);
+                if (invalidRows > 0)
+                {
+                    await EmitAuditAsync(n, "notification.invalid_recipient",
+                        new { notification_id = notificationId, failure_category = "provider_invalid" },
+                        ct);
+                }
                 break;
         }
 

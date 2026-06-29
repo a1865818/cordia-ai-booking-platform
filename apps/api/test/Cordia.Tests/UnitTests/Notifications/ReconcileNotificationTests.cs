@@ -24,6 +24,7 @@ public class ReconcileNotificationTests
     private readonly Mock<INotificationRepository> _repo = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
+    private readonly Mock<INotificationTemplateResolver> _templateResolver = new();
 
     // T5a: retry scheduler deps (no-op mocks for tests that don't exercise the transient path)
     private readonly Mock<IScheduledJobRepository> _jobs = new();
@@ -48,6 +49,12 @@ public class ReconcileNotificationTests
             .Returns(Task.CompletedTask);
         _retryAuditRepo.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+
+        // Default template resolver returns a stub (F10: reconcile resend uses non-empty body).
+        _templateResolver.Setup(r => r.ResolveAsync(
+                It.IsAny<NotificationEvent>(), It.IsAny<NotificationChannel>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationTemplate("v1", "stub-body"));
 
         // Default: policy returns a next time so transient calls don't crash (used only in
         // TransientOnResend test; other tests never hit this path).
@@ -80,6 +87,7 @@ public class ReconcileNotificationTests
             _auditRepo.Object,
             _uow.Object,
             BuildRetryScheduler(),
+            _templateResolver.Object,
             NullLogger<ReconcileNotificationCommandHandler>.Instance);
 
     private static Notification MakeSendingNotification(

@@ -77,7 +77,7 @@ public sealed class MissingNotificationAuditHostedService(
 
             try
             {
-                await auditor.AuditAsync(opRef.TenantId, opRef.OperationId, ct);
+                await auditor.AuditAsync(opRef.TenantId, opRef.OperationId, opRef.Status, ct);
                 audited++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

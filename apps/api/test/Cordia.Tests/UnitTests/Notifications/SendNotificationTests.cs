@@ -381,4 +381,67 @@ public class SendNotificationTests
             It.Is<AuditEvent>(e => e.EventType == "notification.failed_permanent"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    // ── 8. F2: settle returns 0 (lost race) → audit NOT emitted for Accepted ─────────────────────
+
+    [Fact]
+    public async Task SettleReturns0_LostRace_AcceptedAuditNotEmitted_F2()
+    {
+        // Arrange: happy path but MarkAcceptedAsync returns 0 (lost race).
+        SetupHappyPath();
+        _smsAdapter.Setup(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_abc", null));
+        // Settle returns 0 — lost race.
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, It.IsAny<string>(), 1L, NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        // Act
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        // F2: audit must NOT be emitted when the settle returned 0.
+        _auditRepo.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "notification.accepted"),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── 9. F9: adapter throws → handled as transient (no exception propagation) ────────────────────
+
+    [Fact]
+    public async Task AdapterThrows_TreatedAsTransient_NoExceptionPropagated_F9()
+    {
+        // Arrange: happy path setup, adapter throws.
+        SetupHappyPath();
+        _smsAdapter.Setup(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("provider boom"));
+
+        var nextTime = DateTimeOffset.UtcNow.AddSeconds(5);
+        _retryPolicy.Setup(p => p.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<DateTimeOffset>()))
+            .Returns(nextTime);
+        _retryRepo.Setup(r => r.MarkTransientRetryAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                NotificationState.Sending, nextTime, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _jobs.Setup(j => j.ExistsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _jobs.Setup(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _retryAuditRepo.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // Act — must NOT throw (F9: exception swallowed, treated as transient).
+        var ex = await Record.ExceptionAsync(() => BuildHandler().Handle(DefaultCommand(), CancellationToken.None));
+
+        // No exception propagated.
+        Assert.Null(ex);
+
+        // MarkTransientRetryAsync called (HandleTransientAsync path).
+        _retryRepo.Verify(r => r.MarkTransientRetryAsync(
+            It.IsAny<string>(), It.IsAny<string>(), 1L,
+            NotificationState.Sending, nextTime, It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

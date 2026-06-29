@@ -1,4 +1,6 @@
-﻿namespace Cordia.Domain.Interfaces;
+﻿using Cordia.Domain.Enums;
+
+namespace Cordia.Domain.Interfaces;
 
 /// <summary>
 /// Domain seam for auditing a terminal booking operation that is missing an accepted/delivered
@@ -16,8 +18,9 @@ public interface IMissingNotificationAuditor
 {
     /// <summary>
     /// Raises an ops work item + audit for the given terminal operation if it still has no
-    /// accepted/delivered notification. Idempotent: a no-op if the work item already exists
-    /// or if a notification was accepted between the list sweep and this call.
+    /// accepted/delivered notification of the expected event type for its terminal status.
+    /// Idempotent: a no-op if the work item already exists or if a notification was accepted
+    /// between the list sweep and this call.
     /// </summary>
-    Task AuditAsync(string tenantId, string operationId, CancellationToken ct = default);
+    Task AuditAsync(string tenantId, string operationId, OperationStatus terminalStatus, CancellationToken ct = default);
 }

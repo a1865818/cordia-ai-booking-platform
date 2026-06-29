@@ -259,28 +259,46 @@ public sealed class SendNotificationCommandHandler(
                 "SendNotification: no provider adapter registered for channel {Channel}; settled FailedPermanent for {NotificationId}.",
                 channel, notificationId);
 
-            await auditRepo.AddAsync(new AuditEvent
+            if (noAdapterRows > 0)
             {
-                TenantId = tenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "notification.failed_permanent",
-                Actor = "system",
-                SubjectRef = notificationId,
-                CorrelationId = command.CorrelationId,
-                OperationId = operationId,
-                Metadata = JsonSerializer.Serialize(new
+                await auditRepo.AddAsync(new AuditEvent
                 {
-                    notification_id = notificationId,
-                    failure_category = "no_adapter_for_channel",
-                    channel = channel.ToString(),
-                }),
-                OccurredAt = now,
-            }, ct);
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "notification.failed_permanent",
+                    Actor = "system",
+                    SubjectRef = notificationId,
+                    CorrelationId = command.CorrelationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        notification_id = notificationId,
+                        failure_category = "no_adapter_for_channel",
+                        channel = channel.ToString(),
+                    }),
+                    OccurredAt = now,
+                }, ct);
+            }
 
             return Unit.Value; // SendAsync is NOT called
         }
 
-        var result = await adapter.SendAsync(entity.ProviderIdempotencyKey!, rendered, ct);
+        NotificationSendResult result;
+        try
+        {
+            result = await adapter.SendAsync(entity.ProviderIdempotencyKey!, rendered, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // F9: guard against adapter exceptions — treat as transient failure so the inbox
+            // transaction COMMITS (row settles to FailedTransient + durable retry scheduled)
+            // rather than rolling back and causing a poison redelivery loop.
+            logger.LogWarning(ex,
+                "SendNotification: adapter.SendAsync threw for {NotificationId}; treating as transient.",
+                notificationId);
+            await retryScheduler.HandleTransientAsync(entity, expectedVersion: 1, "send_exception", ct);
+            return Unit.Value;
+        }
 
         // 12. Settle Sending(v1) → terminal state based on provider outcome.
         switch (result.Outcome)
@@ -296,23 +314,26 @@ public sealed class SendNotificationCommandHandler(
                 if (acceptedRows == 0)
                     logger.LogWarning("SendNotification: lost race settling Sending→Accepted for {NotificationId}.", notificationId);
 
-                await auditRepo.AddAsync(new AuditEvent
+                if (acceptedRows > 0)
                 {
-                    TenantId = tenantId,
-                    EventId = $"evt_{Guid.NewGuid():N}",
-                    EventType = "notification.accepted",
-                    Actor = "system",
-                    SubjectRef = notificationId,
-                    CorrelationId = command.CorrelationId,
-                    OperationId = operationId,
-                    Metadata = JsonSerializer.Serialize(new
+                    await auditRepo.AddAsync(new AuditEvent
                     {
-                        notification_id = notificationId,
-                        channel = channel.ToString(),
-                        provider_ref = result.ProviderMessageId,
-                    }),
-                    OccurredAt = now,
-                }, ct);
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.accepted",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            channel = channel.ToString(),
+                            provider_ref = result.ProviderMessageId,
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
                 break;
 
             case NotificationSendOutcome.FailedTransient:
@@ -338,22 +359,25 @@ public sealed class SendNotificationCommandHandler(
                 if (permanentRows == 0)
                     logger.LogWarning("SendNotification: lost race settling Sending→FailedPermanent for {NotificationId}.", notificationId);
 
-                await auditRepo.AddAsync(new AuditEvent
+                if (permanentRows > 0)
                 {
-                    TenantId = tenantId,
-                    EventId = $"evt_{Guid.NewGuid():N}",
-                    EventType = "notification.failed_permanent",
-                    Actor = "system",
-                    SubjectRef = notificationId,
-                    CorrelationId = command.CorrelationId,
-                    OperationId = operationId,
-                    Metadata = JsonSerializer.Serialize(new
+                    await auditRepo.AddAsync(new AuditEvent
                     {
-                        notification_id = notificationId,
-                        failure_category = result.FailureCategory ?? "permanent",
-                    }),
-                    OccurredAt = now,
-                }, ct);
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.failed_permanent",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            failure_category = result.FailureCategory ?? "permanent",
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
                 break;
 
             case NotificationSendOutcome.InvalidRecipient:
@@ -368,22 +392,25 @@ public sealed class SendNotificationCommandHandler(
                 if (invalidProvRows == 0)
                     logger.LogWarning("SendNotification: lost race settling Sending→InvalidRecipient for {NotificationId}.", notificationId);
 
-                await auditRepo.AddAsync(new AuditEvent
+                if (invalidProvRows > 0)
                 {
-                    TenantId = tenantId,
-                    EventId = $"evt_{Guid.NewGuid():N}",
-                    EventType = "notification.invalid_recipient",
-                    Actor = "system",
-                    SubjectRef = notificationId,
-                    CorrelationId = command.CorrelationId,
-                    OperationId = operationId,
-                    Metadata = JsonSerializer.Serialize(new
+                    await auditRepo.AddAsync(new AuditEvent
                     {
-                        notification_id = notificationId,
-                        failure_category = "provider_invalid",
-                    }),
-                    OccurredAt = now,
-                }, ct);
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.invalid_recipient",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            failure_category = "provider_invalid",
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
                 break;
         }
 

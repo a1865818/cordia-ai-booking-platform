@@ -153,6 +153,7 @@ public sealed class NotificationRetryScheduler(
                 OperationId = n.OperationId,
                 Payload = JsonSerializer.Serialize(new
                 {
+                    message_type = "notification.retry.requested.v1",
                     notification_id = n.NotificationId,
                     tenant_id = n.TenantId,
                     operation_id = n.OperationId,

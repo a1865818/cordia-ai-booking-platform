@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Moq;
 
@@ -52,17 +53,22 @@ public class AuditMissingTerminalNotificationTests
         _workItemRepo.Setup(r => r.GetOpenByOperationAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
 
-        // No accepted notification.
-        _notifications.Setup(r => r.HasAcceptedNotificationAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
+        // No accepted terminal notification.
+        _notifications.Setup(r => r.HasAcceptedTerminalNotificationAsync(TenantId, OperationId,
+                It.IsAny<NotificationEvent>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId);
+        // TryAddOpenAsync returns true (insert wins).
+        _workItemRepo.Setup(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId, OperationStatus.Booked);
         var result = await BuildHandler().Handle(cmd, CancellationToken.None);
 
         Assert.True(result);
 
-        // Work item created with reason="missing_notification" and state="open".
-        _workItemRepo.Verify(r => r.AddAsync(
+        // Work item created (via TryAddOpenAsync) with reason="missing_notification" and state="open".
+        _workItemRepo.Verify(r => r.TryAddOpenAsync(
             It.Is<OperationWorkItem>(wi =>
                 wi.TenantId == TenantId &&
                 wi.OperationId == OperationId &&
@@ -96,12 +102,14 @@ public class AuditMissingTerminalNotificationTests
                 State = "open",
             });
 
-        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId);
+        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId, OperationStatus.Booked);
         var result = await BuildHandler().Handle(cmd, CancellationToken.None);
 
         Assert.False(result);
 
         // No new work item should be created.
+        _workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
+            Times.Never);
         _workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
@@ -119,21 +127,57 @@ public class AuditMissingTerminalNotificationTests
         _workItemRepo.Setup(r => r.GetOpenByOperationAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
 
-        // Defensive re-check: notification is now accepted.
-        _notifications.Setup(r => r.HasAcceptedNotificationAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
+        // Defensive re-check: the specific terminal notification is now accepted.
+        _notifications.Setup(r => r.HasAcceptedTerminalNotificationAsync(TenantId, OperationId,
+                It.IsAny<NotificationEvent>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId);
+        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId, OperationStatus.Booked);
         var result = await BuildHandler().Handle(cmd, CancellationToken.None);
 
         Assert.False(result);
 
         // No work item should be created (notification arrived in time).
+        _workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
+            Times.Never);
         _workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
         // No audit event.
         _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // ── 4. F4: Booked op with StillPending only (no BookingConfirmed) → IS flagged missing ───────
+
+    [Fact]
+    public async Task BookedOp_WithOnlyStillPendingAccepted_IsFlaggedMissing()
+    {
+        // No open work item.
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        // Defensive re-check for BookingConfirmed returns false (only StillPending is accepted, not BookingConfirmed).
+        _notifications.Setup(r => r.HasAcceptedTerminalNotificationAsync(TenantId, OperationId,
+                NotificationEvent.BookingConfirmed, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        // TryAddOpenAsync returns true (insert wins).
+        _workItemRepo.Setup(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var cmd = new AuditMissingTerminalNotificationCommand(TenantId, OperationId, OperationStatus.Booked);
+        var result = await BuildHandler().Handle(cmd, CancellationToken.None);
+
+        // The op should be flagged (no BookingConfirmed accepted yet).
+        Assert.True(result);
+
+        _workItemRepo.Verify(r => r.TryAddOpenAsync(
+            It.Is<OperationWorkItem>(wi => wi.Reason == "missing_notification" && wi.State == "open"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _audit.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "notification.missing_terminal"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }

@@ -30,6 +30,7 @@ public class RetryNotificationTests
     private readonly Mock<IRetryPolicy> _retryPolicy = new();
     private readonly Mock<INotificationRepository> _retryNotifRepo = new();
     private readonly Mock<IAuditEventRepository> _retryAuditRepo = new();
+    private readonly Mock<INotificationTemplateResolver> _templateResolver = new();
 
     public RetryNotificationTests()
     {
@@ -38,6 +39,11 @@ public class RetryNotificationTests
             .Returns(Task.CompletedTask);
         _retryAuditRepo.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+        // Default template resolver returns a stub with a non-empty body (F10).
+        _templateResolver.Setup(r => r.ResolveAsync(
+                It.IsAny<NotificationEvent>(), It.IsAny<NotificationChannel>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationTemplate("v1", "stub-body"));
     }
 
     private NotificationRetryScheduler BuildScheduler() =>
@@ -50,6 +56,7 @@ public class RetryNotificationTests
             new[] { _smsAdapter.Object },
             _auditRepo.Object,
             BuildScheduler(),
+            _templateResolver.Object,
             NullLogger<RetryNotificationCommandHandler>.Instance);
 
     private static Notification MakeFailedTransientNotification(long version = 2) => new()
@@ -233,6 +240,7 @@ public class RetryNotificationTests
             Array.Empty<INotificationProviderAdapter>(),
             _auditRepo.Object,
             BuildScheduler(),
+            _templateResolver.Object,
             NullLogger<RetryNotificationCommandHandler>.Instance);
 
         await handler.Handle(DefaultCommand(), CancellationToken.None);
@@ -244,5 +252,123 @@ public class RetryNotificationTests
         _auditRepo.Verify(a => a.AddAsync(
             It.Is<AuditEvent>(e => e.EventType == "notification.failed_permanent"),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── 5. F2: settle returns 0 (lost race) → audit NOT emitted ────────────────────────────────
+
+    [Fact]
+    public async Task SettleReturns0_LostRace_AcceptedAuditNotEmitted_F2()
+    {
+        var n = MakeFailedTransientNotification(version: 2);
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+
+        _repo.Setup(r => r.TryTransitionStateAsync(TenantId, NotificationId, 2L,
+                NotificationState.FailedTransient, NotificationState.Sending, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _smsAdapter.Setup(a => a.SendAsync(ProviderKey, It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_abc", null));
+
+        // Settle returns 0 — lost race.
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, NotificationId, 3L,
+                NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        // F2: audit NOT emitted when settle returned 0.
+        _auditRepo.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "notification.accepted"),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── 6. F9: adapter throws → treated as transient (no exception propagation) ──────────────────
+
+    [Fact]
+    public async Task AdapterThrows_TreatedAsTransient_NoExceptionPropagated_F9()
+    {
+        var n = MakeFailedTransientNotification(version: 2);
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+
+        _repo.Setup(r => r.TryTransitionStateAsync(TenantId, NotificationId, 2L,
+                NotificationState.FailedTransient, NotificationState.Sending, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        // Adapter throws.
+        _smsAdapter.Setup(a => a.SendAsync(ProviderKey, It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("provider boom"));
+
+        var nextTime = DateTimeOffset.UtcNow.AddSeconds(5);
+        _retryPolicy.Setup(p => p.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<DateTimeOffset>()))
+            .Returns(nextTime);
+        _retryNotifRepo.Setup(r => r.MarkTransientRetryAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                NotificationState.Sending, nextTime, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _jobs.Setup(j => j.ExistsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _jobs.Setup(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _retryAuditRepo.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // GetAsync is called again by HandleTransientAsync path (reload).
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+
+        // F9: must NOT throw.
+        var ex = await Record.ExceptionAsync(() => BuildHandler().Handle(DefaultCommand(), CancellationToken.None));
+        Assert.Null(ex);
+
+        // HandleTransientAsync called (MarkTransientRetryAsync path).
+        _retryNotifRepo.Verify(r => r.MarkTransientRetryAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            NotificationState.Sending, nextTime, It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── 7. F10: retry resend uses non-empty Body from template ────────────────────────────────────
+
+    [Fact]
+    public async Task RetryResend_UsesNonEmptyBodyFromTemplate_F10()
+    {
+        const string expectedBody = "Your booking is confirmed (retry).";
+        _templateResolver.Setup(r => r.ResolveAsync(
+                NotificationEvent.BookingConfirmed, NotificationChannel.Sms,
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationTemplate("v1", expectedBody));
+
+        var n = MakeFailedTransientNotification(version: 2);
+        n.EventType = NotificationEvent.BookingConfirmed;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+
+        _repo.Setup(r => r.TryTransitionStateAsync(TenantId, NotificationId, 2L,
+                NotificationState.FailedTransient, NotificationState.Sending, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        RenderedMessage? capturedMessage = null;
+        _smsAdapter.Setup(a => a.SendAsync(ProviderKey, It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .Callback<string, RenderedMessage, CancellationToken>((_, msg, _) => capturedMessage = msg)
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_r2", null));
+
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, NotificationId, 3L,
+                NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        Assert.NotNull(capturedMessage);
+        // F10: body must not be empty — it must be the template body.
+        Assert.Equal(expectedBody, capturedMessage!.Body);
     }
 }

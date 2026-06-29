@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -21,12 +22,20 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
     ILogger<AuditMissingTerminalNotificationCommandHandler> logger)
     : IRequestHandler<AuditMissingTerminalNotificationCommand, bool>
 {
+    /// <summary>Maps the terminal operation status to the expected notification event type (F4).</summary>
+    private static NotificationEvent ExpectedEventFor(OperationStatus status) => status switch
+    {
+        OperationStatus.Booked => NotificationEvent.BookingConfirmed,
+        _ => NotificationEvent.FinalFailure, // FailedFinal, Rejected, Expired
+    };
+
     public async Task<bool> Handle(
         AuditMissingTerminalNotificationCommand request,
         CancellationToken cancellationToken)
     {
         var tenantId = request.TenantId;
         var operationId = request.OperationId;
+        var expectedEvent = ExpectedEventFor(request.TerminalStatus);
 
         var created = false;
 
@@ -43,21 +52,21 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
                 return;
             }
 
-            // 2. Defensive re-check: a notification may have been accepted between the list
-            //    sweep and this handler — no alert needed.
-            if (await notifications.HasAcceptedNotificationAsync(tenantId, operationId, ct))
+            // 2. Defensive re-check: the specific terminal notification may have been accepted
+            //    between the list sweep and this handler — no alert needed.
+            if (await notifications.HasAcceptedTerminalNotificationAsync(tenantId, operationId, expectedEvent, ct))
             {
                 logger.LogDebug(
-                    "MissingNotificationAudit: notification already accepted for " +
+                    "MissingNotificationAudit: {ExpectedEvent} notification already accepted for " +
                     "tenant={TenantId} operation_id={OperationId}; skipping",
-                    tenantId, operationId);
+                    expectedEvent, tenantId, operationId);
                 return;
             }
 
-            // 3. Create the work item + audit.
+            // 3. Create the work item + audit (race-safe: ON CONFLICT DO NOTHING, F8).
             var now = DateTimeOffset.UtcNow;
 
-            await workItemRepo.AddAsync(new OperationWorkItem
+            var inserted = await workItemRepo.TryAddOpenAsync(new OperationWorkItem
             {
                 TenantId = tenantId,
                 WorkItemId = $"wi_{Guid.NewGuid():N}",
@@ -68,6 +77,16 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
                 CreatedAt = now,
                 Version = 0,
             }, ct);
+
+            if (!inserted)
+            {
+                // Another worker concurrently inserted the open work item — benign no-op.
+                logger.LogDebug(
+                    "MissingNotificationAudit: concurrent insert won for " +
+                    "tenant={TenantId} operation_id={OperationId}; skipping audit",
+                    tenantId, operationId);
+                return;
+            }
 
             await audit.AddAsync(new AuditEvent
             {

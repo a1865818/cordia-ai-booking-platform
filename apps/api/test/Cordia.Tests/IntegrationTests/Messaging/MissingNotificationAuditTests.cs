@@ -100,7 +100,6 @@ public class MissingNotificationAuditTests(PostgresFixture fixture)
                     (op.Status == OperationStatus.Booked ||
                      op.Status == OperationStatus.Rejected ||
                      op.Status == OperationStatus.Expired ||
-                     op.Status == OperationStatus.Waitlisted ||
                      op.Status == OperationStatus.FailedFinal))
                 .ExecuteUpdateAsync(b => b.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow));
         }
@@ -185,7 +184,7 @@ public class MissingNotificationAuditTests(PostgresFixture fixture)
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
             tenantCtx.TenantId = tenantId;
             var auditor = scope.ServiceProvider.GetRequiredService<IMissingNotificationAuditor>();
-            await auditor.AuditAsync(tenantId, operationId, CancellationToken.None);
+            await auditor.AuditAsync(tenantId, operationId, Cordia.Domain.Enums.OperationStatus.Booked, CancellationToken.None);
         }
 
         // ── Assert: NO missing_notification work item for this operation. ─────────────
@@ -224,7 +223,6 @@ public class MissingNotificationAuditTests(PostgresFixture fixture)
                     (op.Status == OperationStatus.Booked ||
                      op.Status == OperationStatus.Rejected ||
                      op.Status == OperationStatus.Expired ||
-                     op.Status == OperationStatus.Waitlisted ||
                      op.Status == OperationStatus.FailedFinal))
                 .ExecuteUpdateAsync(b => b.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow));
         }
@@ -270,5 +268,39 @@ public class MissingNotificationAuditTests(PostgresFixture fixture)
         var forTenant = missing.Where(m => m.TenantId == tenantId).Select(m => m.OperationId).ToHashSet();
         Assert.Contains(opMissing, forTenant);        // no notification → surfaced
         Assert.DoesNotContain(opCovered, forTenant);  // accepted notification → excluded by NOT EXISTS
+    }
+
+    /// <summary>
+    /// A <c>Waitlisted</c> terminal op is NEVER surfaced by the sweep, even with NO notification
+    /// (F4: <c>notification.waitlisted.v1</c> is unregistered, so waitlisted ops have no terminal-
+    /// outcome notification by design — flagging them would produce a permanent false-positive work
+    /// item every sweep). Guards against a regression that re-adds Waitlisted to the terminal set.
+    /// </summary>
+    [Fact]
+    public async Task Sweep_ExcludesWaitlistedOps_EvenWithNoNotification()
+    {
+        var tenantId = $"t5b-wait-{Guid.NewGuid():N}";
+
+        string opWaitlisted;
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            opWaitlisted = await TestData.SeedOperationAsync(seedCtx, tenantId, OperationStatus.Waitlisted);
+
+            // Eligible by age, and deliberately has NO notification row.
+            await seedCtx.BookingOperations
+                .IgnoreQueryFilters()
+                .Where(x => x.TenantId == tenantId && x.OperationId == opWaitlisted)
+                .ExecuteUpdateAsync(b => b.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow.AddMinutes(-5)));
+        }
+
+        await using var sp = BuildContainer();
+        await using var scope = sp.CreateAsyncScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INotificationRepository>();
+
+        var missing = await repo.ListTerminalOperationsMissingAcceptedNotificationAsync(
+            DateTimeOffset.UtcNow.AddSeconds(-30), limit: 500, CancellationToken.None);
+
+        // The Waitlisted op must never appear, despite having no notification.
+        Assert.DoesNotContain(opWaitlisted, missing.Select(m => m.OperationId));
     }
 }

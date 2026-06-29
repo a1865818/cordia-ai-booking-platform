@@ -1,4 +1,5 @@
-﻿using MediatR;
+﻿using Cordia.Domain.Enums;
+using MediatR;
 
 namespace Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 
@@ -8,5 +9,8 @@ namespace Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 /// Returns <see langword="true"/> when a new work item was created; <see langword="false"/>
 /// when idempotency or the defensive re-check short-circuited (no action needed).
 /// </summary>
-public sealed record AuditMissingTerminalNotificationCommand(string TenantId, string OperationId)
+public sealed record AuditMissingTerminalNotificationCommand(
+    string TenantId,
+    string OperationId,
+    OperationStatus TerminalStatus)
     : IRequest<bool>;

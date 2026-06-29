@@ -169,18 +169,23 @@
         "additionalProperties": false,
         "properties": {
           "notification_id": {
-            "nullable": true,
+            "minLength": 1,
             "type": "string"
           },
           "provider_message_id": {
-            "nullable": true,
+            "minLength": 1,
             "type": "string"
           },
           "status": {
-            "nullable": true,
+            "minLength": 1,
             "type": "string"
           }
         },
+        "required": [
+          "notification_id",
+          "provider_message_id",
+          "status"
+        ],
         "type": "object"
       },
       "IdempotencyConflict": {

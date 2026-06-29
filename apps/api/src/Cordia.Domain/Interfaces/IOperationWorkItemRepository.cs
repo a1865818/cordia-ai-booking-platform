@@ -28,4 +28,12 @@ public interface IOperationWorkItemRepository
     /// </summary>
     Task<OperationWorkItem?> GetOpenByOperationAsync(
         string tenantId, string operationId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomic <c>INSERT … ON CONFLICT (tenant_id, operation_id) WHERE state = 'open' DO NOTHING</c>
+    /// (mirrors <c>InboxRepository.TryAdmitAsync</c>). Returns <see langword="true"/> when the row
+    /// was inserted (rows == 1); returns <see langword="false"/> when another worker already inserted
+    /// an open work item for the same operation (dedup hit — benign no-op).
+    /// </summary>
+    Task<bool> TryAddOpenAsync(OperationWorkItem workItem, CancellationToken ct = default);
 }

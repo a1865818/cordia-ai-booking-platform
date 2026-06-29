@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Interfaces;
+﻿using Cordia.Domain.Enums;
+using Cordia.Domain.Interfaces;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
@@ -13,6 +14,6 @@ namespace Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 /// </summary>
 public sealed class MediatRMissingNotificationAuditor(IMediator mediator) : IMissingNotificationAuditor
 {
-    public async Task AuditAsync(string tenantId, string operationId, CancellationToken ct = default)
-        => await mediator.Send(new AuditMissingTerminalNotificationCommand(tenantId, operationId), ct);
+    public async Task AuditAsync(string tenantId, string operationId, OperationStatus terminalStatus, CancellationToken ct = default)
+        => await mediator.Send(new AuditMissingTerminalNotificationCommand(tenantId, operationId, terminalStatus), ct);
 }

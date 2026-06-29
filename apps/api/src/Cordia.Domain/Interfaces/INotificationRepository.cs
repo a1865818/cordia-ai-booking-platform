@@ -105,13 +105,14 @@ public interface INotificationRepository
 
     /// <summary>
     /// Returns <see langword="true"/> when the given operation already has at least one
-    /// notification in <see cref="NotificationState.Accepted"/> or
-    /// <see cref="NotificationState.Delivered"/> (defensive re-check, T5b).
+    /// notification of the expected event type in <see cref="NotificationState.Accepted"/> or
+    /// <see cref="NotificationState.Delivered"/> (defensive re-check for specific terminal events, T5b F4).
     ///
     /// Uses <c>AsNoTracking().IgnoreQueryFilters()</c> — cross-tenant safe.
     /// </summary>
-    Task<bool> HasAcceptedNotificationAsync(
+    Task<bool> HasAcceptedTerminalNotificationAsync(
         string tenantId,
         string operationId,
+        NotificationEvent expectedEvent,
         CancellationToken ct = default);
 }

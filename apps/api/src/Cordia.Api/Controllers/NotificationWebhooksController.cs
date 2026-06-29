@@ -103,10 +103,13 @@ public class NotificationWebhooksController(
 
 /// <summary>Request body for POST /api/notification-webhooks/delivery-receipts.</summary>
 public sealed record DeliveryReceiptRequest(
+    [property: System.ComponentModel.DataAnnotations.Required]
     [property: System.Text.Json.Serialization.JsonPropertyName("notification_id")]
     string NotificationId,
+    [property: System.ComponentModel.DataAnnotations.Required]
     [property: System.Text.Json.Serialization.JsonPropertyName("provider_message_id")]
     string ProviderMessageId,
+    [property: System.ComponentModel.DataAnnotations.Required]
     [property: System.Text.Json.Serialization.JsonPropertyName("status")]
     string Status)
 {
