@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/notification.retry.requested.v1.json",
+  "title": "NotificationRetryRequestedV1",
+  "description": "Queue-only durable-retry job payload (spec 10 FM#6, T5a).\n\nLifecycle: emitted by NotificationRetryScheduler into scheduled_jobs (JobType='notification.retry.requested.v1', DestinationQueue='notification.commands') → published by ScheduledJobPollerHostedService after next_eligible_at → consumed by RetryNotificationCommandHandler, which re-drives the FailedTransient notification row through the same delivery state machine as SendNotificationCommandHandler.\n\nCarries only the minimal identity triple (notification_id, tenant_id, operation_id) — the consumer reloads the full Notification row from the DB by (tenant_id, notification_id). This ensures retries always operate on the latest persisted state (version, attempt_count, next_eligible_at) rather than a stale snapshot in the job payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "notification_id",
+    "tenant_id"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "notification.retry.requested.v1",
+      "description": "Explicit schema discriminator; always 'notification.retry.requested.v1' for this contract."
+    },
+    "notification_id": {
+      "type": "string",
+      "description": "The deterministic notification identity derived by the original SendNotification consumer (H(tenant, operation, event_type, recipient, template_version, material_revision)). Stable across all retries; used as the primary lookup key by RetryNotificationCommandHandler."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. Consumer-side writes must be scoped to this tenant. Redundant with the outer JobEnvelope tenant_id but carried inline so the job payload is self-describing when inspected in isolation."
+    },
+    "operation_id": {
+      "type": ["string", "null"],
+      "description": "Stable operation identifier. Null only for non-operation notifications (same nullability as the original trigger). Carried for observability and audit correlation; the retry consumer uses notification_id as the primary key."
+    }
+  }
+}

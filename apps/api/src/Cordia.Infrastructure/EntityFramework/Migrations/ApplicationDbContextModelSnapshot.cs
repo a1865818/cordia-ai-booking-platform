@@ -33,6 +33,8 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "hold_status_enum", new[] { "active", "expired", "finalized", "reconciling", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "idempotency_status_enum", new[] { "completed", "failed", "in_progress" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "inbox_outcome_enum", new[] { "admitted", "completed", "rejected" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "message_priority_enum", new[] { "critical", "high", "normal" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "notification_channel_enum", new[] { "channel", "email", "sms" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "notification_event_enum", new[] { "action_required", "booking_confirmed", "cancel_or_modify_confirmed", "final_failure", "no_capacity_alternatives", "request_accepted", "still_pending", "waitlist_offer" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "notification_state_enum", new[] { "accepted", "delivered", "failed_permanent", "failed_transient", "invalid_recipient", "pending", "sending", "suppressed_duplicate" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "operation_status_enum", new[] { "accepted", "alternatives_required", "awaiting_payment", "awaiting_user_action", "booked", "compensation_required", "expired", "failed_final", "finalizing", "held", "manual_review", "reconciling", "rejected", "reserving_capacity", "validating", "waitlisted" });
@@ -47,130 +49,6 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "waitlist_offer_status_enum", new[] { "accepted", "declined", "expired", "matched", "offered", "pending", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "workflow_step_status_enum", new[] { "failed", "in_progress", "pending", "succeeded", "terminal" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Cordia.Domain.Capacity.CapacityHold", b =>
-                {
-                    b.Property<string>("TenantId")
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<string>("HoldId")
-                        .HasColumnType("text")
-                        .HasColumnName("hold_id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at");
-
-                    b.Property<string>("OperationId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("operation_id");
-
-                    b.Property<string>("ProviderRef")
-                        .HasColumnType("text")
-                        .HasColumnName("provider_ref");
-
-                    b.Property<ReleaseReason?>("ReleaseReason")
-                        .HasColumnType("release_reason_enum")
-                        .HasColumnName("release_reason");
-
-                    b.Property<int>("ReservedCapacity")
-                        .HasColumnType("integer")
-                        .HasColumnName("reserved_capacity");
-
-                    b.Property<string>("SlotId")
-                        .HasColumnType("text")
-                        .HasColumnName("slot_id");
-
-                    b.Property<HoldStatus>("Status")
-                        .HasColumnType("hold_status_enum")
-                        .HasColumnName("status");
-
-                    b.Property<long>("Version")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("version");
-
-                    b.Property<string>("WorkflowStep")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("workflow_step");
-
-                    b.HasKey("TenantId", "HoldId")
-                        .HasName("pk_capacity_holds");
-
-                    b.HasIndex("ExpiresAt")
-                        .HasDatabaseName("ix_capacity_holds_expiry")
-                        .HasFilter("status = 'active'");
-
-                    b.HasIndex("TenantId", "OperationId", "WorkflowStep")
-                        .IsUnique()
-                        .HasDatabaseName("uq_active_hold_per_op_step")
-                        .HasFilter("status = 'active'");
-
-                    b.ToTable("capacity_holds", "public", t =>
-                        {
-                            t.HasCheckConstraint("ck_capacity_holds_reserved_positive", "reserved_capacity > 0");
-                        });
-                });
-
-            modelBuilder.Entity("Cordia.Domain.Capacity.CapacitySlot", b =>
-                {
-                    b.Property<string>("TenantId")
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<string>("SlotId")
-                        .HasColumnType("text")
-                        .HasColumnName("slot_id");
-
-                    b.Property<int>("BookedCapacity")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("booked_capacity");
-
-                    b.Property<int>("HeldCapacity")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("held_capacity");
-
-                    b.Property<string>("ResourceId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("resource_id");
-
-                    b.Property<DateTimeOffset>("StartsAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("starts_at");
-
-                    b.Property<int>("TotalCapacity")
-                        .HasColumnType("integer")
-                        .HasColumnName("total_capacity");
-
-                    b.Property<long>("Version")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("version");
-
-                    b.HasKey("TenantId", "SlotId")
-                        .HasName("pk_capacity_slots");
-
-                    b.ToTable("capacity_slots", "public", t =>
-                        {
-                            t.HasCheckConstraint("ck_capacity_slots_no_overcommit", "held_capacity + booked_capacity <= total_capacity");
-
-                            t.HasCheckConstraint("ck_capacity_slots_nonneg", "total_capacity >= 0 AND held_capacity >= 0 AND booked_capacity >= 0");
-                        });
-                });
 
             modelBuilder.Entity("Cordia.Domain.Entities.AuditEvent", b =>
                 {
@@ -383,6 +261,130 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasDatabaseName("ix_booking_operations_tenant_id_intent_id_intent_revision");
 
                     b.ToTable("booking_operations", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.CapacityHold", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("HoldId")
+                        .HasColumnType("text")
+                        .HasColumnName("hold_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("OperationId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("operation_id");
+
+                    b.Property<string>("ProviderRef")
+                        .HasColumnType("text")
+                        .HasColumnName("provider_ref");
+
+                    b.Property<ReleaseReason?>("ReleaseReason")
+                        .HasColumnType("release_reason_enum")
+                        .HasColumnName("release_reason");
+
+                    b.Property<int>("ReservedCapacity")
+                        .HasColumnType("integer")
+                        .HasColumnName("reserved_capacity");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text")
+                        .HasColumnName("slot_id");
+
+                    b.Property<HoldStatus>("Status")
+                        .HasColumnType("hold_status_enum")
+                        .HasColumnName("status");
+
+                    b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
+                    b.Property<string>("WorkflowStep")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("workflow_step");
+
+                    b.HasKey("TenantId", "HoldId")
+                        .HasName("pk_capacity_holds");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_capacity_holds_expiry")
+                        .HasFilter("status = 'active'");
+
+                    b.HasIndex("TenantId", "OperationId", "WorkflowStep")
+                        .IsUnique()
+                        .HasDatabaseName("uq_active_hold_per_op_step")
+                        .HasFilter("status = 'active'");
+
+                    b.ToTable("capacity_holds", "public", t =>
+                        {
+                            t.HasCheckConstraint("ck_capacity_holds_reserved_positive", "reserved_capacity > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.CapacitySlot", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text")
+                        .HasColumnName("slot_id");
+
+                    b.Property<int>("BookedCapacity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("booked_capacity");
+
+                    b.Property<int>("HeldCapacity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("held_capacity");
+
+                    b.Property<string>("ResourceId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("resource_id");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<int>("TotalCapacity")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_capacity");
+
+                    b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
+                    b.HasKey("TenantId", "SlotId")
+                        .HasName("pk_capacity_slots");
+
+                    b.ToTable("capacity_slots", "public", t =>
+                        {
+                            t.HasCheckConstraint("ck_capacity_slots_no_overcommit", "held_capacity + booked_capacity <= total_capacity");
+
+                            t.HasCheckConstraint("ck_capacity_slots_nonneg", "total_capacity >= 0 AND held_capacity >= 0 AND booked_capacity >= 0");
+                        });
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.ConsumerInbox", b =>
@@ -752,18 +754,42 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("notification_id");
 
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<NotificationChannel>("Channel")
+                        .HasColumnType("notification_channel_enum")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
                     b.Property<NotificationEvent>("EventType")
                         .HasColumnType("notification_event_enum")
                         .HasColumnName("event_type");
+
+                    b.Property<string>("FailureCategory")
+                        .HasColumnType("text")
+                        .HasColumnName("failure_category");
 
                     b.Property<int>("MaterialRevision")
                         .HasColumnType("integer")
                         .HasColumnName("material_revision");
 
+                    b.Property<DateTimeOffset?>("NextEligibleAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_eligible_at");
+
                     b.Property<string>("OperationId")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("operation_id");
+
+                    b.Property<MessagePriority>("Priority")
+                        .HasColumnType("message_priority_enum")
+                        .HasColumnName("priority");
 
                     b.Property<string>("ProviderIdempotencyKey")
                         .HasColumnType("text")
@@ -786,6 +812,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("template_version");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()

@@ -5,7 +5,8 @@ namespace Cordia.Domain.Entities;
 
 /// <summary>
 /// Notification delivery row with optimistic-concurrency version token.
-/// PK (tenant_id, notification_id). FK to booking_operations ON DELETE RESTRICT.
+/// PK (tenant_id, notification_id) = §22.1 unique logical-dedup constraint (Inv-9).
+/// FK to booking_operations ON DELETE RESTRICT.
 /// </summary>
 public class Notification : ITenantScoped
 {
@@ -25,10 +26,36 @@ public class Notification : ITenantScoped
 
     public NotificationState State { get; set; }
 
+    public NotificationChannel Channel { get; set; }
+
+    public MessagePriority Priority { get; set; }
+
     public string? ProviderIdempotencyKey { get; set; }
 
     public string? ProviderRef { get; set; }
 
+    public string? FailureCategory { get; set; }
+
+    public int AttemptCount { get; set; }
+
+    public DateTimeOffset? NextEligibleAt { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
     /// <summary>Optimistic-concurrency token (§22.1); default 0.</summary>
     public long Version { get; set; }
+
+    /// <summary>Guarded in-memory transition (§6.1): validates the edge then mutates State/FailureCategory/UpdatedAt.
+    /// Throws <see cref="Exceptions.InvalidNotificationStateTransitionException"/> on an undefined edge.
+    /// Persistence is done separately via the repository's version-guarded TryTransitionStateAsync;
+    /// this method does NOT bump Version.</summary>
+    public void TransitionTo(NotificationState next, string? failureCategory = null)
+    {
+        NotificationStateMachine.EnsureAllowed(State, next);
+        State = next;
+        UpdatedAt = DateTimeOffset.UtcNow;
+        FailureCategory = failureCategory;
+    }
 }

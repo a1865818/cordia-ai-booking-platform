@@ -39,4 +39,29 @@ public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWo
             .IgnoreQueryFilters()
             .Where(w => w.TenantId == tenantId && w.OperationId == operationId && w.State == "open")
             .FirstOrDefaultAsync(ct);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Uses <c>INSERT … ON CONFLICT (tenant_id, operation_id) WHERE state = 'open' DO NOTHING</c>
+    /// to match the partial unique index <c>uq_open_work_item_per_operation</c>. Returns 1 when
+    /// the row was inserted; 0 when another worker already holds the open work item (benign no-op).
+    /// </remarks>
+    public async Task<bool> TryAddOpenAsync(OperationWorkItem workItem, CancellationToken ct = default)
+    {
+        var rows = await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO public.operations_work_items
+                (tenant_id, work_item_id, operation_id, reason, state,
+                 sla_deadline, assignee, resolution, created_at, version)
+            VALUES
+                ({workItem.TenantId}, {workItem.WorkItemId}, {workItem.OperationId},
+                 {workItem.Reason}, {workItem.State},
+                 {workItem.SlaDeadline}, {workItem.Assignee}, {workItem.Resolution},
+                 {workItem.CreatedAt}, {workItem.Version})
+            ON CONFLICT (tenant_id, operation_id) WHERE state = 'open' DO NOTHING
+            """,
+            ct);
+
+        return rows == 1;
+    }
 }

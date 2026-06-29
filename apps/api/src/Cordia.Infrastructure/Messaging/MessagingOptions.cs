@@ -15,6 +15,10 @@ public sealed class MessagingOptions
     public StepSweeperOptions StepSweeper { get; set; } = new();
 
     public SlaOptions Sla { get; set; } = new();
+
+    public NotificationReconcileOptions NotificationReconcile { get; set; } = new();
+
+    public MissingNotificationAuditOptions MissingNotificationAudit { get; set; } = new();
 }
 
 /// <summary>Options for the scheduled-job poller hosted service (§7, T5).</summary>
@@ -71,6 +75,45 @@ public sealed class SlaOptions
 
     /// <summary>Maximum number of non-terminal operations to evaluate per tick.</summary>
     public int BatchSize { get; set; } = 100;
+}
+
+/// <summary>Options for the notification reconcile hosted service (spec 10 §12.8, T4).</summary>
+public sealed class NotificationReconcileOptions
+{
+    /// <summary>Set to false to disable the reconciler (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Milliseconds between reconciler ticks. Default: 2000 ms.</summary>
+    public int PollIntervalMs { get; set; } = 2000;
+
+    /// <summary>Maximum number of stuck-Sending notifications to process per tick.</summary>
+    public int BatchSize { get; set; } = 50;
+
+    /// <summary>
+    /// A notification must have been in <c>Sending</c> for at least this many seconds before
+    /// it is eligible for reconciliation (the §12.8 ambiguous window threshold). Default: 30 s.
+    /// </summary>
+    public int StuckThresholdSeconds { get; set; } = 30;
+}
+
+/// <summary>Options for the missing-terminal-notification audit hosted service (spec 10 §25.4 / FM#12, T5b).</summary>
+public sealed class MissingNotificationAuditOptions
+{
+    /// <summary>Set to false to disable the auditor (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Milliseconds between auditor ticks. Default: 5000 ms.</summary>
+    public int PollIntervalMs { get; set; } = 5000;
+
+    /// <summary>Maximum number of terminal operations to audit per tick.</summary>
+    public int BatchSize { get; set; } = 50;
+
+    /// <summary>
+    /// A terminal booking operation must have been in its terminal state for at least this many
+    /// seconds before it is eligible for the alert sweep. Allows a brief settle window for
+    /// in-flight notifications to land before declaring them missing. Default: 120 s.
+    /// </summary>
+    public int TerminalAgeSeconds { get; set; } = 120;
 }
 
 /// <summary>Options for the outbox publisher hosted service (§7).</summary>

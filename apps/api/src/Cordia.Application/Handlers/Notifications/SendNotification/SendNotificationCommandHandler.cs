@@ -1,0 +1,419 @@
+﻿using System.Text.Json;
+using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
+using Cordia.Domain.Interfaces;
+using Cordia.Domain.Notifications;
+using MediatR;
+using Microsoft.Extensions.Logging;
+
+namespace Cordia.Application.Handlers.Notifications.SendNotification;
+
+/// <summary>
+/// Handles notification delivery inside the InboxDeduplicationBehavior transaction (spec 10 §4, §6.2).
+///
+/// <para><b>Runs inside the inbox transaction.</b> Do NOT open a new <c>IUnitOfWork</c>
+/// transaction — all writes share the ambient scoped DbContext. Repository calls that
+/// invoke <c>SaveChangesAsync</c> participate in the same ambient txn via EF Core's
+/// transaction enlistment.</para>
+///
+/// <para><b>Inv-8:</b> This handler never calls <c>IBookingOperationRepository.TryTransitionStatusAsync</c>
+/// or writes to <c>booking_operations</c> — a notification failure must never roll back
+/// or mutate a confirmed booking (§15.3).</para>
+///
+/// <para><b>Version tracking:</b> a new row is inserted at version 0 (state Pending).
+/// Each <c>VersionTokenUpdate</c> settles an old version → bumps to old+1.
+/// Settle 1: Pending(v0) → Sending(v1). Settle 2: Sending(v1) → terminal(v2).</para>
+/// </summary>
+public sealed class SendNotificationCommandHandler(
+    INotificationRepository repo,
+    INotificationRecipientResolver recipientResolver,
+    IConsentGate consentGate,
+    INotificationTemplateResolver templateResolver,
+    IEnumerable<INotificationProviderAdapter> adapters,
+    IBookingOperationRepository opRepo,
+    IAuditEventRepository auditRepo,
+    NotificationRetryScheduler retryScheduler,
+    ILogger<SendNotificationCommandHandler> logger)
+    : IRequestHandler<SendNotificationCommand, Unit>
+{
+    public async Task<Unit> Handle(SendNotificationCommand command, CancellationToken ct)
+    {
+        var tenantId = command.TenantId;
+        var operationId = command.OperationId;
+
+        // 1. Load operation — must exist and belong to this tenant.
+        var op = await opRepo.GetAsync(operationId, ct);
+        if (op is null || op.TenantId != tenantId)
+        {
+            logger.LogWarning(
+                "SendNotification: operation {OperationId} not found or wrong tenant {TenantId}; ack-and-drop.",
+                operationId, tenantId);
+            return Unit.Value;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var materialRevision = op.IntentRevision;
+
+        // 2. Resolve recipient (may be null → no valid destination).
+        var recipient = await recipientResolver.ResolveAsync(tenantId, operationId, ct);
+
+        var channel = recipient?.Channel ?? NotificationChannel.Sms;
+        var locale = recipient?.Locale ?? "en";
+        var recipientRef = recipient?.RecipientRef ?? string.Empty;
+
+        // 3. Resolve template to get TemplateVersion (part of notification identity).
+        var template = await templateResolver.ResolveAsync(command.EventType, channel, locale, ct);
+
+        // 4. Derive deterministic notification identity (Inv-9).
+        var notificationId = NotificationIdentity.Derive(
+            tenantId, operationId, command.EventType, recipientRef, template.TemplateVersion, materialRevision);
+
+        // 5. Attempt atomic INSERT … ON CONFLICT DO NOTHING (logical dedup).
+        var entity = new Notification
+        {
+            TenantId = tenantId,
+            NotificationId = notificationId,
+            OperationId = operationId,
+            EventType = command.EventType,
+            RecipientRef = recipientRef,
+            TemplateVersion = template.TemplateVersion,
+            MaterialRevision = materialRevision,
+            State = NotificationState.Pending,
+            Channel = channel,
+            Priority = command.Priority,
+            ProviderIdempotencyKey = notificationId, // stable across retries (§13.2)
+            AttemptCount = 0,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Version = 0,
+        };
+
+        var inserted = await repo.TryInsertAsync(entity, ct);
+
+        // 6. Logical dedup (Inv-9): a second trigger for the same logical event → suppressed_duplicate.
+        if (!inserted)
+        {
+            await auditRepo.AddAsync(new AuditEvent
+            {
+                TenantId = tenantId,
+                EventId = $"evt_{Guid.NewGuid():N}",
+                EventType = "notification.suppressed_duplicate",
+                Actor = "system",
+                SubjectRef = notificationId,
+                CorrelationId = command.CorrelationId,
+                OperationId = operationId,
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    notification_id = notificationId,
+                    event_type = command.EventType.ToString(),
+                }),
+                OccurredAt = now,
+            }, ct);
+
+            return Unit.Value; // SendAsync is NOT called (Inv-9)
+        }
+
+        // 7. Guard: no valid destination.
+        if (recipient is null)
+        {
+            var noDestRows = await repo.MarkFailedAsync(
+                tenantId, notificationId, expectedVersion: 0,
+                expectedState: NotificationState.Pending,
+                next: NotificationState.InvalidRecipient,
+                failureCategory: "no_destination", ct);
+
+            if (noDestRows == 0)
+                logger.LogWarning("SendNotification: lost race settling Pending→InvalidRecipient (no_destination) for {NotificationId}.", notificationId);
+
+            await auditRepo.AddAsync(new AuditEvent
+            {
+                TenantId = tenantId,
+                EventId = $"evt_{Guid.NewGuid():N}",
+                EventType = "notification.invalid_recipient",
+                Actor = "system",
+                SubjectRef = notificationId,
+                CorrelationId = command.CorrelationId,
+                OperationId = operationId,
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    notification_id = notificationId,
+                    failure_category = "no_destination",
+                }),
+                OccurredAt = now,
+            }, ct);
+
+            return Unit.Value; // SendAsync is NOT called
+        }
+
+        // 8. Consent gate.
+        var consent = await consentGate.CheckAsync(tenantId, recipientRef, channel, ct);
+        switch (consent)
+        {
+            case ConsentDecision.Withdrawn:
+                var withdrawnRows = await repo.MarkFailedAsync(
+                    tenantId, notificationId, expectedVersion: 0,
+                    expectedState: NotificationState.Pending,
+                    next: NotificationState.InvalidRecipient,
+                    failureCategory: "consent_withdrawn", ct);
+
+                if (withdrawnRows == 0)
+                    logger.LogWarning("SendNotification: lost race settling Pending→InvalidRecipient (consent_withdrawn) for {NotificationId}.", notificationId);
+
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "notification.invalid_recipient",
+                    Actor = "system",
+                    SubjectRef = notificationId,
+                    CorrelationId = command.CorrelationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        notification_id = notificationId,
+                        failure_category = "consent_withdrawn",
+                    }),
+                    OccurredAt = now,
+                }, ct);
+
+                return Unit.Value; // SendAsync is NOT called
+
+            case ConsentDecision.Suppressed:
+                var suppressedRows = await repo.MarkFailedAsync(
+                    tenantId, notificationId, expectedVersion: 0,
+                    expectedState: NotificationState.Pending,
+                    next: NotificationState.SuppressedDuplicate,
+                    failureCategory: "policy_suppressed", ct);
+
+                if (suppressedRows == 0)
+                    logger.LogWarning("SendNotification: lost race settling Pending→SuppressedDuplicate (policy_suppressed) for {NotificationId}.", notificationId);
+
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "notification.suppressed_policy",
+                    Actor = "system",
+                    SubjectRef = notificationId,
+                    CorrelationId = command.CorrelationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        notification_id = notificationId,
+                        failure_category = "policy_suppressed",
+                    }),
+                    OccurredAt = now,
+                }, ct);
+
+                return Unit.Value; // SendAsync is NOT called
+
+                // ConsentDecision.Allowed → continue below.
+        }
+
+        // 9. Render the message body (Inv-12: no PAN/CVV; body carries only safe data).
+        var body = template.BodyTemplate; // stubs use the raw template as the body
+        var rendered = new RenderedMessage(
+            template.TemplateVersion,
+            channel,
+            locale,
+            Body: body,
+            MinimizedRecipient: recipientRef);
+
+        // 10. Settle Pending(v0) → Sending(v1).
+        // Row was inserted at version=0, state=Pending. After this settle version becomes 1.
+        var sendingRows = await repo.TryTransitionStateAsync(
+            tenantId, notificationId,
+            expectedVersion: 0,
+            expectedState: NotificationState.Pending,
+            next: NotificationState.Sending,
+            ct);
+
+        if (sendingRows == 0)
+        {
+            // Lost race — extremely unlikely in single-threaded inbox, but safe to drop.
+            logger.LogWarning(
+                "SendNotification: lost race settling Pending→Sending for {NotificationId}.", notificationId);
+            return Unit.Value;
+        }
+
+        // Version is now 1 (Sending).
+
+        // 11. Select adapter for the channel. If none is registered, do NOT throw — the row is
+        // already in Sending, so throwing would roll back the inbox admission and cause endless
+        // redelivery (a poison loop). Settle to a clean terminal FailedPermanent instead.
+        var adapter = adapters.FirstOrDefault(a => a.Channel == channel);
+        if (adapter is null)
+        {
+            var noAdapterRows = await repo.MarkFailedAsync(
+                tenantId, notificationId,
+                expectedVersion: 1,
+                expectedState: NotificationState.Sending,
+                next: NotificationState.FailedPermanent,
+                failureCategory: "no_adapter_for_channel",
+                ct);
+
+            if (noAdapterRows == 0)
+                logger.LogWarning("SendNotification: lost race settling Sending→FailedPermanent (no adapter) for {NotificationId}.", notificationId);
+
+            logger.LogWarning(
+                "SendNotification: no provider adapter registered for channel {Channel}; settled FailedPermanent for {NotificationId}.",
+                channel, notificationId);
+
+            if (noAdapterRows > 0)
+            {
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "notification.failed_permanent",
+                    Actor = "system",
+                    SubjectRef = notificationId,
+                    CorrelationId = command.CorrelationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        notification_id = notificationId,
+                        failure_category = "no_adapter_for_channel",
+                        channel = channel.ToString(),
+                    }),
+                    OccurredAt = now,
+                }, ct);
+            }
+
+            return Unit.Value; // SendAsync is NOT called
+        }
+
+        NotificationSendResult result;
+        try
+        {
+            result = await adapter.SendAsync(entity.ProviderIdempotencyKey!, rendered, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // F9: guard against adapter exceptions — treat as transient failure so the inbox
+            // transaction COMMITS (row settles to FailedTransient + durable retry scheduled)
+            // rather than rolling back and causing a poison redelivery loop.
+            logger.LogWarning(ex,
+                "SendNotification: adapter.SendAsync threw for {NotificationId}; treating as transient.",
+                notificationId);
+            await retryScheduler.HandleTransientAsync(entity, expectedVersion: 1, "send_exception", ct);
+            return Unit.Value;
+        }
+
+        // 12. Settle Sending(v1) → terminal state based on provider outcome.
+        switch (result.Outcome)
+        {
+            case NotificationSendOutcome.Accepted:
+                var acceptedRows = await repo.MarkAcceptedAsync(
+                    tenantId, notificationId,
+                    expectedVersion: 1,
+                    expectedState: NotificationState.Sending,
+                    providerRef: result.ProviderMessageId,
+                    ct);
+
+                if (acceptedRows == 0)
+                    logger.LogWarning("SendNotification: lost race settling Sending→Accepted for {NotificationId}.", notificationId);
+
+                if (acceptedRows > 0)
+                {
+                    await auditRepo.AddAsync(new AuditEvent
+                    {
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.accepted",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            channel = channel.ToString(),
+                            provider_ref = result.ProviderMessageId,
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
+                break;
+
+            case NotificationSendOutcome.FailedTransient:
+                // T5a: schedule durable retry or exhaust to FailedPermanent (FM#6/FM#7).
+                // The row is currently at version 1 (Sending). retryScheduler handles the
+                // MarkTransientRetryAsync / MarkFailedAsync and job enqueue.
+                await retryScheduler.HandleTransientAsync(
+                    entity,
+                    expectedVersion: 1,
+                    result.FailureCategory ?? "transient",
+                    ct);
+                break;
+
+            case NotificationSendOutcome.FailedPermanent:
+                var permanentRows = await repo.MarkFailedAsync(
+                    tenantId, notificationId,
+                    expectedVersion: 1,
+                    expectedState: NotificationState.Sending,
+                    next: NotificationState.FailedPermanent,
+                    failureCategory: result.FailureCategory ?? "permanent",
+                    ct);
+
+                if (permanentRows == 0)
+                    logger.LogWarning("SendNotification: lost race settling Sending→FailedPermanent for {NotificationId}.", notificationId);
+
+                if (permanentRows > 0)
+                {
+                    await auditRepo.AddAsync(new AuditEvent
+                    {
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.failed_permanent",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            failure_category = result.FailureCategory ?? "permanent",
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
+                break;
+
+            case NotificationSendOutcome.InvalidRecipient:
+                var invalidProvRows = await repo.MarkFailedAsync(
+                    tenantId, notificationId,
+                    expectedVersion: 1,
+                    expectedState: NotificationState.Sending,
+                    next: NotificationState.InvalidRecipient,
+                    failureCategory: "provider_invalid",
+                    ct);
+
+                if (invalidProvRows == 0)
+                    logger.LogWarning("SendNotification: lost race settling Sending→InvalidRecipient for {NotificationId}.", notificationId);
+
+                if (invalidProvRows > 0)
+                {
+                    await auditRepo.AddAsync(new AuditEvent
+                    {
+                        TenantId = tenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "notification.invalid_recipient",
+                        Actor = "system",
+                        SubjectRef = notificationId,
+                        CorrelationId = command.CorrelationId,
+                        OperationId = operationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            notification_id = notificationId,
+                            failure_category = "provider_invalid",
+                        }),
+                        OccurredAt = now,
+                    }, ct);
+                }
+                break;
+        }
+
+        return Unit.Value;
+    }
+}
