@@ -21,7 +21,7 @@ export function KpiCard({ value, label, delta, up, sub, onClick, active }: KpiCa
       {delta && (
         <span className="inline-flex items-center gap-[3px] text-[11px] font-semibold"
           style={{ color: up ? '#0B6431' : '#B82C22' }}>
-          <Icon name="trendUp" size={12} strokeWidth={2.2} />
+          <Icon name={up ? "trendUp" : "trendDown"} size={12} strokeWidth={2.2} />
           {delta}
         </span>
       )}

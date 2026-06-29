@@ -559,11 +559,16 @@ export function parseTime(s: string): number {
   return h * 60 + m;
 }
 
-/** Return the open/close bounds (minutes since midnight) for a given day index (0=Mon…6=Sun). */
-export function dayBounds(dayIdx: number): { start: number; end: number } {
+/**
+ * Return the open/close bounds (minutes since midnight) for a given day index
+ * (0=Mon…6=Sun), plus whether the business is closed that day. Closed days still
+ * report their configured hours so the grid can frame any existing bookings, but
+ * `closed` lets the UI flag the day instead of silently rendering a normal schedule.
+ */
+export function dayBounds(dayIdx: number): { start: number; end: number; closed: boolean } {
   const h = SETTINGS.hours[dayIdx];
-  if (!h || !h.on) return { start: 540, end: 1080 }; // fallback 9 AM – 6 PM
-  return { start: parseTime(h.open), end: parseTime(h.close) };
+  if (!h) return { start: 540, end: 1080, closed: false }; // fallback 9 AM – 6 PM
+  return { start: parseTime(h.open), end: parseTime(h.close), closed: !h.on };
 }
 
 export const TIME_SLOTS = (() => {

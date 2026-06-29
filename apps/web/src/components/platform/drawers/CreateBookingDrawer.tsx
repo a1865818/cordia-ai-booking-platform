@@ -60,6 +60,7 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
     }
   }, [open, services]);
 
+  const hasServices = services.length > 0;
   const service = services.find(s => s.key === svc) ?? services[0];
   const eligible = STAFF; // all staff eligible across business types
 
@@ -72,7 +73,7 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
   ).slice(0, 6);
 
   function submit() {
-    if (phase !== 'form' || !name.trim()) return;
+    if (phase !== 'form' || !name.trim() || !hasServices) return;
     setPhase('confirming');
     setTimeout(() => {
       setPhase('done');
@@ -86,13 +87,22 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
 
   const footer = phase === 'done'
     ? <PrimaryButton full onClick={onClose}>Done</PrimaryButton>
-    : <PrimaryButton full busy={phase === 'confirming'} disabled={!name.trim() || phase !== 'form'} onClick={submit}>
-        {phase === 'confirming' ? 'Confirming' : 'Confirm booking'}
-      </PrimaryButton>;
+    : hasServices
+      ? <PrimaryButton full busy={phase === 'confirming'} disabled={!name.trim() || phase !== 'form'} onClick={submit}>
+          {phase === 'confirming' ? 'Confirming' : 'Confirm booking'}
+        </PrimaryButton>
+      : undefined;
 
   return (
     <Drawer open={open} onClose={onClose} device={device} eyebrow="Manual booking" title="New booking" footer={footer}>
-      {phase === 'done' ? (
+      {!hasServices ? (
+        <div className="py-10 text-center">
+          <div className="text-[14px] font-semibold text-ink">No services yet</div>
+          <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
+            Add a service in Settings before creating a booking.
+          </div>
+        </div>
+      ) : phase === 'done' ? (
         <div className="text-center py-6 px-2">
           <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
             <Icon name="check" size={26} strokeWidth={2.4} color="#15924B" />

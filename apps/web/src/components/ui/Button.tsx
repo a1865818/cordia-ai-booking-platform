@@ -1,16 +1,6 @@
 import React from "react";
 import { Icon, IconName } from "./Icon";
-
-function Spinner({ size = 13 }: { size?: number }) {
-  return (
-    <span style={{
-      width: size, height: size, borderRadius: '50%',
-      border: `${size > 14 ? '2px' : '1.7px'} solid rgba(255,255,255,0.4)`,
-      borderTopColor: '#fff',
-      animation: 'cdspin .7s linear infinite', display: 'inline-block', flexShrink: 0,
-    }} />
-  );
-}
+import { Spinner } from "./Spinner";
 
 interface BtnProps {
   children?: React.ReactNode;

@@ -1,4 +1,5 @@
 import { Icon, IconName } from "../../ui/Icon";
+import { MORE_SCREENS } from "./nav";
 
 interface BottomNavProps {
   screen: string;
@@ -7,7 +8,6 @@ interface BottomNavProps {
   hasLive: boolean;
 }
 
-const MORE_SCREENS = ['waitlist', 'deposits', 'campaigns', 'analytics', 'settings', 'more'];
 const BOTTOM = [
   { key: 'today',         label: 'Today',  icon: 'today'   as IconName },
   { key: 'queue',         label: 'Action', icon: 'alert'   as IconName, badge: 'queue' },

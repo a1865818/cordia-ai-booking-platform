@@ -1,5 +1,6 @@
-import { Icon, IconName } from "../../ui/Icon";
+import { Icon } from "../../ui/Icon";
 import { Logo } from "../../ui/Logo";
+import { NAV_OPERATE, NAV_MANAGE, NavItem } from "./nav";
 
 interface SidebarProps {
   screen: string;
@@ -12,22 +13,8 @@ interface SidebarProps {
   onSignOut?: () => void;
 }
 
-const NAV_OPERATE = [
-  { key: 'today',         label: 'Today',         icon: 'today'    as IconName },
-  { key: 'queue',         label: 'Needs action',  icon: 'alert'    as IconName, badge: 'queue' },
-  { key: 'conversations', label: 'Conversations', icon: 'message'  as IconName, live: true },
-  { key: 'waitlist',      label: 'Waitlist',      icon: 'clock'    as IconName },
-];
-const NAV_MANAGE = [
-  { key: 'customers',  label: 'Customers',          icon: 'users'     as IconName },
-  { key: 'deposits',   label: 'Deposits & payouts', icon: 'card'      as IconName },
-  { key: 'campaigns',  label: 'Campaigns',          icon: 'megaphone' as IconName, badge: 'camp' },
-  { key: 'analytics',  label: 'Analytics',          icon: 'chart'     as IconName },
-  { key: 'settings',   label: 'Settings',           icon: 'gear'      as IconName },
-];
-
 interface SideItemProps {
-  item: typeof NAV_OPERATE[0];
+  item: NavItem;
   active: boolean;
   onClick: () => void;
   queueCount: number;

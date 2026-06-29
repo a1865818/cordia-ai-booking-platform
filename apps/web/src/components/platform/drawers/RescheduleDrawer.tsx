@@ -53,6 +53,7 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
   const [time, setTime] = useState('600');
   const [staff, setStaff] = useState('s1');
   const [phase, setPhase] = useState<'form' | 'confirming' | 'done'>('form');
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (open && booking) {
@@ -63,6 +64,17 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
     }
   }, [open, booking?.id]);
 
+  // Cancel a pending confirm when the drawer closes or unmounts, so onDone
+  // never fires after the user dismisses it.
+  useEffect(() => {
+    if (open) return;
+    if (confirmTimer.current) { clearTimeout(confirmTimer.current); confirmTimer.current = null; }
+  }, [open]);
+
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
+
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Reschedule">{null}</Drawer>;
 
   const eligible = STAFF.filter(s => s.skills.includes(b.service));
@@ -70,7 +82,8 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
   function submit() {
     if (phase !== 'form') return;
     setPhase('confirming');
-    setTimeout(() => {
+    confirmTimer.current = setTimeout(() => {
+      confirmTimer.current = null;
       setPhase('done');
       onDone(b!.id, { day: Number(day), start: Number(time), staff });
     }, 950);

@@ -1,18 +1,9 @@
 import { BookingStatus, statusMeta } from "../../data/console";
+import { Spinner } from "./Spinner";
 
 interface ChipProps {
   status: BookingStatus;
   withSpinner?: boolean;
-}
-
-function Spinner({ size = 9, color = '#fff', track = 'rgba(255,255,255,0.4)' }: { size?: number; color?: string; track?: string }) {
-  return (
-    <span style={{
-      width: size, height: size, borderRadius: '50%',
-      border: `${size > 14 ? '2px' : '1.7px'} solid ${track}`, borderTopColor: color,
-      animation: 'cdspin .7s linear infinite', display: 'inline-block', flexShrink: 0,
-    }} />
-  );
 }
 
 export function Chip({ status, withSpinner = true }: ChipProps) {

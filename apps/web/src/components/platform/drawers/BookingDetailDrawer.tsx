@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Booking, WEEK, staffById, statusMeta, chMeta, fmtT, fmtRange, idemKey } from "../../../data/console";
+import { Booking, WEEK, staffById, chMeta, fmtRange, idemKey } from "../../../data/console";
 import { Drawer } from "../../ui/Drawer";
 import { Chip } from "../../ui/Chip";
 import { DepTag, ProvTag } from "../../ui/StatusTags";

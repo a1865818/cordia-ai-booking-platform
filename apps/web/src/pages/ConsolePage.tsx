@@ -148,7 +148,8 @@ export function ConsolePage() {
     bookingId: string | null;
   }>({ kind: null, bookingId: null });
   const [cancelBusy, setCancelBusy] = useState(false);
-  const btRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const btRef = useRef<ReturnType<typeof setTimeout> | null>(null); // booking-cancel timer
+  const qtRef = useRef<ReturnType<typeof setTimeout> | null>(null); // queue-finish timer
 
   // Toasts
   const { toasts, toast, dismiss } = useToast();
@@ -166,12 +167,14 @@ export function ConsolePage() {
       window.removeEventListener('keydown', onKey);
       if (ltRef.current) clearTimeout(ltRef.current);
       if (btRef.current) clearTimeout(btRef.current);
+      if (qtRef.current) clearTimeout(qtRef.current);
     };
   }, []);
 
   const queueCount = queue.length;
   const campCount = 1;
-  const hasLive = THREADS.some(t => t.live);
+  // A thread only counts as "live" until it's taken over by a human.
+  const hasLive = THREADS.some(t => t.live && !takenOver.has(t.id));
 
   function go(next: string) {
     const n = next as Screen;
@@ -216,15 +219,15 @@ export function ConsolePage() {
     setBookings(bs => [...bs, { ...nb, id: 'new' + Date.now() }]);
   }
 
-  function onRescheduleDone(id: string, patch: { day: number; start: number; staff: string }) {
+  function onRescheduleDone(id: string, patch: { day: number; start: number; staff: string; dur?: number }) {
     setBookings(bs => bs.map(b => b.id === id ? { ...b, ...patch } : b));
   }
 
   function finishQueue(id: string) {
     if (busy) return;
     setBusy(id);
-    if (btRef.current) clearTimeout(btRef.current);
-    btRef.current = setTimeout(() => {
+    if (qtRef.current) clearTimeout(qtRef.current);
+    qtRef.current = setTimeout(() => {
       setQueue(q => q.filter(x => x.id !== id));
       setBusy(null);
       toast({ message: 'Queue item resolved ✓', duration: 3000 });

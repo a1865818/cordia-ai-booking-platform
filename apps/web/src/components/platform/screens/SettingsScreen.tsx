@@ -431,11 +431,13 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
                 />
                 <div className="flex gap-2 mt-2">
                   <button
+                    disabled={!draft.trim()}
                     onClick={() => {
-                      setKb(prev => prev.map((item, idx) => idx === i ? { ...item, a: draft, status: 'answered' as const } : item));
+                      if (!draft.trim()) return;
+                      setKb(prev => prev.map((item, idx) => idx === i ? { ...item, a: draft.trim(), status: 'answered' as const } : item));
                       setEditing(null);
                     }}
-                    className="text-[12.5px] font-semibold text-white bg-ink px-3 py-1.5 rounded-[7px] border-none cursor-pointer hover:brightness-110 transition-all"
+                    className="text-[12.5px] font-semibold text-white bg-ink px-3 py-1.5 rounded-[7px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
                   >Save</button>
                   <button

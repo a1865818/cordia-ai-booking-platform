@@ -30,7 +30,7 @@ function hasConflict(
   staff: string, start: number, dur: number, day: number,
 ): boolean {
   return bs.some(
-    b => b.id !== excludeId && b.staff === staff && b.day === day &&
+    b => b.id !== excludeId && isActive(b.status) && b.staff === staff && b.day === day &&
          start < b.start + b.dur && b.start < start + dur,
   );
 }
@@ -231,7 +231,7 @@ function DiagramView({
   selDay: number;
   timeFilter: string;
   openBooking: (id: string) => void;
-  onDragReschedule: (id: string, patch: { day: number; start: number; staff: string }) => void;
+  onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
   resourceLabel: string;
 }) {
   const { start: dayStart, end: dayEnd } = dayBounds(selDay);
@@ -319,7 +319,7 @@ function DiagramView({
       setDrag({ ...updated });
     };
 
-    const onUp = (e: MouseEvent) => {
+    const onUp = () => {
       const d = dragRef.current;
       dragRef.current = null;
       setDrag(null);
@@ -327,7 +327,7 @@ function DiagramView({
       if (!d.moved) {
         openBooking(d.id);
       } else if (!d.conflict) {
-        onDragReschedule(d.id, { day: selDay, start: d.curStart, staff: d.curStaff });
+        onDragReschedule(d.id, { day: selDay, start: d.curStart, staff: d.curStaff, dur: d.curDur });
       }
     };
 
@@ -710,7 +710,7 @@ export interface TodayScreenProps {
   goQueue: () => void;
   queueCount: number;
   bookings: Booking[];
-  onDragReschedule: (id: string, patch: { day: number; start: number; staff: string }) => void;
+  onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
   resourceLabel: string;
 }
 
@@ -732,7 +732,18 @@ export function TodayScreen({
   const [timeFilter, setTimeFilter] = useState('all');
 
   const dayLabel = `${WEEK.dows[selDay].charAt(0)}${WEEK.dows[selDay].slice(1).toLowerCase()}, ${WEEK.month} ${WEEK.doms[selDay]}`;
+  const dayClosed = dayBounds(selDay).closed;
   const dayBookings = bookings.filter(b => b.day === selDay && isActive(b.status));
+
+  const closedPill = dayClosed ? (
+    <span
+      className="inline-flex items-center gap-[5px] shrink-0 text-[10.5px] font-semibold px-[9px] py-[3px] rounded-full"
+      style={{ background: '#F5F5F5', color: '#6B6B6B' }}
+    >
+      <span className="w-[6px] h-[6px] rounded-full" style={{ background: '#9A9A9A' }} />
+      Closed
+    </span>
+  ) : null;
 
   // ── Phone: simplified card list ──────────────────────────────────────────
   if (isPhone) {
@@ -752,7 +763,10 @@ export function TodayScreen({
           >
             <Icon name="chevL" size={13} strokeWidth={2.4} color="#55554F" />
           </button>
-          <span className="text-[14px] font-semibold flex-1 text-center" style={{ color: '#0A0A0A' }}>{dayLabel}</span>
+          <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
+            <span className="text-[14px] font-semibold truncate" style={{ color: '#0A0A0A' }}>{dayLabel}</span>
+            {closedPill}
+          </div>
           <button
             aria-label="Next day"
             onClick={() => setSelDay(Math.min(6, selDay + 1))}
@@ -858,6 +872,7 @@ export function TodayScreen({
           <h2 className="text-[16px] font-semibold tracking-[-0.02em] m-0" style={{ color: '#0A0A0A' }}>
             {dayLabel}
           </h2>
+          {closedPill}
           {queueCount > 0 && (
             <button
               onClick={goQueue}

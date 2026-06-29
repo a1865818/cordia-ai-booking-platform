@@ -1,4 +1,4 @@
-import { chMeta, depStatusMeta } from "../../data/console";
+import { depStatusMeta } from "../../data/console";
 import { Icon } from "./Icon";
 
 // ---- DepTag ----

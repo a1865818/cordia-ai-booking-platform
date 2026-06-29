@@ -72,7 +72,7 @@ export function HomePage() {
           if (e.isIntersecting && !tickerDone) {
             tickerDone = true;
             if (!reduce) {
-              document.querySelectorAll(".tick .v[data-count]").forEach((el) => {
+              document.querySelectorAll(".ticker .v[data-count]").forEach((el) => {
                 const count = +((el as HTMLElement).dataset["count"] ?? "0");
                 animateCount(el, count);
               });

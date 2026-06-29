@@ -23,6 +23,7 @@ export function CampaignsScreen() {
   }
 
   function approve(id: string) {
+    if (state[id].busy) return;
     set(id, { busy: true });
     setTimeout(() => {
       set(id, { busy: false, status: 'scheduled', scheduled: true });
@@ -103,7 +104,7 @@ export function CampaignsScreen() {
                         <>
                           <GhostButton onClick={() => set(c.id, { status: 'rejected' })} style={{ color: '#6B6B6B' }}>Reject</GhostButton>
                           <GhostButton icon="edit" onClick={() => setEditing(c.id)}>Edit</GhostButton>
-                          <PrimaryButton busy={s.busy} icon="check" onClick={() => approve(c.id)}>
+                          <PrimaryButton busy={s.busy} disabled={s.busy} icon="check" onClick={() => approve(c.id)}>
                             {s.busy ? 'Approving' : 'Approve'}
                           </PrimaryButton>
                         </>

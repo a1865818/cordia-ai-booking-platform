@@ -31,10 +31,13 @@ export function Drawer({ open, onClose, device, title, eyebrow, children, footer
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
+    // Restore the prior value (not a blanket reset) so nested/overlapping
+    // overlays don't unlock page scroll while another is still open.
+    const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
+      document.body.style.overflow = prevOverflow;
     };
   }, [open, onClose]);
 
