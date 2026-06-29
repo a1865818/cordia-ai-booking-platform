@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0A0A0A;
+  --color-lime: #DDF247;
+  --color-lime-deep: #C9D63E;
+  --color-t2: #6B6B6B;
+  --color-t3: #9A9A9A;
+  --color-cd-border: #EAEAEA;
+  --color-hair: #EFEFEF;
+  --color-page: #E9E9E6;
+  --color-wash: #F6F6F4;
+  --color-wash2: #F2F2F0;
+  --color-wash3: #F1F1EF;
+  --color-surface: #ffffff;
+  --color-surface2: #FCFCFC;
+  --color-ink70: #55554F;
+  --color-confirmed-bg: #E7F6EC;
+  --color-confirmed-text: #0B6431;
+  --color-confirmed-accent: #15924B;
+  --color-pending-bg: #FBF3DF;
+  --color-pending-text: #7E5606;
+  --color-pending-accent: #C98A09;
+  --color-failed-bg: #FBEBEA;
+  --color-failed-text: #93231B;
+  --color-failed-accent: #D23B30;
+  --color-cancelled-bg: #F5F5F5;
+  --color-cancelled-text: #6B6B6B;
+  --color-waitlisted-bg: #FBF3DF;
+  --color-waitlisted-text: #7E5606;
+  --color-focus: #2F6BEB;
+  --font-sans: 'Inter Tight', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+}
+
+:focus-visible {
+  outline: 2px solid #2F6BEB;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Smooth anchor scrolling (offset for the 72px sticky nav). Disabled for
+   users who prefer reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 88px;
+  }
+}
+
+@keyframes cdspin {
+  to { transform: rotate(360deg); }
+}
+@keyframes cdshim {
+  0%   { opacity: 0.5; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.5; }
+}
+@keyframes cdwave {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Landing-page motion (consumed via animate-[livepulse_…] / animate-[typedot_…]) */
+@keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+@keyframes typedot { 0%,60%,100%{transform:translateY(0);opacity:.4} 30%{transform:translateY(-5px);opacity:1} }
+
+.cd-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+.cd-scroll::-webkit-scrollbar-thumb { background: #dcdcdc; border-radius: 8px; border: 2px solid #fff; }
+.cd-scroll::-webkit-scrollbar-track { background: transparent; }
