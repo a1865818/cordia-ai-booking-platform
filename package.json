@@ -10,6 +10,7 @@
   "scripts": {
     "nx": "nx",
     "dev": "nx run-many -t serve --projects=api,langgraph",
+    "web": "nx serve web",
     "dev:log": "nx run-many -t serve-log --projects=api,langgraph,web --output-style=stream",
     "langgraph-dev": "nx serve langgraph"
   },
