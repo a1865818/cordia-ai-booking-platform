@@ -6,6 +6,8 @@ public interface IVerificationChallengeRepository
 {
     Task AddAsync(VerificationChallenge challenge, CancellationToken ct = default);
 
+    Task<bool> TryAddAsync(VerificationChallenge challenge, CancellationToken ct = default);
+
     Task<VerificationChallenge?> GetByIdAsync(
         string tenantId,
         string verificationId,
@@ -21,5 +23,6 @@ public interface IVerificationChallengeRepository
         string verificationId,
         string grantId,
         DateTimeOffset verifiedAt,
+        DateTimeOffset grantExpiresAt,
         CancellationToken ct = default);
 }

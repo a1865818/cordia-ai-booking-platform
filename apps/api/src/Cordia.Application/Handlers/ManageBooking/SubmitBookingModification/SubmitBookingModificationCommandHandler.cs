@@ -39,14 +39,6 @@ public sealed class SubmitBookingModificationCommandHandler(
         var booking = await bookingRepo.GetByIdAsync(command.TenantId, bookingId, ct)
             ?? throw new OperationConflictException(bookingId, "Booking was not found.");
 
-        await grants.RequireGrantAsync(
-            command.TenantId,
-            request.GrantId,
-            booking.CustomerId,
-            VerificationActionEnum.Modify,
-            bookingId,
-            ct);
-
         var intentId = string.IsNullOrWhiteSpace(request.Confirmation?.IntentId)
             ? $"intent_{request.OperationId}"
             : request.Confirmation.IntentId;
@@ -157,6 +149,14 @@ public sealed class SubmitBookingModificationCommandHandler(
                 throw new StaleBookingVersionException(booking.BookingId, request.ExpectedBookingVersion, currentVersion);
             }
 
+            await grants.ConsumeGrantAsync(
+                command.TenantId,
+                request.GrantId,
+                booking.CustomerId,
+                VerificationActionEnum.Modify,
+                booking.BookingId,
+                ct2);
+
             if (!await intentRepo.IntentExistsAsync(command.TenantId, intentId, ct2))
             {
                 await intentRepo.AddIntentAsync(new BookingIntent
@@ -169,18 +169,27 @@ public sealed class SubmitBookingModificationCommandHandler(
                 }, ct2);
             }
 
-            await intentRepo.AddRevisionAsync(new BookingIntentRevision
+            var existingRevision = await intentRepo.GetRevisionAsync(command.TenantId, intentId, (int)request.IntentRevision, ct2);
+            if (existingRevision is not null)
             {
-                TenantId = command.TenantId,
-                IntentId = intentId,
-                Revision = (int)request.IntentRevision,
-                CanonicalPayload = JsonSerializer.Serialize(request, Converter.Settings),
-                PayloadHash = request.IntentPayloadHash,
-                SchemaVersion = "manage-booking.modification.v1",
-                TenantPolicyVersion = "manage-booking.v1",
-                SourceSessionId = request.Confirmation.SourceTurnId,
-                CreatedAt = now,
-            }, ct2);
+                if (!string.Equals(existingRevision.PayloadHash, request.IntentPayloadHash, StringComparison.Ordinal))
+                    throw new OperationConflictException(intentId, "Intent revision already exists with a different payload hash.");
+            }
+            else
+            {
+                await intentRepo.AddRevisionAsync(new BookingIntentRevision
+                {
+                    TenantId = command.TenantId,
+                    IntentId = intentId,
+                    Revision = (int)request.IntentRevision,
+                    CanonicalPayload = JsonSerializer.Serialize(request, Converter.Settings),
+                    PayloadHash = request.IntentPayloadHash,
+                    SchemaVersion = "manage-booking.modification.v1",
+                    TenantPolicyVersion = "manage-booking.v1",
+                    SourceSessionId = request.Confirmation.SourceTurnId,
+                    CreatedAt = now,
+                }, ct2);
+            }
 
             await intentRepo.AddConfirmationAsync(new IntentConfirmation
             {

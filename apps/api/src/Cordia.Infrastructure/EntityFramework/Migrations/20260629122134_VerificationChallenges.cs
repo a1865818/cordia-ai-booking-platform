@@ -12,6 +12,8 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.Sql("CREATE TYPE public.verification_request_channel_enum AS ENUM ('email', 'sms');");
+
             migrationBuilder.CreateTable(
                 name: "verification_challenges",
                 schema: "public",
@@ -23,7 +25,7 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     customer_id = table.Column<string>(type: "text", nullable: true),
                     target_booking_id = table.Column<string>(type: "text", nullable: true),
                     action = table.Column<VerificationActionEnum>(type: "verification_action_enum", nullable: false),
-                    channel = table.Column<int>(type: "integer", nullable: false),
+                    channel = table.Column<VerificationRequestChannel>(type: "verification_request_channel_enum", nullable: false),
                     code_hash = table.Column<string>(type: "text", nullable: false),
                     requested_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
@@ -55,6 +57,8 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             migrationBuilder.DropTable(
                 name: "verification_challenges",
                 schema: "public");
+
+            migrationBuilder.Sql("DROP TYPE public.verification_request_channel_enum;");
         }
     }
 }

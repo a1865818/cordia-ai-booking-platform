@@ -39,31 +39,12 @@ public sealed class SubmitBookingCancellationCommandHandler(
         var booking = await bookingRepo.GetByIdAsync(command.TenantId, bookingId, ct)
             ?? throw new OperationConflictException(bookingId, "Booking was not found.");
 
-        await grants.RequireGrantAsync(
-            command.TenantId,
-            request.GrantId,
-            booking.CustomerId,
-            VerificationActionEnum.Cancel,
-            bookingId,
-            ct);
-
         var intentId = string.IsNullOrWhiteSpace(request.Confirmation?.IntentId)
             ? $"intent_{request.OperationId}"
             : request.Confirmation.IntentId;
         var intentRevision = request.Confirmation?.IntentRevision > 0
             ? request.Confirmation.IntentRevision
             : 1;
-
-        if (booking.LifecycleStatus == BookingLifecycleStatus.Cancelled)
-        {
-            return BuildResult(
-                SubmitBookingCancellationOutcome.AlreadyCancelled,
-                SubmitBookingCancellationStatusEnum.AlreadyCancelled,
-                request,
-                intentId,
-                intentRevision,
-                DateTimeOffset.UtcNow);
-        }
 
         var requestHash = hasher.Hash(JsonSerializer.SerializeToNode(request, Converter.Settings));
         var requestHashStored = $"{requestHash.Version}:{requestHash.Value}";
@@ -80,6 +61,17 @@ public sealed class SubmitBookingCancellationCommandHandler(
                     intentId,
                     intentRevision,
                     existing.CreatedAt);
+        }
+
+        if (booking.LifecycleStatus == BookingLifecycleStatus.Cancelled)
+        {
+            return BuildResult(
+                SubmitBookingCancellationOutcome.AlreadyCancelled,
+                SubmitBookingCancellationStatusEnum.AlreadyCancelled,
+                request,
+                intentId,
+                intentRevision,
+                DateTimeOffset.UtcNow);
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -166,6 +158,14 @@ public sealed class SubmitBookingCancellationCommandHandler(
                 throw new StaleBookingVersionException(booking.BookingId, request.ExpectedBookingVersion, currentVersion);
             }
 
+            await grants.ConsumeGrantAsync(
+                command.TenantId,
+                request.GrantId,
+                booking.CustomerId,
+                VerificationActionEnum.Cancel,
+                booking.BookingId,
+                ct2);
+
             if (!await intentRepo.IntentExistsAsync(command.TenantId, intentId, ct2))
             {
                 await intentRepo.AddIntentAsync(new BookingIntent
@@ -179,18 +179,27 @@ public sealed class SubmitBookingCancellationCommandHandler(
             }
 
             var revisionPayloadHash = request.Confirmation?.IntentPayloadHash ?? requestPayloadHash;
-            await intentRepo.AddRevisionAsync(new BookingIntentRevision
+            var existingRevision = await intentRepo.GetRevisionAsync(command.TenantId, intentId, (int)intentRevision, ct2);
+            if (existingRevision is not null)
             {
-                TenantId = command.TenantId,
-                IntentId = intentId,
-                Revision = (int)intentRevision,
-                CanonicalPayload = JsonSerializer.Serialize(request, Converter.Settings),
-                PayloadHash = revisionPayloadHash,
-                SchemaVersion = "manage-booking.cancellation.v1",
-                TenantPolicyVersion = "manage-booking.v1",
-                SourceSessionId = request.Confirmation?.SourceTurnId,
-                CreatedAt = now,
-            }, ct2);
+                if (!string.Equals(existingRevision.PayloadHash, revisionPayloadHash, StringComparison.Ordinal))
+                    throw new OperationConflictException(intentId, "Intent revision already exists with a different payload hash.");
+            }
+            else
+            {
+                await intentRepo.AddRevisionAsync(new BookingIntentRevision
+                {
+                    TenantId = command.TenantId,
+                    IntentId = intentId,
+                    Revision = (int)intentRevision,
+                    CanonicalPayload = JsonSerializer.Serialize(request, Converter.Settings),
+                    PayloadHash = revisionPayloadHash,
+                    SchemaVersion = "manage-booking.cancellation.v1",
+                    TenantPolicyVersion = "manage-booking.v1",
+                    SourceSessionId = request.Confirmation?.SourceTurnId,
+                    CreatedAt = now,
+                }, ct2);
+            }
 
             if (request.Confirmation is not null)
             {

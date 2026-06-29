@@ -2,6 +2,7 @@
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Cordia.Infrastructure.Repositories;
 
@@ -11,6 +12,21 @@ public class VerificationChallengeRepository(ApplicationDbContext db) : IVerific
     {
         db.VerificationChallenges.Add(challenge);
         await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<bool> TryAddAsync(VerificationChallenge challenge, CancellationToken ct = default)
+    {
+        db.VerificationChallenges.Add(challenge);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            db.Entry(challenge).State = EntityState.Detached;
+            return false;
+        }
     }
 
     public Task<VerificationChallenge?> GetByIdAsync(
@@ -34,6 +50,7 @@ public class VerificationChallengeRepository(ApplicationDbContext db) : IVerific
         string verificationId,
         string grantId,
         DateTimeOffset verifiedAt,
+        DateTimeOffset grantExpiresAt,
         CancellationToken ct = default)
         => db.VerificationChallenges
             .IgnoreQueryFilters()
@@ -44,6 +61,7 @@ public class VerificationChallengeRepository(ApplicationDbContext db) : IVerific
             .ExecuteUpdateAsync(
                 s => s
                     .SetProperty(c => c.VerifiedAt, verifiedAt)
-                    .SetProperty(c => c.GrantId, grantId),
+                    .SetProperty(c => c.GrantId, grantId)
+                    .SetProperty(c => c.ExpiresAt, grantExpiresAt),
                 ct);
 }

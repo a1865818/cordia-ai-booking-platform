@@ -13,6 +13,9 @@ public class VerificationChallengeConfiguration : IEntityTypeConfiguration<Verif
         builder.Property(e => e.TenantId).IsRequired();
         builder.Property(e => e.VerificationId).IsRequired();
         builder.Property(e => e.IdempotencyKey).IsRequired();
+        builder.Property(e => e.Channel)
+            .HasColumnType("verification_request_channel_enum")
+            .IsRequired();
         builder.Property(e => e.CodeHash).IsRequired();
         builder.Property(e => e.RequestedAt).HasDefaultValueSql("now()");
 

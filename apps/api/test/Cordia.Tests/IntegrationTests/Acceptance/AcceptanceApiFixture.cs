@@ -84,6 +84,7 @@ public class AcceptanceApiFixture : IAsyncLifetime
                     .MapEnum<NotificationChannel>("notification_channel_enum")
                     .MapEnum<MessagePriority>("message_priority_enum")
                     .MapEnum<VerificationActionEnum>("verification_action_enum")
+                    .MapEnum<VerificationRequestChannel>("verification_request_channel_enum")
                     .MapEnum<CatalogStatus>("catalog_status_enum")
                     .MapEnum<DepositStatus>("deposit_status_enum")
                     .MapEnum<WaitlistOfferStatus>("waitlist_offer_status_enum")

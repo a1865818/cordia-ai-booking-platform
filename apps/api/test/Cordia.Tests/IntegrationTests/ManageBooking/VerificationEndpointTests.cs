@@ -2,6 +2,8 @@
 using System.Net;
 using System.Text.Json;
 using Alba;
+using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Tests.IntegrationTests.Acceptance;
 using Microsoft.EntityFrameworkCore;
@@ -17,6 +19,7 @@ public class VerificationEndpointTests(AcceptanceApiFixture fixture)
     {
         var tenantId = $"t8-ver-req-{Guid.NewGuid():N}";
         var body = RequestBody("idem-req-1", "cust-req", "bk-req", "modify");
+        await SeedBookingAsync(tenantId, "bk-req", "cust-req");
 
         var first = await fixture.Host.Scenario(x =>
         {
@@ -45,6 +48,7 @@ public class VerificationEndpointTests(AcceptanceApiFixture fixture)
     public async Task CheckVerification_PendingBadCodeThenGranted_IssuesGrantAndAudit()
     {
         var tenantId = $"t8-ver-check-{Guid.NewGuid():N}";
+        await SeedBookingAsync(tenantId, "bk-check", "cust-check");
         var request = await fixture.Host.Scenario(x =>
         {
             x.Post.RawJson(RequestBody("idem-check-1", "cust-check", "bk-check", "cancel"))
@@ -114,4 +118,23 @@ public class VerificationEndpointTests(AcceptanceApiFixture fixture)
           "verification_idempotency_key": "{{idempotencyKey}}"
         }
         """;
+
+    private async Task SeedBookingAsync(string tenantId, string bookingId, string customerId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var ctx = fixture.CreateContext(tenantId);
+        ctx.Bookings.Add(new Booking
+        {
+            TenantId = tenantId,
+            BookingId = bookingId,
+            BookingReference = $"REF-{bookingId}",
+            ProviderReference = $"provider-{bookingId}",
+            Version = 0,
+            LifecycleStatus = BookingLifecycleStatus.Confirmed,
+            CustomerId = customerId,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await ctx.SaveChangesAsync();
+    }
 }

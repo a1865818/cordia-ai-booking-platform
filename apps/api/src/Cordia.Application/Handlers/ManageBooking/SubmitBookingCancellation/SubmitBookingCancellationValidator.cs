@@ -9,11 +9,13 @@ public sealed class SubmitBookingCancellationValidator : AbstractValidator<Submi
         RuleFor(x => x.TenantId).NotEmpty();
         RuleFor(x => x.RouteBookingId).NotEmpty();
         RuleFor(x => x.Request).NotNull();
-        RuleFor(x => x.Request.TargetBookingId).NotEmpty();
-        RuleFor(x => x.Request.ExpectedBookingVersion).GreaterThanOrEqualTo(0);
-        RuleFor(x => x.Request.OperationId).NotEmpty();
-        RuleFor(x => x.Request.CancellationIdempotencyKey).NotEmpty();
-        RuleFor(x => x.Request.ReasonCode).NotEmpty();
-        RuleFor(x => x.Request.GrantId).NotEmpty();
+        When(x => x.Request is not null, () =>
+        {
+            RuleFor(x => x.Request.ExpectedBookingVersion).GreaterThanOrEqualTo(0);
+            RuleFor(x => x.Request.OperationId).NotEmpty();
+            RuleFor(x => x.Request.CancellationIdempotencyKey).NotEmpty();
+            RuleFor(x => x.Request.ReasonCode).NotEmpty();
+            RuleFor(x => x.Request.GrantId).NotEmpty();
+        });
     }
 }

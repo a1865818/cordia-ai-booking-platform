@@ -6,6 +6,7 @@ namespace Cordia.Application.Handlers.ManageBooking.ValidateBookingChange;
 
 public sealed record ValidateBookingChangeQuery(
     string TenantId,
+    string RouteBookingId,
     string TargetBookingId,
     long ExpectedBookingVersion,
     JsonElement RequestedFields,

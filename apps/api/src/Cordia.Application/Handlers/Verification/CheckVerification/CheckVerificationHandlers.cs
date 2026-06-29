@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Verification;
+﻿using System.Text.Json;
+using Cordia.Application.Handlers.Verification;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
@@ -27,10 +28,10 @@ public sealed class CheckVerificationQueryHandler(IVerificationChallengeReposito
     internal static VerificationGrantView ToGrantView(VerificationChallenge challenge)
         => new()
         {
-            GrantId = challenge.GrantId,
+            GrantId = challenge.GrantId ?? string.Empty,
             TenantId = challenge.TenantId,
-            CustomerId = challenge.CustomerId,
-            TargetBookingId = challenge.TargetBookingId,
+            CustomerId = challenge.CustomerId ?? string.Empty,
+            TargetBookingId = challenge.TargetBookingId ?? string.Empty,
             AllowedAction = challenge.Action,
             ExpiresAt = challenge.ExpiresAt,
             Scope = string.IsNullOrWhiteSpace(challenge.TargetBookingId)
@@ -71,8 +72,19 @@ public sealed class VerifyCodeCommandHandler(
 
         var grantId = $"grant_{Guid.NewGuid():N}";
         var grantExpiresAt = now + GrantTtl;
+        var issued = false;
         await uow.ExecuteInTransactionAsync(async tx =>
         {
+            var marked = await challenges.MarkVerifiedAsync(
+                request.TenantId,
+                request.VerificationId,
+                grantId,
+                now,
+                grantExpiresAt,
+                tx);
+            if (marked == 0)
+                return;
+
             await grants.AddAsync(new VerificationGrant
             {
                 TenantId = request.TenantId,
@@ -86,8 +98,6 @@ public sealed class VerifyCodeCommandHandler(
                 ExpiresAt = grantExpiresAt,
             }, tx);
 
-            await challenges.MarkVerifiedAsync(request.TenantId, request.VerificationId, grantId, now, tx);
-
             await auditEvents.AddAsync(new AuditEvent
             {
                 TenantId = request.TenantId,
@@ -97,10 +107,25 @@ public sealed class VerifyCodeCommandHandler(
                 SubjectRef = challenge.CustomerId ?? string.Empty,
                 CorrelationId = request.CorrelationId,
                 OperationId = null,
-                Metadata = $$"""{"verification_id":"{{challenge.VerificationId}}","grant_id":"{{grantId}}","action":"{{challenge.Action.ToString()}}"}""",
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    verification_id = challenge.VerificationId,
+                    grant_id = grantId,
+                    action = challenge.Action.ToString(),
+                }),
                 OccurredAt = now,
             }, tx);
+
+            issued = true;
         }, ct);
+
+        if (!issued)
+        {
+            var winner = await challenges.GetByIdAsync(request.TenantId, request.VerificationId, ct);
+            return winner is { VerifiedAt: not null, GrantId: not null }
+                ? new CheckVerificationResult(CheckVerificationStatusEnum.Granted, CheckVerificationQueryHandler.ToGrantView(winner))
+                : new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
+        }
 
         var updated = challenge;
         updated.GrantId = grantId;

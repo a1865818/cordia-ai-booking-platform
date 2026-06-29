@@ -8,6 +8,8 @@ public interface IBookingRepository
 {
     Task AddAsync(Booking booking, CancellationToken ct = default);
 
+    Task MaterializeBookedAsync(Booking booking, CancellationToken ct = default);
+
     Task<Booking?> GetByIdAsync(string tenantId, string bookingId, CancellationToken ct = default);
 
     Task<Booking?> GetByReferenceAsync(string tenantId, string bookingReference, CancellationToken ct = default);

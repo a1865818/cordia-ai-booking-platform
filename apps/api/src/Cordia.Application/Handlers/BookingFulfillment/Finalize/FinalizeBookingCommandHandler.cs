@@ -66,6 +66,7 @@ public sealed class FinalizeBookingCommandHandler(
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IBookingProviderAdapter adapter,
+    IBookingRepository bookingRepo,
     IProviderCircuitBreaker circuitBreaker,
     RetryClassifier classifier,
     IRetryPolicy retryPolicy,
@@ -158,10 +159,17 @@ public sealed class FinalizeBookingCommandHandler(
                     }
                     // FinalizeOutcome.Finalized or NotTracked → fall through to Booked transition below.
 
-                    await opRepo.TryTransitionStatusAsync(
+                    var bookedRows = await opRepo.TryTransitionStatusAsync(
                         tenantId, operationId, current2.Version,
                         OperationStatus.Finalizing, OperationStatus.Booked,
                         reason: "booked", bookingId: latest.ProviderRef, ct: ct2);
+
+                    if (bookedRows > 0)
+                    {
+                        await bookingRepo.MaterializeBookedAsync(
+                            BuildBookingAggregate(tenantId, current2, latest.ProviderRef, canonicalPayload, now: DateTimeOffset.UtcNow),
+                            ct2);
+                    }
                 }, ct);
 
                 if (recoveryHoldExpired)
@@ -514,6 +522,9 @@ public sealed class FinalizeBookingCommandHandler(
                 }
                 // FinalizeOutcome.Finalized or NotTracked → fall through to Finalizing→Booked below.
 
+                if (string.IsNullOrWhiteSpace(result.ProviderReference))
+                    return;
+
                 var rows = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, currentOp.Version,
                     OperationStatus.Finalizing, OperationStatus.Booked,
@@ -521,6 +532,10 @@ public sealed class FinalizeBookingCommandHandler(
 
                 if (rows > 0)
                 {
+                    await bookingRepo.MaterializeBookedAsync(
+                        BuildBookingAggregate(tenantId, currentOp, result.ProviderReference, canonicalPayload, now),
+                        ct2);
+
                     // Inv-8: notification outbox row in the SAME transaction as the Booked transition.
                     await outboxRepo.AddAsync(new OutboxMessage
                     {
@@ -756,4 +771,90 @@ public sealed class FinalizeBookingCommandHandler(
         // Continue: driver reloads → op.Status == CompensationRequired → CompensateOperationCommand.
         return StepOutcome.Continue;
     }
+
+    private static Booking BuildBookingAggregate(
+        string tenantId,
+        BookingOperation operation,
+        string providerReference,
+        string canonicalPayload,
+        DateTimeOffset now)
+    {
+        var bookingReference = ReadFirstString(canonicalPayload, "booking_reference", "bookingReference", "reference")
+            ?? providerReference;
+        var customerRef = ReadFirstString(
+                canonicalPayload,
+                "customer_id",
+                "customerId",
+                "caller_id",
+                "callerId",
+                "phone_e164",
+                "phoneE164",
+                "contact_phone",
+                "contactPhone",
+                "email",
+                "contact_email",
+                "contactEmail")
+            ?? providerReference;
+
+        return new Booking
+        {
+            TenantId = tenantId,
+            BookingId = providerReference,
+            BookingReference = bookingReference,
+            ProviderReference = providerReference,
+            Version = 0,
+            LifecycleStatus = BookingLifecycleStatus.Confirmed,
+            CustomerId = customerRef,
+            CreatedAt = operation.CreatedAt,
+            UpdatedAt = now,
+        };
+    }
+
+    private static string? ReadFirstString(string json, params string[] propertyNames)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return ReadFirstString(doc.RootElement, propertyNames);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadFirstString(JsonElement element, IReadOnlyCollection<string> propertyNames)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (propertyNames.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
+                    return StringValue(property.Value);
+
+                var nested = ReadFirstString(property.Value, propertyNames);
+                if (!string.IsNullOrWhiteSpace(nested))
+                    return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var nested = ReadFirstString(item, propertyNames);
+                if (!string.IsNullOrWhiteSpace(nested))
+                    return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? StringValue(JsonElement element)
+        => element.ValueKind switch
+        {
+            JsonValueKind.String => string.IsNullOrWhiteSpace(element.GetString()) ? null : element.GetString(),
+            JsonValueKind.Number => element.GetRawText(),
+            _ => null,
+        };
 }

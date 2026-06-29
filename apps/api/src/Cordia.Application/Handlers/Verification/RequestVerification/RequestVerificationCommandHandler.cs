@@ -1,12 +1,15 @@
 ﻿using Cordia.Application.Handlers.Verification;
 using Cordia.Domain.Entities;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Verification.RequestVerification;
 
-public sealed class RequestVerificationCommandHandler(IVerificationChallengeRepository challenges)
+public sealed class RequestVerificationCommandHandler(
+    IVerificationChallengeRepository challenges,
+    IBookingRepository bookings)
     : IRequestHandler<RequestVerificationCommand, RequestVerificationResult>
 {
     private static readonly TimeSpan ChallengeTtl = TimeSpan.FromMinutes(10);
@@ -24,6 +27,15 @@ public sealed class RequestVerificationCommandHandler(IVerificationChallengeRepo
         if (existing is not null)
             return new RequestVerificationResult(RequestVerificationStatusEnum.AlreadySent, ToResult(existing));
 
+        var targetBookingId = string.IsNullOrWhiteSpace(request.TargetBookingId) ? null : request.TargetBookingId;
+        var customerId = request.CustomerId;
+        if (targetBookingId is not null)
+        {
+            var booking = await bookings.GetByIdAsync(command.TenantId, targetBookingId, ct)
+                ?? throw new OperationConflictException(targetBookingId, "Booking was not found.");
+            customerId = booking.CustomerId;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var verificationId = $"ver_{Guid.NewGuid():N}";
         var challenge = new VerificationChallenge
@@ -31,8 +43,8 @@ public sealed class RequestVerificationCommandHandler(IVerificationChallengeRepo
             TenantId = command.TenantId,
             VerificationId = verificationId,
             IdempotencyKey = request.VerificationIdempotencyKey,
-            CustomerId = request.CustomerId,
-            TargetBookingId = string.IsNullOrWhiteSpace(request.TargetBookingId) ? null : request.TargetBookingId,
+            CustomerId = customerId,
+            TargetBookingId = targetBookingId,
             Action = request.Action,
             Channel = request.Channel,
             CodeHash = VerificationCode.Hash(verificationId, VerificationCode.DevelopmentCode),
@@ -40,8 +52,12 @@ public sealed class RequestVerificationCommandHandler(IVerificationChallengeRepo
             ExpiresAt = now + ChallengeTtl,
         };
 
-        await challenges.AddAsync(challenge, ct);
-        return new RequestVerificationResult(RequestVerificationStatusEnum.Sent, ToResult(challenge));
+        if (await challenges.TryAddAsync(challenge, ct))
+            return new RequestVerificationResult(RequestVerificationStatusEnum.Sent, ToResult(challenge));
+
+        var winner = await challenges.GetByIdempotencyKeyAsync(command.TenantId, request.VerificationIdempotencyKey, ct)
+            ?? throw new InvalidOperationException($"Verification idempotency key '{request.VerificationIdempotencyKey}' conflicted but winner was not found.");
+        return new RequestVerificationResult(RequestVerificationStatusEnum.AlreadySent, ToResult(winner));
     }
 
     private static VerificationSentResult ToResult(VerificationChallenge challenge)

@@ -31,6 +31,8 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
             .Select(p => p!.Candidate)
             .Where(c => c is not null)
             .Select(c => c!)
+            .GroupBy(c => c.BookingId)
+            .Select(g => g.First())
             .Take(limit)
             .ToList();
     }

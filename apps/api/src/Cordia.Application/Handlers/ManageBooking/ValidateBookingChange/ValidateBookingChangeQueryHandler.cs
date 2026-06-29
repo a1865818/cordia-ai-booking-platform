@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using System.Text.Json;
+using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
@@ -15,6 +16,9 @@ public sealed class ValidateBookingChangeQueryHandler(
         ValidateBookingChangeQuery request,
         CancellationToken ct)
     {
+        if (!string.Equals(request.RouteBookingId, request.TargetBookingId, StringComparison.Ordinal))
+            throw new OperationConflictException(request.RouteBookingId, "Route booking id does not match request target_booking_id.");
+
         var booking = await bookings.GetByIdAsync(request.TenantId, request.TargetBookingId, ct)
             ?? throw new OperationConflictException(request.TargetBookingId, "Booking was not found.");
 
@@ -35,6 +39,22 @@ public sealed class ValidateBookingChangeQueryHandler(
                     ValidateBookingChangeStatusEnum.StaleVersion,
                     requiresConfirmation: false,
                     recoverableFields: ["expected_booking_version"]));
+        }
+
+        var requestedFields = GetRequestedFieldNames(request.RequestedFields);
+        var unsupportedFields = requestedFields
+            .Where(f => !SupportedChangeFields.Contains(f))
+            .ToList();
+
+        if (requestedFields.Count == 0 || unsupportedFields.Count > 0)
+        {
+            return new ValidateBookingChangeResult(
+                "policy_failed",
+                BuildValidation(
+                    valid: false,
+                    ValidateBookingChangeStatusEnum.PolicyFailed,
+                    requiresConfirmation: false,
+                    recoverableFields: requestedFields.Count == 0 ? ["requested_fields"] : unsupportedFields));
         }
 
         return new ValidateBookingChangeResult(
@@ -63,4 +83,27 @@ public sealed class ValidateBookingChangeQueryHandler(
             PolicyVersion = "manage-booking.v1",
             CapacityMode = AvailabilityModeEnum.Live,
         };
+
+    private static readonly HashSet<string> SupportedChangeFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "starts_at",
+        "start_at",
+        "booking_date",
+        "booking_time",
+        "approx_time",
+        "party_size",
+        "special_requests",
+    };
+
+    private static List<string> GetRequestedFieldNames(JsonElement requestedFields)
+    {
+        if (requestedFields.ValueKind != JsonValueKind.Object)
+            return [];
+
+        return requestedFields
+            .EnumerateObject()
+            .Select(p => p.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+    }
 }

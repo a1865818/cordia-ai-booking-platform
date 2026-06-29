@@ -86,6 +86,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         var result = await mediator.Send(
             new ValidateBookingChangeQuery(
                 tenant.TenantId,
+                bookingId,
                 targetBookingId,
                 request.ExpectedBookingVersion,
                 request.RequestedFields,

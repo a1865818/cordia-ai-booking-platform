@@ -50,6 +50,7 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "signal_type_enum", new[] { "directory_slug", "email_recipient", "messaging_recipient", "phone_number", "web_origin", "widget_key" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_action_enum", new[] { "cancel", "modify", "owner_override", "read_sensitive", "refund", "use_payment_method" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_level_enum", new[] { "channel_verified", "high_assurance", "identity_verified", "unverified" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_request_channel_enum", new[] { "email", "sms" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "waitlist_offer_status_enum", new[] { "accepted", "declined", "expired", "matched", "offered", "pending", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "workflow_step_status_enum", new[] { "failed", "in_progress", "pending", "succeeded", "terminal" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -1324,8 +1325,8 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("verification_action_enum")
                         .HasColumnName("action");
 
-                    b.Property<int>("Channel")
-                        .HasColumnType("integer")
+                    b.Property<VerificationRequestChannel>("Channel")
+                        .HasColumnType("verification_request_channel_enum")
                         .HasColumnName("channel");
 
                     b.Property<string>("CodeHash")

@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.ManageBooking.FindManageableBookings;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
@@ -41,13 +42,20 @@ public sealed class GetBookingDetailsQueryHandler(
         if (authoritative is null || string.IsNullOrWhiteSpace(authoritative.CustomerId))
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.RequiresVerification, minimal);
 
-        await grants.RequireGrantAsync(
-            request.TenantId,
-            grantId,
-            authoritative.CustomerId,
-            VerificationActionEnum.ReadSensitive,
-            projection.BookingId,
-            ct);
+        try
+        {
+            await grants.RequireGrantAsync(
+                request.TenantId,
+                grantId,
+                authoritative.CustomerId,
+                VerificationActionEnum.ReadSensitive,
+                projection.BookingId,
+                ct);
+        }
+        catch (VerificationRequiredException)
+        {
+            return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.RequiresVerification, minimal);
+        }
 
         return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.Ok, minimal);
     }
