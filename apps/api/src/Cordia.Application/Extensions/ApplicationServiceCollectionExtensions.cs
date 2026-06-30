@@ -7,6 +7,7 @@ using Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
 using Cordia.Application.Handlers.BookingFulfillment.Sla;
 using Cordia.Application.Handlers.BookingFulfillment.UserAction;
 using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
+using Cordia.Application.Handlers.Menu.IngestVendorMenu;
 using Cordia.Application.Handlers.Notifications;
 using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 using Cordia.Application.Handlers.Notifications.Reconcile;
@@ -150,6 +151,17 @@ public static class ApplicationServiceCollectionExtensions
                     ExtractNotificationId(env.Payload) ?? string.Empty,
                     env.MessageId));
 
+            // Spec 11 — menu ingestion lane (menu.commands). Realizes the menu.commands.ingest.v1
+            // queue contract; routed through InboxDeduplicationBehavior (consumer "menu.processor").
+            // catalog_id + source_artifact_ref are extracted from the job payload.
+            registry.Register("menu.commands.ingest.v1",
+                env => new IngestVendorMenuCommand(
+                    env.TenantId,
+                    ExtractString(env.Payload, "catalog_id") ?? string.Empty,
+                    ExtractString(env.Payload, "source_artifact_ref") ?? string.Empty,
+                    env.MessageId,
+                    env.CorrelationId));
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
@@ -208,6 +220,21 @@ public static class ApplicationServiceCollectionExtensions
 
         return payload.TryGetProperty("notification_id", out var n) && n.ValueKind == JsonValueKind.String
             ? n.GetString()
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts a string property named <paramref name="propertyName"/> from a job-payload
+    /// <see cref="JsonElement"/>. Returns <see langword="null"/> when the element is Undefined/Null,
+    /// the property is absent, or the value is not a string.
+    /// </summary>
+    private static string? ExtractString(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
             : null;
     }
 }

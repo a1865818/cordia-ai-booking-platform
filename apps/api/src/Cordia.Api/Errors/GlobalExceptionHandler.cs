@@ -98,6 +98,24 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Invalid notification state transition", ex.Message, cancellationToken);
                 return true;
 
+            case InvalidCatalogStateTransitionException ex:
+                logger.LogWarning(ex, "Invalid catalog state transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid catalog state transition", ex.Message, cancellationToken);
+                return true;
+
+            case CatalogNotFoundException ex:
+                logger.LogWarning(ex, "Vendor catalog not found: {CatalogId}", ex.CatalogId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Vendor catalog not found", ex.Message, cancellationToken);
+                return true;
+
+            case CatalogNotEditableException ex:
+                logger.LogWarning(ex, "Vendor catalog not editable: {CatalogId} ({Status})", ex.CatalogId, ex.Status);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Vendor catalog not editable", ex.Message, cancellationToken);
+                return true;
+
             case OperationConflictException ex:
                 logger.LogWarning(ex, "Operation conflict: operationId={OperationId}", ex.OperationId);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
