@@ -4,6 +4,17 @@
 **Owner project(s):** `apps/api` (Domain, Application, Infrastructure, Api) for waitlist matching, menu ingestion/approval, and the pre-order saga; `apps/langgraph` for the foreground catalog tools and the pre-order draft; `apps/web` for owner menu review; `libs/shared-schemas` for the catalog and pre-order-draft contracts.
 **Source design sections:** §20 Waitlist (lines 1797–1819); §21 Restaurant Menu and Pre-order (lines 1821–1924); §6.5 approved catalog lookup / availability modes (lines 406–420, 429); §11 Booking Workflow State Machine — `AlternativesRequired → Waitlisted` (lines 1136, 1145); §12 Job and Event Architecture — `waitlist.commands` / `menu.commands` (lines 1158–1176); §22 Data Model — `vendor_catalogs`, `vendor_catalog_items` (lines 1926–1977); §23 tool surface — `search_vendor_catalog`, `get_catalog_item`, `match_waitlist_offer`, `commit_preorder`, `ingest_vendor_menu`, `publish_vendor_catalog` (lines 1979–2031); §27 Testing (lines 2170–2237); §31 Decisions (lines 2387–2404).
 
+> **Implementation status (2026-06-30):** The **menu-ingestion vertical** (§5.2) is implemented: the
+> `menu.commands.ingest.v1` queue contract + isolated ingestion consumer (`uploaded → scanning →
+> {quarantined | extracting → draft_ready}`, fail-secure), the catalog state machine, the published-only
+> read path (`search_vendor_catalog`/`get_catalog_item`), and the owner lifecycle
+> (`MenuController`: upload → review → approve → publish, with prior-version supersede). The malware
+> scanner and the isolated extractor are **deterministic stub ports** with the real isolation boundary
+> enforced + tested; the real ClamAV/LLM swap in behind the same ports. The LangGraph extraction agent
+> (empty tool surface, untrusted-text handling) exists in `apps/langgraph` but is **not yet wired** to
+> the .NET consumer. Waitlist matching and the pre-order saga are **not yet implemented**. See the plan
+> at `thoughts/shared/plans/2026-06-30_spec-11-menu-ingestion.md` for the trade-offs (ADR table).
+
 ## 1. Purpose & scope
 
 This component covers three coordinated features that all sit downstream of core booking but reuse its primitives. (a) **Waitlist**: durable enrollment with explicit constraints, and the default `waitlisted → matched → temporary hold → offer → accept/decline/expire → release` flow, with silent auto-book/charge prohibited unless the tenant has explicit, constraint-scoped customer consent. (b) **Menu ingestion**: the `upload → malware scan → isolated extraction → generalized catalog → owner review → approval → immutable published version` pipeline, where the extraction agent is sandboxed (no booking/CRM/notification/payment tools, treats document text as untrusted data) and only an owner-approved version is ever visible to the foreground agent. (c) **Pre-order saga**: the `hold capacity → reserve/validate items → payment auth → commit booking → commit pre-order → one combined outcome` coordination with compensation for every partial state and live revalidation before commit.
