@@ -71,6 +71,7 @@ public sealed class ReleaseExpiredHoldsCommandHandler(
         {
             // ReleaseScope.Operation: bulk-release-by-op (deposit-expiry path — intentional).
             await capacityReservation.ReleaseByOperationAsync(tenantId, operationId, ReleaseReason.Expired, ct);
+            metrics.FulfillmentHoldExpiredTotal.Add(1);
         }
 
         await auditRepo.AddAsync(new AuditEvent

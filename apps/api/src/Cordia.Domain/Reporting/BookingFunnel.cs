@@ -10,9 +10,9 @@
 ///   Notified  = confirmed operations whose notification reached State=Delivered (Inv-9).
 ///
 /// Additional sub-state counts for complete §5.3 lens coverage:
-///   FailedTerminal = operations that terminated in a failure state (Rejected, FailedFinal,
-///                    Expired, Waitlisted, AlternativesRequired-declined path — conservative set,
-///                    only clearly terminal-failure values).
+///   FailedTerminal = operations that terminated in a clear failure state (Rejected, FailedFinal,
+///                    Expired — conservative set). Waitlisted and AlternativesRequired are
+///                    informational terminals and are excluded from this lens.
 ///   Ambiguous      = operations in Status=Reconciling (provider outcome unknown, §5.3).
 ///   NotifyPending  = Confirmed − Notified (Booked with no Delivered notification yet).
 /// </summary>

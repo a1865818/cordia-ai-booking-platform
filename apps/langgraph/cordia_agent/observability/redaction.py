@@ -77,9 +77,7 @@ _EXPANDED_SENSITIVE_NAMES: frozenset[str] = SENSITIVE_DIGIT_FIELD_NAMES | frozen
 
 _PAN_RE = re.compile(
     r"(?<!\d)"  # not preceded by a digit
-    r"\d{4}"  # first group of 4
-    r"(?:[\s\-]?\d{4}){2,3}"  # 2-3 more groups of 4 (allows 12-16 more digits)
-    r"(?:[\s\-]?\d{1,3})?"  # optional final short group (for 13/17/18/19 total)
+    r"(?:\d[\s\-]?){13,19}"  # 13-19 digits optionally separated by spaces/dashes (any grouping)
     r"(?!\d)"  # not followed by a digit
 )
 
@@ -216,16 +214,25 @@ class RedactionLogFilter(logging.Filter):
 
 
 def install_redaction_filter(logger: logging.Logger | None = None) -> None:
-    """Attach a ``RedactionLogFilter`` to *logger* (or the root logger).
+    """Attach a ``RedactionLogFilter`` to the handlers of *logger* (or the root logger).
 
-    Idempotent: if the root / given logger already has a ``RedactionLogFilter``
-    installed, a second one is not added.
+    Python's ``callHandlers`` propagation bypasses parent-logger filters, so attaching
+    to the logger itself does not scrub records emitted by child loggers. Attaching to
+    each handler ensures the filter runs on every record that reaches a sink.
+
+    Idempotent: handlers that already have a ``RedactionLogFilter`` are skipped.
 
     Args:
         logger: Target logger; defaults to the root logger (``logging.root``).
     """
     target = logger if logger is not None else logging.root
-    # Avoid duplicate installation.
-    if any(isinstance(f, RedactionLogFilter) for f in target.filters):
-        return
-    target.addFilter(RedactionLogFilter())
+    f = RedactionLogFilter()
+    for handler in target.handlers:
+        if not any(
+            isinstance(existing, RedactionLogFilter) for existing in handler.filters
+        ):
+            handler.addFilter(f)
+    # Also add to the logger itself as a belt-and-suspenders guard for records that
+    # are handled directly by the target logger rather than propagating up.
+    if not any(isinstance(existing, RedactionLogFilter) for existing in target.filters):
+        target.addFilter(f)

@@ -158,6 +158,12 @@ public sealed class Metrics : IDisposable
     /// <summary>Notifications confirmed delivered to the recipient.</summary>
     public Counter<long> NotificationDeliveredTotal { get; }
 
+    /// <summary>Notifications that permanently bounced (FailedPermanent) from the provider.</summary>
+    public Counter<long> NotificationBouncedTotal { get; }
+
+    /// <summary>Notifications suppressed by the consent-policy gate.</summary>
+    public Counter<long> NotificationConsentSuppressedTotal { get; }
+
     /// <summary>Notifications in a pending-status state.</summary>
     public Counter<long> NotificationPendingStatusTotal { get; }
 
@@ -355,6 +361,16 @@ public sealed class Metrics : IDisposable
             MetricNames.NotificationDeliveredTotal,
             unit: "1",
             description: "Notifications confirmed delivered to the recipient.");
+
+        NotificationBouncedTotal = Meter.CreateCounter<long>(
+            MetricNames.NotificationBouncedTotal,
+            unit: "1",
+            description: "Notifications that permanently bounced (FailedPermanent) from the provider.");
+
+        NotificationConsentSuppressedTotal = Meter.CreateCounter<long>(
+            MetricNames.NotificationConsentSuppressedTotal,
+            unit: "1",
+            description: "Notifications suppressed by the consent-policy gate.");
 
         NotificationPendingStatusTotal = Meter.CreateCounter<long>(
             MetricNames.NotificationPendingStatusTotal,

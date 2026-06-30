@@ -75,10 +75,10 @@ slos:
       percentile: p95
       window: 7d
     sli:
-      metric: fulfillment.reconciliation_total
-      source: "ambiguous outcome -> reconciled elapsed; correlated with fulfillment.ambiguous_outcome_total"
+      metric: fulfillment.retry.elapsed_ms
+      source: "ambiguous outcome -> reconciled elapsed (histogram p95); correlated with fulfillment.ambiguous_outcome_total"
     owner_spec: "06 (booking-workflow-and-fulfillment)"
-    notes: "baseline pending measurement (OD-1). Inv-7: ambiguous outcomes MUST reconcile."
+    notes: "baseline pending measurement (OD-1). Inv-7: ambiguous outcomes MUST reconcile. Uses histogram for p95."
 
   - id: hold_expiry_safety_margin
     name: Hold-expiry safety margin
@@ -99,10 +99,9 @@ slos:
       percentile: p95
       window: 7d
     sli:
-      metric: notification.provider_accepted_total
-      source: "confirmed (booking_operations terminal) -> dispatched (provider_accepted)"
+      source: "confirmed (booking_operations terminal) -> dispatched (provider_accepted) elapsed; requires a dedicated dispatch latency histogram (e.g. notification.dispatch_latency_ms) — not yet in the registry (OD-1)"
     owner_spec: "10 (notifications)"
-    notes: "baseline pending measurement (OD-1)."
+    notes: "baseline pending measurement (OD-1). notification.provider_accepted_total is a counter and cannot measure p95 latency; a histogram metric must be added before this SLO can be evaluated."
 
   - id: human_review_response
     name: Human-review response time

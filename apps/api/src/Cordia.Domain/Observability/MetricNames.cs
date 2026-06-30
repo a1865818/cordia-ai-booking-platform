@@ -129,6 +129,12 @@ public static class MetricNames
     /// <summary>Notifications confirmed delivered to the recipient (counter).</summary>
     public const string NotificationDeliveredTotal = "notification.delivered_total";
 
+    /// <summary>Notifications that permanently bounced (FailedPermanent) from the provider (counter).</summary>
+    public const string NotificationBouncedTotal = "notification.bounced_total";
+
+    /// <summary>Notifications suppressed by the consent-policy gate (counter).</summary>
+    public const string NotificationConsentSuppressedTotal = "notification.consent_suppressed_total";
+
     /// <summary>Notifications in a pending-status state (counter).</summary>
     public const string NotificationPendingStatusTotal = "notification.pending_status_total";
 

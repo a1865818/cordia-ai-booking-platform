@@ -109,15 +109,16 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
 
             created = true;
 
-            // Inv-8/Inv-9: a terminal operation lacked a notification past threshold and we raised
-            // the work item — missing-notification alert signal (§25.4).
-            metrics.NotificationMissingTerminalTotal.Add(1);
-
             logger.LogInformation(
                 "MissingNotificationAudit: raised work item + audit for " +
                 "tenant={TenantId} operation_id={OperationId}",
                 tenantId, operationId);
         }, cancellationToken);
+
+        // Emit the alert-signal metric AFTER the transaction commits so the counter is never
+        // incremented for a rolled-back work item (avoids false-positive alert signals).
+        if (created)
+            metrics.NotificationMissingTerminalTotal.Add(1);
 
         return created;
     }

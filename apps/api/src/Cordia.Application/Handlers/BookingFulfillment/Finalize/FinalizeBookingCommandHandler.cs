@@ -645,6 +645,10 @@ public sealed class FinalizeBookingCommandHandler(
 
                 circuitBreaker.RecordFailure(adapter.ProviderName, ProviderAccount);
 
+                // Record elapsed for ALL transient failures (including budget-exhausted ones) so the
+                // retry-backlog SLA metric captures the full latency distribution (§25.2).
+                metrics.FulfillmentRetryElapsedMs.Record((now - finalizeStep.CreatedAt).TotalMilliseconds);
+
                 if (next == null)
                 {
                     // Budget exhausted (FM#11): route Finalizing → Reconciling.
@@ -669,7 +673,6 @@ public sealed class FinalizeBookingCommandHandler(
                     await retryScheduler.ScheduleAsync(
                         tenantId, operationId, finalizeStep.WorkflowStepId, StepType, next.Value, ct2);
                     metrics.FulfillmentRetryAttemptTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.Category, attempt.RetryClassification?.ToString() ?? "transient"));
-                    metrics.FulfillmentRetryElapsedMs.Record((now - finalizeStep.CreatedAt).TotalMilliseconds);
                 }
             }, ct);
 

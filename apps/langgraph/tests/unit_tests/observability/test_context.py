@@ -39,10 +39,16 @@ def _make_ctx(**kwargs: str) -> CorrelationContext:
 
 @pytest.mark.unit
 def test_get_correlation_returns_none_when_unset() -> None:
-    # Each test gets a fresh task context via pytest-asyncio's isolation, but
-    # for sync tests we need to ensure we reset the var after previous tests.
-    # Use bind_correlation scope to avoid bleed.
-    assert get_correlation() is None or True  # may have leftover from prev test
+    # Use bind_correlation to establish a known context, then verify get_correlation
+    # returns None after the scope exits (rather than relying on ambient test state).
+    ctx = _make_ctx(correlation_id="isolation-check")
+    with bind_correlation(ctx):
+        assert get_correlation() is ctx
+
+    # After exiting the scope the contextvar is reset to whatever it was before,
+    # which is None when no outer binding is active.
+    result = get_correlation()
+    assert result is None or result is not ctx, "bind_correlation must restore prior state on exit"
 
 
 @pytest.mark.unit

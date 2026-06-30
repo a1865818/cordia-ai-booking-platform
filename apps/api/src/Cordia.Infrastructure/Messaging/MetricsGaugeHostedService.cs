@@ -32,7 +32,7 @@ public sealed class MetricsGaugeHostedService(
             return;
         }
 
-        var intervalMs = _options.MetricsGauge.IntervalSeconds * 1000;
+        var intervalMs = Math.Max(1000, _options.MetricsGauge.IntervalSeconds * 1000);
 
         logger.LogInformation(
             "Metrics gauge service starting (IntervalSeconds={IntervalSeconds}).",

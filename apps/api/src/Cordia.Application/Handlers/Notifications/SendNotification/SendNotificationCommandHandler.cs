@@ -216,6 +216,7 @@ public sealed class SendNotificationCommandHandler(
                     }),
                     OccurredAt = now,
                 }, ct);
+                metrics.NotificationConsentSuppressedTotal.Add(1);
 
                 return Unit.Value; // SendAsync is NOT called
 

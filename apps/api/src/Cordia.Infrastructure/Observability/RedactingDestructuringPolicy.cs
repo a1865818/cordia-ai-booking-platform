@@ -47,8 +47,9 @@ public sealed partial class RedactingDestructuringPolicy : IDestructuringPolicy
     {
         var type = value.GetType();
 
-        // Only handle plain complex objects; leave scalars/collections/strings to Serilog's defaults.
-        if (type.IsPrimitive || value is string || type.IsEnum)
+        // Only handle plain complex objects; leave scalars/collections/strings/enumerables to Serilog's
+        // defaults — intercepting IEnumerable would strip the actual elements, leaving only metadata properties.
+        if (type.IsPrimitive || value is string || type.IsEnum || value is System.Collections.IEnumerable)
         {
             result = null!;
             return false;

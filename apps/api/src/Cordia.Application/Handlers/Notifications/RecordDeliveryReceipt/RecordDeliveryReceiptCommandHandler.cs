@@ -190,6 +190,7 @@ public sealed class RecordDeliveryReceiptCommandHandler(
                     }),
                     OccurredAt = now,
                 }, ct2);
+                metrics.NotificationBouncedTotal.Add(1);
 
                 outcome = ReceiptOutcome.Applied;
             }

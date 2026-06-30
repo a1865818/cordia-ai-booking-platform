@@ -57,9 +57,10 @@ public static class TelemetryServiceCollectionExtensions
 
         if (!string.IsNullOrWhiteSpace(otlpEndpoint))
         {
+            var endpoint = new Uri(otlpEndpoint);
             builder
-                .WithTracing(t => t.AddOtlpExporter())
-                .WithMetrics(m => m.AddOtlpExporter());
+                .WithTracing(t => t.AddOtlpExporter(o => o.Endpoint = endpoint))
+                .WithMetrics(m => m.AddOtlpExporter(o => o.Endpoint = endpoint));
         }
 
         return services;
