@@ -19,7 +19,7 @@ public class VendorCatalogItem : ITenantScoped
 
     public string Description { get; set; } = string.Empty;
 
-    public int PriceMinor { get; set; }
+    public long PriceMinor { get; set; }
 
     public string Currency { get; set; } = string.Empty;
 
@@ -28,4 +28,10 @@ public class VendorCatalogItem : ITenantScoped
 
     /// <summary>jsonb — allergen information blob; null when not provided.</summary>
     public string? AllergenInfo { get; set; }
+
+    /// <summary>Draft-only: extraction-agent confidence (§3); null once owner-confirmed. Never customer-facing as fact (Inv-16).</summary>
+    public double? ExtractionConfidence { get; set; }
+
+    /// <summary>Draft-only: source location within the artifact (§3); never customer-facing.</summary>
+    public string? SourceLocation { get; set; }
 }

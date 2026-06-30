@@ -1180,6 +1180,13 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("catalog_status_enum")
                         .HasColumnName("status");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
                     b.Property<string>("VersionLabel")
                         .IsRequired()
                         .HasColumnType("text")
@@ -1220,6 +1227,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<double?>("ExtractionConfidence")
+                        .HasColumnType("double precision")
+                        .HasColumnName("extraction_confidence");
+
                     b.Property<string>("MenuMetadata")
                         .HasColumnType("jsonb")
                         .HasColumnName("menu_metadata");
@@ -1229,9 +1240,13 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
-                    b.Property<int>("PriceMinor")
-                        .HasColumnType("integer")
+                    b.Property<long>("PriceMinor")
+                        .HasColumnType("bigint")
                         .HasColumnName("price_minor");
+
+                    b.Property<string>("SourceLocation")
+                        .HasColumnType("text")
+                        .HasColumnName("source_location");
 
                     b.HasKey("TenantId", "ItemId")
                         .HasName("pk_vendor_catalog_items");

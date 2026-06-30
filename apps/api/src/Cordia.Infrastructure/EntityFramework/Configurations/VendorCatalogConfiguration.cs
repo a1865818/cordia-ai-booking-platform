@@ -17,5 +17,9 @@ public class VendorCatalogConfiguration : IEntityTypeConfiguration<VendorCatalog
         builder.Property(e => e.SourceHash).IsRequired();
 
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+
+        builder.Property(e => e.Version)
+            .IsConcurrencyToken()
+            .HasDefaultValue(0L);
     }
 }

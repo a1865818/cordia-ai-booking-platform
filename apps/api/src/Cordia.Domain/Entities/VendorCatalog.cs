@@ -23,4 +23,7 @@ public class VendorCatalog : ITenantScoped
     public string SourceHash { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Optimistic-concurrency token (§22.1); default 0.</summary>
+    public long Version { get; set; }
 }
