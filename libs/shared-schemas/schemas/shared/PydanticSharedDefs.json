@@ -957,6 +957,110 @@
       "title": "CaptureMethod",
       "type": "string"
     },
+    "CatalogItem": {
+      "additionalProperties": false,
+      "description": "A single catalog item (spec 11 \u00a74.2).\n\nOnly ``name``, ``description``, and ``price`` are needed for common\ndiscovery; the remaining fields are optional. ``extraction_confidence`` and\n``source_location`` are set ONLY by the isolated extraction agent and are\nexcluded from foreground tool results (never customer-facing as fact).",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque item id, e.g. 'item_01...'.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Item display name.",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "Item description.",
+          "title": "Description",
+          "type": "string"
+        },
+        "price": {
+          "$ref": "#/$defs/Money",
+          "description": "Item price."
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional menu category.",
+          "title": "Category"
+        },
+        "allergens": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen labels.",
+          "title": "Allergens"
+        },
+        "dietary_labels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional dietary labels (e.g. 'vegan').",
+          "title": "Dietary Labels"
+        },
+        "extraction_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Draft-only: extraction-agent confidence; never customer-facing.",
+          "title": "Extraction Confidence"
+        },
+        "source_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Draft-only: artifact source location; never customer-facing.",
+          "title": "Source Location"
+        }
+      },
+      "required": [
+        "item_id",
+        "name",
+        "description",
+        "price"
+      ],
+      "title": "CatalogItem",
+      "type": "object"
+    },
     "CatalogItemStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "CatalogItemStatus",
@@ -1667,6 +1771,28 @@
       "title": "MaskedDtmfSignal",
       "type": "object"
     },
+    "Money": {
+      "additionalProperties": false,
+      "description": "A monetary amount in ISO-4217 minor units (spec 11 \u00a74.2).",
+      "properties": {
+        "amount_minor": {
+          "description": "Minor units, e.g. 2200 = $22.00.",
+          "title": "Amount Minor",
+          "type": "integer"
+        },
+        "currency": {
+          "description": "ISO 4217 code, e.g. 'AUD'.",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount_minor",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
     "NormalizedOperationStatus": {
       "description": "Customer/agent-facing operation status from get_operation_status (spec 06).",
       "enum": [
@@ -1877,6 +2003,31 @@
         "policy_version"
       ],
       "title": "PolicyValidationResult",
+      "type": "object"
+    },
+    "PublishedCatalog": {
+      "additionalProperties": false,
+      "description": "An immutable published catalog version (spec 11 \u00a74.2).",
+      "properties": {
+        "catalog_version": {
+          "description": "Immutable version label, e.g. 'menu_2026_06_16'.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "items": {
+          "description": "Items contained in this published version.",
+          "items": {
+            "$ref": "#/$defs/CatalogItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalog_version",
+        "items"
+      ],
+      "title": "PublishedCatalog",
       "type": "object"
     },
     "ReconnectOutcome": {
