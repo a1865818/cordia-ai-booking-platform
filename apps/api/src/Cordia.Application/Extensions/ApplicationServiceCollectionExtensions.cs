@@ -14,6 +14,7 @@ using Cordia.Application.Handlers.Notifications.Reconcile;
 using Cordia.Application.Handlers.Notifications.Retry;
 using Cordia.Application.Handlers.Notifications.SendNotification;
 using Cordia.Application.Messaging;
+using Cordia.Application.Observability;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
@@ -33,11 +34,14 @@ public static class ApplicationServiceCollectionExtensions
         services.AddMediatR(cfg =>
         {
             cfg.RegisterServicesFromAssembly(assembly);
-            // Pipeline order: 1) Validation → 2) Inbox dedup → 3) Handler.
+            // Pipeline order: 1) Validation → 2) Inbox dedup → 3) Correlation enrichment → 4) Handler.
             // Validation runs first so structurally invalid queue-driven requests are rejected
-            // before the inbox transaction is opened.
+            // before the inbox transaction is opened. Correlation enrichment runs after inbox
+            // admission (so the message is already classified) and seeds the ambient context from
+            // the message for queue-driven requests that have no HTTP edge (§25.1).
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationPipelineBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(InboxDeduplicationBehavior<,>));
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(CorrelationEnrichmentBehavior<,>));
         });
         services.AddValidatorsFromAssembly(assembly);
 

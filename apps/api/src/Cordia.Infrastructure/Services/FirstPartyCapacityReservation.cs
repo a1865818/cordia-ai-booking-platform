@@ -3,7 +3,9 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Observability;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Cordia.Infrastructure.Services;
 
@@ -22,8 +24,18 @@ namespace Cordia.Infrastructure.Services;
 /// </summary>
 public sealed class FirstPartyCapacityReservation(
     ApplicationDbContext db,
-    ICapacityHoldRepository holds) : ICapacityReservation
+    ICapacityHoldRepository holds,
+    Metrics metrics) : ICapacityReservation
 {
+    // The ck_capacity_slots_no_overcommit check constraint (held + booked <= total) is the
+    // last-line Inv-6 guardrail behind the conditional-write predicate. If it ever fires, the
+    // predicate failed to prevent overcommit — surface it as an alert signal (§25.4) and rethrow.
+    internal static bool IsOvercommitViolation(Exception ex) =>
+        (ex as PostgresException ?? ex.InnerException as PostgresException) is
+        { SqlState: PostgresErrorCodes.CheckViolation, ConstraintName: var name }
+        && name is not null
+        && name.Contains("no_overcommit", StringComparison.Ordinal);
+
     /// <inheritdoc/>
     public async Task<ReservationOutcome> ReserveAsync(ReserveRequest req, CancellationToken ct = default)
     {
@@ -41,16 +53,30 @@ public sealed class FirstPartyCapacityReservation(
         // the predicate is monotonic (held+booked only ever increases until release) and the
         // WHERE clause is evaluated atomically by the DB engine. rows==1 ⇒ reserved;
         // rows==0 ⇒ slot is full (or slot does not exist for this tenant/slotId).
-        var rows = await db.CapacitySlots
-            .IgnoreQueryFilters()
-            .Where(s => s.TenantId == req.TenantId
-                        && s.SlotId == req.SlotId
-                        && s.TotalCapacity - s.HeldCapacity - s.BookedCapacity >= req.RequestedCapacity)
-            .ExecuteUpdateAsync(
-                b => b
-                    .SetProperty(s => s.HeldCapacity, s => s.HeldCapacity + req.RequestedCapacity)
-                    .SetProperty(s => s.Version, s => s.Version + 1),
-                ct);
+        //
+        // The ck_capacity_slots_no_overcommit check constraint should never fire here because the
+        // predicate already rejects an overcommitting write. The narrow catch is a defence-in-depth
+        // Inv-6 guardrail: if the constraint DOES fire, emit the capacity-invariant alert signal
+        // (§25.4) and rethrow — the real error must not be swallowed.
+        int rows;
+        try
+        {
+            rows = await db.CapacitySlots
+                .IgnoreQueryFilters()
+                .Where(s => s.TenantId == req.TenantId
+                            && s.SlotId == req.SlotId
+                            && s.TotalCapacity - s.HeldCapacity - s.BookedCapacity >= req.RequestedCapacity)
+                .ExecuteUpdateAsync(
+                    b => b
+                        .SetProperty(s => s.HeldCapacity, s => s.HeldCapacity + req.RequestedCapacity)
+                        .SetProperty(s => s.Version, s => s.Version + 1),
+                    ct);
+        }
+        catch (Exception ex) when (IsOvercommitViolation(ex))
+        {
+            metrics.FulfillmentCapacityInvariantViolationTotal.Add(1);
+            throw;
+        }
 
         // Step 3 — Slot full (or slot row does not exist under this predicate).
         if (rows == 0)

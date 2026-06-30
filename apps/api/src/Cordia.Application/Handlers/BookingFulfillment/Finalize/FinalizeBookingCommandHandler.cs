@@ -4,6 +4,8 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
@@ -72,7 +74,8 @@ public sealed class FinalizeBookingCommandHandler(
     IRetryPolicy retryPolicy,
     RetryScheduler retryScheduler,
     IUnitOfWork uow,
-    ICapacityReservation capacityReservation)
+    ICapacityReservation capacityReservation,
+    Metrics metrics)
     : IRequestHandler<FinalizeBookingCommand, StepOutcome>
 {
     private const string StepType = "finalize";
@@ -431,6 +434,8 @@ public sealed class FinalizeBookingCommandHandler(
                 await attemptRepo.UpdateAsync(attempt, ct2);
 
                 circuitBreaker.RecordSuccess(adapter.ProviderName, ProviderAccount);
+                if (result.Kind == ProviderResultKind.AlreadyExists)
+                    metrics.FulfillmentProviderIdempotencyConflictTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.Provider, adapter.ProviderName));
 
                 // Transition finalize step InProgress → Succeeded.
                 var step = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct2);
@@ -569,6 +574,8 @@ public sealed class FinalizeBookingCommandHandler(
                         }),
                         OccurredAt = now,
                     }, ct2);
+                    metrics.FulfillmentAcceptedToBookedMs.Record((now - op.CreatedAt).TotalMilliseconds, new KeyValuePair<string, object?>(MetricNames.Tags.Provider, adapter.ProviderName));
+                    metrics.FulfillmentOperationTerminalTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "booked"));
                 }
             }, ct);
 
@@ -609,6 +616,7 @@ public sealed class FinalizeBookingCommandHandler(
                 }
 
                 circuitBreaker.RecordFailure(adapter.ProviderName, ProviderAccount);
+                metrics.FulfillmentAmbiguousOutcomeTotal.Add(1);
             }, ct);
 
             // Continue: driver reloads → op.Status == Reconciling → ReconcileOperationCommand.
@@ -660,6 +668,8 @@ public sealed class FinalizeBookingCommandHandler(
                     // the TransientFailure attempt row.
                     await retryScheduler.ScheduleAsync(
                         tenantId, operationId, finalizeStep.WorkflowStepId, StepType, next.Value, ct2);
+                    metrics.FulfillmentRetryAttemptTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.Category, attempt.RetryClassification?.ToString() ?? "transient"));
+                    metrics.FulfillmentRetryElapsedMs.Record((now - finalizeStep.CreatedAt).TotalMilliseconds);
                 }
             }, ct);
 

@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
@@ -8,7 +9,7 @@ namespace Cordia.Domain.Entities;
 /// PK (tenant_id, notification_id) = §22.1 unique logical-dedup constraint (Inv-9).
 /// FK to booking_operations ON DELETE RESTRICT.
 /// </summary>
-public class Notification : ITenantScoped
+public class Notification : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -58,4 +59,10 @@ public class Notification : ITenantScoped
         UpdatedAt = DateTimeOffset.UtcNow;
         FailureCategory = failureCategory;
     }
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 }

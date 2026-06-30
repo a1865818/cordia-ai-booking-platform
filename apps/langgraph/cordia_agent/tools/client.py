@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from cordia_agent.observability.metrics import record_tool_error, record_tool_timeout
 from cordia_agent.tools._timeouts import (
     GRANT_REQUIRED_TOOLS,
     TOOL_DEADLINES,
@@ -236,6 +237,8 @@ class ToolClient:
 
         if last_transport_error is not None or response is None:
             # All attempts exhausted — map to unavailable envelope (Inv-16).
+            # Emit timeout metric (spec 13 §4.2 / T8).
+            record_tool_timeout(tool_name)
             return map_transport_failure(
                 tool_name=tool_name,
                 correlation_id=correlation_id,
@@ -282,6 +285,19 @@ class ToolClient:
             # Body is not valid JSON (json.JSONDecodeError is a ValueError) —
             # fall back to the generic per-class status; never read raw text.
             typed_status = None
+
+        # Emit tool-error metric with coarse category (spec 13 §4.2 / T8).
+        if response.status_code == 404:
+            _err_category = "not_found"
+        elif response.status_code == 409:
+            _err_category = "conflict"
+        elif response.status_code == 429:
+            _err_category = "rate_limited"
+        elif response.status_code >= 500:
+            _err_category = "unavailable"
+        else:
+            _err_category = "request_error"
+        record_tool_error(tool_name, _err_category)
 
         return map_http_error(
             response.status_code,

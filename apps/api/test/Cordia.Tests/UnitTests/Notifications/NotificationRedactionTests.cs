@@ -5,6 +5,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Notifications;
+using Cordia.Infrastructure.Observability;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System.Text.RegularExpressions;
@@ -56,7 +57,8 @@ public class NotificationRedactionTests
             _opRepo.Object,
             _auditRepo.Object,
             BuildRetryScheduler(),
-            NullLogger<SendNotificationCommandHandler>.Instance);
+            NullLogger<SendNotificationCommandHandler>.Instance,
+            new Metrics());
 
     /// <summary>
     /// Drive SendNotificationCommandHandler for an ActionRequired (deposit) event.

@@ -80,4 +80,23 @@ public class DeadLetterRepository(ApplicationDbContext db) : IDeadLetterReposito
             .ExecuteUpdateAsync(
                 b => b.SetProperty(e => e.ReplayState, DlqReplayState.Replayed),
                 ct);
+
+    public Task<int> CountQuarantinedAsync(CancellationToken ct = default)
+        => db.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .CountAsync(e => e.ReplayState == DlqReplayState.Quarantined, ct);
+
+    public async Task<double> OldestQuarantinedAgeSecondsAsync(CancellationToken ct = default)
+    {
+        var oldest = await db.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(e => e.ReplayState == DlqReplayState.Quarantined)
+            .MinAsync(e => (DateTimeOffset?)e.DeadLetteredAt, ct);
+
+        return oldest.HasValue
+            ? (DateTimeOffset.UtcNow - oldest.Value).TotalSeconds
+            : 0d;
+    }
 }

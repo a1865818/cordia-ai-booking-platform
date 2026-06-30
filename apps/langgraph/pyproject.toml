@@ -27,6 +27,11 @@ dependencies = [
 
     # Utilities
     "pydantic>=2.7.0,<3.0.0",
+
+    # OpenTelemetry — observability (spec 13 T8)
+    "opentelemetry-api>=1.25.0,<2.0.0",
+    "opentelemetry-sdk>=1.25.0,<2.0.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.25.0,<2.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

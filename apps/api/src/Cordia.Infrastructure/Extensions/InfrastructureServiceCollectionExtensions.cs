@@ -3,6 +3,8 @@ using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.EntityFramework.Interceptors;
+using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Retry;
@@ -23,9 +25,13 @@ public static class InfrastructureServiceCollectionExtensions
     {
         var connectionString = configuration.GetConnectionString("CordiaDBConnection");
 
+        // Spec 13 T4 — correlation stamping interceptor (singleton: only depends on singleton ICorrelationContext).
+        services.AddSingleton<CorrelationStampingInterceptor>();
+
         services.AddDbContext<ApplicationDbContext>((sp, options) =>
         {
             options
+                .AddInterceptors(sp.GetRequiredService<CorrelationStampingInterceptor>())
                 .UseNpgsql(
                     connectionString,
                     o => o
@@ -86,6 +92,9 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
 
+        // Spec 13 T6 — product-reporting projector (read-only funnel, Inv-16).
+        services.AddScoped<IBookingFunnelReadModel, BookingFunnelReadModel>();
+
         // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
         services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();
         services.AddScoped<ICapacityHoldRepository, CapacityHoldRepository>();
@@ -131,6 +140,9 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         services.AddMessaging();
+
+        // Spec 13 T2 — OpenTelemetry tracer/meter + metric instrument singletons.
+        services.AddObservability(configuration);
 
         return services;
     }

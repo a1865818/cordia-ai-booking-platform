@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Behaviours;
@@ -37,7 +38,8 @@ namespace Cordia.Application.Behaviours;
 /// </summary>
 public sealed class InboxDeduplicationBehavior<TRequest, TResponse>(
     IUnitOfWork uow,
-    IInboxRepository inboxRepo)
+    IInboxRepository inboxRepo,
+    Metrics metrics)
     : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
@@ -67,7 +69,11 @@ public sealed class InboxDeduplicationBehavior<TRequest, TResponse>(
             }, ct);
 
             if (!admitted)
+            {
+                metrics.FulfillmentInboxDedupSuppressedTotal.Add(1);
+                metrics.FulfillmentDeliveryDuplicateTotal.Add(1);
                 return; // duplicate: nothing else written; txn commits as a no-op
+            }
 
             response = await next(ct); // handler creates/advances the durable step in THIS txn
         }, cancellationToken);

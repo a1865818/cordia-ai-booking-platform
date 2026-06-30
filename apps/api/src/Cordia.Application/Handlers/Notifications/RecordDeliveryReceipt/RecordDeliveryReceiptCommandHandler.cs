@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -32,7 +33,8 @@ public sealed class RecordDeliveryReceiptCommandHandler(
     INotificationRepository repo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
-    ILogger<RecordDeliveryReceiptCommandHandler> logger)
+    ILogger<RecordDeliveryReceiptCommandHandler> logger,
+    Metrics metrics)
     : IRequestHandler<RecordDeliveryReceiptCommand, ReceiptOutcome>
 {
     private static readonly HashSet<NotificationState> _terminalStates = new()
@@ -138,6 +140,7 @@ public sealed class RecordDeliveryReceiptCommandHandler(
                     }),
                     OccurredAt = now,
                 }, ct2);
+                metrics.NotificationDeliveredTotal.Add(1);
 
                 outcome = ReceiptOutcome.Applied;
             }

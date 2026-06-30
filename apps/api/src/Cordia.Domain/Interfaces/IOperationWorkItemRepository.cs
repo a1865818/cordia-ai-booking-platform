@@ -36,4 +36,16 @@ public interface IOperationWorkItemRepository
     /// an open work item for the same operation (dedup hit — benign no-op).
     /// </summary>
     Task<bool> TryAddOpenAsync(OperationWorkItem workItem, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the count of open work items (State == "open") across all tenants.
+    /// Used for the <c>fulfillment.manual_review.depth</c> gauge.
+    /// </summary>
+    Task<int> CountOpenAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the age in seconds of the oldest open work item (based on <c>CreatedAt</c>),
+    /// or 0 when there are none.
+    /// </summary>
+    Task<double> OldestOpenAgeSecondsAsync(CancellationToken ct = default);
 }

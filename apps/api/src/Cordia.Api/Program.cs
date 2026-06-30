@@ -1,14 +1,33 @@
 ﻿using Cordia.Application.Extensions;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
+using Cordia.Infrastructure.Observability;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Logging ---
+// §25.1/§25.3: correlation enrichment on every line, default-deny redaction before any sink, and a
+// fenced-off model-trace lane. The app (console) sink EXCLUDES events tagged ModelTrace; a separate
+// sink INCLUDES ONLY them so model prompts/outputs are never co-mingled with app logs (Inv-12).
+// MinimumLevel + per-source overrides flow in via ReadFrom.Configuration (appsettings "Serilog").
+// PROD swap point: the model-trace sub-logger writes to Console here for local visibility; point it
+// at the stricter-access, shorter-retention store (§25.3) per environment by replacing its WriteTo.
 builder.Host.UseSerilog((context, loggerConfig) =>
-    loggerConfig.ReadFrom.Configuration(context.Configuration));
+    loggerConfig
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .Enrich.With(new SerilogCorrelationEnricher())
+        .Destructure.With(new RedactingDestructuringPolicy())
+        .WriteTo.Logger(l => l
+            .Filter.ByExcluding(e => e.Properties.ContainsKey(ModelTraceSink.MarkerProperty))
+            .WriteTo.Console())
+        .WriteTo.Logger(l => l
+            .Filter.ByIncludingOnly(e => e.Properties.ContainsKey(ModelTraceSink.MarkerProperty))
+            .WriteTo.Console(
+                outputTemplate:
+                "[MODEL-TRACE {Timestamp:HH:mm:ss}] {Message:lj}{NewLine}")));
 
 // --- Layers ---
 builder.Services.AddApplication();
@@ -106,6 +125,10 @@ if (app.Configuration.GetValue("DatabaseBootstrap:MigrateOnStartup", false))
     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     await db.Database.MigrateAsync();
 }
+
+// Mint/echo correlation id at the HTTP edge BEFORE tenant resolution so the ambient correlation
+// context exists for all downstream work and logging (§25.1).
+app.UseMiddleware<Cordia.Api.Middleware.CorrelationMiddleware>();
 
 // Resolve tenant from X-Tenant-Id header (dev/test shim — replaced by signed-context resolution in spec 08/15).
 app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();

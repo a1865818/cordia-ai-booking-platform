@@ -27,7 +27,7 @@ public class FirstPartyCapacityReservationTests(PostgresFixture fixture)
     private static FirstPartyCapacityReservation MakeService(ApplicationDbContext ctx)
     {
         var holdRepo = new CapacityHoldRepository(ctx);
-        return new FirstPartyCapacityReservation(ctx, holdRepo);
+        return new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
     }
 
     private static CapacitySlot MakeSlot(string tenantId, string slotId, int total, int held = 0, int booked = 0)

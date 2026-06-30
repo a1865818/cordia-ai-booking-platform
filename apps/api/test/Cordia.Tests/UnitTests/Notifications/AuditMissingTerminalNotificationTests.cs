@@ -1,7 +1,9 @@
-﻿using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
+﻿using System.Diagnostics.Metrics;
+using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.Notifications;
@@ -11,9 +13,11 @@ namespace Cordia.Tests.UnitTests.Notifications;
 /// (spec 10 §25.4 / FM#12 / Inv-14, T5b).
 ///
 /// All deps are mocked; the IUnitOfWork mock invokes the delegate so the handler body runs.
+/// A MeterListener observes the Cordia meter so the missing-terminal alert counter (spec 13)
+/// can be asserted.
 /// </summary>
 [Trait("Category", "Unit")]
-public class AuditMissingTerminalNotificationTests
+public class AuditMissingTerminalNotificationTests : IDisposable
 {
     // ── Fixture ─────────────────────────────────────────────────────────────────────────────────
 
@@ -21,12 +25,27 @@ public class AuditMissingTerminalNotificationTests
     private readonly Mock<INotificationRepository> _notifications = new();
     private readonly Mock<IAuditEventRepository> _audit = new();
     private readonly Mock<IUnitOfWork> _uow = new();
+    private readonly Metrics _metrics = new();
+    private readonly MeterListener _listener = new();
+    private readonly Dictionary<string, long> _counters = new();
 
     private const string TenantId = "tenant-missing-notif-test";
     private const string OperationId = "op-missing-notif-1";
 
     public AuditMissingTerminalNotificationTests()
     {
+        _listener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter == _metrics.Meter)
+                listener.EnableMeasurementEvents(instrument);
+        };
+        _listener.SetMeasurementEventCallback<long>((inst, measurement, _, _) =>
+        {
+            _counters.TryGetValue(inst.Name, out var current);
+            _counters[inst.Name] = current + measurement;
+        });
+        _listener.Start();
+
         // Make the UoW mock invoke the delegate so the handler body actually runs.
         _uow.Setup(u => u.ExecuteInTransactionAsync(
                 It.IsAny<Func<CancellationToken, Task>>(),
@@ -42,7 +61,14 @@ public class AuditMissingTerminalNotificationTests
 
     private AuditMissingTerminalNotificationCommandHandler BuildHandler()
         => new(_workItemRepo.Object, _notifications.Object, _audit.Object, _uow.Object,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<AuditMissingTerminalNotificationCommandHandler>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AuditMissingTerminalNotificationCommandHandler>.Instance,
+            _metrics);
+
+    public void Dispose()
+    {
+        _listener.Dispose();
+        _metrics.Dispose();
+    }
 
     // ── 1. Happy path: no existing work item + no accepted notification → creates work item + audit ──
 
@@ -84,6 +110,9 @@ public class AuditMissingTerminalNotificationTests
                 e.EventType == "notification.missing_terminal" &&
                 e.Actor == "system"),
             It.IsAny<CancellationToken>()), Times.Once);
+
+        // Inv-8/9 alert signal (spec 13 §25.4): missing-terminal counter incremented.
+        Assert.Equal(1, _counters.GetValueOrDefault("notification.missing_terminal_total"));
     }
 
     // ── 2. Open work item already exists → idempotency short-circuit, no new work item, returns false ──
@@ -116,6 +145,9 @@ public class AuditMissingTerminalNotificationTests
         // No audit event.
         _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()),
             Times.Never);
+
+        // No alert signal when the work item is not raised.
+        Assert.Equal(0, _counters.GetValueOrDefault("notification.missing_terminal_total"));
     }
 
     // ── 3. Defensive re-check: notification accepted between list sweep and now → returns false ──

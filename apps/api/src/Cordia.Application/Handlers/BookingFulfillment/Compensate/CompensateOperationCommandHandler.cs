@@ -3,6 +3,8 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Compensate;
@@ -37,7 +39,8 @@ public sealed class CompensateOperationCommandHandler(
     IAuditEventRepository auditRepo,
     ManualReviewEscalator manualReviewEscalator,
     IUnitOfWork uow,
-    ICapacityReservation capacityReservation)
+    ICapacityReservation capacityReservation,
+    Metrics metrics)
     : IRequestHandler<CompensateOperationCommand, StepOutcome>
 {
     private const string CompensateStepType = "compensate";
@@ -171,6 +174,8 @@ public sealed class CompensateOperationCommandHandler(
                             }),
                             OccurredAt = now,
                         }, ct2);
+                        metrics.FulfillmentCompensationSuccessTotal.Add(1);
+                        metrics.FulfillmentOperationTerminalTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "failed"));
                     }
                 }, ct);
 
@@ -198,7 +203,10 @@ public sealed class CompensateOperationCommandHandler(
                     ct: ct2);
 
                 if (escalated)
+                {
+                    metrics.FulfillmentCompensationFailureTotal.Add(1);
                     escalateOutcome = StepOutcome.Wait;
+                }
             }, ct);
 
             return escalateOutcome;
@@ -268,6 +276,8 @@ public sealed class CompensateOperationCommandHandler(
                     Metadata = JsonSerializer.Serialize(new { reason = "failed_no_effect" }),
                     OccurredAt = now,
                 }, ct2);
+                metrics.FulfillmentCompensationSuccessTotal.Add(1);
+                metrics.FulfillmentOperationTerminalTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "failed"));
             }
         }, ct);
 

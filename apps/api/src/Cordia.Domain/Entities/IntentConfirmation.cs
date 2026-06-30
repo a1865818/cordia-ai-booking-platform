@@ -1,10 +1,11 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
 /// <summary>Immutable confirmation evidence bound to exactly one intent revision (§8.8).</summary>
-public class IntentConfirmation : ITenantScoped
+public class IntentConfirmation : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -35,4 +36,10 @@ public class IntentConfirmation : ITenantScoped
 
     /// <summary>Navigation property to the exact revision this confirmation binds.</summary>
     public BookingIntentRevision Revision { get; set; } = null!;
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 }
