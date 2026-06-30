@@ -67,7 +67,7 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
 
         await using (var ctx1 = fixture.CreateContext(tenantId))
         {
-            var only = await new VendorCatalogRepository(ctx1).SearchPublishedItemsAsync(null, 0, 50, CancellationToken.None);
+            var only = await new VendorCatalogRepository(ctx1).SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
             Assert.Equal(["Old Dish"], only.Select(i => i.Name).ToList());
         }
 
@@ -84,7 +84,7 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
         Assert.Equal(CatalogStatus.Published, v2Row.Status);
 
         // The published read path now returns only v2's items (v1 is immutable + superseded).
-        var items = await new VendorCatalogRepository(assertCtx).SearchPublishedItemsAsync(null, 0, 50, CancellationToken.None);
+        var items = await new VendorCatalogRepository(assertCtx).SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
         Assert.Equal(["New Dish"], items.Select(i => i.Name).ToList());
 
         // Supersede audit recorded against the prior version.

@@ -114,7 +114,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
 
             // Pre-publish: the foreground read path exposes nothing (Inv-16).
             var hiddenWhileDraft = await new VendorCatalogRepository(ctx1)
-                .SearchPublishedItemsAsync(null, 0, 50, CancellationToken.None);
+                .SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
             Assert.Empty(hiddenWhileDraft);
         }
 
@@ -131,7 +131,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         Assert.Equal(CatalogStatus.Published, catalog.Status);
 
         var visible = await new VendorCatalogRepository(assertCtx)
-            .SearchPublishedItemsAsync(null, 0, 50, CancellationToken.None);
+            .SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
         Assert.Equal(["Sample Dish"], visible.Select(i => i.Name).ToList());
         Assert.All(visible, i => Assert.StartsWith($"{catalogId}:", i.ItemId));
     }

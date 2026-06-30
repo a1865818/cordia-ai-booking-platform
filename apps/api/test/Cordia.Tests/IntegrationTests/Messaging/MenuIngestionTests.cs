@@ -4,10 +4,13 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Messaging;
+using Cordia.Domain.Interfaces;
+using Cordia.Domain.Menu;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -43,6 +46,37 @@ public class MenuIngestionTests(PostgresFixture fixture)
         services.AddApplication();
         services.AddInfrastructure(config);
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>Container whose isolated extractor always throws — simulates an extraction failure.</summary>
+    private static ServiceProvider BuildContainerWithFailingExtractor()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:CordiaDBConnection"] = PostgresFixture.TestConnStr,
+                ["Messaging:Publisher:Enabled"] = "false",
+                ["Messaging:ScheduledJobPoller:Enabled"] = "false",
+                ["Messaging:StepSweeper:Enabled"] = "false",
+                ["Messaging:NotificationReconcile:Enabled"] = "false",
+                ["Messaging:MissingNotificationAudit:Enabled"] = "false",
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(config);
+        services.AddApplication();
+        services.AddInfrastructure(config);
+        services.RemoveAll<IIsolatedMenuExtractor>();
+        services.AddSingleton<IIsolatedMenuExtractor, ThrowingMenuExtractor>();
+        return services.BuildServiceProvider();
+    }
+
+    private sealed class ThrowingMenuExtractor : IIsolatedMenuExtractor
+    {
+        public Task<IReadOnlyList<DraftCatalogItem>> ExtractAsync(string artifactRef, CancellationToken ct = default)
+            => throw new InvalidOperationException("simulated extraction failure");
     }
 
     private static OutboxPublisherHostedService BuildPublisher(IServiceProvider sp)
@@ -194,5 +228,48 @@ public class MenuIngestionTests(PostgresFixture fixture)
         var audit = await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EventType == "catalog.quarantined" && e.SubjectRef == catalogId);
         Assert.NotNull(audit);
+
+        // The owner is alerted (Inv-14): a quarantine event is enqueued on the outbox in the same inbox txn.
+        var alert = await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(m => m.TenantId == tenantId
+                && m.MessageType == "menu.catalog.quarantined.v1" && m.CorrelationId == catalogId);
+        Assert.NotNull(alert);
+    }
+
+    [Fact]
+    public async Task ExtractionFailure_StaysExtracting_AuditAndOwnerAlert_NoItems()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+        // Clean artifact (scan passes → Extracting), but the extractor throws.
+        var (tenantId, catalogId, messageId) = await SeedUploadedCatalogAndIngestMessageAsync("s3://tenant/menu.pdf");
+
+        await using var sp = BuildContainerWithFailingExtractor();
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // No extract_failed state (frozen D4): the catalog is left stuck in Extracting, never DraftReady/Published.
+        var catalog = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
+        Assert.Equal(CatalogStatus.Extracting, catalog.Status);
+
+        var itemCount = await assertCtx.VendorCatalogItems.AsNoTracking().IgnoreQueryFilters()
+            .CountAsync(i => i.TenantId == tenantId && i.CatalogId == catalogId);
+        Assert.Equal(0, itemCount);
+
+        var audit = await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EventType == "catalog.extraction_failed" && e.SubjectRef == catalogId);
+        Assert.NotNull(audit);
+
+        // The owner is alerted (Inv-14): an extraction-failed event is enqueued on the outbox.
+        var alert = await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(m => m.TenantId == tenantId
+                && m.MessageType == "menu.catalog.extraction_failed.v1" && m.CorrelationId == catalogId);
+        Assert.NotNull(alert);
+
+        // Fail-secure: the handler did not throw, so the message was consumed (inbox row admitted), not poison-looped.
+        var inbox = await assertCtx.ConsumerInbox.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(i => i.TenantId == tenantId && i.ConsumerName == "menu.processor" && i.MessageId == messageId);
+        Assert.NotNull(inbox);
     }
 }

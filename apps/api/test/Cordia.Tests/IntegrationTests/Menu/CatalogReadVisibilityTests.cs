@@ -67,19 +67,19 @@ public class CatalogReadVisibilityTests(PostgresFixture fixture)
         var repo = new VendorCatalogRepository(readCtx);
 
         // (1) Search returns only tenant A's published items (not the draft, not tenant B's).
-        var all = await repo.SearchPublishedItemsAsync(null, 0, 50, CancellationToken.None);
+        var all = await repo.SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
         var ids = all.Select(i => i.ItemId).ToList();
         Assert.Equal(["a-salmon", "a-soup"], ids.OrderBy(x => x).ToList());
         Assert.DoesNotContain("a-secret", ids);
         Assert.DoesNotContain("b-item", ids);
 
         // (2) Query filter (case-insensitive) narrows to matching items.
-        var salmon = await repo.SearchPublishedItemsAsync("salmon", 0, 50, CancellationToken.None);
+        var salmon = await repo.SearchPublishedItemsAsync("salmon", null, 0, 50, CancellationToken.None);
         Assert.Single(salmon);
         Assert.Equal("a-salmon", salmon[0].ItemId);
 
         // (3) Paging: ordered by name, take=1 → "Grilled Salmon" first.
-        var firstPage = await repo.SearchPublishedItemsAsync(null, 0, 1, CancellationToken.None);
+        var firstPage = await repo.SearchPublishedItemsAsync(null, null, 0, 1, CancellationToken.None);
         Assert.Single(firstPage);
         Assert.Equal("a-salmon", firstPage[0].ItemId);
 

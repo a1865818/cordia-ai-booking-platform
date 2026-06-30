@@ -32,10 +32,10 @@ public class SearchVendorCatalogTests
     [Fact]
     public async Task MapsRepoItemsToTokenBoundedSummaries()
     {
-        _repo.Setup(r => r.SearchPublishedItemsAsync("salmon", 0, 20, It.IsAny<CancellationToken>()))
+        _repo.Setup(r => r.SearchPublishedItemsAsync("salmon", null, 0, 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync([Item("item_1", "Grilled Salmon"), Item("item_2", "Salmon Soup")]);
 
-        var result = await BuildHandler().Handle(new SearchVendorCatalogQuery("salmon", 0, 20), CancellationToken.None);
+        var result = await BuildHandler().Handle(new SearchVendorCatalogQuery("salmon", null, 0, 20), CancellationToken.None);
 
         Assert.Equal(2, result.Count);
         Assert.Equal("item_1", result[0].ItemId);
@@ -47,10 +47,10 @@ public class SearchVendorCatalogTests
     [Fact]
     public async Task EmptyRepoResult_ReturnsEmptyList()
     {
-        _repo.Setup(r => r.SearchPublishedItemsAsync(It.IsAny<string?>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        _repo.Setup(r => r.SearchPublishedItemsAsync(It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
-        var result = await BuildHandler().Handle(new SearchVendorCatalogQuery(null, 0, 20), CancellationToken.None);
+        var result = await BuildHandler().Handle(new SearchVendorCatalogQuery(null, null, 0, 20), CancellationToken.None);
 
         Assert.Empty(result);
     }
@@ -58,11 +58,11 @@ public class SearchVendorCatalogTests
     [Fact]
     public async Task PassesPagingAndQueryThroughToRepo()
     {
-        _repo.Setup(r => r.SearchPublishedItemsAsync("x", 40, 10, It.IsAny<CancellationToken>()))
+        _repo.Setup(r => r.SearchPublishedItemsAsync("x", "mains", 40, 10, It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
-        await BuildHandler().Handle(new SearchVendorCatalogQuery("x", 40, 10), CancellationToken.None);
+        await BuildHandler().Handle(new SearchVendorCatalogQuery("x", "mains", 40, 10), CancellationToken.None);
 
-        _repo.Verify(r => r.SearchPublishedItemsAsync("x", 40, 10, It.IsAny<CancellationToken>()), Times.Once);
+        _repo.Verify(r => r.SearchPublishedItemsAsync("x", "mains", 40, 10, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

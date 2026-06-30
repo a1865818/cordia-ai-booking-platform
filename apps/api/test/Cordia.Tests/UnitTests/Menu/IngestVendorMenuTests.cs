@@ -22,9 +22,10 @@ public class IngestVendorMenuTests
     private readonly Mock<IArtifactScanner> _scanner = new();
     private readonly Mock<IIsolatedMenuExtractor> _extractor = new();
     private readonly Mock<IAuditEventRepository> _audit = new();
+    private readonly Mock<IOutboxRepository> _outbox = new();
 
     private IngestVendorMenuCommandHandler BuildHandler()
-        => new(_repo.Object, _scanner.Object, _extractor.Object, _audit.Object,
+        => new(_repo.Object, _scanner.Object, _extractor.Object, _audit.Object, _outbox.Object,
             NullLogger<IngestVendorMenuCommandHandler>.Instance);
 
     private static IngestVendorMenuCommand Command()
@@ -33,6 +34,7 @@ public class IngestVendorMenuTests
     public IngestVendorMenuTests()
     {
         _audit.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        _outbox.Setup(o => o.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         _repo.Setup(r => r.AddDraftItemsAsync(It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         // All guarded transitions succeed unless a test overrides.
         _repo.Setup(r => r.TryTransitionStatusAsync(Tenant, CatalogId, It.IsAny<long>(),
@@ -78,6 +80,11 @@ public class IngestVendorMenuTests
         _extractor.Verify(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _repo.Verify(r => r.AddDraftItemsAsync(It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>()), Times.Never);
         _audit.Verify(a => a.AddAsync(It.Is<AuditEvent>(e => e.EventType == "catalog.quarantined"), It.IsAny<CancellationToken>()), Times.Once);
+        // The owner is alerted (Inv-14): a quarantine event is enqueued on the outbox carrying only the catalog id.
+        _outbox.Verify(o => o.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.QuarantinedEventType
+                && m.CorrelationId == "corr-1"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -129,6 +136,10 @@ public class IngestVendorMenuTests
         _repo.Verify(r => r.AddDraftItemsAsync(It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>()), Times.Never);
         _repo.Verify(r => r.TryTransitionStatusAsync(Tenant, CatalogId, It.IsAny<long>(),
             CatalogStatus.Extracting, CatalogStatus.DraftReady, It.IsAny<CancellationToken>()), Times.Never);
+        // The owner is alerted (Inv-14): an extraction-failed event is enqueued on the outbox.
+        _outbox.Verify(o => o.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.ExtractionFailedEventType),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

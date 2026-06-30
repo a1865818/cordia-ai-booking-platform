@@ -29,6 +29,10 @@ public class GetCatalogItemTests
                 Description = "Atlantic salmon",
                 PriceMinor = 3200,
                 Currency = "AUD",
+                Category = "mains",
+                Modifiers = """[{"modifier_id":"mod_1","name":"Extra cheese"}]""",
+                AvailabilityWindow = """{"days_of_week":["fri"],"start_time":"17:00"}""",
+                ImageRef = "s3://tenant/img/salmon.jpg",
                 MenuMetadata = """{"category":"mains"}""",
                 AllergenInfo = """{"contains":["fish"]}""",
             });
@@ -38,6 +42,10 @@ public class GetCatalogItemTests
         Assert.NotNull(result);
         Assert.Equal("item_1", result!.ItemId);
         Assert.Equal(3200, result.PriceMinor);
+        Assert.Equal("mains", result.Category);
+        Assert.Equal("""[{"modifier_id":"mod_1","name":"Extra cheese"}]""", result.Modifiers);
+        Assert.Equal("""{"days_of_week":["fri"],"start_time":"17:00"}""", result.AvailabilityWindow);
+        Assert.Equal("s3://tenant/img/salmon.jpg", result.ImageRef);
         Assert.Equal("""{"category":"mains"}""", result.MenuMetadata);
         Assert.Equal("""{"contains":["fish"]}""", result.AllergenInfo);
     }
