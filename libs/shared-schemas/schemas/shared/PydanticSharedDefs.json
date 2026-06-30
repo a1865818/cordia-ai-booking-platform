@@ -479,6 +479,56 @@
       "title": "AvailabilityResult",
       "type": "object"
     },
+    "AvailabilityWindow": {
+      "additionalProperties": false,
+      "description": "When an item is orderable (spec 11 \u00a74.2).\n\nAll fields optional; ``None`` everywhere \u21d2 always available. Times are local\ntime-of-day (the tenant timezone, resolved from tenant context), 24-hour ``HH:MM``.\nThis is descriptive metadata only \u2014 fulfillment-time availability is never guaranteed\nby the foreground agent (\u00a721.2); the pre-order saga revalidates before commit.",
+      "properties": {
+        "days_of_week": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lowercase day abbreviations, e.g. ['mon','tue']; None \u21d2 all days.",
+          "title": "Days Of Week"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Local time-of-day 'HH:MM' (24h); None \u21d2 open.",
+          "title": "Start Time"
+        },
+        "end_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Local time-of-day 'HH:MM' (24h); None \u21d2 open.",
+          "title": "End Time"
+        }
+      },
+      "title": "AvailabilityWindow",
+      "type": "object"
+    },
     "BargeInFrame": {
       "additionalProperties": false,
       "description": "Caller barge-in detected; no payload beyond the envelope.",
@@ -993,6 +1043,22 @@
           "description": "Optional menu category.",
           "title": "Category"
         },
+        "modifiers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CatalogModifier"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional selectable modifiers (\u00a721.3).",
+          "title": "Modifiers"
+        },
         "allergens": {
           "anyOf": [
             {
@@ -1024,6 +1090,31 @@
           "default": null,
           "description": "Optional dietary labels (e.g. 'vegan').",
           "title": "Dietary Labels"
+        },
+        "availability_window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AvailabilityWindow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional orderable window; None \u21d2 always available."
+        },
+        "image_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional opaque image reference (e.g. object-store key).",
+          "title": "Image Ref"
         },
         "extraction_confidence": {
           "anyOf": [
@@ -1071,6 +1162,40 @@
         "not_found",
         "catalog_unavailable"
       ]
+    },
+    "CatalogModifier": {
+      "additionalProperties": false,
+      "description": "A selectable item modifier (spec 11 \u00a74.2, \u00a721.3).\n\nCarries a stable ``modifier_id`` referenced by ``PreorderDraftLine.modifier_ids`` and\ncaptured into the immutable ``PreorderReference``. ``price_delta`` is added to the base\nitem price when selected; ``None`` means a free modifier.",
+      "properties": {
+        "modifier_id": {
+          "description": "Stable opaque modifier id, e.g. 'mod_01...'.",
+          "title": "Modifier Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Modifier display name, e.g. 'Extra cheese'.",
+          "title": "Name",
+          "type": "string"
+        },
+        "price_delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Price added when selected; None \u21d2 free."
+        }
+      },
+      "required": [
+        "modifier_id",
+        "name"
+      ],
+      "title": "CatalogModifier",
+      "type": "object"
     },
     "Channel": {
       "description": "Origin channel a draft was captured on.",

@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from cordia_agent.contracts.catalog import CatalogItem, Money, PublishedCatalog
+from cordia_agent.contracts.catalog import (
+    AvailabilityWindow,
+    CatalogItem,
+    CatalogModifier,
+    Money,
+    PublishedCatalog,
+)
 
 
 def _make_item(**overrides: object) -> CatalogItem:
@@ -56,6 +62,73 @@ def test_catalog_item_round_trip() -> None:
     assert restored == item
     assert restored.price.amount_minor == 3200
     assert restored.price.currency == "AUD"
+
+
+@pytest.mark.unit
+def test_catalog_modifier_shape_and_extra_forbidden() -> None:
+    mod = CatalogModifier(
+        modifier_id="mod_1",
+        name="Extra cheese",
+        price_delta=Money(amount_minor=150, currency="AUD"),
+    )
+    assert mod.modifier_id == "mod_1"
+    assert mod.price_delta is not None and mod.price_delta.amount_minor == 150
+    # price_delta is optional (a free modifier).
+    assert CatalogModifier(modifier_id="mod_2", name="No onion").price_delta is None
+    with pytest.raises(ValidationError):
+        CatalogModifier(modifier_id="m", name="x", surprise="y")
+
+
+@pytest.mark.unit
+def test_availability_window_shape_and_extra_forbidden() -> None:
+    window = AvailabilityWindow(
+        days_of_week=["mon", "tue"], start_time="06:00", end_time="11:00"
+    )
+    assert window.days_of_week == ["mon", "tue"]
+    # all fields optional (None ⇒ always available).
+    empty = AvailabilityWindow()
+    assert (
+        empty.days_of_week is None
+        and empty.start_time is None
+        and empty.end_time is None
+    )
+    with pytest.raises(ValidationError):
+        AvailabilityWindow(surprise="y")
+
+
+@pytest.mark.unit
+def test_catalog_item_rich_fields_round_trip() -> None:
+    item = _make_item(
+        modifiers=[
+            CatalogModifier(
+                modifier_id="mod_1",
+                name="Extra cheese",
+                price_delta=Money(amount_minor=150, currency="AUD"),
+            ),
+        ],
+        availability_window=AvailabilityWindow(
+            days_of_week=["fri", "sat"], start_time="17:00", end_time="22:00"
+        ),
+        image_ref="s3://tenant/img/salmon.jpg",
+    )
+    restored = CatalogItem.model_validate(item.model_dump())
+    assert restored == item
+    assert (
+        restored.modifiers is not None and restored.modifiers[0].modifier_id == "mod_1"
+    )
+    assert (
+        restored.availability_window is not None
+        and restored.availability_window.start_time == "17:00"
+    )
+    assert restored.image_ref == "s3://tenant/img/salmon.jpg"
+
+
+@pytest.mark.unit
+def test_catalog_item_rich_fields_default_none() -> None:
+    item = _make_item()
+    assert item.modifiers is None
+    assert item.availability_window is None
+    assert item.image_ref is None
 
 
 @pytest.mark.unit
