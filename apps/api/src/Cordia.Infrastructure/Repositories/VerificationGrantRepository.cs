@@ -33,9 +33,32 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
                 && g.ConsumedAt == null)
             .FirstOrDefaultAsync(ct);
 
+    public Task<VerificationGrant?> FindValidGrantByIdAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+        => db.VerificationGrants
+            .AsNoTracking()
+            .Where(g =>
+                g.TenantId == tenantId
+                && g.GrantId == grantId
+                && g.CustomerRef == customerRef
+                && g.AllowedAction == action
+                && (g.TargetBookingId == null || g.TargetBookingId == targetBookingId)
+                && now < g.ExpiresAt
+                && g.ConsumedAt == null)
+            .FirstOrDefaultAsync(ct);
+
     public Task<int> ConsumeAsync(
         string tenantId,
         string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
         DateTimeOffset consumedAt,
         CancellationToken ct = default)
         => db.VerificationGrants
@@ -44,6 +67,9 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
             // window between FindValidGrantAsync and consumption.
             .Where(g => g.TenantId == tenantId
                 && g.GrantId == grantId
+                && g.CustomerRef == customerRef
+                && g.AllowedAction == action
+                && (g.TargetBookingId == null || g.TargetBookingId == targetBookingId)
                 && g.ConsumedAt == null
                 && consumedAt < g.ExpiresAt)
             .ExecuteUpdateAsync(

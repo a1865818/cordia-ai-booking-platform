@@ -23,6 +23,20 @@ public interface IVerificationGrantRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns the specific presented grant only when it is valid for the supplied criteria.
+    /// Used by the spec 08 authorization gate; callers must not authorize from "any" grant
+    /// when a request presents a concrete grant id.
+    /// </summary>
+    Task<VerificationGrant?> FindValidGrantByIdAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        DateTimeOffset now,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Single-use consumption: atomically sets consumed_at where consumed_at is null AND the grant
     /// is not yet expired (<paramref name="consumedAt"/> &lt; expires_at, §9.3). Returns rows-affected
     /// (1 = consumed, 0 = already consumed OR expired → caller must force re-verification).
@@ -30,6 +44,9 @@ public interface IVerificationGrantRepository
     Task<int> ConsumeAsync(
         string tenantId,
         string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
         DateTimeOffset consumedAt,
         CancellationToken ct = default);
 }

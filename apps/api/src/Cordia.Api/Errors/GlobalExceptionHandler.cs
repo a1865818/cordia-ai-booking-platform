@@ -86,6 +86,20 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case VerificationRequiredException ex:
+                logger.LogWarning(ex, "Verification required: tenant={TenantId} customer={CustomerRef} action={Action} booking={TargetBookingId}",
+                    ex.TenantId, ex.CustomerRef, ex.Action, ex.TargetBookingId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
+                    "Verification required", ex.Message, cancellationToken);
+                return true;
+
+            case StaleBookingVersionException ex:
+                logger.LogWarning(ex, "Stale booking version: bookingId={BookingId} expected={ExpectedVersion} current={CurrentVersion}",
+                    ex.BookingId, ex.ExpectedVersion, ex.CurrentVersion);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Stale booking version", ex.Message, cancellationToken);
+                return true;
+
             case InvalidStateTransitionException ex:
                 logger.LogWarning(ex, "Invalid state transition: {From} -> {To}", ex.From, ex.To);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
