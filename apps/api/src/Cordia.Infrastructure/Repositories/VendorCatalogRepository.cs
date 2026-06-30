@@ -17,7 +17,7 @@ namespace Cordia.Infrastructure.Repositories;
 public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRepository
 {
     public async Task<IReadOnlyList<VendorCatalogItem>> SearchPublishedItemsAsync(
-        string? query, int skip, int take, CancellationToken ct = default)
+        string? query, string? category, int skip, int take, CancellationToken ct = default)
     {
         var publishedCatalogIds = db.VendorCatalogs
             .Where(c => c.Status == CatalogStatus.Published)
@@ -34,6 +34,9 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
                 EF.Functions.ILike(i.Name, pattern) ||
                 EF.Functions.ILike(i.Description, pattern));
         }
+
+        if (!string.IsNullOrWhiteSpace(category))
+            items = items.Where(i => i.Category == category);
 
         return await items
             .OrderBy(i => i.Name)

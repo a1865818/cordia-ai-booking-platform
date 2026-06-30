@@ -15,10 +15,12 @@ public interface IVendorCatalogRepository
     /// <summary>
     /// Paged, case-insensitive search over published catalog items, matching
     /// <paramref name="query"/> against name/description (all items when
-    /// <paramref name="query"/> is null/blank). Ordered by name for stable paging.
+    /// <paramref name="query"/> is null/blank) and, when <paramref name="category"/> is
+    /// supplied, narrowed to that exact category (§4.2 / foreground <c>category</c> filter).
+    /// Ordered by name for stable paging.
     /// </summary>
     Task<IReadOnlyList<VendorCatalogItem>> SearchPublishedItemsAsync(
-        string? query, int skip, int take, CancellationToken ct = default);
+        string? query, string? category, int skip, int take, CancellationToken ct = default);
 
     /// <summary>
     /// Single published item by id, or <c>null</c> when no published item with that

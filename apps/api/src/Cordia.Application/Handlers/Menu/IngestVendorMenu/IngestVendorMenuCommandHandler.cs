@@ -27,9 +27,17 @@ public sealed class IngestVendorMenuCommandHandler(
     IArtifactScanner scanner,
     IIsolatedMenuExtractor extractor,
     IAuditEventRepository auditRepo,
+    IOutboxRepository outboxRepo,
     ILogger<IngestVendorMenuCommandHandler> logger)
     : IRequestHandler<IngestVendorMenuCommand, Unit>
 {
+    /// <summary>Owner-facing alert emitted when an artifact is quarantined by the malware scan (Inv-14, §8).</summary>
+    public const string QuarantinedEventType = "menu.catalog.quarantined.v1";
+
+    /// <summary>Owner-facing alert emitted when extraction fails (catalog stuck in Extracting; Inv-14, §8).</summary>
+    public const string ExtractionFailedEventType = "menu.catalog.extraction_failed.v1";
+
+
     public async Task<Unit> Handle(IngestVendorMenuCommand command, CancellationToken ct)
     {
         var catalog = await repo.GetAsync(command.CatalogId, ct);
@@ -73,9 +81,15 @@ public sealed class IngestVendorMenuCommandHandler(
                 CatalogStatus.Scanning, CatalogStatus.Quarantined, ct);
 
             if (quarantined > 0)
+            {
                 await WriteAuditAsync(command, "catalog.quarantined", new { catalog_id = command.CatalogId }, now, ct);
+                // Surface the quarantine to the owner (Inv-14): the artifact is never extracted/published.
+                await EnqueueOwnerAlertAsync(command, QuarantinedEventType, "malware_detected", now, ct);
+            }
             else
+            {
                 logger.LogWarning("IngestVendorMenu: lost race Scanning→Quarantined for {CatalogId}.", command.CatalogId);
+            }
 
             return Unit.Value; // malware is NEVER extracted
         }
@@ -103,6 +117,9 @@ public sealed class IngestVendorMenuCommandHandler(
             // and surface the failure via audit + the stuck state (Inv-14).
             logger.LogWarning(ex, "IngestVendorMenu: extraction failed for {CatalogId}; left in Extracting.", command.CatalogId);
             await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
+            // Surface the failure to the owner (Inv-14): there is no extract_failed state (frozen D4), so the
+            // owner alert + the stuck Extracting status + the audit row are how a failed extraction is made visible.
+            await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             return Unit.Value;
         }
 
@@ -117,6 +134,10 @@ public sealed class IngestVendorMenuCommandHandler(
                 Description = d.Description,
                 PriceMinor = d.PriceMinor,
                 Currency = d.Currency,
+                Category = d.Category,
+                Modifiers = d.Modifiers,
+                AvailabilityWindow = d.AvailabilityWindow,
+                ImageRef = d.ImageRef,
                 ExtractionConfidence = d.ExtractionConfidence,
                 SourceLocation = d.SourceLocation,
             })
@@ -136,6 +157,25 @@ public sealed class IngestVendorMenuCommandHandler(
 
         return Unit.Value;
     }
+
+    /// <summary>
+    /// Enqueues an owner-facing alert on the transactional outbox (inside the inbox transaction, Inv-4)
+    /// so a failed/quarantined ingestion is never silently dropped (Inv-14, §8). The payload carries only
+    /// the catalog id + a coarse reason — no artifact bytes, URL, or secret (Inv-12). The message routes to
+    /// the <c>menu.commands</c> lane; until an owner-notification consumer is wired it is safely ack-delivered.
+    /// </summary>
+    private Task EnqueueOwnerAlertAsync(
+        IngestVendorMenuCommand command, string messageType, string reason, DateTimeOffset now, CancellationToken ct)
+        => outboxRepo.AddAsync(new OutboxMessage
+        {
+            TenantId = command.TenantId,
+            MessageId = $"obx_{Guid.NewGuid():N}",
+            MessageType = messageType,
+            CorrelationId = command.CorrelationId ?? command.CatalogId,
+            CausationId = command.MessageId,
+            Payload = JsonSerializer.Serialize(new { catalog_id = command.CatalogId, reason }),
+            OccurredAt = now,
+        }, ct);
 
     private Task WriteAuditAsync(
         IngestVendorMenuCommand command, string eventType, object metadata, DateTimeOffset now, CancellationToken ct)

@@ -23,6 +23,18 @@ public class VendorCatalogItem : ITenantScoped
 
     public string Currency { get; set; } = string.Empty;
 
+    /// <summary>Optional menu category (§4.2); backs the foreground <c>category</c> search filter.</summary>
+    public string? Category { get; set; }
+
+    /// <summary>jsonb — serialized list of <c>CatalogModifier</c> (§4.2, §21.3); null when none.</summary>
+    public string? Modifiers { get; set; }
+
+    /// <summary>jsonb — serialized <c>AvailabilityWindow</c> (§4.2); null ⇒ always available.</summary>
+    public string? AvailabilityWindow { get; set; }
+
+    /// <summary>Optional opaque image reference (§4.2), e.g. an object-store key; null when none.</summary>
+    public string? ImageRef { get; set; }
+
     /// <summary>jsonb — menu metadata blob; null when not provided.</summary>
     public string? MenuMetadata { get; set; }
 

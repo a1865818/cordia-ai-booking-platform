@@ -4,8 +4,9 @@ using MediatR;
 namespace Cordia.Application.Handlers.Menu.GetCatalogItem;
 
 /// <summary>
-/// Full published-item detail (spec 11 §7). Carries the menu/allergen metadata blobs
-/// (jsonb) but never the draft-only extraction fields (Inv-16).
+/// Full published-item detail (spec 11 §4.2, §7). Carries the §4.2 rich fields
+/// (modifiers / availability_window / image_ref, as stored jsonb/text) and the
+/// menu/allergen metadata blobs, but never the draft-only extraction fields (Inv-16).
 /// </summary>
 public sealed record CatalogItemDetail(
     string ItemId,
@@ -13,6 +14,10 @@ public sealed record CatalogItemDetail(
     string Description,
     long PriceMinor,
     string Currency,
+    string? Category,
+    string? Modifiers,
+    string? AvailabilityWindow,
+    string? ImageRef,
     string? MenuMetadata,
     string? AllergenInfo);
 
@@ -40,6 +45,10 @@ public sealed class GetCatalogItemQueryHandler(IVendorCatalogRepository repo)
             item.Description,
             item.PriceMinor,
             item.Currency,
+            item.Category,
+            item.Modifiers,
+            item.AvailabilityWindow,
+            item.ImageRef,
             item.MenuMetadata,
             item.AllergenInfo);
     }

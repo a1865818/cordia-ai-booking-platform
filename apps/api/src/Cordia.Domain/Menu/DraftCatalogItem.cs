@@ -12,4 +12,8 @@ public sealed record DraftCatalogItem(
     long PriceMinor,
     string Currency,
     double? ExtractionConfidence,
-    string? SourceLocation);
+    string? SourceLocation,
+    string? Category = null,
+    string? Modifiers = null,
+    string? AvailabilityWindow = null,
+    string? ImageRef = null);

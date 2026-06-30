@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/menu.catalog.quarantined.v1.json",
+  "title": "MenuCatalogQuarantinedV1",
+  "description": "Owner-facing alert (spec 11 §8, Inv-14) emitted on the menu.commands lane when the malware scan flags an uploaded catalog artifact. The artifact is never extracted or published; this event surfaces the quarantine to the owner so a failed ingestion is never silently dropped. Carries NO secrets, PAN, artifact bytes, or transcript text (Inv-12) — only the catalog id and a coarse reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "correlation_id",
+    "catalog_id",
+    "reason"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "menu.catalog.quarantined.v1",
+      "description": "Explicit schema discriminator; always 'menu.catalog.quarantined.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope (Inv-13)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Correlation identifier propagated across the ingestion chain (the catalog id)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the ingestion message that caused this alert (nullable)."
+    },
+    "catalog_id": {
+      "type": "string",
+      "description": "Stable id of the quarantined vendor_catalogs row."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Coarse machine reason for the quarantine, e.g. 'malware_detected'. Never raw scanner output."
+    }
+  }
+}

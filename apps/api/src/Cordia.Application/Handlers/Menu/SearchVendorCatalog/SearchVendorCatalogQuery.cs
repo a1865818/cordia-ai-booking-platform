@@ -13,14 +13,16 @@ public sealed record CatalogItemSummary(
     string Name,
     string Description,
     long PriceMinor,
-    string Currency);
+    string Currency,
+    string? Category);
 
 /// <summary>
 /// Paged search over the <b>published</b> vendor catalog (spec 11 §5.2, §7). Backs the
-/// foreground <c>search_vendor_catalog</c> tool. Tenant scope is enforced by the
-/// DbContext global query filter (Inv-13).
+/// foreground <c>search_vendor_catalog</c> tool (keyword <paramref name="Query"/> + optional
+/// <paramref name="Category"/> filter). Tenant scope is enforced by the DbContext global query
+/// filter (Inv-13).
 /// </summary>
-public sealed record SearchVendorCatalogQuery(string? Query, int Skip, int Take)
+public sealed record SearchVendorCatalogQuery(string? Query, string? Category, int Skip, int Take)
     : IRequest<IReadOnlyList<CatalogItemSummary>>;
 
 /// <summary>Returns published catalog items matching the query, mapped to token-bounded summaries.</summary>
@@ -30,9 +32,10 @@ public sealed class SearchVendorCatalogQueryHandler(IVendorCatalogRepository rep
     public async Task<IReadOnlyList<CatalogItemSummary>> Handle(
         SearchVendorCatalogQuery request, CancellationToken ct)
     {
-        var items = await repo.SearchPublishedItemsAsync(request.Query, request.Skip, request.Take, ct);
+        var items = await repo.SearchPublishedItemsAsync(
+            request.Query, request.Category, request.Skip, request.Take, ct);
         return items
-            .Select(i => new CatalogItemSummary(i.ItemId, i.Name, i.Description, i.PriceMinor, i.Currency))
+            .Select(i => new CatalogItemSummary(i.ItemId, i.Name, i.Description, i.PriceMinor, i.Currency, i.Category))
             .ToList();
     }
 }

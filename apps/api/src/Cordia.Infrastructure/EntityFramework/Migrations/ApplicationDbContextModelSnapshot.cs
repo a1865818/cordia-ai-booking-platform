@@ -1212,10 +1212,18 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("allergen_info");
 
+                    b.Property<string>("AvailabilityWindow")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("availability_window");
+
                     b.Property<string>("CatalogId")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("catalog_id");
+
+                    b.Property<string>("Category")
+                        .HasColumnType("text")
+                        .HasColumnName("category");
 
                     b.Property<string>("Currency")
                         .IsRequired()
@@ -1231,9 +1239,17 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("double precision")
                         .HasColumnName("extraction_confidence");
 
+                    b.Property<string>("ImageRef")
+                        .HasColumnType("text")
+                        .HasColumnName("image_ref");
+
                     b.Property<string>("MenuMetadata")
                         .HasColumnType("jsonb")
                         .HasColumnName("menu_metadata");
+
+                    b.Property<string>("Modifiers")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("modifiers");
 
                     b.Property<string>("Name")
                         .IsRequired()
