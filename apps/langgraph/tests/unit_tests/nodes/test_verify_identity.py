@@ -76,7 +76,7 @@ def _granted_body(
     grant_id: str | None = "grant_001",
     tenant_id: str = _TENANT_ID,
     allowed_action: str = "modify",
-    expires_at: str = "2026-07-01T13:00:00+00:00",
+    expires_at: str | None = None,
 ) -> dict:
     """Build a 200 response body for check_verification (granted).
 
@@ -85,7 +85,17 @@ def _granted_body(
     which strips envelope-only keys (``status``, ``ok``, ``correlation_id``, …)
     before model_validate — so grant fields must be at the TOP level of the body,
     not nested under a ``"data"`` key.
+
+    ``expires_at`` defaults to a timestamp always in the future relative to real
+    wall-clock ``now``: the node-level tests drive ``verify_identity`` which validates
+    the grant against ``datetime.now(UTC)`` (not the injected ``_NOW``), so a hardcoded
+    date would make the grant "expire" once that date passes. Tests that need a specific
+    expiry (boundary / expired cases) pass ``expires_at`` explicitly.
     """
+    if expires_at is None:
+        expires_at = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+        ).isoformat()
     return {
         "status": "granted",
         "grant_id": grant_id,
