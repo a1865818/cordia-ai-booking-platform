@@ -63,7 +63,9 @@ Per `docs/specs/README.md` "Delivery sequencing": **Phases 1–4 are substantial
 
 **Persistence tests** (`test/Cordia.Tests/IntegrationTests/Persistence/`): `VendorCatalogPersistenceTests`, `WaitlistPersistenceTests`, `PreorderSagaPersistenceTests` — prove the schema round-trips.
 
-**One repository only**: `IWaitlistOfferRepository` + `WaitlistOfferRepository` (just `AddAsync` + `TryTransitionStatusAsync` via `VersionTokenUpdate`). **No** `IVendorCatalogRepository`, `IWaitlistEnrollmentRepository`, or `IPreorderSagaRepository` yet.
+**One repository only** *(at the `0614910` snapshot)*: `IWaitlistOfferRepository` + `WaitlistOfferRepository` (just `AddAsync` + `TryTransitionStatusAsync` via `VersionTokenUpdate`).
+
+> **UPDATE (2026-07-02):** this is now stale — `IVendorCatalogRepository`, `IWaitlistEnrollmentRepository`, and `IPreorderSagaRepository` (+ their EF implementations) have all since been built and wired during spec-11 implementation. Do **not** re-create them; extend the existing ones.
 
 **Messaging topology** (`Cordia.Domain/Messaging/LogicalQueue.cs`): `WaitlistCommands` (`waitlist.commands`, consumer `waitlist.processor`) and `MenuCommands` (`menu.commands`, consumer `menu.processor`) are **already registered** in `LogicalQueueRegistry` with prefix routing (`waitlist.` / `menu.`). The consumers themselves are **not** wired yet.
 
