@@ -26,6 +26,12 @@ public class PreorderSagaConfiguration : IEntityTypeConfiguration<PreorderSaga>
             .IsRequired()
             .HasColumnType("jsonb");
 
+        builder.Property(e => e.IsStandalone)
+            .HasDefaultValue(false);
+
+        builder.Property(e => e.RequestedCapacity)
+            .HasDefaultValue(0);
+
         // FK (tenant_id, operation_id) → booking_operations ON DELETE RESTRICT
         builder.HasOne<BookingOperation>()
             .WithMany()

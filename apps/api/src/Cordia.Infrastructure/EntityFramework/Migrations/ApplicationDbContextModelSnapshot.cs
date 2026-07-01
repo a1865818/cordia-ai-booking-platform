@@ -225,6 +225,12 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("intent_revision");
 
+                    b.Property<bool>("IsPreorder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_preorder");
+
                     b.Property<OperationTypeEnum>("OperationType")
                         .HasColumnType("operation_type_enum")
                         .HasColumnName("operation_type");
@@ -981,9 +987,19 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("deposit_session_id");
 
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text")
+                        .HasColumnName("failure_reason");
+
                     b.Property<string>("HoldId")
                         .HasColumnType("text")
                         .HasColumnName("hold_id");
+
+                    b.Property<bool>("IsStandalone")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_standalone");
 
                     b.Property<string>("OperationId")
                         .IsRequired()
@@ -995,9 +1011,19 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("preorder_reference");
 
+                    b.Property<int>("RequestedCapacity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("requested_capacity");
+
                     b.Property<PreorderSagaState>("SagaState")
                         .HasColumnType("preorder_saga_state_enum")
                         .HasColumnName("saga_state");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text")
+                        .HasColumnName("slot_id");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .ValueGeneratedOnAdd()
@@ -1346,6 +1372,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("auto_book");
 
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -1360,6 +1390,13 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<string>("DepositTerms")
                         .HasColumnType("jsonb")
                         .HasColumnName("deposit_terms");
+
+                    b.Property<string>("IdentityRef")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("")
+                        .HasColumnName("identity_ref");
 
                     b.Property<string>("LocationId")
                         .IsRequired()
@@ -1384,6 +1421,13 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("service_id");
 
+                    b.Property<string>("VerificationLevel")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("unverified")
+                        .HasColumnName("verification_level");
+
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()
@@ -1406,6 +1450,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<string>("OfferId")
                         .HasColumnType("text")
                         .HasColumnName("offer_id");
+
+                    b.Property<int>("AvailableSeats")
+                        .HasColumnType("integer")
+                        .HasColumnName("available_seats");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
@@ -1441,6 +1489,14 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<DateTimeOffset?>("ResolvedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("resolved_at");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text")
+                        .HasColumnName("slot_id");
+
+                    b.Property<DateTimeOffset?>("SlotStartAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("slot_start_at");
 
                     b.Property<WaitlistOfferStatus>("Status")
                         .HasColumnType("waitlist_offer_status_enum")

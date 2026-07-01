@@ -26,5 +26,10 @@ public class WaitlistEnrollmentConfiguration : IEntityTypeConfiguration<Waitlist
 
         builder.Property(e => e.DepositTerms).HasColumnType("jsonb");
         builder.Property(e => e.AutoBook).HasColumnType("jsonb");
+
+        // Spec 11 §5.1 (divergence #1) — identity context for the accept→revision mint.
+        // Migration generated in Phase 6 (see divergence-fixes plan).
+        builder.Property(e => e.IdentityRef).HasColumnName("identity_ref").HasDefaultValue(string.Empty);
+        builder.Property(e => e.VerificationLevel).HasColumnName("verification_level").HasDefaultValue("unverified");
     }
 }

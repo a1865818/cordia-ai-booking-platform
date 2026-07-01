@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/preorder.commands.step.v1.json",
+  "title": "PreorderCommandsStepV1",
+  "description": "Shared envelope shape for every pre-order saga step AFTER start (spec 11 §5.3) on the preorder.commands lane (consumer 'preorder.processor'): hold_capacity, reserve_items, authorize_payment, commit_booking, commit_preorder, compensate_items, compensate_hold, compensate_booking, and reconcile — each a distinct message_type sharing this shape. Carries ONLY the saga + operation ids (Inv-12); the handler reloads the saga row for the immutable reference + step checkpoints (HoldId / DepositSessionId). Each is inbox-deduplicated and idempotent under duplicate delivery (Inv-5/Inv-9).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_type", "tenant_id", "saga_id", "operation_id"],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "description": "One of the preorder.commands.* step types.",
+      "enum": [
+        "preorder.commands.hold_capacity.v1",
+        "preorder.commands.reserve_items.v1",
+        "preorder.commands.authorize_payment.v1",
+        "preorder.commands.commit_booking.v1",
+        "preorder.commands.commit_preorder.v1",
+        "preorder.commands.compensate_items.v1",
+        "preorder.commands.compensate_hold.v1",
+        "preorder.commands.compensate_booking.v1",
+        "preorder.commands.reconcile.v1"
+      ]
+    },
+    "tenant_id": { "type": "string", "description": "Tenant scope (Inv-13)." },
+    "saga_id": { "type": "string", "description": "The preorder_sagas row this step advances." },
+    "operation_id": { "type": "string", "description": "Owning booking operation id (correlation)." },
+    "correlation_id": { "type": ["string", "null"], "description": "Correlation id propagated across the saga chain." },
+    "causation_id": { "type": ["string", "null"], "description": "message_id of the direct cause (nullable)." }
+  }
+}

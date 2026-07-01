@@ -54,9 +54,17 @@ public class LogicalQueueRegistryTests
     }
 
     [Fact]
-    public void All_HasEightEntries()
+    public void All_HasNineEntries()
     {
-        Assert.Equal(8, LogicalQueueRegistry.All.Count);
+        // 8 base lanes + the spec-11 preorder.commands lane.
+        Assert.Equal(9, LogicalQueueRegistry.All.Count);
+    }
+
+    [Fact]
+    public void Resolve_PreorderPrefix_RoutesToPreorderCommands()
+    {
+        Assert.True(LogicalQueueRegistry.TryResolve("preorder.commands.start.v1", out var queue));
+        Assert.Equal(LogicalQueue.PreorderCommands, queue);
     }
 
     [Fact]

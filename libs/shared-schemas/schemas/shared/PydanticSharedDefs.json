@@ -907,6 +907,18 @@
           "title": "Special Requests",
           "type": "array"
         },
+        "preorder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreorderReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Immutable pre-order reference, or None when no pre-order."
+        },
         "target_booking_id": {
           "anyOf": [
             {
@@ -2128,6 +2140,92 @@
         "policy_version"
       ],
       "title": "PolicyValidationResult",
+      "type": "object"
+    },
+    "PreorderLineReference": {
+      "additionalProperties": false,
+      "description": "One immutable pre-order line (spec 11 \u00a74.3, \u00a721.3).",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque catalog item id.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "modifier_ids": {
+          "description": "Stable modifier ids selected on this line; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifier Ids",
+          "type": "array"
+        },
+        "quantity": {
+          "description": "Number of this item ordered (\u2265 1).",
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "captured_price_amount_minor": {
+          "description": "Per-unit price quoted at confirmation, in ISO-4217 minor units.",
+          "title": "Captured Price Amount Minor",
+          "type": "integer"
+        },
+        "captured_price_currency": {
+          "description": "ISO 4217 code, e.g. 'AUD'.",
+          "title": "Captured Price Currency",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen / preparation notes.",
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "item_id",
+        "quantity",
+        "captured_price_amount_minor",
+        "captured_price_currency"
+      ],
+      "title": "PreorderLineReference",
+      "type": "object"
+    },
+    "PreorderReference": {
+      "additionalProperties": false,
+      "description": "Immutable pre-order reference captured at confirmation (spec 11 \u00a74.3).\n\nCarries the immutable menu version, the ordered lines, and the customer confirmation\nevidence id. Embedded in the confirmed intent revision (part of the canonical hash).",
+      "properties": {
+        "catalog_version": {
+          "description": "IMMUTABLE published menu version label.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "lines": {
+          "description": "Ordered pre-order lines.",
+          "items": {
+            "$ref": "#/$defs/PreorderLineReference"
+          },
+          "title": "Lines",
+          "type": "array"
+        },
+        "confirmation_id": {
+          "description": "Customer confirmation evidence id (\u00a721.3).",
+          "title": "Confirmation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_version",
+        "lines",
+        "confirmation_id"
+      ],
+      "title": "PreorderReference",
       "type": "object"
     },
     "PublishedCatalog": {

@@ -82,6 +82,7 @@ from cordia_agent.tools.contracts import (
 )
 from cordia_agent.contracts.catalog import CatalogItem, Money, PublishedCatalog
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.contracts.preorder import PreorderLineReference, PreorderReference
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -149,6 +150,8 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         OperationAcceptedResponse,
         OperationStatusView,
         PolicyValidationResult,
+        PreorderLineReference,
+        PreorderReference,
         PublishedCatalog,
         SubmitCancellationInput,
         SubmitConfirmedIntentInput,

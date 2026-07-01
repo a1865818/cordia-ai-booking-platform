@@ -27,6 +27,29 @@ public class PreorderSaga : ITenantScoped
 
     public string? DepositSessionId { get; set; }
 
+    /// <summary>
+    /// Booking slot the capacity hold is taken against (from the confirmed booking request); null for
+    /// a standalone order. Persisted so the hold step + crash-recovery resume can reserve without the
+    /// slot being re-supplied on every message.
+    /// </summary>
+    public string? SlotId { get; set; }
+
+    /// <summary>Seats/covers to hold for the booking; 0 for a standalone order.</summary>
+    public int RequestedCapacity { get; set; }
+
+    /// <summary>
+    /// True for a standalone order (no booking, §21.4): the saga skips the capacity-hold and
+    /// booking-commit steps. False (default) for a booking-attached pre-order.
+    /// </summary>
+    public bool IsStandalone { get; set; }
+
+    /// <summary>
+    /// Coarse machine reason recorded when the saga reaches FailedFinal / ManualReview (compensation
+    /// or an unconfirmable external undo); null while healthy. For audit + outcome context — never
+    /// card data or PII (Inv-12).
+    /// </summary>
+    public string? FailureReason { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }

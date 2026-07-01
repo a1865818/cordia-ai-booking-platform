@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/preorder.alternatives_required.v1.json",
+  "title": "PreorderAlternativesRequiredV1",
+  "description": "Outbox event (spec 11 §5.3, Inv-10) emitted when live revalidation finds a stale pre-order line (item unpublished / price changed) or no capacity at hold time — nothing was acquired, so the saga ends FailedFinal and the customer must re-confirm against current alternatives (spec-06 AlternativesRequired). Carries opaque ids + coarse stale-line reasons only (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_type", "tenant_id", "saga_id", "operation_id"],
+  "properties": {
+    "message_type": { "type": "string", "const": "preorder.alternatives_required.v1", "description": "Explicit schema discriminator." },
+    "tenant_id": { "type": "string", "description": "Tenant scope (Inv-13)." },
+    "saga_id": { "type": "string", "description": "The failed preorder_sagas row." },
+    "operation_id": { "type": "string", "description": "Owning booking operation id." },
+    "correlation_id": { "type": ["string", "null"], "description": "Correlation id propagated across the saga chain." },
+    "reason": { "type": ["string", "null"], "description": "Coarse reason when not line-specific, e.g. 'no_capacity'." },
+    "stale_lines": {
+      "type": ["array", "null"],
+      "description": "Per-line stale reasons when revalidation failed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "item_id": { "type": "string" },
+          "reason": { "type": "string", "description": "item_unavailable | price_changed | modifier_unavailable" }
+        }
+      }
+    }
+  }
+}

@@ -13,7 +13,20 @@ using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 using Cordia.Application.Handlers.Notifications.Reconcile;
 using Cordia.Application.Handlers.Notifications.Retry;
 using Cordia.Application.Handlers.Notifications.SendNotification;
+using Cordia.Application.Handlers.Preorder;
+using Cordia.Application.Handlers.Preorder.BookingSignal;
+using Cordia.Application.Handlers.Preorder.CommitPreorder;
+using Cordia.Application.Handlers.Preorder.CompensateBooking;
+using Cordia.Application.Handlers.Preorder.CompensateItems;
+using Cordia.Application.Handlers.Preorder.Reconcile;
+using Cordia.Application.Handlers.Preorder.Recovery;
+using Cordia.Application.Handlers.Preorder.ReserveItems;
+using Cordia.Application.Handlers.Preorder.StartSaga;
+using Cordia.Application.Handlers.Waitlist;
+using Cordia.Application.Handlers.Waitlist.Expire;
+using Cordia.Application.Handlers.Waitlist.Match;
 using Cordia.Application.Messaging;
+using Cordia.Application.Services;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
@@ -162,6 +175,62 @@ public static class ApplicationServiceCollectionExtensions
                     env.MessageId,
                     env.CorrelationId));
 
+            // Spec 11 — waitlist lane (waitlist.commands → consumer "waitlist.processor"). Both
+            // commands are inbox-deduplicated (one transaction each, Inv-5).
+            //
+            // match.v1: offer a freed opening to the next eligible enrollee. The matched-slot
+            // criteria (location/service/slot id + start + seats) are carried in the payload by the
+            // matcher / re-match builder (WaitlistRematchMessage).
+            registry.Register(WaitlistRematchMessage.MessageType,
+                env => new MatchWaitlistOfferCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "location_id") ?? string.Empty,
+                    ExtractString(env.Payload, "service_id") ?? string.Empty,
+                    ExtractString(env.Payload, "slot_id") ?? string.Empty,
+                    ExtractDateTimeOffset(env.Payload, "slot_start") ?? default,
+                    ExtractInt(env.Payload, "available_seats") ?? 0));
+
+            // offer_expiry.v1: the offer deadline elapsed — expire it, release the hold, re-match.
+            // offer_id is carried in the scheduled-job payload by OfferExpiryScheduler.
+            registry.Register(OfferExpiryScheduler.JobType,
+                env => new ExpireWaitlistOfferCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty));
+
+            // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All
+            // steps are inbox-deduplicated (one transaction each, Inv-5/Inv-9). The start message
+            // carries the immutable PreorderReference + slot/standalone; every other step carries only
+            // saga_id (+ operation_id), reloading the saga for its reference + checkpoints.
+            registry.Register(PreorderSagaMessages.Start,
+                env => new StartPreorderSagaCommand(
+                    env.TenantId, env.MessageId, env.CorrelationId,
+                    PreorderOperationId(env),
+                    ExtractRawObject(env.Payload, "preorder_reference") ?? "{}",
+                    ExtractBool(env.Payload, "standalone") ?? false,
+                    ExtractString(env.Payload, "slot_id"),
+                    ExtractInt(env.Payload, "requested_capacity") ?? 0));
+            registry.Register(PreorderSagaMessages.ReserveItems,
+                env => new ReservePreorderItemsCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CommitPreorder,
+                env => new CommitPreorderCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CompensateItems,
+                env => new CompensatePreorderItemsCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CompensateBooking,
+                env => new CompensatePreorderBookingCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.Reconcile,
+                env => new ReconcilePreorderSagaCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            // 06 → saga booking-outcome signals (spec 11 §5.3). Emitted by the 06 engine for a
+            // pre-order operation instead of a customer notification; carry only the operation id
+            // (the handler resolves the saga by operation).
+            registry.Register(PreorderSagaMessages.BookingCommitted,
+                env => new PreorderBookingCommittedCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.BookingFailed,
+                env => new PreorderBookingFailedCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderOperationId(env)));
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
@@ -172,6 +241,16 @@ public static class ApplicationServiceCollectionExtensions
 
         // Spec 07 T5 — capacity expiry scheduler; scoped to share the ambient DbContext.
         services.AddScoped<CapacityExpiryScheduler>();
+
+        // Spec 11 — waitlist offer-expiry scheduler; scoped to share the ambient inbox transaction.
+        services.AddScoped<OfferExpiryScheduler>();
+
+        // Spec 11 — pre-order saga services; scoped to share the ambient DbContext / inbox transaction.
+        services.AddScoped<LiveItemRevalidationService>();
+        services.AddScoped<PreorderRecoverySweeper>();
+        // Domain seam so PreorderRecoverySweeperHostedService (Infrastructure) resolves the sweep
+        // without referencing Application directly (mirrors ISlaEvaluator / INotificationReconciler).
+        services.AddScoped<IPreorderRecoverySweeper>(sp => sp.GetRequiredService<PreorderRecoverySweeper>());
 
         // T9: SLA evaluator seam — scoped; resolved by SlaEvaluatorHostedService through domain interface
         // so Infrastructure does not reference Application directly.
@@ -237,4 +316,73 @@ public static class ApplicationServiceCollectionExtensions
             ? v.GetString()
             : null;
     }
+
+    /// <summary>
+    /// Safely extracts a <see cref="DateTimeOffset"/> property named <paramref name="propertyName"/>
+    /// from a job-payload <see cref="JsonElement"/> (serialized as an ISO-8601 string). Returns
+    /// <see langword="null"/> when absent or unparseable — guards against malformed payloads.
+    /// </summary>
+    private static DateTimeOffset? ExtractDateTimeOffset(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.String
+            && v.TryGetDateTimeOffset(out var dto)
+            ? dto
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts an <see cref="int"/> property named <paramref name="propertyName"/> from a
+    /// job-payload <see cref="JsonElement"/>. Returns <see langword="null"/> when absent or not an
+    /// integer number — guards against malformed payloads.
+    /// </summary>
+    private static int? ExtractInt(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.Number
+            && v.TryGetInt32(out var i)
+            ? i
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts a <see cref="bool"/> property named <paramref name="propertyName"/> from a
+    /// job-payload <see cref="JsonElement"/>. Returns <see langword="null"/> when absent or not a boolean.
+    /// </summary>
+    private static bool? ExtractBool(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? v.GetBoolean()
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts a nested JSON object property named <paramref name="propertyName"/> as its raw
+    /// JSON text (so it can be re-parsed by the handler). Returns <see langword="null"/> when absent or
+    /// not an object — guards against malformed payloads.
+    /// </summary>
+    private static string? ExtractRawObject(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.Object
+            ? v.GetRawText()
+            : null;
+    }
+
+    /// <summary>Resolves the saga id for a pre-order step from the payload.</summary>
+    private static string PreorderSagaId(JobEnvelope env)
+        => ExtractString(env.Payload, "saga_id") ?? string.Empty;
+
+    /// <summary>Resolves the operation id for a pre-order step (envelope first, then payload).</summary>
+    private static string PreorderOperationId(JobEnvelope env)
+        => env.OperationId ?? ExtractString(env.Payload, "operation_id") ?? string.Empty;
 }

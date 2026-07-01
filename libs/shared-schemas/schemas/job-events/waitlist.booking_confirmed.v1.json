@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.booking_confirmed.v1.json",
+  "title": "WaitlistBookingConfirmedV1",
+  "description": "Outbox event (spec 11 §5.1) emitted when a waitlist offer is committed: either the customer accepted (finalizing the temporary hold against the offer's provisional operation) or it auto-booked under a recorded consent grant (§20). Drives the customer's booking-confirmed notification. The full verified booking submission remains the spec-04 path; this event records that capacity was finalized. Carries only opaque ids and the notification channel (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "offer_id",
+    "enrollment_id",
+    "operation_id"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.booking_confirmed.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.booking_confirmed.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (the enrollment id)."
+    },
+    "offer_id": {
+      "type": "string",
+      "description": "Stable id of the accepted/auto-booked waitlist_offers row."
+    },
+    "enrollment_id": {
+      "type": "string",
+      "description": "Stable id of the originating waitlist_enrollments row."
+    },
+    "operation_id": {
+      "type": "string",
+      "description": "Provisional booking operation id the finalized hold was committed against (spec 07)."
+    },
+    "customer_ref": {
+      "type": ["string", "null"],
+      "description": "Opaque tenant-scoped customer reference; never raw contact details (Inv-12)."
+    },
+    "notification_channel": {
+      "type": ["string", "null"],
+      "description": "Customer's chosen delivery channel for the confirmation notification."
+    },
+    "slot_start_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Start time of the confirmed slot."
+    },
+    "auto_booked": {
+      "type": ["boolean", "null"],
+      "description": "True when the offer was committed automatically under a recorded consent grant (§20) rather than an explicit customer accept."
+    }
+  }
+}

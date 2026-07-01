@@ -110,6 +110,36 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Vendor catalog not found", ex.Message, cancellationToken);
                 return true;
 
+            case InvalidWaitlistOfferTransitionException ex:
+                logger.LogWarning(ex, "Invalid waitlist offer transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid waitlist offer transition", ex.Message, cancellationToken);
+                return true;
+
+            case WaitlistEnrollmentNotFoundException ex:
+                logger.LogWarning(ex, "Waitlist enrollment not found: {EnrollmentId}", ex.EnrollmentId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Waitlist enrollment not found", ex.Message, cancellationToken);
+                return true;
+
+            case WaitlistOfferNotFoundException ex:
+                logger.LogWarning(ex, "Waitlist offer not found: {OfferId}", ex.OfferId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Waitlist offer not found", ex.Message, cancellationToken);
+                return true;
+
+            case InvalidPreorderSagaTransitionException ex:
+                logger.LogWarning(ex, "Invalid pre-order saga transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid pre-order saga transition", ex.Message, cancellationToken);
+                return true;
+
+            case PreorderSagaNotFoundException ex:
+                logger.LogWarning(ex, "Pre-order saga not found: {SagaId}", ex.SagaId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Pre-order saga not found", ex.Message, cancellationToken);
+                return true;
+
             case CatalogNotEditableException ex:
                 logger.LogWarning(ex, "Vendor catalog not editable: {CatalogId} ({Status})", ex.CatalogId, ex.Status);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,

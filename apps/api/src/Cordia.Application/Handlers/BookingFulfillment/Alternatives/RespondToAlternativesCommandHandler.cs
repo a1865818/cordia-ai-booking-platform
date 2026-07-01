@@ -103,12 +103,14 @@ public sealed class RespondToAlternativesCommandHandler(
                     throw new OperationConflictException(
                         command.OperationId, "Concurrent update — retry.");
 
+                // Spec 11 §5.3: a pre-order op signals the saga (→ compensate items) instead of
+                // emitting the customer failure notification directly.
                 await outboxRepo.AddAsync(new OutboxMessage
                 {
                     TenantId = command.TenantId,
                     MessageId = $"obx_{Guid.NewGuid():N}",
                     OperationId = command.OperationId,
-                    MessageType = "notification.booking_failed.v1",
+                    MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.FailedOutcomeType(current.IsPreorder),
                     CorrelationId = command.OperationId,
                     Payload = JsonSerializer.Serialize(new
                     {

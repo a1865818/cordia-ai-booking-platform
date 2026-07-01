@@ -24,6 +24,15 @@ public class BookingOperation : ITenantScoped
 
     public string? BookingId { get; set; }
 
+    /// <summary>
+    /// True when this operation carries a pre-order (spec 11 §5.3). Set at acceptance (04) when the
+    /// confirmed revision's canonical payload contains a non-empty <c>PreorderReference</c>. The 06
+    /// engine drives the booking as usual but, for a pre-order op, signals the saga
+    /// (<c>preorder.commands.booking_committed.v1</c> / <c>booking_failed.v1</c>) instead of emitting a
+    /// customer-facing outcome — the saga emits the single combined outcome (Inv-8).
+    /// </summary>
+    public bool IsPreorder { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }

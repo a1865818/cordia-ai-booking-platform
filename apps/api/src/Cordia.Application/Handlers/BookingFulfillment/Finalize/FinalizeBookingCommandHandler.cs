@@ -521,13 +521,15 @@ public sealed class FinalizeBookingCommandHandler(
 
                 if (rows > 0)
                 {
-                    // Inv-8: notification outbox row in the SAME transaction as the Booked transition.
+                    // Inv-8: outcome outbox row in the SAME transaction as the Booked transition.
+                    // Spec 11 §5.3: a pre-order op signals the saga (which emits the one combined
+                    // customer outcome) instead of notifying the customer directly here.
                     await outboxRepo.AddAsync(new OutboxMessage
                     {
                         TenantId = tenantId,
                         MessageId = $"obx_{Guid.NewGuid():N}",
                         OperationId = operationId,
-                        MessageType = "notification.booking_confirmed.v1",
+                        MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.ConfirmedOutcomeType(currentOp.IsPreorder),
                         CorrelationId = operationId,
                         Payload = JsonSerializer.Serialize(new
                         {

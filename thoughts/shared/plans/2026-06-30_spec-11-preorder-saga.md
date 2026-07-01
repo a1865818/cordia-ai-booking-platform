@@ -83,11 +83,20 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 1: Success Criteria
 #### Automated
-- [ ] `bun nx run langgraph:generate-schemas` + `shared-schemas:generate-types` clean; types present in all three targets.
-- [ ] langgraph + api unit suites green; hash includes pre-order content deterministically.
+- [x] `bun nx run langgraph:generate-schemas` + `shared-schemas:generate-types` clean; `PreorderReference`/`PreorderLineReference` present in C# (`Cordia.Domain.Generated`), TS, and Zod.
+- [x] langgraph contract suite green (`test_preorder.py`, 7); api `CanonicalHashIncludesPreorderTests` green (4): different lines → different hash, reordered lines/modifiers → equal, presence≠absence, null==absent.
 
 ### Phase 1: Discoveries and Notable Information
-[filled on execution]
+**Implementation Adaptations:**
+- **Matched the spec §4.3 record exactly (flat captured-price fields), NOT the plan's "unit_price `Money`".** The spec
+  pins `PreorderLineReference(ItemId, ModifierIds, Quantity, CapturedPriceAmountMinor:long, CapturedPriceCurrency, Notes?)`
+  and `PreorderReference(CatalogVersion, Lines, ConfirmationId)`; the generated C# mirrors it (quicktype emits `Quantity`
+  as `long`). `line_subtotal` / `total_amount_minor` are non-serialized Python `@property` helpers — they never enter the
+  JSON Schema, generated types, or the canonical hash.
+- **Embedding = a new optional `preorder: PreorderReference | None` field on `BookingRequest`** (the `IntentRevision.canonical_payload`).
+  The existing canon.v1 hasher already folds nested structures and omits null/empty, so plain bookings hash identically to
+  before this field existed (verified: null==absent) — no parallel pre-order hash, no hasher change needed (ADR holds).
+- Pre-existing Windows-only flakes in `test_clarify.py` (`strftime("%-d")` glibc directive) are unrelated to this work.
 
 ---
 
@@ -109,10 +118,21 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 2: Success Criteria
 #### Automated
-- [ ] state-machine + repo unit tests green; `bun nx build api` clean.
+- [x] `PreorderSagaStateMachineTests` green (40: forward + standalone shortcuts + compensation + reconcile + terminals + disallowed); `bun nx build api` clean.
 
 ### Phase 2: Discoveries and Notable Information
-[filled on execution]
+**Technical Discoveries:**
+- **Standalone-order shortcuts are state-machine edges, not a separate machine:** `Revalidating → ReservingItems` and
+  `AuthorizingPayment → CommittingPreorder` skip the hold + booking-commit steps (§21.4) and reuse the same compensation
+  edges. `ReservingItems → FailedFinal` and `CompensatingItems → FailedFinal` exist for the no-hold (standalone) case.
+- **`Reconciling` is the recovery hub** — reachable from any in-flight forward step (a `IsInFlightForwardStep` helper marks
+  HoldingCapacity…CommittingPreorder) and fanning out to resume any forward/compensation step or escalate to a terminal.
+
+**Implementation Adaptations:**
+- `IPreorderSagaRepository.TryAdvanceStateAsync` takes explicit nullable `setHoldId`/`setDepositSessionId` checkpoint params
+  (not an Infrastructure setters-builder) so the Domain port stays infrastructure-free; the impl conditionally includes the
+  `SetProperty` calls (known at call time) inside the version-token UPDATE so the checkpoint persists atomically with the
+  state advance (Inv-9). `FindStuckAsync` scans cross-tenant (`IgnoreQueryFilters`) for the recovery sweep.
 
 ---
 
@@ -132,10 +152,25 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 3: Success Criteria
 #### Automated
-- [ ] `PreorderRevalidationTests` green: stale → alternatives + no hold; clean → advances; idempotent.
+- [x] `PreorderRevalidationTests` green (4): all-valid → HoldingCapacity + hold enqueued + audit; item-unpublished → FailedFinal + AlternativesRequired + no hold; price-changed → FailedFinal; re-start on an existing saga → idempotent no-op (one saga).
 
 ### Phase 3: Discoveries and Notable Information
-[filled on execution]
+**Technical Discoveries:**
+- **Dedicated `preorder.commands` lane added** (9th logical queue, consumer `preorder.processor`, ordering not required —
+  per-saga state is version-guarded). The spec names only waitlist/menu lanes; the saga needs its own consumer for inbox
+  dedup, so this mirrors the waitlist/menu precedent. `LogicalQueueRegistryTests` updated 8→9 + a preorder-routing case.
+- **`LiveItemRevalidationService`** compares each line against `GetPublishedItemAsync`: existence, `PriceMinor` + currency
+  match, and modifier availability (parsed defensively from the item's `modifiers` jsonb — malformed ⇒ line reads stale).
+
+**Implementation Adaptations:**
+- **The start message carries the immutable `PreorderReferenceJson` + operation id** (and a `standalone` flag); the handler
+  mints the saga id, persists the reference verbatim into `preorder_sagas.preorder_reference`, and revalidates. In
+  production the enqueuer copies the reference from the confirmed revision (Inv-1); carrying it on the message is the
+  boundary since the spec-04/06 enqueuer is out of scope ("agents set up, not wired").
+- **Single consolidated migration generated early, not per-phase:** `PreorderSagaColumns` adds the only two new columns the
+  saga needs across all phases — `is_standalone` (bool, default false) + `failure_reason` (text, null). Generated now to
+  unblock per-phase integration tests; if a later phase needs another column it is folded in by regenerating this one
+  migration (never a second), keeping the end state at exactly one preorder migration.
 
 ---
 
@@ -160,10 +195,24 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 4: Success Criteria
 #### Automated
-- [ ] `PreorderSagaHappyPathTests` green; every step idempotent on re-delivery; checkpoints persisted before hand-off.
+- [x] `PreorderSagaHappyPathTests` green (2): the forward chain drives Revalidating → … → Completed with `HoldId` +
+      `DepositSessionId` checkpoints persisted, the hold finalized into booked capacity, and exactly one combined-outcome
+      notification; a re-delivered CommitPreorder after completion does not double-notify (Inv-5/Inv-8/Inv-9).
 
 ### Phase 4: Discoveries and Notable Information
-[filled on execution]
+**Implementation Adaptations:**
+- **Two stub-ported boundary ports** (per the scope decision): `IPreorderItemReservation` (reserve/release keyed by
+  `(tenant, sagaId)` — no persisted reservation id; fails deterministically on a `"reserve_fail"` item-id sentinel) and
+  `IPreorderPaymentAuthorization` (authorize/void; declines on a negative amount sentinel). Capacity uses the REAL
+  spec-07 `ICapacityReservation` (Reserve on hold-step, FinalizeAgainstOperationAsync on commit-booking).
+- **Booking slot threaded only as far as the hold step:** the start message carries `slot_id` + `requested_capacity`
+  (from the confirmed booking request); StartSaga forwards them in the `hold_capacity` message; downstream steps reload
+  the saga's checkpoints. No slot is stored on the saga.
+- **Commit-preorder is the terminal commit:** the `Completed` saga row IS the committed pre-order record; the single
+  combined `notification.booking_confirmed.v1` is emitted under the version+state-guarded terminal advance, so a duplicate
+  delivery (state already Completed) settles without re-notifying.
+- **`FailureReason` checkpoint:** `TryAdvanceStateAsync` gained an optional `setFailureReason` so failure transitions
+  record a coarse machine reason atomically with the state advance (for ManualReview/outcome context).
 
 ---
 
@@ -187,11 +236,23 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 5: Success Criteria
 #### Automated
-- [ ] `PreorderCompensationTests` green: every failure path leaves no dangling hold/deposit/reservation; ManualReview is
-      reached only when an external undo is unconfirmable.
+- [x] `PreorderCompensationTests` green (4): items-unavailable → CompensatingHold → FailedFinal (slot freed, one failure
+      outcome); payment-declined → CompensatingItems → CompensatingHold → FailedFinal; booking-commit-fail + unconfirmable
+      void → ManualReview (`failure_reason = deposit_void_unconfirmable`); reconcile re-enqueues the stuck step idempotently.
 
 ### Phase 5: Discoveries and Notable Information
-[filled on execution]
+**Implementation Adaptations:**
+- **Single recovery primitive:** `Reconcile` re-enqueues the step message matching the persisted `SagaState` (its own
+  state-guard makes re-entry idempotent), or escalates the non-resumable states — Revalidating → FailedFinal (nothing
+  acquired), Reconciling → ManualReview. The Phase-6 crash-recovery sweep reuses this by enqueuing `reconcile.v1`, so
+  step-timeout and crash-recovery share one mechanism rather than per-step ScheduledJob timers (a deliberate simplification
+  over the plan's per-(saga,state) timeout job; documented).
+- **Exactly-one outcome (Inv-8)** is enforced by emitting the success/failure notification only on the version+state-guarded
+  transition INTO a terminal: `CommitPreorder` → `notification.booking_confirmed.v1` on Completed; the compensation handlers
+  → `notification.booking_failed.v1` on FailedFinal/ManualReview. A saga reaches exactly one terminal, and the guard makes
+  duplicate deliveries settle, so the customer is notified once.
+- **`CompensateBooking`** voids the deposit AND releases items inline (no extra state hop), then FailedFinal on confirmed
+  void or ManualReview on unconfirmable void (Inv-7).
 
 ---
 
@@ -216,12 +277,27 @@ and compensation edges are encoded in a `PreorderSagaStateMachine`. Step timeout
 
 ### Phase 6: Success Criteria
 #### Automated
-- [ ] `bun nx test api` + `bun nx test-integration api` green (combined-outcome, crash-recovery, standalone); `bun nx lint api` clean.
+- [x] `PreorderRecoveryAndStandaloneTests` green (2): standalone order skips hold + booking-commit, reaches Completed with
+      no capacity hold and exactly one confirmation / zero failures; recovery sweep finds a stale saga, enqueues reconcile,
+      which resumes the CURRENT step (CommittingBooking) without re-authorizing the deposit (FM#8-11).
+- [x] `bun nx test api` green (617 unit); full integration suite green except the 1 pre-existing `ScheduledJobPollerTests`
+      timestamp-precision flake (Postgres µs truncation, unrelated). All 12 pre-order integration tests pass.
+- [x] Consumers registered (10 `preorder.commands.*` types) + DI (`LiveItemRevalidationService`, `PreorderRecoverySweeper`,
+      stub ports); 3 job-event schemas authored (start, shared step, alternatives_required).
 #### Manual
 - [ ] Trace a full happy-path saga end-to-end in logs (each state transition + single outcome notification).
 
 ### Phase 6: Discoveries and Notable Information
-[filled on execution]
+**Implementation Adaptations:**
+- **Standalone (§21.4) is purely the `IsStandalone` flag + two state-machine shortcuts:** StartSaga routes
+  Revalidating → ReservingItems and AuthorizePayment routes → CommittingPreorder; no hold is taken and no booking is
+  committed, yet the same compensation/outcome machinery applies.
+- **Crash recovery = `PreorderRecoverySweeper.SweepAsync(olderThan)`** over `FindStuckAsync` → enqueues `reconcile.v1`
+  per stuck saga; reconcile resumes the step matching the persisted state, so a saga past payment-auth resumes at its
+  CURRENT step and is never re-authorized (verified). Wiring the sweeper to a periodic hosted-service/scheduled job is a
+  thin follow-up (left unwired, consistent with the "stub/boundary, not fully wired" scope).
+- The success/failure outcomes reuse the spec-10 `notification.booking_confirmed.v1` / `notification.booking_failed.v1`
+  lane types (already registered), so no new notification consumer was needed.
 
 ---
 

@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
 
+from cordia_agent.contracts.preorder import PreorderReference
 from cordia_agent.tools.status_codes import AvailabilityMode
 
 
@@ -103,6 +104,14 @@ class BookingRequest(BaseModel):
     )
     special_requests: list[str] = Field(
         default_factory=list, description="Free-form special requests."
+    )
+    # Pre-order (spec 11 §4.3): the immutable, revalidated-before-commit reference embedded in
+    # the canonical payload so a pre-order is part of the canonical request hash (Inv-1/Inv-2 —
+    # changing any line forces a new revision). None ⇒ no pre-order; the canonical hasher omits
+    # null/empty so plain bookings hash identically to before this field existed.
+    preorder: PreorderReference | None = Field(
+        default=None,
+        description="Immutable pre-order reference, or None when no pre-order.",
     )
     # Target/system fields stay plain - TriState is meaningless here (not customer-volunteered).
     target_booking_id: str | None = Field(
