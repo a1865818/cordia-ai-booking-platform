@@ -76,6 +76,18 @@ public sealed class ReconcileWaitlistAcceptCommandHandler(
         }
 
         // Still in-flight — re-check after another delay, bounded so we never schedule forever.
+        //
+        // RESIDUAL (accepted, spec 11 §12): this reconcile narrows but does NOT fully close the
+        // cross-slot double-offer window. Between the lost-claim mint and the enrollment being marked
+        // terminal above, the enrollee has no live offer and stays eligible, so an INDEPENDENT slot
+        // opening could theoretically offer + accept them a second time inside this delay
+        // (Delay x MaxAttempts). The trade-off is deliberate: we favour eligibility and reconcile off
+        // the real 06 outcome rather than eagerly excluding a not-yet-booked enrollee (which would
+        // strand them if 06 later fails capacity/payment). The triggering race is already extremely
+        // narrow (an expire/decline must win the version-guarded claim in the tiny mint->claim gap AND
+        // a separate opening must run a full offer->accept cycle within the delay). To fully close it,
+        // a future spec would add an "accepted-offer / pending-booking" exclusion to FindEligibleAsync
+        // that is itself released on a terminal-failure outcome.
         var nextAttempt = command.Attempt + 1;
         if (nextAttempt >= WaitlistAcceptReconcileScheduler.MaxAttempts)
         {

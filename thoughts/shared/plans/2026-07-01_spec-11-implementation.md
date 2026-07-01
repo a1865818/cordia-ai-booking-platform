@@ -160,6 +160,37 @@ These are intentional non-goals, flagged as seams for future specs to wire in:
 - **Retention windows** (specs 12/14) and **initial SLO values** (spec 13).
 - **`apps/web` owner-review UI** — out of scope for this vertical.
 
+### Accepted residuals (from code review — trade-offs, not blockers)
+
+Behaviours we consciously left as-is, recorded here so a future spec knows exactly where to wire the
+follow-up. Each is low/informational severity given how narrow the window is.
+
+1. **Reconcile narrows but doesn't fully close the cross-slot double-offer window.** Between the
+   lost-claim mint and the enrollment being marked terminal, the enrollee has no live offer and stays
+   eligible, so an *independent* slot opening could theoretically offer + accept them a second time
+   inside the reconcile delay (`Delay` 5 min × `MaxAttempts` 3). Trade-off: favour eligibility and
+   reconcile off the real 06 outcome rather than eagerly excluding a not-yet-booked enrollee (which
+   would strand them if 06 later fails). Acknowledged with a code comment in
+   `ReconcileWaitlistAcceptCommandHandler`. **Future wiring:** add an "accepted-offer / pending-booking"
+   exclusion to `FindEligibleAsync` that is itself released on a terminal-failure outcome.
+2. **`CancelAsync` is overloaded to mean "fulfilled".** A booked enrollee is recorded by setting
+   `CancelledAt` (the column `FindEligibleAsync` filters on); the audit event correctly says
+   `waitlist.enrollment_fulfilled`, but the data model can't distinguish customer-cancelled from
+   fulfilled. **Future wiring:** add a dedicated `FulfilledAt` timestamp (or terminal enrollment state)
+   before any customer-facing read path reports "you cancelled".
+3. **No backstop if the process crashes between mint and reconcile-schedule.** The spec-04 mint and the
+   `reconcileScheduler.ScheduleAsync` insert commit in separate transactions; a crash in that gap leaves
+   a minted op with no reconcile scheduled and a re-eligible enrollee (on the HTTP accept path the
+   request also fails, so it's visible). **Future wiring:** a periodic sweep for minted operations
+   lacking a live/terminal offer would make this self-healing.
+4. **`identity_ref` backfills to `""`** (migration `20260701102603`). Practically moot —
+   `waitlist_enrollments` is created within this PR series and `SubmitConfirmedIntentValidator` requires
+   a non-empty `Identity`, so a blank row 400s rather than minting a blank-identity booking.
+   **Future wiring:** drop the backfill default / make the column `NOT NULL` once no legacy rows exist.
+5. **Accept/decline endpoints are unauthenticated** (`X-Actor`; `offerId` acts as a bearer capability) —
+   the documented spec-08 deferral; the booking is still bound to `enrollment.IdentityRef`.
+   **Future wiring:** front these with the spec-08 verification grant the §21.4 conversion path uses.
+
 ---
 
 ## Test strategy (from §27)
