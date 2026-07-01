@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.commands.reconcile_accept.v1.json",
+  "title": "WaitlistCommandsReconcileAcceptV1",
+  "description": "Queue-only command (spec 11 §5.1) crossing the broker to the waitlist consumer (consumer 'waitlist.processor'). Scheduled with a delay by accept/auto-accept when the Offered->Accepted claim was LOST to a concurrent expire/decline AFTER the booking was already minted through spec 04. The handler probes the minted operation's real outcome and settles the divergence: if the operation booked, the enrollment is marked terminal (fulfilled) so it is never re-offered (no double-book); if it terminally failed, nothing was booked so the enrollee stays eligible; if still in-flight, a bounded re-check is scheduled. Carries NO secrets or PII beyond opaque ids (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "offer_id",
+    "operation_id",
+    "enrollment_id"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.commands.reconcile_accept.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.commands.reconcile_accept.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes are scoped to this tenant (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (typically the enrollment id)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause (the accept whose claim was lost)."
+    },
+    "offer_id": {
+      "type": "string",
+      "description": "Stable id of the waitlist_offers row whose accept lost the claim after minting."
+    },
+    "operation_id": {
+      "type": "string",
+      "description": "Booking operation minted by the accept; the handler probes its terminal status."
+    },
+    "enrollment_id": {
+      "type": "string",
+      "description": "Enrollment the offer belonged to; marked terminal (fulfilled) if the operation booked."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based probe attempt; bounds the re-check when the operation is still in-flight."
+    }
+  }
+}

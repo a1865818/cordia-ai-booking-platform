@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
@@ -27,7 +28,10 @@ namespace Cordia.Application.Handlers.Waitlist.Accept;
 /// <para>Ordering is record-before-state and self-healing: the confirmed intent is submitted BEFORE the
 /// offer is claimed <c>Offered → Accepted</c>. Because the spec 04 submit is idempotent on a
 /// deterministic per-offer key, every path (fresh accept, concurrent accept, retry after a crash, and
-/// an already-Accepted replay) re-submits safely and never mints a duplicate booking.</para>
+/// an already-Accepted replay) re-submits safely and never mints a duplicate booking. If a concurrent
+/// expire/decline wins the claim AFTER the mint, the accept does NOT report 409 (the booking landed and
+/// spec 06 owns its outcome) — it settles and schedules a <see cref="ReconcileAccept.ReconcileWaitlistAcceptCommand"/>
+/// that reconciles the minted operation against the enrollment so the enrollee is never double-offered.</para>
 ///
 /// <para>Idempotent (Inv-5): an already-Accepted offer re-submits (04 replays) and returns. A
 /// non-Offered (and non-Accepted) offer throws <see cref="InvalidWaitlistOfferTransitionException"/>
@@ -45,6 +49,7 @@ public sealed class AcceptWaitlistOfferCommandHandler(
     ICanonicalRequestHasher hasher,
     IMediator mediator,
     IAuditEventRepository auditRepo,
+    WaitlistAcceptReconcileScheduler reconcileScheduler,
     IUnitOfWork uow)
     : IRequestHandler<AcceptWaitlistOfferCommand, Unit>
 {
@@ -97,12 +102,21 @@ public sealed class AcceptWaitlistOfferCommandHandler(
             WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct);
         if (won == 0)
         {
-            // Lost the race: a concurrent accept/expire moved the row. Reload and re-evaluate.
+            // Lost the race: a concurrent accept/expire/decline moved the row. Reload and re-evaluate.
             var reloaded = await offerRepo.GetAsync(command.OfferId, ct);
             if (reloaded?.Status == WaitlistOfferStatus.Accepted)
                 return Unit.Value; // concurrent accept won — same booking already minted (idempotent)
-            throw new InvalidWaitlistOfferTransitionException(
-                reloaded?.Status ?? offer.Status, WaitlistOfferStatus.Accepted);
+
+            // Lost to a concurrent expire/decline AFTER the booking was already minted. The booking
+            // record is the source of truth (spec 06 owns its terminal outcome + the customer
+            // notification), so do NOT report 409. Schedule a reconcile that, once 06 finishes, marks
+            // the enrollment fulfilled if it booked (so the enrollee is never re-offered → no
+            // double-book) or leaves it eligible if it failed (spec 11 §5.1).
+            await uow.ExecuteInTransactionAsync(
+                ct2 => reconcileScheduler.ScheduleAsync(
+                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2),
+                ct);
+            return Unit.Value;
         }
 
         await uow.ExecuteInTransactionAsync(async ct2 =>

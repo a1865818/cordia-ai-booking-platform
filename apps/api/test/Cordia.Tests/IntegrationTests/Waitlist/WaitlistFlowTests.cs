@@ -7,6 +7,7 @@ using Cordia.Application.Handlers.Waitlist.Decline;
 using Cordia.Application.Handlers.Waitlist.Enroll;
 using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -59,6 +60,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             new CanonicalRequestHasher(),
             null!, // IMediator — Phase 6 (04→06 wiring)
             new AuditEventRepository(ctx),
+            new WaitlistAcceptReconcileScheduler(new ScheduledJobRepository(ctx)),
             new UnitOfWork(ctx));
 
     private static DeclineWaitlistOfferCommandHandler BuildDecline(ApplicationDbContext ctx)

@@ -1,6 +1,7 @@
 ﻿using System.Text.Json.Nodes;
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Waitlist.Accept;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -34,12 +35,16 @@ public class AcceptWaitlistOfferHandlerTests
     private readonly Mock<ICanonicalRequestHasher> _hasher = new();
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
+    private readonly Mock<IScheduledJobRepository> _jobs = new();
     private readonly Mock<IUnitOfWork> _uow = new();
 
     private readonly List<SubmitConfirmedIntentCommand> _submitted = new();
 
     public AcceptWaitlistOfferHandlerTests()
     {
+        _jobs.Setup(j => j.ExistsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _jobs.Setup(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         _hasher.Setup(h => h.Hash(It.IsAny<JsonNode>())).Returns(new CanonicalHash("canon.v1", "H"));
         _uow.Setup(u => u.ExecuteInTransactionAsync(
                 It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<CancellationToken>()))
@@ -54,7 +59,8 @@ public class AcceptWaitlistOfferHandlerTests
 
     private AcceptWaitlistOfferCommandHandler CreateHandler() => new(
         _offerRepo.Object, _enrollmentRepo.Object, _hasher.Object,
-        _mediator.Object, _auditRepo.Object, _uow.Object);
+        _mediator.Object, _auditRepo.Object,
+        new WaitlistAcceptReconcileScheduler(_jobs.Object), _uow.Object);
 
     [Fact]
     public async Task Accept_Submits_HashMatching_Confirmed_Intent_Under_Offer_Operation_And_Claims()
@@ -114,6 +120,28 @@ public class AcceptWaitlistOfferHandlerTests
             CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None));
 
         Assert.Empty(_submitted);
+    }
+
+    [Fact]
+    public async Task Accept_LostClaimAfterMint_SchedulesReconcile_DoesNotThrow()
+    {
+        // Offer is Offered at read time (so we mint), but a concurrent expire/decline wins the claim:
+        // TryResolve returns 0 and the reload shows a terminal non-Accepted state.
+        _offerRepo.SetupSequence(r => r.GetAsync(OfferId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Offered))
+            .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Expired));
+        _offerRepo.Setup(r => r.TryResolveAsync(
+                TenantId, OfferId, It.IsAny<long>(),
+                WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted,
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        // The booking was already minted, so the accept must NOT throw 409...
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+
+        Assert.Single(_submitted); // booking minted (record-before-state)
+        // ...and it schedules a reconcile to settle the orphaned operation against the enrollment.
+        _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

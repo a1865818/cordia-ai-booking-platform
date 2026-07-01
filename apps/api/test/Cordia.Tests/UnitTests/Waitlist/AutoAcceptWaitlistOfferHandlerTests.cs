@@ -1,6 +1,7 @@
 ﻿using System.Text.Json.Nodes;
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Waitlist.AutoAccept;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
@@ -37,12 +38,16 @@ public class AutoAcceptWaitlistOfferHandlerTests
     private readonly Mock<ICanonicalRequestHasher> _hasher = new();
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
+    private readonly Mock<IScheduledJobRepository> _jobs = new();
     private readonly Mock<IUnitOfWork> _uow = new();
 
     private readonly List<SubmitConfirmedIntentCommand> _submitted = new();
 
     public AutoAcceptWaitlistOfferHandlerTests()
     {
+        _jobs.Setup(j => j.ExistsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _jobs.Setup(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         _hasher.Setup(h => h.Hash(It.IsAny<JsonNode>())).Returns(new CanonicalHash("canon.v1", "H"));
         _uow.Setup(u => u.ExecuteInTransactionAsync(
                 It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<CancellationToken>()))
@@ -55,7 +60,8 @@ public class AutoAcceptWaitlistOfferHandlerTests
 
     private AutoAcceptWaitlistOfferCommandHandler CreateHandler() => new(
         _offerRepo.Object, _enrollmentRepo.Object, _hasher.Object,
-        _mediator.Object, _auditRepo.Object, _uow.Object,
+        _mediator.Object, _auditRepo.Object,
+        new WaitlistAcceptReconcileScheduler(_jobs.Object), _uow.Object,
         NullLogger<AutoAcceptWaitlistOfferCommandHandler>.Instance);
 
     [Fact]

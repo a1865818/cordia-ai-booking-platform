@@ -27,6 +27,7 @@ using Cordia.Application.Handlers.Waitlist;
 using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Application.Messaging;
 using Cordia.Application.Services;
 using Cordia.Domain.Enums;
@@ -213,6 +214,20 @@ public static class ApplicationServiceCollectionExtensions
                     env.TenantId,
                     ExtractString(env.Payload, "offer_id") ?? string.Empty));
 
+            // reconcile_accept.v1: settle a waitlist accept whose offer claim was lost after the booking
+            // was minted (spec 11 §5.1). Scheduled (delayed) by accept/auto-accept via
+            // WaitlistAcceptReconcileScheduler; probes the operation and either marks the enrollment
+            // fulfilled (booked) or leaves it eligible (failed). Inbox-deduplicated (waitlist.processor).
+            registry.Register(ReconcileWaitlistAcceptCommand.MessageType,
+                env => new ReconcileWaitlistAcceptCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty,
+                    ExtractString(env.Payload, "operation_id") ?? string.Empty,
+                    ExtractString(env.Payload, "enrollment_id") ?? string.Empty,
+                    ExtractInt(env.Payload, "attempt") ?? 0));
+
             // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All
             // steps are inbox-deduplicated (one transaction each, Inv-5/Inv-9). The start message
             // carries the immutable PreorderReference; every other step carries only saga_id
@@ -254,6 +269,9 @@ public static class ApplicationServiceCollectionExtensions
 
         // Spec 11 — waitlist offer-expiry scheduler; scoped to share the ambient inbox transaction.
         services.AddScoped<OfferExpiryScheduler>();
+
+        // Spec 11 — waitlist accept-reconcile scheduler (lost-claim-after-mint); scoped to the ambient tx.
+        services.AddScoped<WaitlistAcceptReconcileScheduler>();
 
         // Spec 11 — pre-order saga services; scoped to share the ambient DbContext / inbox transaction.
         services.AddScoped<LiveItemRevalidationService>();

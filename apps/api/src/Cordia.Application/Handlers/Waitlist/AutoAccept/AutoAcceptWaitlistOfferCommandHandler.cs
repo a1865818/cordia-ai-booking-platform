@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
@@ -28,6 +29,7 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
     ICanonicalRequestHasher hasher,
     IMediator mediator,
     IAuditEventRepository auditRepo,
+    WaitlistAcceptReconcileScheduler reconcileScheduler,
     IUnitOfWork uow,
     ILogger<AutoAcceptWaitlistOfferCommandHandler> logger)
     : IRequestHandler<AutoAcceptWaitlistOfferCommand, Unit>
@@ -113,11 +115,17 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
             var reloaded = await offerRepo.GetAsync(command.OfferId, ct);
             if (reloaded?.Status == WaitlistOfferStatus.Accepted)
                 return Unit.Value; // concurrent auto-accept won — same booking already minted (idempotent)
+
             // Lost to a concurrent expire/decline after the booking was minted (rare). The spec-04 record
-            // stands; a human/reconcile handles the edge. Do not throw on a queue-driven message.
+            // stands (06 owns its outcome), so schedule a reconcile that settles the orphaned operation
+            // against the enrollment — booked → mark fulfilled so no re-offer; failed → stays eligible.
             logger.LogWarning(
-                "Waitlist auto-accept: offer {OfferId} moved to {Status} after the booking was minted.",
+                "Waitlist auto-accept: offer {OfferId} moved to {Status} after the booking was minted; scheduling reconcile.",
                 command.OfferId, reloaded?.Status);
+            await uow.ExecuteInTransactionAsync(
+                ct2 => reconcileScheduler.ScheduleAsync(
+                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2),
+                ct);
             return Unit.Value;
         }
 
