@@ -17,8 +17,9 @@ namespace Cordia.Application.Handlers.Waitlist.Match;
 /// find the FIFO-first eligible enrollee; reserve a temporary capacity hold (spec 07); insert the
 /// offer (Matched) and advance it to Offered with an expiry; schedule the offer-expiry job; and
 /// enqueue the offer notification. If the enrollee has a satisfiable <see cref="AutoBookGrant"/>
-/// (§20) the offer is auto-accepted instead: the hold is finalized and a booking-confirmed event is
-/// emitted — no customer offer round-trip.</para>
+/// (§20) the offer is auto-booked instead: rather than finalizing capacity or emitting a bespoke
+/// event here (Inv-1), it enqueues the auto-accept step, which mints an auditable confirmed revision
+/// through the same spec-04 front door a customer accept uses — no customer offer round-trip.</para>
 ///
 /// <para><b>Settles (no-op) without throwing</b> when there is no eligible enrollee or no capacity
 /// (NoCapacity / Ambiguous), so the message is not redelivered into a poison loop.</para>

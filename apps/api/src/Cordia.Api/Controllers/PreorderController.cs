@@ -16,17 +16,20 @@ namespace Cordia.Api.Controllers;
 ///
 /// Thin by design: resolves tenant (X-Tenant-Id) + operator (X-Actor), sends a MediatR command, and
 /// maps typed domain exceptions via the GlobalExceptionHandler (saga not found → 404, illegal
-/// transition → 409, missing operator/customer evidence → 400). Full operator authorization is the
-/// spec-08 seam (TODO); every action is audited with the operator + customer-agreement evidence.
+/// transition → 409, missing grant → 400, invalid/expired customer grant → 403). The customer half of
+/// §21.4 is a real spec-08 verification grant consumed by the convert handler; staff RBAC over which
+/// operators may act is the §12 open decision, so the operator actor is recorded (audited) but not yet
+/// role-gated.
 /// </summary>
 [ApiController]
 [Route("api/preorder")]
 public class PreorderController(IMediator mediator, ITenantContext tenant) : ControllerBase
 {
-    /// <summary>Converts a parked pre-order to a standalone order (operator + recorded customer agreement).</summary>
+    /// <summary>Converts a parked pre-order to a standalone order (operator + a customer verification grant).</summary>
     [HttpPost("sagas/{sagaId}/convert-standalone")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> ConvertStandalone(
@@ -39,7 +42,7 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
 
         await mediator.Send(new ConvertPreorderToStandaloneCommand(
-            tenant.TenantId, sagaId, ResolveOperator(actor), body.CustomerAgreementEvidenceId ?? string.Empty), ct);
+            tenant.TenantId, sagaId, ResolveOperator(actor), body.GrantId ?? string.Empty), ct);
 
         return Ok(new { saga_id = sagaId, status = "converted_to_standalone" });
     }
@@ -69,9 +72,10 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         => string.IsNullOrWhiteSpace(actor) ? "operator" : actor;
 }
 
-/// <summary>Body for POST /api/preorder/sagas/{sagaId}/convert-standalone.</summary>
+/// <summary>Body for POST /api/preorder/sagas/{sagaId}/convert-standalone. The grant is the customer's
+/// single-use spec-08 verification grant evidencing agreement to the standalone conversion (§21.4).</summary>
 public sealed record ConvertStandaloneRequest(
-    [property: JsonPropertyName("customer_agreement_evidence_id")] string? CustomerAgreementEvidenceId)
+    [property: JsonPropertyName("grant_id")] string? GrantId)
 {
     public ConvertStandaloneRequest() : this((string?)null) { }
 }

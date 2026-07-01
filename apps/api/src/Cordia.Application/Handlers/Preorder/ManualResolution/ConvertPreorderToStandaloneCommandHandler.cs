@@ -1,7 +1,9 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Preorder;
 using MediatR;
@@ -13,15 +15,25 @@ namespace Cordia.Application.Handlers.Preorder.ManualResolution;
 /// Converts a pre-order parked in <c>ManualReview</c> into a standalone order (spec 11 §21.4). This is
 /// the audited operator + customer resolution of the "booking committed but pre-order could not be
 /// bound" park (<c>CompensatingBooking → ManualReview</c>): rather than leaving the pre-order to
-/// linger, an operator — with recorded customer agreement — finalizes it as a standalone food order.
+/// linger, an operator — with the customer's recorded agreement — finalizes it as a standalone order.
+///
+/// <para>The customer half of §21.4 is enforced as a real, single-use spec-08 verification grant: the
+/// handler resolves the customer + committed booking from the saga's operation and
+/// <see cref="IGrantAuthorizationService.ConsumeGrantAsync"/>s the supplied grant (<c>Modify</c>
+/// action, scoped to that booking) inside the same transaction — a missing/expired/mismatched grant
+/// throws <c>VerificationRequiredException</c> (403) and rolls the whole conversion back. The operator
+/// half is the audited actor; staff RBAC over which operators may act is the §12 open decision.</para>
 ///
 /// <para>Advances <c>ManualReview → Completed</c> under the version+state guard, marking the saga
 /// <c>IsStandalone</c>, and emits the single combined outcome + an audit event carrying BOTH the
-/// operator actor and the customer-agreement evidence id (§21.4). Idempotent: an already-Completed
-/// saga returns success; any other non-ManualReview state is a 409.</para>
+/// operator actor and the consumed customer grant id (§21.4). Idempotent: an already-Completed saga
+/// returns success WITHOUT consuming a grant; any other non-ManualReview state is a 409.</para>
 /// </summary>
 public sealed class ConvertPreorderToStandaloneCommandHandler(
     IPreorderSagaRepository sagaRepo,
+    IBookingReadRepository bookingRead,
+    IBookingRepository bookings,
+    IGrantAuthorizationService grants,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
@@ -36,7 +48,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
         if (saga is null || saga.TenantId != command.TenantId)
             throw new PreorderSagaNotFoundException(command.SagaId);
 
-        // Idempotent: already resolved by a prior convert (standalone Completed).
+        // Idempotent: already resolved by a prior convert (standalone Completed) — no fresh grant needed.
         if (saga.SagaState == PreorderSagaState.Completed)
         {
             logger.LogInformation("Preorder convert: saga {SagaId} already Completed; settling.", command.SagaId);
@@ -49,6 +61,20 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
 
         PreorderSagaStateMachine.EnsureAllowed(PreorderSagaState.ManualReview, PreorderSagaState.Completed);
 
+        // Resolve the customer + committed booking this ManualReview park sits on (booking_committed →
+        // CommittingPreorder → CompensatingBooking → ManualReview), so the customer-agreement grant is
+        // scoped to the authoritative booking rather than to operator-supplied input (§21.4, spec 08).
+        var projection = await bookingRead.GetBookingProjectionByOperationIdAsync(command.TenantId, saga.OperationId, ct);
+        var booking = projection is null
+            ? null
+            : await bookings.GetByIdAsync(command.TenantId, projection.BookingId, ct);
+        if (booking is null)
+        {
+            // No committed booking to establish customer agreement against — cannot authorize (§21.4).
+            throw new VerificationRequiredException(
+                command.TenantId, customerRef: string.Empty, VerificationActionEnum.Modify, targetBookingId: null);
+        }
+
         var won = false;
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
@@ -58,6 +84,13 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                 setFailureReason: "converted_to_standalone", setStandalone: true, ct: ct2) > 0;
             if (!won)
                 return;
+
+            // Customer half of §21.4: consume the single-use verification grant scoped to the committed
+            // booking. Throws VerificationRequiredException (403) and rolls back the advance if the grant
+            // is missing/expired/for a different customer, action, or booking.
+            await grants.ConsumeGrantAsync(
+                command.TenantId, command.GrantId, booking.CustomerId,
+                VerificationActionEnum.Modify, booking.BookingId, ct2);
 
             await outboxRepo.AddAsync(new OutboxMessage
             {
@@ -89,9 +122,12 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                 {
                     saga_id = command.SagaId,
                     operation_id = saga.OperationId,
-                    // §21.4 audit: BOTH parties on record — the operator who acted and the customer's agreement.
+                    // §21.4 audit: BOTH parties on record — the operator who acted and the customer's
+                    // agreement, evidenced by the consumed spec-08 verification grant + its booking scope.
                     operator_actor = command.OperatorActor,
-                    customer_agreement_evidence_id = command.CustomerAgreementEvidenceId,
+                    customer_grant_id = command.GrantId,
+                    customer_ref = booking.CustomerId,
+                    booking_id = booking.BookingId,
                 }),
                 OccurredAt = now,
             }, ct2);

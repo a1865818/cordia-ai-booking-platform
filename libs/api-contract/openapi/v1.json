@@ -330,7 +330,7 @@
       "ConvertStandaloneRequest": {
         "additionalProperties": false,
         "properties": {
-          "customer_agreement_evidence_id": {
+          "grant_id": {
             "nullable": true,
             "type": "string"
           }
@@ -3274,6 +3274,26 @@
               }
             },
             "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {

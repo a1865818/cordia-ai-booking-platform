@@ -4,16 +4,28 @@
 **Owner project(s):** `apps/api` (Domain, Application, Infrastructure, Api) for waitlist matching, menu ingestion/approval, and the pre-order saga; `apps/langgraph` for the foreground catalog tools and the pre-order draft; `apps/web` for owner menu review; `libs/shared-schemas` for the catalog and pre-order-draft contracts.
 **Source design sections:** §20 Waitlist (lines 1797–1819); §21 Restaurant Menu and Pre-order (lines 1821–1924); §6.5 approved catalog lookup / availability modes (lines 406–420, 429); §11 Booking Workflow State Machine — `AlternativesRequired → Waitlisted` (lines 1136, 1145); §12 Job and Event Architecture — `waitlist.commands` / `menu.commands` (lines 1158–1176); §22 Data Model — `vendor_catalogs`, `vendor_catalog_items` (lines 1926–1977); §23 tool surface — `search_vendor_catalog`, `get_catalog_item`, `match_waitlist_offer`, `commit_preorder`, `ingest_vendor_menu`, `publish_vendor_catalog` (lines 1979–2031); §27 Testing (lines 2170–2237); §31 Decisions (lines 2387–2404).
 
-> **Implementation status (2026-06-30):** The **menu-ingestion vertical** (§5.2) is implemented: the
-> `menu.commands.ingest.v1` queue contract + isolated ingestion consumer (`uploaded → scanning →
-> {quarantined | extracting → draft_ready}`, fail-secure), the catalog state machine, the published-only
-> read path (`search_vendor_catalog`/`get_catalog_item`), and the owner lifecycle
-> (`MenuController`: upload → review → approve → publish, with prior-version supersede). The malware
-> scanner and the isolated extractor are **deterministic stub ports** with the real isolation boundary
-> enforced + tested; the real ClamAV/LLM swap in behind the same ports. The LangGraph extraction agent
-> (empty tool surface, untrusted-text handling) exists in `apps/langgraph` but is **not yet wired** to
-> the .NET consumer. Waitlist matching and the pre-order saga are **not yet implemented**. See the plan
-> at `thoughts/shared/plans/2026-06-30_spec-11-menu-ingestion.md` for the trade-offs (ADR table).
+> **Implementation status (2026-07-01):** All three verticals are implemented and integrated with the
+> merged sibling specs (04/05/06/07/08/10). **Menu ingestion** (§5.2): the `menu.commands.ingest.v1`
+> contract + isolated ingestion consumer (`uploaded → scanning → {quarantined | extracting →
+> draft_ready}`, fail-secure), the catalog state machine, the published-only read path
+> (`search_vendor_catalog`/`get_catalog_item`), and the owner lifecycle (`MenuController`: upload →
+> review → approve → publish, prior-version supersede). **Waitlist** (§5.1): enroll → match → temporary
+> hold (07) → offer → accept/decline/expire → release, with offer-expiry re-match; a match that
+> satisfies a recorded `AutoBookGrant` (§20) is auto-booked through the **same spec-04 front door** a
+> customer accept uses (Inv-1) — never via a bespoke booking path. **Pre-order saga** (§5.3): the saga
+> revalidates the live menu, reserves items, then **delegates the whole booking (capacity/payment/
+> provider-create) to the spec-06 operation engine** and awaits its terminal
+> `preorder.commands.booking_committed.v1` / `booking_failed.v1` signal before committing the pre-order
+> and emitting the one combined outcome (Inv-8); compensation unwinds the reserved items and parks a
+> post-commit failure in `ManualReview` for an operator+customer standalone conversion (§21.4). This
+> delegation supersedes the self-owned `HoldingCapacity` / `AuthorizingPayment` / `CompensatingHold`
+> saga steps sketched in the §5.3 diagram below (those enum members are retained but unwired).
+> The malware scanner and isolated extractor remain **deterministic stub ports** with the real
+> isolation boundary enforced + tested (real ClamAV/LLM swap in behind the same ports); the LangGraph
+> extraction agent (empty tool surface, untrusted-text handling) exists in `apps/langgraph` but is
+> **not yet wired** to the .NET consumer. Remaining open items are the §12 decisions (auto-book consent
+> UX/evidence format, payment auth-vs-capture sequence, retention windows, SLO ratification), deferred
+> by design and coordinated with siblings 04/07/09/13/14.
 
 ## 1. Purpose & scope
 
@@ -328,7 +340,7 @@ Because a `catalog_version` is **immutable**, its items are safely cached with i
 - **07-capacity-and-holds.md** — provides the atomic temporary hold for waitlist offers and the pre-order capacity hold, plus the idempotent release used by offer expiry and saga compensation.
 - **09-payment-deposit-link.md** — deposit collection via Stripe payment link (per-restaurant toggle); this spec never touches the payment provider directly.
 - **10-notifications.md** — delivers the offer / offer-expiry / **single combined** pre-order outcome notifications, each independently deduplicated; gated on booking persistence (Inv-8/9).
-- **08-identity-and-manage-booking.md** — a waitlist-offer accept is a verified follow-up; converting a pre-order to a standalone order is an authorized operator action.
+- **08-identity-and-manage-booking.md** — a waitlist-offer accept is a verified follow-up; converting a pre-order to a standalone order requires the customer's agreement, enforced as a single-use spec-08 verification grant (`Modify` action, scoped to the committed booking) consumed by the convert handler via `IGrantAuthorizationService`. The operator half is the audited actor; staff RBAC over *which* operators may convert/approve/publish remains the §12 open decision (not yet role-gated).
 - **12-data-model-and-persistence.md** — owns canonical DDL/EF Core mapping for `vendor_catalogs`, `vendor_catalog_items`, and the logical `waitlist_enrollments` / `waitlist_offers` / `preorder_sagas` tables; sketches here defer to it.
 - **13-observability-and-slos.md** — consumes metrics: offer accept/decline/expire rates, match latency, extraction-confidence distribution, catalog-publish events, saga step durations + compensation rate.
 - **14-security-and-privacy.md** — owns the prompt-injection boundary policy the extraction agent enforces, tenant-scoped object-storage paths for artifacts, and the auto-book-consent record requirements.

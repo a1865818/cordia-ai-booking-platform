@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://cordia.app/schemas/job-events/preorder.commands.step.v1.json",
   "title": "PreorderCommandsStepV1",
-  "description": "Shared envelope shape for every pre-order saga step AFTER start (spec 11 §5.3) on the preorder.commands lane (consumer 'preorder.processor'): hold_capacity, reserve_items, authorize_payment, commit_booking, commit_preorder, compensate_items, compensate_hold, compensate_booking, and reconcile — each a distinct message_type sharing this shape. Carries ONLY the saga + operation ids (Inv-12); the handler reloads the saga row for the immutable reference + step checkpoints (HoldId / DepositSessionId). Each is inbox-deduplicated and idempotent under duplicate delivery (Inv-5/Inv-9).",
+  "description": "Shared envelope shape for every internal pre-order saga step AFTER start (spec 11 §5.3) on the preorder.commands lane (consumer 'preorder.processor'). Under the booking-delegated design (booking — capacity/07, payment/09, provider-create/06 — is owned by the spec-06 engine) the saga's own steps are: reserve_items, commit_preorder, compensate_items, compensate_booking, and reconcile — each a distinct message_type sharing this shape. (The 06 → saga terminal signals booking_committed.v1 / booking_failed.v1 are resolved by operation_id and use their own schemas, not this envelope.) Carries ONLY the saga + operation ids (Inv-12); the handler reloads the saga row for the immutable reference + step checkpoints. Each is inbox-deduplicated and idempotent under duplicate delivery (Inv-5/Inv-9).",
   "type": "object",
   "additionalProperties": false,
   "required": ["message_type", "tenant_id", "saga_id", "operation_id"],
@@ -11,13 +11,9 @@
       "type": "string",
       "description": "One of the preorder.commands.* step types.",
       "enum": [
-        "preorder.commands.hold_capacity.v1",
         "preorder.commands.reserve_items.v1",
-        "preorder.commands.authorize_payment.v1",
-        "preorder.commands.commit_booking.v1",
         "preorder.commands.commit_preorder.v1",
         "preorder.commands.compensate_items.v1",
-        "preorder.commands.compensate_hold.v1",
         "preorder.commands.compensate_booking.v1",
         "preorder.commands.reconcile.v1"
       ]
