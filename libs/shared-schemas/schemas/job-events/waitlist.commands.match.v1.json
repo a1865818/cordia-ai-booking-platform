@@ -51,7 +51,8 @@
     },
     "available_seats": {
       "type": "integer",
-      "description": "Seats available in the matched opening; bounds the enrollee party size that can be offered."
+      "minimum": 1,
+      "description": "Seats available in the matched opening; bounds the enrollee party size that can be offered. Must be ≥ 1 — a 0/negative opening cannot offer any seat."
     }
   }
 }

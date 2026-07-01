@@ -10,8 +10,12 @@ namespace Cordia.Domain.Waitlist;
 /// </summary>
 public static class WaitlistEnrollmentExtensions
 {
-    /// <summary>Shared options: snake_case wire shape, matching the §4.4 contract field names.</summary>
-    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    /// <summary>
+    /// Shared options: snake_case wire shape, matching the §4.4 contract field names. Private so the
+    /// wire contract can't be mutated from outside — <see cref="JsonSerializerOptions"/> is mutable
+    /// until first use, and a shared public instance would let unrelated code change parsing globally.
+    /// </summary>
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };

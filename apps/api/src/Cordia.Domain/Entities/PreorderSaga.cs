@@ -28,18 +28,9 @@ public class PreorderSaga : ITenantScoped
     public string? DepositSessionId { get; set; }
 
     /// <summary>
-    /// Booking slot the capacity hold is taken against (from the confirmed booking request); null for
-    /// a standalone order. Persisted so the hold step + crash-recovery resume can reserve without the
-    /// slot being re-supplied on every message.
-    /// </summary>
-    public string? SlotId { get; set; }
-
-    /// <summary>Seats/covers to hold for the booking; 0 for a standalone order.</summary>
-    public int RequestedCapacity { get; set; }
-
-    /// <summary>
-    /// True for a standalone order (no booking, §21.4): the saga skips the capacity-hold and
-    /// booking-commit steps. False (default) for a booking-attached pre-order.
+    /// True once a parked pre-order has been resolved into a standalone order (§21.4, set by the
+    /// operator convert path); false (default) for a booking-attached pre-order. The saga never starts
+    /// standalone — booking is always delegated to the spec-06 engine (divergence #2).
     /// </summary>
     public bool IsStandalone { get; set; }
 

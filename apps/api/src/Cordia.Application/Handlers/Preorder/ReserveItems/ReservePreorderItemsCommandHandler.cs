@@ -42,9 +42,17 @@ public sealed class ReservePreorderItemsCommandHandler(
 
         if (status == ItemReservationStatus.Reserved)
         {
-            await sagaRepo.TryAdvanceStateAsync(
+            // Version+state-guarded advance: if a concurrent/duplicate execution already advanced this
+            // step, we lose the race (0 rows) and MUST NOT enqueue the 06 trigger again (that would
+            // double-drive the booking) — settle instead.
+            var won = await sagaRepo.TryAdvanceStateAsync(
                 command.TenantId, command.SagaId, saga.Version,
                 PreorderSagaState.ReservingItems, PreorderSagaState.CommittingBooking, now, ct: ct);
+            if (won == 0)
+            {
+                logger.LogInformation("Preorder reserve-items: saga {SagaId} advanced concurrently; settling.", command.SagaId);
+                return Unit.Value;
+            }
 
             // Trigger the spec-06 operation engine for this operation. 06 drives
             // Accepted → … → Booked (owning capacity/payment/create) and, because the operation is
@@ -77,9 +85,14 @@ public sealed class ReservePreorderItemsCommandHandler(
 
         // Unavailable: release any partial reservation (the saga holds no capacity of its own now
         // that booking is delegated to 06) → CompensatingItems → FailedFinal.
-        await sagaRepo.TryAdvanceStateAsync(
+        var advanced = await sagaRepo.TryAdvanceStateAsync(
             command.TenantId, command.SagaId, saga.Version,
             PreorderSagaState.ReservingItems, PreorderSagaState.CompensatingItems, now, setFailureReason: "items_unavailable", ct: ct);
+        if (advanced == 0)
+        {
+            logger.LogInformation("Preorder reserve-items: saga {SagaId} advanced concurrently; settling.", command.SagaId);
+            return Unit.Value;
+        }
 
         await outboxRepo.AddAsync(
             PreorderSagaMessages.StepMessage(command.TenantId, PreorderSagaMessages.CompensateItems, command.SagaId, command.OperationId, now, command.CorrelationId), ct);

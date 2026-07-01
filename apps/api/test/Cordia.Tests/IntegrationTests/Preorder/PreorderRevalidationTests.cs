@@ -105,7 +105,7 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
         var handler = BuildStart(ctx);
         await using var tx = await ctx.Database.BeginTransactionAsync();
         await handler.Handle(
-            new StartPreorderSagaCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, operationId, referenceJson, Standalone: false),
+            new StartPreorderSagaCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, operationId, referenceJson),
             CancellationToken.None);
         await tx.CommitAsync();
     }

@@ -38,16 +38,19 @@ public sealed class CancelWaitlistEnrollmentCommandHandler(
             await enrollmentRepo.CancelAsync(
                 command.TenantId, command.EnrollmentId, enrollment.Version, now, ct2);
 
-            // Release any live offer + roll back its temporary hold so the slot is freed.
+            // Release any live offer + roll back its temporary hold so the slot is freed. Resolve the
+            // offer FIRST (version-guarded) and release the hold ONLY when we win: a concurrent accept
+            // finalizing this same offer/hold would move the row, so we'd lose the claim (0 rows) and
+            // must NOT release capacity out from under the winning booking (Inv-6).
             var offer = await offerRepo.GetLiveByEnrollmentAsync(command.EnrollmentId, ct2);
             if (offer is not null)
             {
-                if (!string.IsNullOrEmpty(offer.HoldId))
-                    await capacity.ReleaseAsync(command.TenantId, offer.HoldId, ReleaseReason.Compensated, ct2);
-
-                await offerRepo.TryResolveAsync(
+                var released = await offerRepo.TryResolveAsync(
                     command.TenantId, offer.OfferId, offer.Version, offer.Status,
                     WaitlistOfferStatus.Released, now, ct2);
+
+                if (released > 0 && !string.IsNullOrEmpty(offer.HoldId))
+                    await capacity.ReleaseAsync(command.TenantId, offer.HoldId, ReleaseReason.Compensated, ct2);
             }
 
             await auditRepo.AddAsync(new AuditEvent

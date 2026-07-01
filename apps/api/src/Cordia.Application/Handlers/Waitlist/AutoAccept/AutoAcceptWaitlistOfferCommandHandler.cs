@@ -69,6 +69,16 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
             return Unit.Value;
         }
 
+        // Inv-6 / M7: never auto-book a cancelled enrollment — settle without booking (the offer-expiry
+        // backstop releases the hold + re-matches).
+        if (enrollment.CancelledAt is not null)
+        {
+            logger.LogWarning(
+                "Waitlist auto-accept: enrollment {EnrollmentId} is cancelled; settling without booking.",
+                offer.EnrollmentId);
+            return Unit.Value;
+        }
+
         // §20: re-verify the recorded consent still covers this matched slot. If the grant was removed
         // or no longer permits (party/window/deposit), DO NOT auto-book — settle fail-secure.
         var grant = enrollment.GetAutoBookGrant();

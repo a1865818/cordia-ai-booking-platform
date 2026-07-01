@@ -21,7 +21,8 @@ public sealed class CommitPreorderCommandHandler(
     ILogger<CommitPreorderCommandHandler> logger)
     : IRequestHandler<CommitPreorderCommand, Unit>
 {
-    /// <summary>Combined success outcome: booking + pre-order committed, deposit held (Inv-8).</summary>
+    /// <summary>Combined success outcome: booking + pre-order committed (deposit, if any, is owned by
+    /// the 06/09 payment path, not the saga) — emitted exactly once (Inv-8).</summary>
     public const string OutcomeConfirmedEventType = "notification.booking_confirmed.v1";
 
     public async Task<Unit> Handle(CommitPreorderCommand command, CancellationToken ct)
@@ -56,7 +57,6 @@ public sealed class CommitPreorderCommandHandler(
             {
                 saga_id = command.SagaId,
                 operation_id = command.OperationId,
-                deposit_session_id = saga.DepositSessionId,
                 preorder = true,
             }),
             OccurredAt = now,
@@ -64,7 +64,7 @@ public sealed class CommitPreorderCommandHandler(
 
         await auditRepo.AddAsync(PreorderSagaSupport.Audit(
             command.TenantId, "preorder.committed", command.SagaId, command.OperationId, now,
-            new { saga_id = command.SagaId, deposit_session_id = saga.DepositSessionId }), ct);
+            new { saga_id = command.SagaId }), ct);
         return Unit.Value;
     }
 }

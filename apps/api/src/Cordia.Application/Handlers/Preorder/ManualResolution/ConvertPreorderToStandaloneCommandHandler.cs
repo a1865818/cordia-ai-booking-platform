@@ -48,10 +48,12 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
         if (saga is null || saga.TenantId != command.TenantId)
             throw new PreorderSagaNotFoundException(command.SagaId);
 
-        // Idempotent: already resolved by a prior convert (standalone Completed) — no fresh grant needed.
-        if (saga.SagaState == PreorderSagaState.Completed)
+        // Idempotent ONLY for a prior convert (Completed AND IsStandalone) — no fresh grant needed. A
+        // normally-completed pre-order (Completed but not standalone) is NOT a convert target: fall
+        // through so the state guard below rejects it as a 409 rather than silently "succeeding".
+        if (saga.SagaState == PreorderSagaState.Completed && saga.IsStandalone)
         {
-            logger.LogInformation("Preorder convert: saga {SagaId} already Completed; settling.", command.SagaId);
+            logger.LogInformation("Preorder convert: saga {SagaId} already converted to standalone; settling.", command.SagaId);
             return Unit.Value;
         }
 

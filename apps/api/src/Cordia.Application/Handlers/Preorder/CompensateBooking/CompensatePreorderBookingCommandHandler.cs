@@ -21,6 +21,12 @@ namespace Cordia.Application.Handlers.Preorder.CompensateBooking;
 /// commit-booking step, was removed); the handler is kept as a defensive backstop for reconcile /
 /// recovery. Runs in the inbox transaction; settles when the saga is missing or no longer in
 /// CompensatingBooking (Inv-5/Inv-9).</para>
+///
+/// <para><b>Inv-8 — parking is not a terminal outcome.</b> The park emits only a NEUTRAL
+/// "still confirming / under review" customer notice, not <c>notification.booking_failed.v1</c>: the
+/// booking is committed, so a "failed" notification here would contradict the confirmed outcome a
+/// later convert-to-standalone emits. The single combined outcome is owned by the terminal resolution
+/// (convert → confirmed, cancel → failed) so the customer receives exactly one authoritative outcome.</para>
 /// </summary>
 public sealed class CompensatePreorderBookingCommandHandler(
     IPreorderSagaRepository sagaRepo,
@@ -48,8 +54,10 @@ public sealed class CompensatePreorderBookingCommandHandler(
         if (won == 0)
             return Unit.Value;
 
-        await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
-            command.TenantId, command.SagaId, command.OperationId, "manual_review_post_commit", now, command.CorrelationId), ct);
+        // Inv-8: emit ONLY a neutral "under review" notice — never a terminal failure outcome (the
+        // booking is committed). The single combined outcome is owned by the terminal convert/cancel.
+        await outboxRepo.AddAsync(PreorderSagaSupport.InReviewNotice(
+            command.TenantId, command.SagaId, command.OperationId, now, command.CorrelationId), ct);
         await auditRepo.AddAsync(PreorderSagaSupport.Audit(
             command.TenantId, "preorder.manual_review", command.SagaId, command.OperationId, now,
             new { saga_id = command.SagaId, reason = "post_commit_failure" }), ct);

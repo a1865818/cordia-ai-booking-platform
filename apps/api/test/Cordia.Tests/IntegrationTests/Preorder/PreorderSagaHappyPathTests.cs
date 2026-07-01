@@ -144,7 +144,7 @@ public class PreorderSagaHappyPathTests(PostgresFixture fixture)
         // Start → revalidate ok → ReservingItems (items-first for every pre-order).
         await InTxAsync(tenantId, ctx => Start(ctx).Handle(
             new StartPreorderSagaCommand(tenantId, $"m-{Guid.NewGuid():N}", null, operationId,
-                Reference("item_1", 1500, 2), Standalone: false, SlotId: null, RequestedCapacity: 2), CancellationToken.None));
+                Reference("item_1", 1500, 2)), CancellationToken.None));
 
         var saga = await LoadSagaAsync(tenantId, operationId);
         var sagaId = saga.SagaId;
@@ -189,7 +189,7 @@ public class PreorderSagaHappyPathTests(PostgresFixture fixture)
 
         await InTxAsync(tenantId, ctx => Start(ctx).Handle(
             new StartPreorderSagaCommand(tenantId, $"m-{Guid.NewGuid():N}", null, operationId,
-                Reference("item_1", 1500, 2), Standalone: false, SlotId: null, RequestedCapacity: 2), CancellationToken.None));
+                Reference("item_1", 1500, 2)), CancellationToken.None));
         var sagaId = (await LoadSagaAsync(tenantId, operationId)).SagaId;
         await DriveToCommittingBookingAsync(tenantId, operationId, sagaId);
         await InTxAsync(tenantId, ctx => BookingCommitted(ctx).Handle(new PreorderBookingCommittedCommand(tenantId, $"m-{Guid.NewGuid():N}", null, operationId), CancellationToken.None));

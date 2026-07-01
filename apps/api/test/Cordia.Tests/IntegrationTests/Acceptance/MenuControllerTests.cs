@@ -104,10 +104,12 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
             await seed.SaveChangesAsync();
         }
 
+        // Edits key on the full namespaced id the read path emits ({catalogId}:d1) — symmetric with
+        // GetCatalogItem/Search (M5: no re-prefixing).
         await fixture.Host.Scenario(x =>
         {
             x.Post
-                .RawJson("""{"edits":[{"item_id":"d1","name":"New Name","price_minor":2500}]}""")
+                .RawJson($$"""{"edits":[{"item_id":"{{catalogId}}:d1","name":"New Name","price_minor":2500}]}""")
                 .ToUrl($"/api/menu/catalogs/{catalogId}/edit");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.StatusCodeShouldBe(HttpStatusCode.OK);
@@ -124,6 +126,24 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         var catalog = await ctx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
             .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
         Assert.Equal(CatalogStatus.InReview, catalog.Status);
+    }
+
+    [Fact]
+    public async Task EditItems_UnknownItemId_Returns404_NotSilentNoOp()
+    {
+        // M5: an edit targeting an item id that matches no row in the editable catalog must SURFACE a
+        // 404 (never silently succeed), so a stale/mistyped id fails loudly.
+        var tenantId = $"acc-menu-ed404-{Guid.NewGuid():N}";
+        var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post
+                .RawJson($$"""{"edits":[{"item_id":"{{catalogId}}:missing","name":"New Name"}]}""")
+                .ToUrl($"/api/menu/catalogs/{catalogId}/edit");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.NotFound);
+        });
     }
 
     [Fact]

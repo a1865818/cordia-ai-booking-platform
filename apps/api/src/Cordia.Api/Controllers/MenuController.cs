@@ -72,6 +72,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
 
         var edits = (body?.Edits ?? [])
+            .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
             .Select(e => new CatalogItemEdit(e.ItemId, e.Name, e.Description, e.PriceMinor))
             .ToList();
 
@@ -97,6 +98,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
 
         var edits = (body.Edits ?? [])
+            .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
             .Select(e => new CatalogItemEdit(e.ItemId, e.Name, e.Description, e.PriceMinor))
             .ToList();
 
@@ -171,7 +173,13 @@ public sealed record EditCatalogItemsRequest(
     public EditCatalogItemsRequest() : this((IReadOnlyList<CatalogItemEditDto>?)null) { }
 }
 
-/// <summary>A single owner item edit in a review request (null fields left unchanged).</summary>
+/// <summary>
+/// A single owner item edit in a review request (null fields left unchanged).
+/// <para><b><c>item_id</c> must be the full namespaced id the read endpoints emit</b>
+/// (<c>{catalogId}:{rawId}</c> — as returned by <c>GET /api/catalog/items</c> and
+/// <c>/api/menu/...</c>), NOT the raw menu id. An edit whose <c>item_id</c> matches no item in the
+/// editable catalog is rejected with 404 (never silently ignored).</para>
+/// </summary>
 public sealed record CatalogItemEditDto(
     [property: JsonPropertyName("item_id")] string ItemId,
     [property: JsonPropertyName("name")] string? Name,

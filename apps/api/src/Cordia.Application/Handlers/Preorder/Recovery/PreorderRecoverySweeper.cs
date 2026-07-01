@@ -7,7 +7,7 @@ namespace Cordia.Application.Handlers.Preorder.Recovery;
 /// whose <c>UpdatedAt</c> is older than a threshold (i.e. a step crashed or its hand-off was lost)
 /// and enqueues a <c>preorder.commands.reconcile.v1</c> message for each, which re-drives the step
 /// matching the persisted state — idempotent re-entry that never re-acquires anything already done
-/// (e.g. a saga past AuthorizingPayment is resumed at its CURRENT step, never re-authorized).
+/// (e.g. a saga waiting in CommittingBooking is re-checked against the 06 operation, never re-booked).
 ///
 /// <para>Stateless coordinator over the repository + outbox; wire to a scheduled job or a periodic
 /// hosted-service (consistent with the existing schedulers) to run it on a cadence.</para>
@@ -26,12 +26,11 @@ public sealed class PreorderRecoverySweeper(
         var now = DateTimeOffset.UtcNow;
         var stuck = await sagaRepo.FindStuckAsync(olderThan, ct);
 
-        foreach (var saga in stuck)
-        {
-            await outboxRepo.AddAsync(
-                PreorderSagaMessages.StepMessage(
-                    saga.TenantId, PreorderSagaMessages.Reconcile, saga.SagaId, saga.OperationId, now), ct);
-        }
+        // Batch the reconcile enqueues into ONE insert/commit rather than one commit per stuck saga.
+        var messages = stuck.Select(saga =>
+            PreorderSagaMessages.StepMessage(
+                saga.TenantId, PreorderSagaMessages.Reconcile, saga.SagaId, saga.OperationId, now));
+        await outboxRepo.AddRangeAsync(messages, ct);
 
         return stuck.Count;
     }

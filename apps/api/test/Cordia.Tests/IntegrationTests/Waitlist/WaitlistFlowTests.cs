@@ -323,8 +323,10 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             .AnyAsync(m => m.TenantId == tenantId && m.MessageType == AutoAcceptWaitlistOfferCommand.MessageType));
         Assert.True(await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
             .AnyAsync(a => a.TenantId == tenantId && a.EventType == "waitlist.auto_book_scheduled"));
-        // No offer-expiry job for the auto-book path (the capacity hold carries its own expiry).
-        Assert.False(await ctx.ScheduledJobs.AsNoTracking().IgnoreQueryFilters()
+        // Offer-expiry job IS scheduled as the backstop: if the auto-accept step never books (grant no
+        // longer permits, or the message is undeliverable) the expiry releases the hold + re-matches, so
+        // the hold and offer never leak. If auto-accept books first, the expiry job no-ops.
+        Assert.True(await ctx.ScheduledJobs.AsNoTracking().IgnoreQueryFilters()
             .AnyAsync(j => j.TenantId == tenantId && j.JobId == $"sj_offerexp_{offer.OfferId}"));
     }
 

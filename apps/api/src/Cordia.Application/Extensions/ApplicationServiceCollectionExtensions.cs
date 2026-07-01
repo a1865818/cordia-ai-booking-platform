@@ -215,16 +215,13 @@ public static class ApplicationServiceCollectionExtensions
 
             // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All
             // steps are inbox-deduplicated (one transaction each, Inv-5/Inv-9). The start message
-            // carries the immutable PreorderReference + slot/standalone; every other step carries only
-            // saga_id (+ operation_id), reloading the saga for its reference + checkpoints.
+            // carries the immutable PreorderReference; every other step carries only saga_id
+            // (+ operation_id), reloading the saga for its reference + checkpoints.
             registry.Register(PreorderSagaMessages.Start,
                 env => new StartPreorderSagaCommand(
                     env.TenantId, env.MessageId, env.CorrelationId,
                     PreorderOperationId(env),
-                    ExtractRawObject(env.Payload, "preorder_reference") ?? "{}",
-                    ExtractBool(env.Payload, "standalone") ?? false,
-                    ExtractString(env.Payload, "slot_id"),
-                    ExtractInt(env.Payload, "requested_capacity") ?? 0));
+                    ExtractRawObject(env.Payload, "preorder_reference") ?? "{}"));
             registry.Register(PreorderSagaMessages.ReserveItems,
                 env => new ReservePreorderItemsCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
             registry.Register(PreorderSagaMessages.CommitPreorder,
@@ -359,20 +356,6 @@ public static class ApplicationServiceCollectionExtensions
         return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.Number
             && v.TryGetInt32(out var i)
             ? i
-            : null;
-    }
-
-    /// <summary>
-    /// Safely extracts a <see cref="bool"/> property named <paramref name="propertyName"/> from a
-    /// job-payload <see cref="JsonElement"/>. Returns <see langword="null"/> when absent or not a boolean.
-    /// </summary>
-    private static bool? ExtractBool(JsonElement payload, string propertyName)
-    {
-        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-            return null;
-
-        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? v.GetBoolean()
             : null;
     }
 

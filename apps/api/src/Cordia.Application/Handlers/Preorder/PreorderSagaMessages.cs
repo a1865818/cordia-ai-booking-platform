@@ -49,6 +49,14 @@ public static class PreorderSagaMessages
     public const string BookingFailedNotification = "notification.booking_failed.v1";
 
     /// <summary>
+    /// Neutral "still being confirmed / under review" customer notification (spec 10
+    /// <c>NotificationEvent.StillPending</c>). Emitted when a pre-order parks in <c>ManualReview</c> so
+    /// the customer is not left silent — WITHOUT emitting a terminal outcome. The single combined
+    /// outcome (Inv-8) is still owned by the terminal resolution (convert → confirmed, cancel → failed).
+    /// </summary>
+    public const string InReviewNotification = "notification.still_confirming.v1";
+
+    /// <summary>
     /// Booking-outcome message type for an operation reaching a terminal <c>Booked</c> state. For a
     /// pre-order operation (§5.3) the 06 engine signals the saga
     /// (<c>preorder.commands.booking_committed.v1</c>) — the saga then emits the single combined

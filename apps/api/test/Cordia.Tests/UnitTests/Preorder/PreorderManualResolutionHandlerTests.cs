@@ -76,12 +76,13 @@ public class PreorderManualResolutionHandlerTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(rows);
 
-    private static PreorderSaga Saga(PreorderSagaState state) => new()
+    private static PreorderSaga Saga(PreorderSagaState state, bool isStandalone = false) => new()
     {
         TenantId = TenantId,
         SagaId = SagaId,
         OperationId = OperationId,
         SagaState = state,
+        IsStandalone = isStandalone,
         Version = 3,
     };
 
@@ -158,10 +159,11 @@ public class PreorderManualResolutionHandlerTests
     }
 
     [Fact]
-    public async Task Convert_AlreadyCompleted_IsIdempotent_NoAdvance_NoGrantConsumed()
+    public async Task Convert_AlreadyConvertedToStandalone_IsIdempotent_NoAdvance_NoGrantConsumed()
     {
+        // A prior convert leaves the saga Completed AND IsStandalone — only that is an idempotent replay.
         _sagaRepo.Setup(r => r.GetAsync(SagaId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Saga(PreorderSagaState.Completed));
+            .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: true));
 
         await Convert().Handle(
             new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None);
@@ -172,6 +174,22 @@ public class PreorderManualResolutionHandlerTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<bool?>(),
             It.IsAny<CancellationToken>()), Times.Never);
         // An idempotent replay must NOT burn a fresh single-use grant.
+        _grants.Verify(g => g.ConsumeGrantAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Convert_CompletedButNotStandalone_Throws_409()
+    {
+        // A normally-completed pre-order (Completed but NOT standalone) is not a convert target — it must
+        // be rejected as an invalid transition rather than silently treated as an idempotent success.
+        _sagaRepo.Setup(r => r.GetAsync(SagaId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: false));
+
+        await Assert.ThrowsAsync<InvalidPreorderSagaTransitionException>(() =>
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);

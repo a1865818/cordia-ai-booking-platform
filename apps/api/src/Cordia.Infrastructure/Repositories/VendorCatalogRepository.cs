@@ -117,14 +117,34 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
     {
         foreach (var edit in edits)
         {
-            await db.VendorCatalogItems
-                .Where(i => i.CatalogId == catalogId && i.ItemId == $"{catalogId}:{edit.ItemId}")
+            // Symmetric namespacing (M5): the read path emits the full "{catalogId}:{rawId}" item id, so
+            // the edit keys on exactly that id. Re-prefixing here would look for "{catalogId}:{catalogId}:…"
+            // and silently match nothing. Data-layer immutability guard: only edit rows whose catalog is
+            // still in_review (defense-in-depth on top of the handler's status pre-check). A miss is
+            // surfaced (never a silent no-op) so a stale/mistyped id fails loudly.
+            var affected = await db.VendorCatalogItems
+                .Where(i => i.CatalogId == catalogId
+                    && i.ItemId == edit.ItemId
+                    && db.VendorCatalogs.Any(c => c.CatalogId == catalogId && c.Status == CatalogStatus.InReview))
                 .ExecuteUpdateAsync(
                     s => s
                         .SetProperty(x => x.Name, x => edit.Name ?? x.Name)
                         .SetProperty(x => x.Description, x => edit.Description ?? x.Description)
                         .SetProperty(x => x.PriceMinor, x => edit.PriceMinor ?? x.PriceMinor),
                     ct);
+
+            if (affected == 0)
+                throw new Cordia.Domain.Exceptions.CatalogItemNotFoundException(edit.ItemId);
         }
     }
+
+    public Task ClearDraftExtractionMetadataAsync(string catalogId, CancellationToken ct = default)
+        => db.VendorCatalogItems
+            .Where(i => i.CatalogId == catalogId
+                && (i.ExtractionConfidence != null || i.SourceLocation != null))
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(x => x.ExtractionConfidence, (double?)null)
+                    .SetProperty(x => x.SourceLocation, (string?)null),
+                ct);
 }

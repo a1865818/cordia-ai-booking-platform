@@ -124,6 +124,12 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Vendor catalog not found", ex.Message, cancellationToken);
                 return true;
 
+            case CatalogItemNotFoundException ex:
+                logger.LogWarning(ex, "Catalog item not found: {ItemId}", ex.ItemId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Catalog item not found", ex.Message, cancellationToken);
+                return true;
+
             case InvalidWaitlistOfferTransitionException ex:
                 logger.LogWarning(ex, "Invalid waitlist offer transition: {From} -> {To}", ex.From, ex.To);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,

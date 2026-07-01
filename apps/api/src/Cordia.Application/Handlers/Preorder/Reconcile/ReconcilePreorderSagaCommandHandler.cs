@@ -21,11 +21,21 @@ namespace Cordia.Application.Handlers.Preorder.Reconcile;
 /// </summary>
 public sealed class ReconcilePreorderSagaCommandHandler(
     IPreorderSagaRepository sagaRepo,
+    IBookingOperationRepository opRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     ILogger<ReconcilePreorderSagaCommandHandler> logger)
     : IRequestHandler<ReconcilePreorderSagaCommand, Unit>
 {
+    /// <summary>06 operation states that are a terminal FAILURE for a delegated pre-order booking.</summary>
+    private static readonly HashSet<OperationStatus> _terminalFailureStates =
+    [
+        OperationStatus.FailedFinal,
+        OperationStatus.Rejected,
+        OperationStatus.Expired,
+        OperationStatus.AlternativesRequired, // no-capacity for a pre-order op (High #3) — not customer-recoverable
+    ];
+
     /// <summary>
     /// Maps a resumable saga-owned state to the step message type that re-drives it. The dead
     /// hold-capacity / authorize-payment / commit-booking / compensate-hold steps were removed
@@ -59,11 +69,67 @@ public sealed class ReconcilePreorderSagaCommandHandler(
             return Unit.Value; // already terminal — nothing to recover
         }
 
-        // Waiting on the spec-06 engine: re-nudge it rather than re-driving a saga step (Inv-7). The
-        // 06 driver keys off the operation id and is idempotent; if the operation already reached a
-        // terminal outcome it re-signals the saga (booking_committed / booking_failed).
+        // Waiting on the spec-06 engine (divergence #2). The saga advances only on the 06→saga
+        // booking-outcome signal; if that single signal was lost (DLQ/poison) the saga would hang here
+        // forever because re-nudging 06 on an ALREADY-terminal op re-emits nothing (the emit lives
+        // inside 06's rows>0 transition guard). So probe the operation's real state and re-synthesize
+        // the lost signal directly — the idempotent, state-guarded signal handlers do the advance.
+        // Only when the op is still genuinely in-flight do we re-nudge 06 to make progress (Inv-7).
         if (saga.SagaState == PreorderSagaState.CommittingBooking)
         {
+            var op = await opRepo.GetAsync(command.OperationId, ct);
+
+            if (op is not null && op.TenantId == command.TenantId && op.Status == OperationStatus.Booked)
+            {
+                // Booking committed but the signal was lost → re-emit booking_committed so the saga
+                // advances to CommittingPreorder and binds the pre-order.
+                await outboxRepo.AddAsync(new OutboxMessage
+                {
+                    TenantId = command.TenantId,
+                    MessageId = $"obx_{Guid.NewGuid():N}",
+                    OperationId = command.OperationId,
+                    MessageType = PreorderSagaMessages.BookingCommitted,
+                    CorrelationId = command.CorrelationId ?? command.OperationId,
+                    Payload = JsonSerializer.Serialize(new
+                    {
+                        operation_id = command.OperationId,
+                        tenant_id = command.TenantId,
+                        booking_id = op.BookingId,
+                    }),
+                    OccurredAt = now,
+                }, ct);
+                await auditRepo.AddAsync(PreorderSagaSupport.Audit(
+                    command.TenantId, "preorder.reconcile_resumed", command.SagaId, command.OperationId, now,
+                    new { saga_id = command.SagaId, resumed_state = saga.SagaState.ToString(), op_status = op.Status.ToString(), resignalled = "booking_committed" }), ct);
+                return Unit.Value;
+            }
+
+            if (op is not null && op.TenantId == command.TenantId && _terminalFailureStates.Contains(op.Status))
+            {
+                // Booking terminally failed but the signal was lost → re-emit booking_failed so the saga
+                // compensates the reserved items and surfaces the one combined outcome.
+                await outboxRepo.AddAsync(new OutboxMessage
+                {
+                    TenantId = command.TenantId,
+                    MessageId = $"obx_{Guid.NewGuid():N}",
+                    OperationId = command.OperationId,
+                    MessageType = PreorderSagaMessages.BookingFailed,
+                    CorrelationId = command.CorrelationId ?? command.OperationId,
+                    Payload = JsonSerializer.Serialize(new
+                    {
+                        operation_id = command.OperationId,
+                        tenant_id = command.TenantId,
+                        reason = $"reconcile:{op.Status}",
+                    }),
+                    OccurredAt = now,
+                }, ct);
+                await auditRepo.AddAsync(PreorderSagaSupport.Audit(
+                    command.TenantId, "preorder.reconcile_resumed", command.SagaId, command.OperationId, now,
+                    new { saga_id = command.SagaId, resumed_state = saga.SagaState.ToString(), op_status = op.Status.ToString(), resignalled = "booking_failed" }), ct);
+                return Unit.Value;
+            }
+
+            // Op still in-flight (or unknown) — re-nudge the idempotent 06 driver to make progress.
             await outboxRepo.AddAsync(new OutboxMessage
             {
                 TenantId = command.TenantId,
@@ -80,7 +146,7 @@ public sealed class ReconcilePreorderSagaCommandHandler(
             }, ct);
             await auditRepo.AddAsync(PreorderSagaSupport.Audit(
                 command.TenantId, "preorder.reconcile_resumed", command.SagaId, command.OperationId, now,
-                new { saga_id = command.SagaId, resumed_state = saga.SagaState.ToString(), renudged_06 = true }), ct);
+                new { saga_id = command.SagaId, resumed_state = saga.SagaState.ToString(), op_status = op?.Status.ToString(), renudged_06 = true }), ct);
             return Unit.Value;
         }
 
@@ -95,10 +161,23 @@ public sealed class ReconcilePreorderSagaCommandHandler(
             return Unit.Value;
         }
 
-        // Non-resumable: Revalidating acquired nothing → fail clean; Reconciling is already parked → escalate.
-        var next = saga.SagaState == PreorderSagaState.Revalidating
-            ? PreorderSagaState.FailedFinal
-            : PreorderSagaState.ManualReview;
+        // Non-resumable: Revalidating acquired nothing → fail clean (terminal); Reconciling is already
+        // parked → escalate to ManualReview (awaits a human). ANY other (legacy/unknown) state must NOT
+        // throw — a reconcile message is queue-driven and an unhandled throw would poison/retry it
+        // forever. Settle instead.
+        PreorderSagaState next;
+        if (saga.SagaState == PreorderSagaState.Revalidating)
+            next = PreorderSagaState.FailedFinal;
+        else if (saga.SagaState == PreorderSagaState.Reconciling)
+            next = PreorderSagaState.ManualReview;
+        else
+        {
+            logger.LogWarning(
+                "Preorder reconcile: saga {SagaId} in non-recoverable state {State}; settling without escalation.",
+                command.SagaId, saga.SagaState);
+            return Unit.Value;
+        }
+
         PreorderSagaStateMachine.EnsureAllowed(saga.SagaState, next);
         var won = await sagaRepo.TryAdvanceStateAsync(
             command.TenantId, command.SagaId, saga.Version, saga.SagaState, next, now,
@@ -106,8 +185,15 @@ public sealed class ReconcilePreorderSagaCommandHandler(
         if (won == 0)
             return Unit.Value;
 
-        await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
-            command.TenantId, command.SagaId, command.OperationId, $"reconcile_{next}", now, command.CorrelationId), ct);
+        // Inv-8: ManualReview is NOT a terminal customer outcome — emit only a neutral "under review"
+        // notice so the terminal convert/cancel still owns the single combined outcome. Only the
+        // terminal FailedFinal escalation emits the failure outcome.
+        await outboxRepo.AddAsync(
+            next == PreorderSagaState.FailedFinal
+                ? PreorderSagaSupport.FailureOutcome(
+                    command.TenantId, command.SagaId, command.OperationId, $"reconcile_{next}", now, command.CorrelationId)
+                : PreorderSagaSupport.InReviewNotice(
+                    command.TenantId, command.SagaId, command.OperationId, now, command.CorrelationId), ct);
         await auditRepo.AddAsync(PreorderSagaSupport.Audit(
             command.TenantId, "preorder.reconcile_escalated", command.SagaId, command.OperationId, now,
             new { saga_id = command.SagaId, to = next.ToString() }), ct);

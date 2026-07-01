@@ -265,9 +265,9 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                         // the saga round-trips it against the same property names.
                         preorder_reference = JsonSerializer.SerializeToNode(
                             preorder, Cordia.Domain.Generated.Converter.Settings),
-                        // Booking-attached: the saga triggers the 06 engine (07 capacity derived from
-                        // the operation's revision). Standalone conversion (§21.4) is a separate path.
-                        standalone = false,
+                        // Booking is delegated to the 06 engine (07 capacity derived from the operation's
+                        // revision). Standalone conversion (§21.4) is a separate operator path — the saga
+                        // never starts standalone, so no start-time flags are carried.
                     }),
                     OccurredAt = now,
                 }

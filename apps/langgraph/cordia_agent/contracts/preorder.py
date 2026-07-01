@@ -16,11 +16,15 @@ JSON Schema or the canonical hash.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from cordia_agent.contracts.catalog import Money
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from cordia_agent.contracts.catalog import Money
 
 
 class PreorderLineReference(BaseModel):
@@ -33,7 +37,7 @@ class PreorderLineReference(BaseModel):
         default_factory=list,
         description="Stable modifier ids selected on this line; empty ⇒ none.",
     )
-    quantity: int = Field(description="Number of this item ordered (≥ 1).")
+    quantity: int = Field(ge=1, description="Number of this item ordered (≥ 1).")
     captured_price_amount_minor: int = Field(
         description="Per-unit price quoted at confirmation, in ISO-4217 minor units."
     )

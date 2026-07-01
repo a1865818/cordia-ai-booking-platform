@@ -23,6 +23,22 @@ namespace Cordia.Application.Handlers.Waitlist;
 public static class WaitlistAcceptSubmission
 {
     /// <summary>
+    /// Provenance stamps for the minted revision/confirmation. A waitlist accept is a platform-minted
+    /// booking (not an agent turn), so it has no real schema/policy/turn/read-back version — but spec-04's
+    /// structural validator requires these fields non-empty (Inv-1 evidence). They are deterministic
+    /// constants (or derive from the offer id) so every retry/replay is byte-identical (Inv-5); they are
+    /// NOT part of the canonical hash (that is computed over the booking payload only), so they never
+    /// affect the idempotency-key/hash replay guarantee.
+    /// </summary>
+    public const string SchemaVersion = "waitlist.v1";
+
+    /// <inheritdoc cref="SchemaVersion"/>
+    public const string TenantPolicyVersion = "waitlist.v1";
+
+    /// <inheritdoc cref="SchemaVersion"/>
+    public const string ReadBackVersion = "waitlist";
+
+    /// <summary>
     /// Builds the submit command for accepting <paramref name="offer"/> under <paramref name="enrollment"/>.
     /// When <paramref name="autoBookConsentEvidenceId"/> is supplied (auto-book, §20), the recorded
     /// consent evidence is stamped into the confirmation disclosures so the minted revision is an
@@ -56,8 +72,8 @@ public static class WaitlistAcceptSubmission
             Revision = 1,
             CanonicalPayload = payload,
             PayloadHash = hash.Value,
-            SchemaVersion = string.Empty,
-            TenantPolicyVersion = string.Empty,
+            SchemaVersion = SchemaVersion,
+            TenantPolicyVersion = TenantPolicyVersion,
             SourceSessionId = offer.EnrollmentId,
             CreatedAt = now,
         };
@@ -73,6 +89,10 @@ public static class WaitlistAcceptSubmission
             // Divergence #1: bind the booking to the enrolled customer's captured identity (Inv-1).
             Identity = enrollment.IdentityRef,
             VerificationLevel = enrollment.VerificationLevel,
+            // Deterministic per-offer evidence stamps — required non-empty by spec-04's validator. The
+            // "turn" that produced this confirmation is the offer; the read-back is the offer notification.
+            SourceTurnId = offer.OfferId,
+            ReadBackVersion = ReadBackVersion,
             // §20: an auto-book is only permitted under recorded, constraint-scoped consent — record the
             // consent evidence id on the confirmation so the minted revision is auditable. Empty for a
             // customer-initiated accept (the accept itself is the verified follow-up).

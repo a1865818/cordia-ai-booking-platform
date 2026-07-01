@@ -19,6 +19,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
+        "required": ["item_id", "reason"],
         "properties": {
           "item_id": { "type": "string" },
           "reason": { "type": "string", "description": "item_unavailable | price_changed | modifier_unavailable" }

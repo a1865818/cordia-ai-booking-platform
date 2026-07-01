@@ -1077,19 +1077,9 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("preorder_reference");
 
-                    b.Property<int>("RequestedCapacity")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("requested_capacity");
-
                     b.Property<PreorderSagaState>("SagaState")
                         .HasColumnType("preorder_saga_state_enum")
                         .HasColumnName("saga_state");
-
-                    b.Property<string>("SlotId")
-                        .HasColumnType("text")
-                        .HasColumnName("slot_id");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .ValueGeneratedOnAdd()
@@ -1108,7 +1098,8 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_preorder_sagas");
 
                     b.HasIndex("TenantId", "OperationId")
-                        .HasDatabaseName("ix_preorder_sagas_tenant_id_operation_id");
+                        .IsUnique()
+                        .HasDatabaseName("uq_preorder_saga_per_operation");
 
                     b.ToTable("preorder_sagas", "public");
                 });
@@ -1286,6 +1277,11 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
 
                     b.HasKey("TenantId", "CatalogId")
                         .HasName("pk_vendor_catalogs");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_published_catalog_per_tenant")
+                        .HasFilter("status = 'published'");
 
                     b.ToTable("vendor_catalogs", "public");
                 });
@@ -1646,7 +1642,9 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_waitlist_offers");
 
                     b.HasIndex("TenantId", "EnrollmentId")
-                        .HasDatabaseName("ix_waitlist_offers_tenant_id_enrollment_id");
+                        .IsUnique()
+                        .HasDatabaseName("uq_live_offer_per_enrollment")
+                        .HasFilter("status IN ('pending', 'matched', 'offered')");
 
                     b.ToTable("waitlist_offers", "public");
                 });

@@ -51,7 +51,7 @@ public static class LogicalQueueRegistry
         ("capacity.",            LogicalQueue.BookingCommands),
     ];
 
-    /// <summary>All 8 logical queue metadata entries.</summary>
+    /// <summary>All 9 logical queue metadata entries.</summary>
     public static readonly IReadOnlyList<LogicalQueueMetadata> All =
     [
         new(LogicalQueue.BookingCommands,     "booking.commands",     OrderingRequired: true,  ["booking.finalizer", "booking.manage"]),

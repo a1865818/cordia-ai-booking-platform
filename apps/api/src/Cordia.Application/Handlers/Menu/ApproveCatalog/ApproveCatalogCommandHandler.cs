@@ -33,6 +33,10 @@ public sealed class ApproveCatalogCommandHandler(
             if (rows == 0)
                 throw new InvalidCatalogStateTransitionException(catalog.Status, CatalogStatus.Approved);
 
+            // Owner-confirmed → strip the draft-only extraction-agent metadata so the approved (and
+            // later published) rows never retain it (§3, Inv-16).
+            await repo.ClearDraftExtractionMetadataAsync(command.CatalogId, ct2);
+
             await auditRepo.AddAsync(new AuditEvent
             {
                 TenantId = command.TenantId,

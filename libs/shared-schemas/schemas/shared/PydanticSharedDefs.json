@@ -2241,6 +2241,7 @@
         },
         "quantity": {
           "description": "Number of this item ordered (\u2265 1).",
+          "minimum": 1,
           "title": "Quantity",
           "type": "integer"
         },

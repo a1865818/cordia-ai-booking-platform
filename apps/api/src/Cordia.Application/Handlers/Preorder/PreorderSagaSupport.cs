@@ -8,8 +8,9 @@ namespace Cordia.Application.Handlers.Preorder;
 
 /// <summary>
 /// Shared helpers for the pre-order saga step handlers: parsing the immutable
-/// <see cref="PreorderReference"/> off the saga row, computing the deposit/order total, and building
-/// the per-step audit row. Keeps the individual step handlers thin and consistent.
+/// <see cref="PreorderReference"/> off the saga row, building the combined outcome / neutral in-review
+/// notifications and the per-step audit row, and scheduling the reconcile timeout. Keeps the individual
+/// step handlers thin and consistent.
 /// </summary>
 public static class PreorderSagaSupport
 {
@@ -35,6 +36,25 @@ public static class PreorderSagaSupport
             OccurredAt = now,
         };
 
+    /// <summary>
+    /// Builds a NEUTRAL "under review / still confirming" customer notice for a saga parked in
+    /// <c>ManualReview</c> (spec 10 <c>NotificationEvent.StillPending</c>). This is deliberately NOT a
+    /// terminal outcome — it keeps the customer informed without pre-empting the single combined outcome
+    /// (Inv-8) that the terminal convert (confirmed) or cancel (failed) resolution owns.
+    /// </summary>
+    public static OutboxMessage InReviewNotice(
+        string tenantId, string sagaId, string operationId, DateTimeOffset now, string? correlationId = null)
+        => new()
+        {
+            TenantId = tenantId,
+            MessageId = $"obx_{Guid.NewGuid():N}",
+            MessageType = PreorderSagaMessages.InReviewNotification,
+            CorrelationId = correlationId ?? operationId,
+            OperationId = operationId,
+            Payload = JsonSerializer.Serialize(new { saga_id = sagaId, operation_id = operationId, reason = "under_review" }),
+            OccurredAt = now,
+        };
+
     /// <summary>Parses the saga's stored <c>preorder_reference</c> jsonb, or <c>null</c> if unparseable.</summary>
     public static PreorderReference? ParseReference(string referenceJson)
     {
@@ -46,23 +66,6 @@ public static class PreorderSagaSupport
         {
             return null;
         }
-    }
-
-    /// <summary>
-    /// Total order amount (Σ per-unit captured price × quantity, minor units) and the currency
-    /// (taken from the first line; the saga is single-currency per the captured reference).
-    /// </summary>
-    public static (long AmountMinor, string Currency) Total(PreorderReference reference)
-    {
-        long total = 0;
-        var currency = string.Empty;
-        foreach (var line in reference.Lines ?? [])
-        {
-            total += line.CapturedPriceAmountMinor * line.Quantity;
-            if (currency.Length == 0)
-                currency = line.CapturedPriceCurrency;
-        }
-        return (total, currency);
     }
 
     /// <summary>
@@ -123,16 +126,20 @@ public static class PreorderSagaSupport
         }, ct);
     }
 
-    /// <summary>Builds a system-actor audit row for a saga step/transition.</summary>
+    /// <summary>
+    /// Builds an audit row for a saga step/transition. <paramref name="actor"/> defaults to
+    /// <c>"system"</c> for automated steps; pass the operator identity for human-initiated resolutions
+    /// (convert/cancel) so the audit trail attributes the action to the real actor.
+    /// </summary>
     public static AuditEvent Audit(
         string tenantId, string eventType, string sagaId, string operationId,
-        DateTimeOffset now, object? metadata = null)
+        DateTimeOffset now, object? metadata = null, string actor = "system")
         => new()
         {
             TenantId = tenantId,
             EventId = $"evt_{Guid.NewGuid():N}",
             EventType = eventType,
-            Actor = "system",
+            Actor = actor,
             SubjectRef = sagaId,
             CorrelationId = sagaId,
             OperationId = operationId,

@@ -78,9 +78,8 @@ public sealed class StartPreorderSagaCommandHandler(
             OperationId = command.OperationId,
             SagaState = PreorderSagaState.Revalidating,
             PreorderReference = command.PreorderReferenceJson,
-            IsStandalone = command.Standalone,
-            SlotId = command.SlotId,
-            RequestedCapacity = command.RequestedCapacity,
+            // Never starts standalone — booking is delegated to the 06 engine (IsStandalone is set only
+            // later by the operator convert path, §21.4).
             CreatedAt = now,
             UpdatedAt = now,
         }, ct);

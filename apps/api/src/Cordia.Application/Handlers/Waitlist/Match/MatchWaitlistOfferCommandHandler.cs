@@ -62,6 +62,19 @@ public sealed class MatchWaitlistOfferCommandHandler(
         }
 
         var enrollment = eligible[0];
+
+        // M7 / Inv-6: FindEligibleAsync already filters cancelled enrollments, but a cancel may have
+        // committed in the read→reserve window. Re-check before reserving anything so we never take a
+        // hold (or make an offer) for a just-cancelled enrollment.
+        var fresh = await enrollmentRepo.GetAsync(enrollment.EnrollmentId, ct);
+        if (fresh is null || fresh.CancelledAt is not null)
+        {
+            logger.LogInformation(
+                "Waitlist match: enrollment {EnrollmentId} cancelled before reserve; settling.", enrollment.EnrollmentId);
+            return Unit.Value;
+        }
+        enrollment = fresh;
+
         var operationId = $"op_wl_{Guid.NewGuid():N}";
         var expiresAt = now.AddSeconds(enrollment.OfferLifetimeSeconds);
 
@@ -107,8 +120,11 @@ public sealed class MatchWaitlistOfferCommandHandler(
             // offer stays Offered; the auto-accept step (a plain consumer that can open its own
             // transaction to call spec-04) mints an auditable confirmed revision carrying the grant's
             // consent evidence and claims Offered → Accepted, after which the 06 engine finalizes the
-            // "create" hold. No offer-expiry job is scheduled — the capacity hold carries its own expiry
-            // as the backstop if the auto-accept step never lands.
+            // "create" hold. Schedule the offer-expiry job as the BACKSTOP: if the auto-accept step never
+            // books (grant no longer permits at re-verify, or the message is permanently undeliverable),
+            // ExpireWaitlistOfferCommandHandler releases the hold + re-matches — so the hold and offer can
+            // never leak. If auto-accept books first, the offer is Accepted and the expiry job no-ops.
+            await offerExpiry.ScheduleAsync(command.TenantId, offerId, expiresAt, ct);
             await EnqueueAsync(command.TenantId, AutoAcceptWaitlistOfferCommand.MessageType, offerId, enrollment, now, new
             {
                 offer_id = offerId,

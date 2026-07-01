@@ -73,7 +73,9 @@ public class SubmitConfirmedIntentPreorderRoutingTests
 
         using var doc = JsonDocument.Parse(msg.Payload);
         Assert.Equal("op_1", doc.RootElement.GetProperty("operation_id").GetString());
-        Assert.False(doc.RootElement.GetProperty("standalone").GetBoolean());
+        // The start payload no longer carries a standalone/slot flag — the saga never starts standalone
+        // (booking delegated to 06; standalone is a later operator convert path, §21.4).
+        Assert.False(doc.RootElement.TryGetProperty("standalone", out _));
         Assert.Equal(
             "menu_1",
             doc.RootElement.GetProperty("preorder_reference").GetProperty("catalog_version").GetString());

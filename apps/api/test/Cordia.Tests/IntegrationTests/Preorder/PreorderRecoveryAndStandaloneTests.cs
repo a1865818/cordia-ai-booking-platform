@@ -24,7 +24,8 @@ namespace Cordia.Tests.IntegrationTests.Preorder;
 public class PreorderRecoveryAndStandaloneTests(PostgresFixture fixture)
 {
     private static ReconcilePreorderSagaCommandHandler ReconcileH(ApplicationDbContext ctx)
-        => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
+        => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx),
+            new OutboxRepository(ctx), new AuditEventRepository(ctx),
             NullLogger<ReconcilePreorderSagaCommandHandler>.Instance);
 
     private async Task InTxAsync(string tenantId, Func<ApplicationDbContext, Task> body)
@@ -79,7 +80,6 @@ public class PreorderRecoveryAndStandaloneTests(PostgresFixture fixture)
                 OperationId = operationId,
                 SagaState = PreorderSagaState.CommittingBooking,
                 PreorderReference = Reference("item_1", 1500),
-                RequestedCapacity = 1,
                 CreatedAt = DateTimeOffset.UtcNow.AddHours(-1),
                 UpdatedAt = DateTimeOffset.UtcNow.AddHours(-1), // stale
                 Version = 3,

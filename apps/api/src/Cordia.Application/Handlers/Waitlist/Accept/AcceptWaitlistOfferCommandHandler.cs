@@ -64,6 +64,12 @@ public sealed class AcceptWaitlistOfferCommandHandler(
         var enrollment = await enrollmentRepo.GetAsync(offer.EnrollmentId, ct)
             ?? throw new WaitlistEnrollmentNotFoundException(offer.EnrollmentId);
 
+        // Inv-6 / M7: never mint a booking for a cancelled enrollment. Cancel releases the live offer,
+        // but a cancel racing this accept can commit after we read the offer as Offered — re-check the
+        // enrollment before minting (record-before-state mints before the offer-state guard runs).
+        if (enrollment.CancelledAt is not null)
+            throw new InvalidWaitlistOfferTransitionException(offer.Status, WaitlistOfferStatus.Accepted);
+
         if (offer.SlotStartAt is null || string.IsNullOrEmpty(offer.OperationId))
             throw new InvalidOperationException(
                 $"Waitlist offer '{offer.OfferId}' cannot be accepted: missing matched slot or operation id.");

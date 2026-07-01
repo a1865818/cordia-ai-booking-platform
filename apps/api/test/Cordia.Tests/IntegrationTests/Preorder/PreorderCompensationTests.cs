@@ -49,7 +49,8 @@ public class PreorderCompensationTests(PostgresFixture fixture)
         => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
             NullLogger<CompensatePreorderBookingCommandHandler>.Instance);
     private static ReconcilePreorderSagaCommandHandler Reconcile(ApplicationDbContext ctx)
-        => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
+        => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx),
+            new OutboxRepository(ctx), new AuditEventRepository(ctx),
             NullLogger<ReconcilePreorderSagaCommandHandler>.Instance);
 
     private async Task InTxAsync(string tenantId, Func<ApplicationDbContext, Task> body)
@@ -98,7 +99,7 @@ public class PreorderCompensationTests(PostgresFixture fixture)
     /// <summary>Start → reserve items; returns the saga id. With a "reserve_fail" item the reserve routes to CompensatingItems.</summary>
     private async Task<string> StartReserveAsync(string tenantId, string operationId, string itemId, long price)
     {
-        await InTxAsync(tenantId, ctx => Start(ctx).Handle(new StartPreorderSagaCommand(tenantId, $"m-{Guid.NewGuid():N}", null, operationId, Reference(itemId, price), false, null, 2), CancellationToken.None));
+        await InTxAsync(tenantId, ctx => Start(ctx).Handle(new StartPreorderSagaCommand(tenantId, $"m-{Guid.NewGuid():N}", null, operationId, Reference(itemId, price)), CancellationToken.None));
         var sagaId = (await LoadAsync(tenantId, operationId)).SagaId;
         await InTxAsync(tenantId, ctx => Reserve(ctx).Handle(new ReservePreorderItemsCommand(tenantId, $"m-{Guid.NewGuid():N}", null, sagaId, operationId), CancellationToken.None));
         return sagaId;
@@ -176,7 +177,16 @@ public class PreorderCompensationTests(PostgresFixture fixture)
 
         var saga = await LoadAsync(tenantId, operationId);
         Assert.Equal(PreorderSagaState.ManualReview, saga.SagaState);
-        await AssertOneFailureOutcomeAsync(tenantId);
+
+        // Inv-8: the park emits ONLY a neutral "under review" notice — NOT a terminal failure outcome
+        // (the booking is committed). The single combined outcome is owned by the terminal convert/cancel.
+        await using var ctx2 = fixture.CreateContext(tenantId);
+        var inReview = await ctx2.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .CountAsync(m => m.TenantId == tenantId && m.MessageType == PreorderSagaMessages.InReviewNotification);
+        Assert.Equal(1, inReview);
+        var failures = await ctx2.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .CountAsync(m => m.TenantId == tenantId && m.MessageType == PreorderSagaSupport.OutcomeFailedEventType);
+        Assert.Equal(0, failures);
     }
 
     [Fact]

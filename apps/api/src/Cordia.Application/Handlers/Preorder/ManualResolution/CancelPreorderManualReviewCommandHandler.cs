@@ -41,7 +41,11 @@ public sealed class CancelPreorderManualReviewCommandHandler(
 
         PreorderSagaStateMachine.EnsureAllowed(PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal);
 
-        var reason = string.IsNullOrWhiteSpace(command.Reason) ? "manual_review_cancelled" : command.Reason;
+        // Inv-12: FailureReason (and the outcome payload) is a MACHINE code, never free-form operator
+        // text — a human might type customer/card data into command.Reason. The operator's note is kept
+        // only in the audit metadata (the human-readable, access-controlled trail).
+        const string failureCode = "manual_review_cancelled";
+        var operatorNote = string.IsNullOrWhiteSpace(command.Reason) ? null : command.Reason;
 
         var won = false;
         await uow.ExecuteInTransactionAsync(async ct2 =>
@@ -49,15 +53,17 @@ public sealed class CancelPreorderManualReviewCommandHandler(
             won = await sagaRepo.TryAdvanceStateAsync(
                 command.TenantId, command.SagaId, saga.Version,
                 PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal, now,
-                setFailureReason: reason, ct: ct2) > 0;
+                setFailureReason: failureCode, ct: ct2) > 0;
             if (!won)
                 return;
 
             await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
-                command.TenantId, command.SagaId, saga.OperationId, reason, now), ct2);
+                command.TenantId, command.SagaId, saga.OperationId, failureCode, now), ct2);
+            // Attributed to the operator (not "system"); the free-form note lives here only.
             await auditRepo.AddAsync(PreorderSagaSupport.Audit(
                 command.TenantId, "preorder.manual_review_cancelled", command.SagaId, saga.OperationId, now,
-                new { saga_id = command.SagaId, operator_actor = command.OperatorActor, reason }), ct2);
+                new { saga_id = command.SagaId, operator_actor = command.OperatorActor, reason = failureCode, operator_note = operatorNote },
+                actor: command.OperatorActor), ct2);
         }, ct);
 
         if (!won)

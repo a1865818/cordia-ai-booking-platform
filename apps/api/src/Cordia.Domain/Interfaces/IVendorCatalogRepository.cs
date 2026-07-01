@@ -76,9 +76,19 @@ public interface IVendorCatalogRepository
         CancellationToken ct = default);
 
     /// <summary>
-    /// Applies owner edits to draft catalog items (spec 11 §5.2) within the ambient transaction.
-    /// Each edit changes only its non-null fields; item ids are namespaced as
-    /// <c>{catalogId}:{itemId}</c> to match the ingestion handler. Edits that match no row are no-ops.
+    /// Applies owner edits to draft catalog items (spec 11 §5.2) within the ambient transaction. Each
+    /// edit changes only its non-null fields and is keyed on the FULL namespaced id the read path emits
+    /// (<c>{catalogId}:{rawId}</c>); only items whose catalog is still <c>in_review</c> are editable.
+    /// An edit that matches no editable row throws <see cref="Exceptions.CatalogItemNotFoundException"/>
+    /// (never a silent no-op).
     /// </summary>
     Task ApplyItemEditsAsync(string catalogId, IEnumerable<CatalogItemEdit> edits, CancellationToken ct = default);
+
+    /// <summary>
+    /// Clears the draft-only extraction-agent metadata (<c>extraction_confidence</c> /
+    /// <c>source_location</c>) on all items of <paramref name="catalogId"/> — called on owner approval so
+    /// a published catalog row never retains extraction provenance (§3, Inv-16). Runs within the ambient
+    /// transaction.
+    /// </summary>
+    Task ClearDraftExtractionMetadataAsync(string catalogId, CancellationToken ct = default);
 }
