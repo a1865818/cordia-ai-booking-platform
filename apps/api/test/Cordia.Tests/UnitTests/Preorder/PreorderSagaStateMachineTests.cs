@@ -10,8 +10,9 @@ namespace Cordia.Tests.UnitTests.Preorder;
 /// engine. Forward: Revalidating → ReservingItems → CommittingBooking (await 06) → CommittingPreorder
 /// → Completed. Compensation unwinds only the saga's reserved items (CompensatingItems → FailedFinal)
 /// or, once 06 has committed the booking, escalates via CompensatingBooking → ManualReview; any
-/// in-flight forward step can time out to Reconciling; terminals are Completed / FailedFinal /
-/// ManualReview. The legacy HoldingCapacity / AuthorizingPayment / CompensatingHold steps are retained
+/// in-flight forward step can time out to Reconciling; terminals are Completed / FailedFinal, while
+/// ManualReview is an operator-resolution park (§21.4 → Completed / FailedFinal). The legacy
+/// HoldingCapacity / AuthorizingPayment / CompensatingHold steps are retained
 /// enum members but no longer wired (07/09 owned by 06).
 /// </summary>
 [Trait("Category", "Unit")]
@@ -32,6 +33,9 @@ public class PreorderSagaStateMachineTests
         { PreorderSagaState.CommittingPreorder, PreorderSagaState.CompensatingBooking }, // preorder persist failed
         { PreorderSagaState.CompensatingItems, PreorderSagaState.FailedFinal },
         { PreorderSagaState.CompensatingBooking, PreorderSagaState.ManualReview },
+        // §21.4 operator resolution of a ManualReview park: convert to standalone or cancel.
+        { PreorderSagaState.ManualReview, PreorderSagaState.Completed },
+        { PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal },
         // Timeout → reconcile from any in-flight forward step.
         { PreorderSagaState.ReservingItems, PreorderSagaState.Reconciling },
         { PreorderSagaState.CommittingBooking, PreorderSagaState.Reconciling },
@@ -51,7 +55,7 @@ public class PreorderSagaStateMachineTests
         { PreorderSagaState.ReservingItems, PreorderSagaState.CommittingPreorder }, // can't skip the booking
         { PreorderSagaState.Completed, PreorderSagaState.Revalidating },            // terminal
         { PreorderSagaState.FailedFinal, PreorderSagaState.ReservingItems },        // terminal
-        { PreorderSagaState.ManualReview, PreorderSagaState.Completed },            // terminal
+        { PreorderSagaState.ManualReview, PreorderSagaState.ReservingItems },       // no resume from a human park
         { PreorderSagaState.CommittingPreorder, PreorderSagaState.ReservingItems }, // no backward edge
         // Legacy saga-level booking steps are unwired (delegated to 06): no outgoing edges.
         { PreorderSagaState.Revalidating, PreorderSagaState.HoldingCapacity },      // saga no longer holds capacity
@@ -60,11 +64,12 @@ public class PreorderSagaStateMachineTests
         { PreorderSagaState.AuthorizingPayment, PreorderSagaState.CommittingBooking }, // unwired legacy step
     };
 
+    // ManualReview is NOT terminal — it is an operator-resolution park (§21.4) with edges to
+    // Completed (convert to standalone) / FailedFinal (cancel). Only these two are truly terminal.
     public static readonly TheoryData<PreorderSagaState> TerminalStates = new()
     {
         PreorderSagaState.Completed,
         PreorderSagaState.FailedFinal,
-        PreorderSagaState.ManualReview,
     };
 
     [Theory]

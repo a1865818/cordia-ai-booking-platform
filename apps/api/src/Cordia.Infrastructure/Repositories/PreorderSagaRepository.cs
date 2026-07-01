@@ -36,6 +36,7 @@ public class PreorderSagaRepository(ApplicationDbContext db) : IPreorderSagaRepo
         string? setHoldId = null,
         string? setDepositSessionId = null,
         string? setFailureReason = null,
+        bool? setStandalone = null,
         CancellationToken ct = default)
         => VersionTokenUpdate.UpdateAsync<PreorderSaga>(
             db,
@@ -51,6 +52,8 @@ public class PreorderSagaRepository(ApplicationDbContext db) : IPreorderSagaRepo
                     s.SetProperty(x => x.DepositSessionId, setDepositSessionId);
                 if (setFailureReason is not null)
                     s.SetProperty(x => x.FailureReason, setFailureReason);
+                if (setStandalone is not null)
+                    s.SetProperty(x => x.IsStandalone, setStandalone.Value);
             },
             ct);
 

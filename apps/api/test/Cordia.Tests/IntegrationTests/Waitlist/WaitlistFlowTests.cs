@@ -1,6 +1,7 @@
 ﻿#pragma warning disable xUnit1051 // Use TestContext.Current.CancellationToken
 using Cordia.Application.Handlers.Waitlist;
 using Cordia.Application.Handlers.Waitlist.Accept;
+using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Application.Handlers.Waitlist.Cancel;
 using Cordia.Application.Handlers.Waitlist.Decline;
 using Cordia.Application.Handlers.Waitlist.Enroll;
@@ -306,18 +307,23 @@ public class WaitlistFlowTests(PostgresFixture fixture)
 
         var offer = await ctx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters()
             .FirstAsync(o => o.TenantId == tenantId && o.EnrollmentId == enrollmentId);
-        Assert.Equal(WaitlistOfferStatus.Accepted, offer.Status);
+        // §20/Inv-1: auto-book now routes through spec-04, so the match leaves the offer Offered and
+        // enqueues the auto-accept step (which mints the confirmed revision + claims it); the match no
+        // longer finalizes capacity or emits a bespoke booking event here.
+        Assert.Equal(WaitlistOfferStatus.Offered, offer.Status);
 
-        // Hold finalized → slot moved held → booked.
+        // Hold NOT finalized by the match — the 06 engine finalizes it after the spec-04 submit. The
+        // slot capacity is still HELD (not booked) at this point.
         var slot = await ctx.CapacitySlots.AsNoTracking().IgnoreQueryFilters().SingleAsync(s => s.SlotId == slotId);
-        Assert.Equal(0, slot.HeldCapacity);
-        Assert.Equal(2, slot.BookedCapacity);
+        Assert.Equal(2, slot.HeldCapacity);
+        Assert.Equal(0, slot.BookedCapacity);
 
+        // Auto-accept step enqueued (routes through the spec-04 front door); intent audited.
         Assert.True(await ctx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
-            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == MatchWaitlistOfferCommandHandler.BookingConfirmedEventType));
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == AutoAcceptWaitlistOfferCommand.MessageType));
         Assert.True(await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
-            .AnyAsync(a => a.TenantId == tenantId && a.EventType == "waitlist.auto_booked"));
-        // No expiry job for an auto-booked offer.
+            .AnyAsync(a => a.TenantId == tenantId && a.EventType == "waitlist.auto_book_scheduled"));
+        // No offer-expiry job for the auto-book path (the capacity hold carries its own expiry).
         Assert.False(await ctx.ScheduledJobs.AsNoTracking().IgnoreQueryFilters()
             .AnyAsync(j => j.TenantId == tenantId && j.JobId == $"sj_offerexp_{offer.OfferId}"));
     }

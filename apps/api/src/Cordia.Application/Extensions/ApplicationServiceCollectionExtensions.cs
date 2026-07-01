@@ -23,6 +23,7 @@ using Cordia.Application.Handlers.Preorder.Recovery;
 using Cordia.Application.Handlers.Preorder.ReserveItems;
 using Cordia.Application.Handlers.Preorder.StartSaga;
 using Cordia.Application.Handlers.Waitlist;
+using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
 using Cordia.Application.Messaging;
@@ -199,6 +200,16 @@ public static class ApplicationServiceCollectionExtensions
                     env.TenantId,
                     env.MessageId,
                     env.CorrelationId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty));
+
+            // auto_accept.v1: platform auto-book under a recorded AutoBookGrant (§20, Inv-1). Enqueued by
+            // the matcher; mints the confirmed booking via the spec-04 front door. Registered as a PLAIN
+            // IRequest (no IInboxConsumerRequest) so InboxDeduplicationBehavior does NOT wrap it — the
+            // handler calls SubmitConfirmedIntent, which opens its own transaction (idempotent via the
+            // spec-04 key + the offer's version-guarded claim).
+            registry.Register(AutoAcceptWaitlistOfferCommand.MessageType,
+                env => new AutoAcceptWaitlistOfferCommand(
+                    env.TenantId,
                     ExtractString(env.Payload, "offer_id") ?? string.Empty));
 
             // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All

@@ -1,9 +1,7 @@
 ﻿using System.Text.Json;
-using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
-using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Waitlist;
 using MediatR;
@@ -17,8 +15,8 @@ namespace Cordia.Application.Handlers.Waitlist.Accept;
 /// <para>Historically the accept finalized its own capacity hold and emitted a bespoke
 /// <c>waitlist.booking_confirmed.v1</c> event: a parallel booking path in which merely resolving the
 /// offer minted the booking, so anyone who saw the offer notification could effectively book for the
-/// enrollee. This handler instead builds a canonical <see cref="BookingRequest"/> from the enrollment
-/// (+ the matched slot), computes its canonical hash, stamps a <see cref="Confirmation"/> with the
+/// enrollee. This handler instead builds a canonical <c>BookingRequest</c> from the enrollment
+/// (+ the matched slot), computes its canonical hash, stamps a <c>Confirmation</c> with the
 /// enrolled customer's captured identity/verification context, and submits it through spec 04. Spec 04
 /// mints the official <c>booking_intent_revisions</c> / <c>intent_confirmations</c> /
 /// <c>booking_operations</c> records under the offer's operation id (Inv-1) and hands the booking to
@@ -71,7 +69,8 @@ public sealed class AcceptWaitlistOfferCommandHandler(
                 $"Waitlist offer '{offer.OfferId}' cannot be accepted: missing matched slot or operation id.");
 
         // --- Build the confirmed booking submission (spec 04) from the enrollment + matched slot. ---
-        var submit = BuildSubmitCommand(command.TenantId, offer, enrollment, now);
+        // Shared with the auto-book path so there is exactly one waitlist-booking front door.
+        var submit = WaitlistAcceptSubmission.Build(command.TenantId, offer, enrollment, hasher, now);
 
         // Idempotent replay path: the offer is already Accepted (concurrent winner or retry). Re-submit
         // to 04 (same key → replay, no duplicate) so a crash after the claim still lands the booking.
@@ -124,82 +123,4 @@ public sealed class AcceptWaitlistOfferCommandHandler(
 
         return Unit.Value;
     }
-
-    /// <summary>
-    /// Assembles the deterministic <see cref="SubmitConfirmedIntentCommand"/> for accepting
-    /// <paramref name="offer"/>. All identifiers derive from the offer id so every retry/replay is
-    /// byte-identical (Inv-5). The canonical hash is computed exactly as spec 04 does (generated
-    /// converter settings) so the §8.8 confirmation-hash check passes.
-    /// </summary>
-    private SubmitConfirmedIntentCommand BuildSubmitCommand(
-        string tenantId, WaitlistOffer offer, WaitlistEnrollment enrollment, DateTimeOffset now)
-    {
-        var payload = new BookingRequest
-        {
-            Operation = OperationTypeEnum.Create,
-            ServiceId = enrollment.ServiceId,
-            LocationId = enrollment.LocationId,
-            PartySize = enrollment.PartySize,
-            StartsAt = offer.SlotStartAt!.Value,
-        };
-
-        var payloadNode = JsonSerializer.SerializeToNode(payload, Cordia.Domain.Generated.Converter.Settings);
-        var hash = hasher.Hash(payloadNode);
-
-        var intentId = $"wl_int_{offer.OfferId}";
-
-        var revision = new IntentRevision
-        {
-            IntentId = intentId,
-            Revision = 1,
-            CanonicalPayload = payload,
-            PayloadHash = hash.Value,
-            SchemaVersion = string.Empty,
-            TenantPolicyVersion = string.Empty,
-            SourceSessionId = offer.EnrollmentId,
-            CreatedAt = now,
-        };
-
-        var confirmation = new Confirmation
-        {
-            ConfirmationId = $"wl_conf_{offer.OfferId}",
-            IntentId = intentId,
-            IntentRevision = 1,
-            // BARE hash — spec 04 checks confirmation.intent_payload_hash == computed H.Value (§8.8).
-            IntentPayloadHash = hash.Value,
-            ConfirmationChannel = MapChannel(enrollment.NotificationChannel),
-            // Divergence #1: bind the booking to the enrolled customer's captured identity (Inv-1).
-            Identity = enrollment.IdentityRef,
-            VerificationLevel = enrollment.VerificationLevel,
-            ConfirmedAt = now,
-        };
-
-        var request = new SubmitConfirmedIntentRequest
-        {
-            // Deterministic per-offer key so re-accept / retry replays instead of duplicating (Inv-5).
-            IdempotencyKey = $"wl_accept_{offer.OfferId}",
-            // Mint the operation under the id the capacity hold was reserved against so the 06 engine
-            // reuses the existing "create" hold (see MatchWaitlistOfferCommandHandler.WorkflowStep).
-            OperationId = offer.OperationId!,
-            IntentId = intentId,
-            IntentRevision = 1,
-            Revision = revision,
-            Confirmation = confirmation,
-        };
-
-        return new SubmitConfirmedIntentCommand(tenantId, request);
-    }
-
-    /// <summary>
-    /// Maps the enrollment's free-form <c>notification_channel</c> to the closed
-    /// <see cref="ChannelEnum"/> confirmation-channel vocabulary. Unknown values fall back to
-    /// <see cref="ChannelEnum.Web"/> (the generic online channel a link-based accept arrives on).
-    /// </summary>
-    private static ChannelEnum MapChannel(string? channel) => channel?.Trim().ToLowerInvariant() switch
-    {
-        "email" => ChannelEnum.Email,
-        "sms" => ChannelEnum.Sms,
-        "voice" => ChannelEnum.Voice,
-        _ => ChannelEnum.Web,
-    };
 }

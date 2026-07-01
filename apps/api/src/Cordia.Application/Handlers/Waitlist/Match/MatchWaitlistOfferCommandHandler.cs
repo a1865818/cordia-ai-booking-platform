@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -34,9 +35,6 @@ public sealed class MatchWaitlistOfferCommandHandler(
 {
     /// <summary>Outbox event: a deadline-bound offer was sent to the customer.</summary>
     public const string OfferNotifiedEventType = "waitlist.offer.notified.v1";
-
-    /// <summary>Outbox event: an offer auto-booked under a recorded grant produced a confirmed booking.</summary>
-    public const string BookingConfirmedEventType = "waitlist.booking_confirmed.v1";
 
     /// <summary>
     /// Workflow step the waitlist capacity hold is reserved under. This is deliberately the SAME step
@@ -103,21 +101,19 @@ public sealed class MatchWaitlistOfferCommandHandler(
         var deposit = enrollment.GetDepositTerms();
         if (grant is not null && grant.Permits(enrollment.PartySize, command.SlotStartAt, deposit))
         {
-            // Auto-book under recorded consent (§20): finalize the hold and confirm directly.
-            await capacity.FinalizeAgainstOperationAsync(command.TenantId, operationId, WorkflowStep, ct);
-            await offerRepo.TryResolveAsync(
-                command.TenantId, offerId, expectedVersion: 1,
-                WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct);
-
-            await EnqueueAsync(command.TenantId, BookingConfirmedEventType, offerId, enrollment, now, new
+            // Auto-book under recorded consent (§20, Inv-1): route through the SAME spec-04 front door a
+            // customer accept uses — do NOT finalize capacity or emit a bespoke booking event here. The
+            // offer stays Offered; the auto-accept step (a plain consumer that can open its own
+            // transaction to call spec-04) mints an auditable confirmed revision carrying the grant's
+            // consent evidence and claims Offered → Accepted, after which the 06 engine finalizes the
+            // "create" hold. No offer-expiry job is scheduled — the capacity hold carries its own expiry
+            // as the backstop if the auto-accept step never lands.
+            await EnqueueAsync(command.TenantId, AutoAcceptWaitlistOfferCommand.MessageType, offerId, enrollment, now, new
             {
                 offer_id = offerId,
-                enrollment_id = enrollment.EnrollmentId,
                 operation_id = operationId,
-                slot_start_at = command.SlotStartAt,
-                auto_booked = true,
             }, ct);
-            await AuditAsync(command.TenantId, "waitlist.auto_booked", offerId, operationId, now, ct);
+            await AuditAsync(command.TenantId, "waitlist.auto_book_scheduled", offerId, operationId, now, ct);
             return Unit.Value;
         }
 

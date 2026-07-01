@@ -715,6 +715,18 @@
           "$ref": "#/$defs/BookingRequest",
           "description": "The booking request."
         },
+        "preorder_draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreorderDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mutable in-dialog pre-order draft, or None when none in progress."
+        },
         "source": {
           "$ref": "#/$defs/SourceInfo",
           "description": "Origin channel + language."
@@ -2140,6 +2152,74 @@
         "policy_version"
       ],
       "title": "PolicyValidationResult",
+      "type": "object"
+    },
+    "PreorderDraft": {
+      "additionalProperties": false,
+      "description": "The MUTABLE, in-dialog pre-order draft assembled inside the foreground ``BookingDraft``\n(spec 11 \u00a74.3, \u00a72 \u2014 the agent only *drafts*).\n\nThe agent builds this up turn by turn from the published-catalog read tools; it holds no prices\nand is never itself the booking side effect. At confirmation it is frozen into the immutable\n:class:`PreorderReference` (via :meth:`to_reference`), which is what gets embedded in the confirmed\nintent revision and folded into the canonical request hash (Inv-1/Inv-2). The draft is foreground\nstate only \u2014 it never crosses into a durable side effect on its own.",
+      "properties": {
+        "catalog_version": {
+          "description": "Published menu version the draft is being built against.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "lines": {
+          "description": "In-progress pre-order lines (mutable during the dialog).",
+          "items": {
+            "$ref": "#/$defs/PreorderDraftLine"
+          },
+          "title": "Lines",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalog_version"
+      ],
+      "title": "PreorderDraft",
+      "type": "object"
+    },
+    "PreorderDraftLine": {
+      "additionalProperties": false,
+      "description": "One MUTABLE, in-dialog pre-order line (spec 11 \u00a74.3).\n\nUnlike :class:`PreorderLineReference` this carries NO captured price \u2014 a draft line is assembled\nwhile the customer is still choosing, and the price is only captured (from the live published\ncatalog) when the draft is frozen into an immutable :class:`PreorderReference` at confirmation.",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque catalog item id.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "modifier_ids": {
+          "description": "Stable modifier ids selected on this line; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifier Ids",
+          "type": "array"
+        },
+        "quantity": {
+          "description": "Number of this item ordered (\u2265 1).",
+          "minimum": 1,
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen / preparation notes.",
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "item_id",
+        "quantity"
+      ],
+      "title": "PreorderDraftLine",
       "type": "object"
     },
     "PreorderLineReference": {

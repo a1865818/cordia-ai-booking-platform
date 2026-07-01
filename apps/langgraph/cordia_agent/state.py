@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
 
-from cordia_agent.contracts.preorder import PreorderReference
+from cordia_agent.contracts.preorder import PreorderDraft, PreorderReference
 from cordia_agent.tools.status_codes import AvailabilityMode
 
 
@@ -219,6 +219,13 @@ class BookingDraft(BaseModel):
         default=None, description="Customer reference, if known."
     )
     request: BookingRequest = Field(description="The booking request.")
+    # Pre-order (spec 11 §4.3): the MUTABLE in-dialog draft the agent assembles from the published
+    # catalog. Frozen into request.preorder (immutable PreorderReference) at confirmation via
+    # PreorderDraft.to_reference(...). Foreground state only — stripped from the canonical projection
+    # (like field_provenance) so it is never itself a booking side effect (§2: the agent only drafts).
+    preorder_draft: PreorderDraft | None = Field(
+        default=None, description="Mutable in-dialog pre-order draft, or None when none in progress."
+    )
     source: SourceInfo = Field(description="Origin channel + language.")
     field_provenance: dict[str, FieldProvenance] = Field(
         default_factory=dict,
@@ -228,11 +235,12 @@ class BookingDraft(BaseModel):
     def to_canonical(self) -> CanonicalBookingDraft:  # DQ2=B
         """Project to the canonical payload, dropping internal-only fields.
 
-        Strips ``field_provenance``; the TriState distinction is already inline
-        on each request field (DQ1=A), so absent/unknown/declined survive.
+        Strips ``field_provenance`` and the foreground-only ``preorder_draft`` (the immutable
+        ``request.preorder`` reference is what is canonical); the TriState distinction is already
+        inline on each request field (DQ1=A), so absent/unknown/declined survive.
         """
         return CanonicalBookingDraft.model_validate(
-            self.model_dump(exclude={"field_provenance"})
+            self.model_dump(exclude={"field_provenance", "preorder_draft"})
         )
 
 

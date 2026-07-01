@@ -48,9 +48,9 @@ public class ReservePreorderItemsHandlerTests
         _saga.Setup(r => r.TryAdvanceStateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
                 It.IsAny<PreorderSagaState>(), It.IsAny<PreorderSagaState>(), It.IsAny<DateTimeOffset>(),
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool?>(), It.IsAny<CancellationToken>()))
             .Callback((string _, string _, long _, PreorderSagaState from, PreorderSagaState to,
-                       DateTimeOffset _, string _, string _, string _, CancellationToken _) => _transition = (from, to))
+                       DateTimeOffset _, string _, string _, string _, bool? _, CancellationToken _) => _transition = (from, to))
             .ReturnsAsync(1);
         _outbox.Setup(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
             .Callback<OutboxMessage, CancellationToken>((m, _) => _emitted.Add(m))

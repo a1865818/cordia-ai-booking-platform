@@ -24,9 +24,9 @@ public interface IPreorderSagaRepository
     /// <paramref name="expectedVersion"/> AND the current state, bumping the version and stamping
     /// <paramref name="updatedAt"/> in one atomic UPDATE. Optionally persists the step checkpoints
     /// (<paramref name="setHoldId"/> / <paramref name="setDepositSessionId"/>) and/or a
-    /// <paramref name="setFailureReason"/> atomically with the advance — pass <c>null</c> to leave a
-    /// field unchanged. Returns rows-affected: <c>1</c> = won the advance, <c>0</c> = lost the race /
-    /// state already moved (reload + re-evaluate).
+    /// <paramref name="setFailureReason"/> and/or <paramref name="setStandalone"/> atomically with the
+    /// advance — pass <c>null</c> to leave a field unchanged. Returns rows-affected: <c>1</c> = won the
+    /// advance, <c>0</c> = lost the race / state already moved (reload + re-evaluate).
     /// </summary>
     Task<int> TryAdvanceStateAsync(
         string tenantId,
@@ -38,6 +38,7 @@ public interface IPreorderSagaRepository
         string? setHoldId = null,
         string? setDepositSessionId = null,
         string? setFailureReason = null,
+        bool? setStandalone = null,
         CancellationToken ct = default);
 
     /// <summary>

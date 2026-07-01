@@ -12,7 +12,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from cordia_agent.contracts.catalog import Money
 from cordia_agent.contracts.preorder import (
+    PreorderDraft,
+    PreorderDraftLine,
     PreorderLineReference,
     PreorderReference,
 )
@@ -103,3 +106,68 @@ def test_reference_serializes_without_computed_helpers() -> None:
     dumped = _ref().model_dump()
     assert "total_amount_minor" not in dumped
     assert "line_subtotal" not in dumped["lines"][0]
+
+
+# ── Mutable draft (spec 11 §4.3) ──────────────────────────────────────────────
+
+
+def _draft(**overrides: object) -> PreorderDraft:
+    kwargs: dict[str, object] = {
+        "catalog_version": "menu_2026_06_16",
+        "lines": [PreorderDraftLine(item_id="item_1", quantity=2, notes="no peanuts")],
+    }
+    kwargs.update(overrides)
+    return PreorderDraft(**kwargs)
+
+
+@pytest.mark.unit
+def test_draft_line_defaults() -> None:
+    """A draft line carries NO price; modifier_ids defaults empty, notes None."""
+    line = PreorderDraftLine(item_id="item_1", quantity=1)
+    assert line.modifier_ids == []
+    assert line.notes is None
+    # Draft lines never carry a captured price (that is captured at freeze time only).
+    assert "captured_price_amount_minor" not in line.model_dump()
+
+
+@pytest.mark.unit
+def test_draft_line_rejects_zero_quantity() -> None:
+    with pytest.raises(ValidationError):
+        PreorderDraftLine(item_id="item_1", quantity=0)
+
+
+@pytest.mark.unit
+def test_draft_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        _draft(surprise="x")
+
+
+@pytest.mark.unit
+def test_draft_freezes_to_reference_capturing_prices() -> None:
+    """to_reference captures per-unit price + currency from the lookup and mirrors the draft."""
+    prices = {"item_1": Money(amount_minor=3200, currency="AUD"), "item_2": Money(amount_minor=750, currency="AUD")}
+    draft = _draft(
+        lines=[
+            PreorderDraftLine(item_id="item_1", modifier_ids=["mod_1"], quantity=2, notes="no peanuts"),
+            PreorderDraftLine(item_id="item_2", quantity=1),
+        ]
+    )
+
+    ref = draft.to_reference("conf_9", price_lookup=lambda item_id: prices[item_id])
+
+    assert isinstance(ref, PreorderReference)
+    assert ref.catalog_version == "menu_2026_06_16"
+    assert ref.confirmation_id == "conf_9"
+    assert [line.item_id for line in ref.lines] == ["item_1", "item_2"]
+    assert ref.lines[0].captured_price_amount_minor == 3200
+    assert ref.lines[0].captured_price_currency == "AUD"
+    assert ref.lines[0].modifier_ids == ["mod_1"]
+    assert ref.lines[0].notes == "no peanuts"
+    # Captured prices flow into the derived total: 3200*2 + 750*1.
+    assert ref.total_amount_minor == 7150
+
+
+@pytest.mark.unit
+def test_empty_draft_cannot_be_frozen() -> None:
+    with pytest.raises(ValueError):
+        _draft(lines=[]).to_reference("conf_1", price_lookup=lambda _: Money(amount_minor=1, currency="AUD"))

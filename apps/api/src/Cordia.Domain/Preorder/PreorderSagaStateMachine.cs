@@ -32,7 +32,9 @@ namespace Cordia.Domain.Preorder;
 /// step on a step timeout, and either resumes the forward/compensation chain or escalates to a
 /// terminal.</para>
 ///
-/// <para><b>Terminals</b> (no outgoing edges): Completed, FailedFinal, ManualReview.
+/// <para><b>Terminals</b> (no outgoing edges): Completed, FailedFinal. <b>ManualReview</b> is a
+/// human-resolution parking state (§21.4): an operator + customer either convert the pre-order to a
+/// standalone order (→ Completed) or cancel it (→ FailedFinal); it never auto-advances.
 /// <see cref="PreorderSagaState.HoldingCapacity"/> / <see cref="PreorderSagaState.AuthorizingPayment"/>
 /// / <see cref="PreorderSagaState.CompensatingHold"/> are retained enum members that are no longer
 /// wired into the forward or compensation paths (booking delegated to 06).</para>
@@ -103,8 +105,18 @@ public static class PreorderSagaStateMachine
                 PreorderSagaState.FailedFinal,
                 PreorderSagaState.ManualReview,
             }.ToFrozenSet(),
+            [PreorderSagaState.ManualReview] = new HashSet<PreorderSagaState>
+            {
+                // §21.4 operator resolution ONLY (not an automatic edge): an operator + the customer
+                // either convert the parked pre-order to a standalone order (→ Completed, marked
+                // standalone) or cancel it (→ FailedFinal). A pre-order never lingers active — it stays
+                // in ManualReview until a human explicitly resolves it. Guarded in the resolution
+                // handlers (operator actor + customer-agreement evidence required, audited).
+                PreorderSagaState.Completed,
+                PreorderSagaState.FailedFinal,
+            }.ToFrozenSet(),
             // Terminal states — no outgoing edges; absent from the dictionary.
-            // Completed, FailedFinal, ManualReview
+            // Completed, FailedFinal (ManualReview is resolvable by an operator, above)
             // Unwired legacy steps (booking delegated to 06) — also absent, no outgoing edges:
             // HoldingCapacity, AuthorizingPayment, CompensatingHold
         }.ToFrozenDictionary();
