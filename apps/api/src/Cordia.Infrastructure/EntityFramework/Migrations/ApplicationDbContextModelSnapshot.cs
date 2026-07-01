@@ -24,6 +24,7 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "attempt_outcome_enum", new[] { "abandoned", "ambiguous", "dispatching", "planned", "reconciled", "rejected", "succeeded", "transient_failure" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "booking_lifecycle_status_enum", new[] { "cancellation_pending", "cancelled", "confirmed", "modification_pending" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "catalog_status_enum", new[] { "approved", "draft_ready", "extracting", "in_review", "published", "quarantined", "scanning", "superseded", "uploaded" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "channel_enum", new[] { "email", "messaging", "voice", "web" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "consent_state", new[] { "alternative_offered", "declined", "granted", "not_required" });
@@ -46,6 +47,7 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "signal_type_enum", new[] { "directory_slug", "email_recipient", "messaging_recipient", "phone_number", "web_origin", "widget_key" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_action_enum", new[] { "cancel", "modify", "owner_override", "read_sensitive", "refund", "use_payment_method" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_level_enum", new[] { "channel_verified", "high_assurance", "identity_verified", "unverified" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "verification_request_channel_enum", new[] { "email", "sms" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "waitlist_offer_status_enum", new[] { "accepted", "declined", "expired", "matched", "offered", "pending", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "workflow_step_status_enum", new[] { "failed", "in_progress", "pending", "succeeded", "terminal" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -98,6 +100,70 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_audit_events");
 
                     b.ToTable("audit_events", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.Booking", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("BookingId")
+                        .HasColumnType("text")
+                        .HasColumnName("booking_id");
+
+                    b.Property<string>("BookingReference")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("booking_reference");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CustomerId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("customer_id");
+
+                    b.Property<BookingLifecycleStatus>("LifecycleStatus")
+                        .HasColumnType("booking_lifecycle_status_enum")
+                        .HasColumnName("lifecycle_status");
+
+                    b.Property<string>("ProviderReference")
+                        .HasColumnType("text")
+                        .HasColumnName("provider_reference");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
+                    b.HasKey("TenantId", "BookingId")
+                        .HasName("pk_bookings");
+
+                    b.HasIndex("TenantId", "BookingReference")
+                        .IsUnique()
+                        .HasDatabaseName("ix_bookings_tenant_id_booking_reference");
+
+                    b.HasIndex("TenantId", "CustomerId")
+                        .HasDatabaseName("ix_bookings_tenant_id_customer_id");
+
+                    b.HasIndex("TenantId", "ProviderReference")
+                        .HasDatabaseName("ix_bookings_tenant_id_provider_reference")
+                        .HasFilter("provider_reference IS NOT NULL");
+
+                    b.ToTable("bookings", "public");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.BookingIntent", b =>
@@ -1297,6 +1363,73 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasDatabaseName("ix_vendor_catalog_items_tenant_id_catalog_id");
 
                     b.ToTable("vendor_catalog_items", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.VerificationChallenge", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("VerificationId")
+                        .HasColumnType("text")
+                        .HasColumnName("verification_id");
+
+                    b.Property<VerificationActionEnum>("Action")
+                        .HasColumnType("verification_action_enum")
+                        .HasColumnName("action");
+
+                    b.Property<VerificationRequestChannel>("Channel")
+                        .HasColumnType("verification_request_channel_enum")
+                        .HasColumnName("channel");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("code_hash");
+
+                    b.Property<string>("CustomerId")
+                        .HasColumnType("text")
+                        .HasColumnName("customer_id");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("GrantId")
+                        .HasColumnType("text")
+                        .HasColumnName("grant_id");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("TargetBookingId")
+                        .HasColumnType("text")
+                        .HasColumnName("target_booking_id");
+
+                    b.Property<DateTimeOffset?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("TenantId", "VerificationId")
+                        .HasName("pk_verification_challenges");
+
+                    b.HasIndex("TenantId", "ExpiresAt")
+                        .HasDatabaseName("ix_verification_challenges_tenant_id_expires_at");
+
+                    b.HasIndex("TenantId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_verification_challenges_tenant_id_idempotency_key");
+
+                    b.ToTable("verification_challenges", "public");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.VerificationGrant", b =>

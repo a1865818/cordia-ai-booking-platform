@@ -224,7 +224,8 @@ class BookingDraft(BaseModel):
     # PreorderDraft.to_reference(...). Foreground state only — stripped from the canonical projection
     # (like field_provenance) so it is never itself a booking side effect (§2: the agent only drafts).
     preorder_draft: PreorderDraft | None = Field(
-        default=None, description="Mutable in-dialog pre-order draft, or None when none in progress."
+        default=None,
+        description="Mutable in-dialog pre-order draft, or None when none in progress.",
     )
     source: SourceInfo = Field(description="Origin channel + language.")
     field_provenance: dict[str, FieldProvenance] = Field(

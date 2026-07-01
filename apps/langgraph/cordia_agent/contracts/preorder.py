@@ -103,9 +103,12 @@ class PreorderDraft(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    catalog_version: str = Field(description="Published menu version the draft is being built against.")
+    catalog_version: str = Field(
+        description="Published menu version the draft is being built against."
+    )
     lines: list[PreorderDraftLine] = Field(
-        default_factory=list, description="In-progress pre-order lines (mutable during the dialog)."
+        default_factory=list,
+        description="In-progress pre-order lines (mutable during the dialog).",
     )
 
     def to_reference(
@@ -135,7 +138,9 @@ class PreorderDraft(BaseModel):
                 item_id=line.item_id,
                 modifier_ids=list(line.modifier_ids),
                 quantity=line.quantity,
-                captured_price_amount_minor=(money := price_lookup(line.item_id)).amount_minor,
+                captured_price_amount_minor=(
+                    money := price_lookup(line.item_id)
+                ).amount_minor,
                 captured_price_currency=money.currency,
                 notes=line.notes,
             )

@@ -54,6 +54,77 @@
         ],
         "type": "string"
       },
+      "BookingChangeValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity_mode": {
+            "$ref": "#/components/schemas/AvailabilityModeEnum"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ValidateBookingChangeStatusEnum"
+          },
+          "currency": {
+            "nullable": true,
+            "type": "string"
+          },
+          "fees_minor": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "policy_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "recoverable_fields": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "requires_confirmation": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "requires_payment": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "BookingProjectionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_reference": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "BookingRequest": {
         "additionalProperties": false,
         "properties": {
@@ -180,6 +251,27 @@
           "sms",
           "voice",
           "web"
+        ],
+        "type": "string"
+      },
+      "CheckVerificationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "grant": {
+            "$ref": "#/components/schemas/VerificationGrantView"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CheckVerificationStatusEnum"
+          }
+        },
+        "type": "object"
+      },
+      "CheckVerificationStatusEnum": {
+        "enum": [
+          "expired",
+          "failed",
+          "granted",
+          "pending"
         ],
         "type": "string"
       },
@@ -339,6 +431,50 @@
         },
         "type": "object"
       },
+      "FindManageableBookingsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ManageableBooking"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FindStatus"
+          }
+        },
+        "type": "object"
+      },
+      "FindStatus": {
+        "enum": [
+          "found",
+          "multiple",
+          "none"
+        ],
+        "type": "string"
+      },
+      "GetBookingDetailsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "booking": {
+            "$ref": "#/components/schemas/BookingProjectionRef"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GetBookingDetailsStatusEnum"
+          }
+        },
+        "type": "object"
+      },
+      "GetBookingDetailsStatusEnum": {
+        "enum": [
+          "not_found",
+          "ok",
+          "requires_verification"
+        ],
+        "type": "string"
+      },
       "IdempotencyConflict": {
         "additionalProperties": false,
         "properties": {
@@ -399,6 +535,36 @@
           "tenant_policy_version": {
             "nullable": true,
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ManageableBooking": {
+        "additionalProperties": false,
+        "properties": {
+          "approx_time": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_reference": {
+            "nullable": true,
+            "type": "string"
+          },
+          "business": {
+            "nullable": true,
+            "type": "string"
+          },
+          "date": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -624,6 +790,27 @@
         },
         "type": "object"
       },
+      "RequestVerificationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/RequestVerificationStatusEnum"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSentResult"
+          }
+        },
+        "type": "object"
+      },
+      "RequestVerificationStatusEnum": {
+        "enum": [
+          "already_sent",
+          "no_verified_destination",
+          "rate_limited",
+          "sent"
+        ],
+        "type": "string"
+      },
       "ResolveRequest": {
         "additionalProperties": false,
         "properties": {
@@ -665,6 +852,126 @@
         },
         "type": "object"
       },
+      "Scope": {
+        "enum": [
+          "operation",
+          "session"
+        ],
+        "type": "string"
+      },
+      "SubmitBookingCancellationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SubmitBookingCancellationStatusEnum"
+          },
+          "status_url": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SubmitBookingCancellationStatusEnum": {
+        "enum": [
+          "accepted",
+          "already_cancelled",
+          "duplicate_accepted",
+          "idempotency_conflict",
+          "stale_version",
+          "verification_required"
+        ],
+        "type": "string"
+      },
+      "SubmitBookingModificationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SubmitBookingModificationStatusEnum"
+          },
+          "status_url": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SubmitBookingModificationStatusEnum": {
+        "enum": [
+          "accepted",
+          "confirmation_invalid",
+          "duplicate_accepted",
+          "idempotency_conflict",
+          "stale_version",
+          "verification_required"
+        ],
+        "type": "string"
+      },
+      "SubmitCancellationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "cancellation_idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "confirmation": {
+            "$ref": "#/components/schemas/Confirmation"
+          },
+          "expected_booking_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "grant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason_code": {
+            "nullable": true,
+            "type": "string"
+          },
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "SubmitConfirmedIntentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -697,6 +1004,43 @@
         },
         "type": "object"
       },
+      "SubmitModificationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation": {
+            "$ref": "#/components/schemas/Confirmation"
+          },
+          "expected_booking_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "grant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_payload_hash": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "modification_idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "UploadMenuRequest": {
         "additionalProperties": false,
         "properties": {
@@ -710,6 +1054,47 @@
           }
         },
         "type": "object"
+      },
+      "ValidateBookingChangeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_booking_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "grant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "requested_fields": {},
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ValidateBookingChangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/BookingChangeValidation"
+          }
+        },
+        "type": "object"
+      },
+      "ValidateBookingChangeStatusEnum": {
+        "enum": [
+          "capacity_unavailable",
+          "policy_failed",
+          "stale_version",
+          "valid"
+        ],
+        "type": "string"
       },
       "ValidationProblemDetails": {
         "additionalProperties": {},
@@ -742,6 +1127,111 @@
             "type": "string"
           },
           "type": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerificationActionEnum": {
+        "enum": [
+          "cancel",
+          "modify",
+          "owner_override",
+          "read_sensitive",
+          "refund",
+          "use_payment_method"
+        ],
+        "type": "string"
+      },
+      "VerificationGrantView": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_action": {
+            "$ref": "#/components/schemas/VerificationActionEnum"
+          },
+          "customer_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "grant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerificationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/VerificationActionEnum"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/VerificationRequestChannel"
+          },
+          "customer_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verification_idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerificationRequestChannel": {
+        "enum": [
+          "email",
+          "sms"
+        ],
+        "type": "string"
+      },
+      "VerificationSentResult": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/VerificationRequestChannel"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "masked_destination": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verification_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerifyCodeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
             "nullable": true,
             "type": "string"
           }
@@ -1189,6 +1679,76 @@
       }
     },
     "/api/Bookings": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "phone_e164",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "booking_reference",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "email",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindManageableBookingsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindManageableBookingsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindManageableBookingsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      },
       "post": {
         "requestBody": {
           "content": {
@@ -1285,6 +1845,453 @@
               "text/plain": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/api/Bookings/{bookingId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bookingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Grant-Id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grant_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBookingDetailsResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/api/Bookings/{bookingId}/cancellations": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bookingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitCancellationInput"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitCancellationInput"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitCancellationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingCancellationResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/api/Bookings/{bookingId}/changes:validate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bookingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateBookingChangeRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateBookingChangeRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateBookingChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingChangeResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingChangeResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingChangeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/api/Bookings/{bookingId}/modifications": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bookingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitModificationInput"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitModificationInput"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitModificationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitBookingModificationResponse"
                 }
               }
             },
@@ -2314,6 +3321,198 @@
         ]
       }
     },
+    "/api/verifications": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestVerificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestVerificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestVerificationResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Verifications"
+        ]
+      }
+    },
+    "/api/verifications/{verificationId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verificationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "Verifications"
+        ]
+      }
+    },
+    "/api/verifications/{verificationId}/verify": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verificationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Correlation-Id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyCodeRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyCodeRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckVerificationResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Verifications"
+        ]
+      }
+    },
     "/api/waitlist/enrollments": {
       "post": {
         "parameters": [
@@ -2655,6 +3854,9 @@
     },
     {
       "name": "Preorder"
+    },
+    {
+      "name": "Verifications"
     },
     {
       "name": "Waitlist"
