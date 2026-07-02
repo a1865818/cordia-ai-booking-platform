@@ -53,4 +53,60 @@ public class EnrollWaitlistValidatorTests
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, e => e.PropertyName == "VerificationLevel");
     }
+
+    // ── §20: AutoBookGrant consent-evidence + constraint validation (review 2026-07-03, C11) ────
+
+    private static Cordia.Domain.Waitlist.AutoBookGrant Grant(string evidenceId) => new(
+        ConsentEvidenceId: evidenceId,
+        ConsentedAt: DateTimeOffset.UtcNow,
+        MaxPartySize: 4,
+        ConstraintFrom: DateTimeOffset.UtcNow,
+        ConstraintTo: DateTimeOffset.UtcNow.AddDays(30),
+        MaxDepositAmountMinor: 5000,
+        DepositCurrency: "AUD");
+
+    [Fact]
+    public void AutoBook_WithRecordedConsent_Passes()
+    {
+        var cmd = ValidCommand(null) with { AutoBook = Grant("consent_ev_1") };
+
+        Assert.True(new EnrollWaitlistValidator().Validate(cmd).IsValid);
+    }
+
+    [Fact]
+    public void AutoBook_EmptyConsentEvidence_IsRejected()
+    {
+        // An empty evidence id must never authorize silent auto-booking (§20).
+        var cmd = ValidCommand(null) with { AutoBook = Grant("") };
+
+        var result = new EnrollWaitlistValidator().Validate(cmd);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.PropertyName.Contains("ConsentEvidenceId"));
+    }
+
+    [Fact]
+    public void AutoBook_InvertedConstraintWindow_IsRejected()
+    {
+        var grant = Grant("consent_ev_1") with
+        {
+            ConstraintFrom = DateTimeOffset.UtcNow.AddDays(30),
+            ConstraintTo = DateTimeOffset.UtcNow,
+        };
+        var cmd = ValidCommand(null) with { AutoBook = grant };
+
+        Assert.False(new EnrollWaitlistValidator().Validate(cmd).IsValid);
+    }
+
+    [Fact]
+    public void Permits_EmptyConsentEvidence_IsFailSecure()
+    {
+        // Defense in depth for grants persisted before the validator existed: the domain check
+        // itself refuses to authorize an evidence-less grant, so the match falls back to an offer.
+        var grant = Grant("");
+
+        Assert.False(grant.Permits(2, DateTimeOffset.UtcNow.AddDays(1), null));
+        Assert.True((grant with { ConsentEvidenceId = "consent_ev_1" })
+            .Permits(2, DateTimeOffset.UtcNow.AddDays(1), null));
+    }
 }

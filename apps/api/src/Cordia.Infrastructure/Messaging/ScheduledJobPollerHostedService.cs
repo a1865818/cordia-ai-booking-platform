@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Interfaces;
+﻿using Cordia.Domain.Exceptions;
+using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -101,6 +102,20 @@ public sealed class ScheduledJobPollerHostedService(
             try
             {
                 await transport.PublishAsync(envelope, queue, ct);
+            }
+            catch (PoisonMessageException pex)
+            {
+                // A routable job_type with no registered consumer is a PERMANENT registration
+                // defect — reclaim-and-retry can never fix it. Terminally mark the job Dead
+                // (mirrors the unknown-destination_queue path above and the outbox publisher's
+                // unconsumed_message_type dead-letter).
+                await markRepo.MarkDeadAsync(job.TenantId, job.JobId, ct);
+                logger.LogError(
+                    pex,
+                    "Scheduled-job poller {WorkerId}: no registered consumer for job_type " +
+                    "{JobType} job_id={JobId}; marked Dead (permanent registration defect)",
+                    _workerId, job.JobType, job.JobId);
+                continue;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

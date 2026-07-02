@@ -28,7 +28,11 @@ public sealed record AutoBookGrant(
     /// <c>false</c>, and the caller must fall back to an offer.
     /// </summary>
     public bool Permits(int partySize, DateTimeOffset slotTime, DepositTerms? requiredDeposit)
-        => partySize <= MaxPartySize
+        // §20: no recorded consent evidence = no authority to auto-book, regardless of the other
+        // constraints. Fail-secure defense in depth for grants persisted before the enroll-time
+        // validator existed (the caller falls back to a normal offer).
+        => !string.IsNullOrWhiteSpace(ConsentEvidenceId)
+        && partySize <= MaxPartySize
         && slotTime >= ConstraintFrom
         && slotTime <= ConstraintTo
         && (requiredDeposit is null

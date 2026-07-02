@@ -9,14 +9,17 @@ namespace Cordia.Application.Handlers.Waitlist.Cancel;
 
 /// <summary>
 /// Cancels a waitlist enrollment in one transaction (spec 11 §4.4, Inv-6): stamps the enrollment
-/// cancelled (version-guarded, terminal) and releases any live offer — rolling back its temporary
-/// capacity hold so the slot is freed. Idempotent: a re-cancel of an already-cancelled enrollment
-/// is a no-op. Throws <see cref="WaitlistEnrollmentNotFoundException"/> (404) for an unknown id.
+/// cancelled (version-guarded, terminal), releases any live offer — rolling back its temporary
+/// capacity hold so the slot is freed — and re-matches the freed opening to the next eligible
+/// enrollee (same recovery as decline/expire, §5.1/FM#1). Idempotent: a re-cancel of an
+/// already-cancelled enrollment is a no-op. Throws
+/// <see cref="WaitlistEnrollmentNotFoundException"/> (404) for an unknown id.
 /// </summary>
 public sealed class CancelWaitlistEnrollmentCommandHandler(
     IWaitlistEnrollmentRepository enrollmentRepo,
     IWaitlistOfferRepository offerRepo,
     ICapacityReservation capacity,
+    IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow)
     : IRequestHandler<CancelWaitlistEnrollmentCommand, Unit>
@@ -50,7 +53,16 @@ public sealed class CancelWaitlistEnrollmentCommandHandler(
                     WaitlistOfferStatus.Released, now, ct2);
 
                 if (released > 0 && !string.IsNullOrEmpty(offer.HoldId))
+                {
                     await capacity.ReleaseAsync(command.TenantId, offer.HoldId, ReleaseReason.Compensated, ct2);
+
+                    // Re-match the freed opening to the next eligible enrollee, exactly like
+                    // decline/expire — otherwise the slot silently leaves the waitlist queue and
+                    // the next enrollee is never offered it (review 2026-07-03, C10).
+                    var rematch = WaitlistRematchMessage.Build(command.TenantId, offer, enrollment, now);
+                    if (rematch is not null)
+                        await outboxRepo.AddAsync(rematch, ct2);
+                }
             }
 
             await auditRepo.AddAsync(new AuditEvent

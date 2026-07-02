@@ -89,6 +89,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
             new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx)),
+            new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             new UnitOfWork(ctx));
 
@@ -252,6 +253,34 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         await using (var ctx = fixture.CreateContext(tenantId))
             await Assert.ThrowsAsync<WaitlistEnrollmentNotFoundException>(() =>
                 BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, "wle_missing", "customer"), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Cancel_WithLiveOffer_ReleasesHold_AndEnqueuesRematch()
+    {
+        // Review 2026-07-03 C10: cancelling an enrollment that holds a live offer must re-match
+        // the freed opening to the next eligible enrollee, exactly like decline/expire (§5.1/FM#1)
+        // — otherwise the slot silently leaves the waitlist queue.
+        var tenantId = $"wl-cancel-live-{Guid.NewGuid():N}";
+        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
+        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
+        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
+        var (offerId, holdId, _) = await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer"), CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var offer = await assertCtx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters().SingleAsync(o => o.OfferId == offerId);
+        Assert.Equal(WaitlistOfferStatus.Released, offer.Status);
+
+        var hold = await assertCtx.CapacityHolds.AsNoTracking().IgnoreQueryFilters().SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Released, hold.Status);
+
+        // Re-match enqueued for the freed opening (same recovery as decline/expire).
+        Assert.True(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
     }
 
     // ── Match ──────────────────────────────────────────────────────────────────────────────────
