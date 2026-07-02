@@ -45,4 +45,16 @@ public static class ConfirmationMappings
             _ => VerificationLevel.Unverified,
         };
     }
+
+    /// <summary>
+    /// True when <paramref name="raw"/> is a member of the <c>verification_level</c> wire vocabulary.
+    /// Edge validators use this so a captured assurance level is rejected up front (400) instead of
+    /// being silently coerced to <see cref="VerificationLevel.Unverified"/> by
+    /// <see cref="MapVerificationLevel"/> long after the customer enrolled.
+    /// </summary>
+    public static bool IsKnownVerificationLevel(string raw) => raw.ToLowerInvariant() switch
+    {
+        "unverified" or "channel_verified" or "identity_verified" or "high_assurance" => true,
+        _ => false,
+    };
 }
