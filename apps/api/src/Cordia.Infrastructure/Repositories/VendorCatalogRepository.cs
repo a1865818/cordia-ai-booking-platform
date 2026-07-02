@@ -29,10 +29,12 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
 
         if (!string.IsNullOrWhiteSpace(query))
         {
-            var pattern = $"%{query}%";
+            // The customer's text must match LITERALLY: unescaped % / _ act as wildcards, and a
+            // trailing backslash aborts the query with PG error 22025 (→ 500 on a foreground path).
+            var pattern = $"%{SqlLikePattern.Escape(query)}%";
             items = items.Where(i =>
-                EF.Functions.ILike(i.Name, pattern) ||
-                EF.Functions.ILike(i.Description, pattern));
+                EF.Functions.ILike(i.Name, pattern, SqlLikePattern.EscapeCharacter) ||
+                EF.Functions.ILike(i.Description, pattern, SqlLikePattern.EscapeCharacter));
         }
 
         if (!string.IsNullOrWhiteSpace(category))
