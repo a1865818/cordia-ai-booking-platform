@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Microsoft.Extensions.DependencyInjection;
@@ -106,6 +107,19 @@ public sealed class OutboxPublisherHostedService(
             try
             {
                 await transport.PublishAsync(envelope, queue, ct);
+            }
+            catch (PoisonMessageException pex)
+            {
+                // A routable type with no registered consumer (and no intentionally-unconsumed
+                // declaration) is a PERMANENT registration defect — retrying cannot fix it.
+                // Dead-letter immediately, mirroring the unroutable_message_type path above.
+                await DeadLetterPoisonAsync(scope, row, "unconsumed_message_type", ct);
+                logger.LogError(
+                    pex,
+                    "Outbox publisher {WorkerId}: message_type {MessageType} has no registered consumer " +
+                    "message_id={MessageId}; dead-lettered (registration defect)",
+                    _workerId, row.MessageType, row.MessageId);
+                continue;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

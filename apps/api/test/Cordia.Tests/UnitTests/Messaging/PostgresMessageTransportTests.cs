@@ -26,12 +26,12 @@ public class PostgresMessageTransportTests
             Payload: JsonDocument.Parse("{}").RootElement);
 
     [Fact]
-    public async Task PublishAsync_WhenDispatcherReturnsTrue_CompletesWithoutException()
+    public async Task PublishAsync_WhenDispatched_CompletesWithoutException()
     {
         var dispatcherMock = new Mock<IQueueConsumerDispatcher>();
         dispatcherMock
             .Setup(d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+            .ReturnsAsync(DispatchResult.Dispatched);
 
         var transport = new PostgresMessageTransport(
             dispatcherMock.Object,
@@ -47,12 +47,12 @@ public class PostgresMessageTransportTests
     }
 
     [Fact]
-    public async Task PublishAsync_WhenDispatcherReturnsFalse_CompletesWithoutException()
+    public async Task PublishAsync_WhenIntentionallyUnconsumed_TreatedAsDelivered()
     {
         var dispatcherMock = new Mock<IQueueConsumerDispatcher>();
         dispatcherMock
             .Setup(d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
+            .ReturnsAsync(DispatchResult.IntentionallyUnconsumed);
 
         var transport = new PostgresMessageTransport(
             dispatcherMock.Object,
@@ -68,6 +68,26 @@ public class PostgresMessageTransportTests
     }
 
     [Fact]
+    public async Task PublishAsync_WhenNoConsumer_ThrowsPoison_SoThePublisherDeadLetters()
+    {
+        // Review PR #65 root cause: a routable type with no registered consumer was silently
+        // marked delivered, vanishing customer-facing notifications. It must now surface loudly.
+        var dispatcherMock = new Mock<IQueueConsumerDispatcher>();
+        dispatcherMock
+            .Setup(d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DispatchResult.NoConsumer);
+
+        var transport = new PostgresMessageTransport(
+            dispatcherMock.Object,
+            new TenantContext(),
+            NullLogger<PostgresMessageTransport>.Instance);
+
+        var envelope = BuildEnvelope("waitlist.offer.notified.v1");
+        await Assert.ThrowsAsync<Cordia.Domain.Exceptions.PoisonMessageException>(
+            () => transport.PublishAsync(envelope, LogicalQueue.WaitlistCommands, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task PublishAsync_SetsScopedTenantFromEnvelope_BeforeDispatch()
     {
         var tenantContext = new TenantContext { TenantId = "" }; // background scope: no tenant set
@@ -78,7 +98,7 @@ public class PostgresMessageTransportTests
             .Setup(d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
             // Capture the ambient tenant AT dispatch time — proves it was set before dispatch.
             .Callback(() => tenantSeenByDispatcher = tenantContext.TenantId)
-            .ReturnsAsync(true);
+            .ReturnsAsync(DispatchResult.Dispatched);
 
         var transport = new PostgresMessageTransport(
             dispatcherMock.Object,

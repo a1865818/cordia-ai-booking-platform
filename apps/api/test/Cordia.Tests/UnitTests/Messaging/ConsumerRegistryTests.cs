@@ -61,4 +61,23 @@ public class ConsumerRegistryTests
         Assert.Throws<InvalidOperationException>(
             () => registry.Register("booking.finalize.requested.v1", factory));
     }
+
+    [Fact]
+    public void RegisterUnconsumed_MarksType_AndConflictsWithConsumerRegistration()
+    {
+        var registry = new ConsumerRegistry();
+        Func<JobEnvelope, IBaseRequest> factory = env => new TestConsumerRequest(env.MessageId);
+
+        registry.RegisterUnconsumed("notification.waitlisted.v1", "informational");
+
+        Assert.True(registry.IsIntentionallyUnconsumed("notification.waitlisted.v1"));
+        Assert.False(registry.IsIntentionallyUnconsumed("notification.booking_confirmed.v1"));
+
+        // A type cannot be BOTH consumed and declared unconsumed — either direction throws.
+        Assert.Throws<InvalidOperationException>(
+            () => registry.Register("notification.waitlisted.v1", factory));
+        registry.Register("booking.finalize.requested.v1", factory);
+        Assert.Throws<InvalidOperationException>(
+            () => registry.RegisterUnconsumed("booking.finalize.requested.v1", "nope"));
+    }
 }

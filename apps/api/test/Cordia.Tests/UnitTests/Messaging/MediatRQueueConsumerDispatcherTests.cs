@@ -1,4 +1,5 @@
 ﻿using Cordia.Application.Messaging;
+using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using MediatR;
 using Moq;
@@ -37,7 +38,7 @@ public class MediatRQueueConsumerDispatcherTests
 
         var result = await dispatcher.DispatchAsync(envelope, LogicalQueue.BookingCommands, CancellationToken.None);
 
-        Assert.False(result);
+        Assert.Equal(DispatchResult.NoConsumer, result);
         mediatorMock.Verify(m => m.Send(It.IsAny<IBaseRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -58,7 +59,7 @@ public class MediatRQueueConsumerDispatcherTests
 
         var result = await dispatcher.DispatchAsync(envelope, LogicalQueue.BookingCommands, CancellationToken.None);
 
-        Assert.True(result);
+        Assert.Equal(DispatchResult.Dispatched, result);
         // MediatR 13: mediator.Send(IBaseRequest, ct) routes through ISender.Send(IBaseRequest, ct);
         // verify using IBaseRequest predicate with explicit cast to avoid expression-tree limitations.
         mediatorMock.Verify(
@@ -81,7 +82,23 @@ public class MediatRQueueConsumerDispatcherTests
 
         var result = await dispatcher.DispatchAsync(envelope, LogicalQueue.BookingCommands, CancellationToken.None);
 
-        Assert.False(result);
+        Assert.Equal(DispatchResult.NoConsumer, result);
+        mediatorMock.Verify(m => m.Send(It.IsAny<IBaseRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WhenDeclaredUnconsumed_ReturnsIntentionallyUnconsumed()
+    {
+        var mediatorMock = new Mock<IMediator>();
+        var registry = new ConsumerRegistry();
+        registry.RegisterUnconsumed("notification.waitlisted.v1", "informational; no catalogue entry");
+
+        var dispatcher = new MediatRQueueConsumerDispatcher(mediatorMock.Object, registry);
+        var envelope = BuildEnvelope("notification.waitlisted.v1");
+
+        var result = await dispatcher.DispatchAsync(envelope, LogicalQueue.NotificationCommands, CancellationToken.None);
+
+        Assert.Equal(DispatchResult.IntentionallyUnconsumed, result);
         mediatorMock.Verify(m => m.Send(It.IsAny<IBaseRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

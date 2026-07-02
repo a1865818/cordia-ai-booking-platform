@@ -268,6 +268,22 @@ public static class ApplicationServiceCollectionExtensions
             registry.Register(PreorderSagaMessages.BookingFailed,
                 env => new PreorderBookingFailedCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderOperationId(env)));
 
+            // ── Deliberately unconsumed event types ────────────────────────────────────────────
+            // These are emitted for the audit trail / a consumer that is not wired yet; the
+            // transport acks them as delivered. Any OTHER routable type with no consumer is a
+            // registration defect and is dead-lettered loudly (spec 11 review root cause: the
+            // silently-dropped waitlist-offer / preorder-alternatives notifications).
+            registry.RegisterUnconsumed("notification.sla_escalation.v1",
+                "ops-internal signal; spec 06 already creates the operations_work_item on SLA breach");
+            registry.RegisterUnconsumed("notification.waitlisted.v1",
+                "informational added-to-waitlist event; no catalogue entry (spec 10 §5 note)");
+            registry.RegisterUnconsumed("payment.deposit_link.requested.v1",
+                "spec 09 provider stub; deposit-link delivery not wired yet");
+            registry.RegisterUnconsumed(IngestVendorMenuCommandHandler.QuarantinedEventType,
+                "owner alert; owner-notification consumer not wired yet (spec 11 §5.2)");
+            registry.RegisterUnconsumed(IngestVendorMenuCommandHandler.ExtractionFailedEventType,
+                "owner alert; owner-notification consumer not wired yet (spec 11 §5.2)");
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
