@@ -142,6 +142,20 @@ public sealed class ReconcilePreorderSagaCommandHandler(
                 return Unit.Value;
             }
 
+            // Op parked in 06's own ManualReview — a human owns it, and the 06 driver no-ops for
+            // that state, so a re-nudge would spin forever without progress (review 2026-07-03,
+            // C16). Settle: ResolveManualReviewCommandHandler routes its terminal resolution
+            // through the IsPreorder-gated outcome types, so the saga WILL receive the
+            // booking_committed / booking_failed signal when the operator resolves it.
+            if (op is not null && op.TenantId == command.TenantId && op.Status == OperationStatus.ManualReview)
+            {
+                logger.LogInformation(
+                    "Preorder reconcile: operation {OperationId} is in ManualReview (human-owned); " +
+                    "settling — the 06 resolution will signal saga {SagaId}.",
+                    command.OperationId, command.SagaId);
+                return Unit.Value;
+            }
+
             // Op still in-flight (or unknown) — re-nudge the idempotent 06 driver to make progress.
             await outboxRepo.AddAsync(new OutboxMessage
             {

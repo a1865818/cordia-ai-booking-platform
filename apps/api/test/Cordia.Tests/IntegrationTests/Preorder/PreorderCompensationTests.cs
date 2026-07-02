@@ -44,7 +44,7 @@ public class PreorderCompensationTests(PostgresFixture fixture)
         => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
             NullLogger<PreorderBookingFailedCommandHandler>.Instance);
     private static CompensatePreorderItemsCommandHandler CompItems(ApplicationDbContext ctx)
-        => new(new PreorderSagaRepository(ctx), new StubPreorderItemReservation(),
+        => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx), new StubPreorderItemReservation(),
             new OutboxRepository(ctx), new AuditEventRepository(ctx), NullLogger<CompensatePreorderItemsCommandHandler>.Instance);
     private static CompensatePreorderBookingCommandHandler CompBooking(ApplicationDbContext ctx)
         => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
@@ -128,6 +128,15 @@ public class PreorderCompensationTests(PostgresFixture fixture)
 
         Assert.Equal(PreorderSagaState.FailedFinal, (await LoadAsync(tenantId, operationId)).SagaState);
         await AssertOneFailureOutcomeAsync(tenantId);
+
+        // Review 2026-07-03 C15/§8 FM#8: the operation must not dangle in Accepted after the
+        // customer received the terminal failure outcome — compensation terminalizes it.
+        await using (var opCtx = fixture.CreateContext(tenantId))
+        {
+            var op = await opCtx.BookingOperations.AsNoTracking().IgnoreQueryFilters()
+                .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+            Assert.Equal(OperationStatus.FailedFinal, op.Status);
+        }
     }
 
     [Fact]

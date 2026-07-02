@@ -122,31 +122,45 @@ public sealed class StartPreorderSagaCommandHandler(
         // Park the operation in AlternativesRequired (§5.3 Revalidating → AlternativesRequired) so
         // the customer-visible state matches the prompt they receive; a pre-order op skips the 06
         // engine start, so without this the row would sit in Accepted forever (Inv-14).
+        var parked = 0;
         var op = await opRepo.GetAsync(command.OperationId, ct);
         if (op is not null && op.TenantId == command.TenantId && op.Status == OperationStatus.Accepted)
         {
             OperationStateMachine.EnsureAllowed(OperationStatus.Accepted, OperationStatus.AlternativesRequired);
-            await opRepo.TryTransitionStatusAsync(
+            parked = await opRepo.TryTransitionStatusAsync(
                 command.TenantId, command.OperationId, op.Version,
                 OperationStatus.Accepted, OperationStatus.AlternativesRequired,
                 reason: "preorder_revalidation_stale", ct: ct);
         }
 
-        await outboxRepo.AddAsync(new OutboxMessage
+        // The re-confirm prompt is sent only when THIS handler won the park (a lost version race
+        // or a missing/mismatched op means a concurrent writer owns the operation's messaging —
+        // emitting here regardless could produce a prompt that contradicts its state).
+        if (parked > 0)
         {
-            TenantId = command.TenantId,
-            MessageId = $"obx_{Guid.NewGuid():N}",
-            MessageType = AlternativesRequiredEventType,
-            CorrelationId = command.CorrelationId ?? command.OperationId,
-            OperationId = command.OperationId,
-            Payload = JsonSerializer.Serialize(new
+            await outboxRepo.AddAsync(new OutboxMessage
             {
-                saga_id = sagaId,
-                operation_id = command.OperationId,
-                stale_lines = result.StaleLines.Select(l => new { item_id = l.ItemId, reason = l.Reason }),
-            }),
-            OccurredAt = now,
-        }, ct);
+                TenantId = command.TenantId,
+                MessageId = $"obx_{Guid.NewGuid():N}",
+                MessageType = AlternativesRequiredEventType,
+                CorrelationId = command.CorrelationId ?? command.OperationId,
+                OperationId = command.OperationId,
+                Payload = JsonSerializer.Serialize(new
+                {
+                    saga_id = sagaId,
+                    operation_id = command.OperationId,
+                    stale_lines = result.StaleLines.Select(l => new { item_id = l.ItemId, reason = l.Reason }),
+                }),
+                OccurredAt = now,
+            }, ct);
+        }
+        else
+        {
+            logger.LogWarning(
+                "Preorder start: revalidation-stale park lost/skipped for operation {OperationId} " +
+                "(status={Status}); alternatives prompt not emitted.",
+                command.OperationId, op?.Status);
+        }
 
         await AuditAsync(command.TenantId, "preorder.revalidation_failed", sagaId, command.OperationId, now,
             new { saga_id = sagaId, stale = result.StaleLines.Select(l => new { l.ItemId, l.Reason }) }, ct);

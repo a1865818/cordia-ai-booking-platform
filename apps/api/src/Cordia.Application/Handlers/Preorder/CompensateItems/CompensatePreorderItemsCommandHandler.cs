@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -11,9 +12,17 @@ namespace Cordia.Application.Handlers.Preorder.CompensateItems;
 /// its own — capacity/payment are owned by the 06 engine — so there is no hold to unwind. Release is
 /// idempotent (keyed by saga). Runs in the inbox transaction; settles when the saga is missing or no
 /// longer in CompensatingItems (Inv-5/Inv-9).
+///
+/// <para>Also terminalizes the <c>booking_operations</c> row in lockstep with the failure outcome:
+/// an op still in <c>Accepted</c> (items failed before 06 was ever triggered) or parked in
+/// <c>AlternativesRequired</c> (the no-capacity signal path) would otherwise dangle non-terminal
+/// forever while the customer already received the terminal notification (§8 FM#8/FM#3-adjacent).
+/// Ops beyond those states are 06-owned and already terminal (booking_failed came FROM a terminal
+/// op) — they are left untouched.</para>
 /// </summary>
 public sealed class CompensatePreorderItemsCommandHandler(
     IPreorderSagaRepository sagaRepo,
+    IBookingOperationRepository opRepo,
     IPreorderItemReservation items,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
@@ -39,6 +48,21 @@ public sealed class CompensatePreorderItemsCommandHandler(
 
         if (won == 0)
             return Unit.Value; // concurrent advance — settle
+
+        // Terminalize the operation row in lockstep with the failure outcome (version-guarded; a
+        // lost race means a concurrent writer moved the op and owns its state). Only the two
+        // states the saga can strand are touched: Accepted (pre-06 item failure) and
+        // AlternativesRequired (the ReserveCapacity no-capacity signal path).
+        var op = await opRepo.GetAsync(command.OperationId, ct);
+        if (op is not null && op.TenantId == command.TenantId
+            && op.Status is OperationStatus.Accepted or OperationStatus.AlternativesRequired)
+        {
+            OperationStateMachine.EnsureAllowed(op.Status, OperationStatus.FailedFinal);
+            await opRepo.TryTransitionStatusAsync(
+                command.TenantId, command.OperationId, op.Version,
+                op.Status, OperationStatus.FailedFinal,
+                reason: "preorder_compensated", ct: ct);
+        }
 
         await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
             command.TenantId, command.SagaId, command.OperationId, saga.FailureReason ?? "items_released", now, command.CorrelationId), ct);

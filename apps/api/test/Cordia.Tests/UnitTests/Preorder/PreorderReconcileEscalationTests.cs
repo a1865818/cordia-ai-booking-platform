@@ -96,6 +96,36 @@ public class PreorderReconcileEscalationTests
     }
 
     [Fact]
+    public async Task CommittingBooking_OpParkedInManualReview_Settles_WithoutRenudging()
+    {
+        // Review 2026-07-03 C16: a 06 op in ManualReview is human-owned and the 06 driver no-ops
+        // for it — re-nudging booking.command.requested.v1 every sweep tick spins forever. The
+        // reconcile must settle; ResolveManualReview signals the saga when the operator resolves.
+        _sagaRepo.Setup(r => r.GetAsync(SagaId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Saga(PreorderSagaState.CommittingBooking, TimeSpan.FromHours(2)));
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingOperation
+            {
+                TenantId = TenantId,
+                OperationId = OperationId,
+                IntentId = "int_1",
+                IntentRevision = 1,
+                Status = OperationStatus.ManualReview,
+                IsPreorder = true,
+                Version = 4,
+            });
+
+        await CreateHandler().Handle(Command(), CancellationToken.None);
+
+        _outbox.Verify(o => o.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+        _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<PreorderSagaState>(), It.IsAny<PreorderSagaState>(),
+            It.IsAny<DateTimeOffset>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<string?>(), It.IsAny<bool?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task CommittingPreorder_StuckPastWindow_LostAdvanceRace_DoesNotEnqueueCompensate()
     {
         var stuckFor = ReconcilePreorderSagaCommandHandler.CommitStuckEscalationAfter + TimeSpan.FromMinutes(1);
