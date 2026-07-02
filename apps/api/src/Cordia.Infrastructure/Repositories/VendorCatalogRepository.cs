@@ -60,6 +60,22 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
             .FirstOrDefaultAsync(ct);
     }
 
+    public async Task<IReadOnlyList<VendorCatalogItem>> GetPublishedItemsAsync(
+        IReadOnlyCollection<string> itemIds, CancellationToken ct = default)
+    {
+        if (itemIds.Count == 0)
+            return [];
+
+        var publishedCatalogIds = db.VendorCatalogs
+            .Where(c => c.Status == CatalogStatus.Published)
+            .Select(c => c.CatalogId);
+
+        return await db.VendorCatalogItems
+            .AsNoTracking()
+            .Where(i => itemIds.Contains(i.ItemId) && publishedCatalogIds.Contains(i.CatalogId))
+            .ToListAsync(ct);
+    }
+
     public Task<VendorCatalog?> GetAsync(string catalogId, CancellationToken ct = default)
         => db.VendorCatalogs
             .AsNoTracking()

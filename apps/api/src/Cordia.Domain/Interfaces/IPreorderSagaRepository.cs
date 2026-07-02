@@ -45,7 +45,12 @@ public interface IPreorderSagaRepository
     /// Returns non-terminal sagas whose <c>UpdatedAt</c> is older than <paramref name="olderThan"/>
     /// (across tenants) for the crash-recovery sweep — sagas stuck mid-step that need re-enqueuing
     /// from their persisted state (FM#8-11). Terminal sagas (Completed/FailedFinal/ManualReview)
-    /// are excluded.
+    /// are excluded. Projects ONLY the identifiers the sweeper needs (the table grows with total
+    /// pre-order volume and the sweep runs on a tight cadence) and is batch-capped — a still-stuck
+    /// saga is simply picked up by the next sweep.
     /// </summary>
-    Task<IReadOnlyList<PreorderSaga>> FindStuckAsync(DateTimeOffset olderThan, CancellationToken ct = default);
+    Task<IReadOnlyList<StuckSagaRef>> FindStuckAsync(DateTimeOffset olderThan, CancellationToken ct = default);
 }
+
+/// <summary>Identifier projection of a stuck saga returned by the crash-recovery sweep.</summary>
+public sealed record StuckSagaRef(string TenantId, string SagaId, string OperationId);

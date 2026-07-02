@@ -68,6 +68,9 @@ public class WaitlistEnrollmentRepository(ApplicationDbContext db) : IWaitlistEn
                 && !thisSlotEnrollmentIds.Contains(e.EnrollmentId))
             .OrderBy(e => e.CreatedAt)
             .ThenBy(e => e.EnrollmentId)
+            // The matcher offers ONE opening to the FIFO-first enrollee; never hydrate the whole
+            // eligible set (it scales with waitlist depth on the per-cancellation hot path).
+            .Take(1)
             .ToListAsync(ct);
     }
 }

@@ -57,7 +57,10 @@ public class PreorderSagaRepository(ApplicationDbContext db) : IPreorderSagaRepo
             },
             ct);
 
-    public async Task<IReadOnlyList<PreorderSaga>> FindStuckAsync(
+    /// <summary>Per-sweep batch cap: bounds the work of one tick; the next sweep picks up the rest.</summary>
+    private const int StuckSweepBatchSize = 500;
+
+    public async Task<IReadOnlyList<StuckSagaRef>> FindStuckAsync(
         DateTimeOffset olderThan, CancellationToken ct = default)
         => await db.PreorderSagas
             .AsNoTracking()
@@ -67,5 +70,8 @@ public class PreorderSagaRepository(ApplicationDbContext db) : IPreorderSagaRepo
                 && s.SagaState != PreorderSagaState.FailedFinal
                 && s.SagaState != PreorderSagaState.ManualReview)
             .OrderBy(s => s.UpdatedAt)
+            .Take(StuckSweepBatchSize)
+            // Project only the identifiers the sweeper needs — never hydrate the jsonb reference.
+            .Select(s => new StuckSagaRef(s.TenantId, s.SagaId, s.OperationId))
             .ToListAsync(ct);
 }

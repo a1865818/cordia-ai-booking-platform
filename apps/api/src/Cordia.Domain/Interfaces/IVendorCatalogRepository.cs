@@ -29,6 +29,15 @@ public interface IVendorCatalogRepository
     Task<VendorCatalogItem?> GetPublishedItemAsync(string itemId, CancellationToken ct = default);
 
     /// <summary>
+    /// Batch lookup of published items by id (ONE query), for callers that check many lines at
+    /// once — e.g. pre-order live revalidation inside the inbox transaction (spec 11 §7: snapshot
+    /// p95 &lt; 150 ms, not one round-trip per line). Ids with no published item are absent from
+    /// the result.
+    /// </summary>
+    Task<IReadOnlyList<VendorCatalogItem>> GetPublishedItemsAsync(
+        IReadOnlyCollection<string> itemIds, CancellationToken ct = default);
+
+    /// <summary>
     /// Loads a catalog by id (any status), tenant-scoped via the global query filter,
     /// or <c>null</c> when absent. Used by the ingestion / review lifecycle handlers.
     /// </summary>

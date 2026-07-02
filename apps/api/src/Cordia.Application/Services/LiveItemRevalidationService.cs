@@ -32,11 +32,17 @@ public sealed class LiveItemRevalidationService(IVendorCatalogRepository catalog
         PreorderReference reference, CancellationToken ct = default)
     {
         var stale = new List<StaleLine>();
+        var lines = reference.Lines ?? [];
 
-        foreach (var line in reference.Lines ?? [])
+        // ONE batched lookup for all lines — this runs inside the inbox transaction on every saga
+        // start, so per-line round-trips would scale the §7 revalidation budget with order size.
+        var items = await catalog.GetPublishedItemsAsync(
+            lines.Select(l => l.ItemId).Distinct(StringComparer.Ordinal).ToList(), ct);
+        var byId = items.ToDictionary(i => i.ItemId, StringComparer.Ordinal);
+
+        foreach (var line in lines)
         {
-            var item = await catalog.GetPublishedItemAsync(line.ItemId, ct);
-            if (item is null)
+            if (!byId.TryGetValue(line.ItemId, out var item))
             {
                 stale.Add(new StaleLine(line.ItemId, StaleLine.ItemUnavailable));
                 continue;
