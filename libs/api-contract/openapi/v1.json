@@ -408,6 +408,10 @@
           "deposit_terms": {
             "$ref": "#/components/schemas/DepositTermsDto"
           },
+          "identity_ref": {
+            "nullable": true,
+            "type": "string"
+          },
           "location_id": {
             "nullable": true,
             "type": "string"
@@ -425,6 +429,10 @@
             "type": "integer"
           },
           "service_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verification_level": {
             "nullable": true,
             "type": "string"
           }

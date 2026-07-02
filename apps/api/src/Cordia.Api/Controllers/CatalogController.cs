@@ -40,9 +40,10 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
         if (string.IsNullOrWhiteSpace(tenant.TenantId))
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
 
-        // Clamp the page size into the validator's [1, MaxPageSize] bound (the foreground tool sends
-        // max_results, never skip/offset — paging is a single bounded page).
-        var take = Math.Clamp(maxResults ?? DefaultMaxResults, 1, SearchVendorCatalogValidator.MaxPageSize);
+        // Pass max_results through untouched: SearchVendorCatalogValidator owns the [1, MaxPageSize]
+        // bound and an out-of-range value is a 400 — silently clamping here would mask caller bugs
+        // (docs/dotnet-api-patterns.md: validators are the sole source of range enforcement).
+        var take = maxResults ?? DefaultMaxResults;
 
         var items = await mediator.Send(new SearchVendorCatalogQuery(query, category, 0, take), ct);
 
@@ -79,13 +80,15 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
             price_minor = item.PriceMinor,
             currency = item.Currency,
             category = item.Category,
-            // §4.2 rich fields: modifiers/availability_window are stored jsonb — emit them as nested
-            // JSON (array/object), not as a double-encoded string. image_ref is a plain reference.
+            // §4.2 rich fields: ALL four jsonb columns are emitted as nested JSON (array/object),
+            // never as a double-encoded string — allergen_info especially must reach consumers as
+            // structured data, not an opaque blob (§21.2 never invent/omit allergens).
+            // image_ref is a plain reference.
             modifiers = AsJson(item.Modifiers),
             availability_window = AsJson(item.AvailabilityWindow),
             image_ref = item.ImageRef,
-            menu_metadata = item.MenuMetadata,
-            allergen_info = item.AllergenInfo,
+            menu_metadata = AsJson(item.MenuMetadata),
+            allergen_info = AsJson(item.AllergenInfo),
         });
     }
 

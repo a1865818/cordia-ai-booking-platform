@@ -39,9 +39,8 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     {
         if (string.IsNullOrWhiteSpace(tenant.TenantId))
             return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
-        if (string.IsNullOrWhiteSpace(body.SourceArtifactRef))
-            return Problem(statusCode: 400, title: "Missing source_artifact_ref",
-                detail: "source_artifact_ref is required.");
+        // source_artifact_ref is enforced by UploadMenuValidator via the validation pipeline —
+        // validators are the sole source of required-field enforcement (docs/dotnet-api-patterns.md).
 
         var versionLabel = string.IsNullOrWhiteSpace(body.VersionLabel)
             ? $"menu_{DateTimeOffset.UtcNow:yyyyMMddHHmmss}"

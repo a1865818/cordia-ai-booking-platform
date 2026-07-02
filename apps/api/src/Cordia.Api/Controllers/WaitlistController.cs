@@ -50,7 +50,8 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
                 tenant.TenantId, ResolveActor(actor), body.CustomerRef,
                 body.AcceptableFrom, body.AcceptableTo, body.PartySize,
                 body.LocationId, body.ServiceId, body.OfferLifetimeSeconds,
-                deposit, body.NotificationChannel, autoBook), ct);
+                deposit, body.NotificationChannel, autoBook,
+                body.IdentityRef, body.VerificationLevel), ct);
 
         return Created($"/api/waitlist/enrollments/{enrollmentId}",
             new { enrollment_id = enrollmentId, status = "enrolled" });
@@ -124,7 +125,12 @@ public sealed record EnrollWaitlistRequest(
     [property: JsonPropertyName("offer_lifetime_seconds")] int OfferLifetimeSeconds,
     [property: JsonPropertyName("notification_channel")] string NotificationChannel,
     [property: JsonPropertyName("deposit_terms")] DepositTermsDto? DepositTerms,
-    [property: JsonPropertyName("auto_book")] AutoBookGrantDto? AutoBook)
+    [property: JsonPropertyName("auto_book")] AutoBookGrantDto? AutoBook,
+    // §5.1 "verified follow-up": the identity/assurance captured at enrollment binds the eventual
+    // accept's confirmation. Without these the enrollment is stamped unverified — the DTO
+    // previously had no way to carry them (review 2026-07-03, C9).
+    [property: JsonPropertyName("identity_ref")] string? IdentityRef = null,
+    [property: JsonPropertyName("verification_level")] string? VerificationLevel = null)
 {
     public EnrollWaitlistRequest() : this(
         string.Empty, default, default, 0, string.Empty, string.Empty, 0, string.Empty, null, null)
