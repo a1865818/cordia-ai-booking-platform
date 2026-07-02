@@ -61,7 +61,7 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
         return catalogId;
     }
 
-    private async Task<string> SeedOperationAsync(string tenantId)
+    private async Task<string> SeedOperationAsync(string tenantId, bool isPreorder = false)
     {
         var intentId = $"int-{Guid.NewGuid():N}";
         var operationId = $"op-{Guid.NewGuid():N}";
@@ -87,6 +87,7 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
             IntentRevision = 1,
             OperationType = OperationTypeEnum.Create,
             Status = OperationStatus.Accepted,
+            IsPreorder = isPreorder,
             Version = 0,
         });
         await ctx.SaveChangesAsync();
@@ -173,6 +174,65 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
         var saga = await ctx.PreorderSagas.AsNoTracking().IgnoreQueryFilters()
             .FirstAsync(s => s.TenantId == tenantId && s.OperationId == operationId);
         Assert.Equal(PreorderSagaState.FailedFinal, saga.SagaState);
+    }
+
+    /// <summary>
+    /// Full decline-after-stale chain (review 2026-07-03 follow-up, Inv-8): stale revalidation
+    /// terminates the saga at FailedFinal and parks the op in AlternativesRequired with only the
+    /// re-confirm prompt. When the customer then DECLINES, RespondToAlternatives routes the
+    /// pre-order failure as the saga signal — and because the saga is already terminal, the signal
+    /// handler must emit the combined customer failure outcome itself (a plain settle left the
+    /// customer with zero terminal notification).
+    /// </summary>
+    [Fact]
+    public async Task DeclineAfterStaleRevalidation_EmitsExactlyOneCustomerFailureOutcome()
+    {
+        var tenantId = $"pre-reval-decl-{Guid.NewGuid():N}";
+        // item_1 is NOT published → revalidation is stale.
+        var operationId = await SeedOperationAsync(tenantId, isPreorder: true);
+
+        await RunStartAsync(tenantId, operationId, Reference("item_1", 1500));
+
+        // Customer declines the alternatives prompt (real handler): op → FailedFinal + the
+        // pre-order failure routed as the saga signal, not a direct customer notification.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var decline = new Cordia.Application.Handlers.BookingFulfillment.Alternatives.RespondToAlternativesCommandHandler(
+                new BookingOperationRepository(ctx), new OutboxRepository(ctx),
+                new AuditEventRepository(ctx), new Cordia.Infrastructure.Services.UnitOfWork(ctx));
+            await decline.Handle(
+                new Cordia.Application.Handlers.BookingFulfillment.Alternatives.RespondToAlternativesCommand(
+                    tenantId, operationId,
+                    Cordia.Application.Handlers.BookingFulfillment.Alternatives.AlternativesResponse.Decline),
+                CancellationToken.None);
+        }
+
+        // Deliver the booking_failed signal to the (already-terminal) saga.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var signal = new Cordia.Application.Handlers.Preorder.BookingSignal.PreorderBookingFailedCommandHandler(
+                new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<Cordia.Application.Handlers.Preorder.BookingSignal.PreorderBookingFailedCommandHandler>.Instance);
+            await using var tx = await ctx.Database.BeginTransactionAsync();
+            await signal.Handle(
+                new Cordia.Application.Handlers.Preorder.BookingSignal.PreorderBookingFailedCommand(
+                    tenantId, $"m-{Guid.NewGuid():N}", null, operationId),
+                CancellationToken.None);
+            await tx.CommitAsync();
+        }
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // Exactly ONE terminal customer failure outcome (Inv-8) — the signal handler's
+        // already-terminal branch emitted it; nothing else did.
+        var failureOutcomes = await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .CountAsync(m => m.TenantId == tenantId && m.MessageType == PreorderSagaSupport.OutcomeFailedEventType);
+        Assert.Equal(1, failureOutcomes);
+
+        // And the operation is terminal — no dangling AlternativesRequired.
+        var op = await assertCtx.BookingOperations.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+        Assert.Equal(OperationStatus.FailedFinal, op.Status);
     }
 
     [Fact]
