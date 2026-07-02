@@ -69,12 +69,6 @@ public sealed class AcceptWaitlistOfferCommandHandler(
         var enrollment = await enrollmentRepo.GetAsync(offer.EnrollmentId, ct)
             ?? throw new WaitlistEnrollmentNotFoundException(offer.EnrollmentId);
 
-        // Inv-6 / M7: never mint a booking for a cancelled enrollment. Cancel releases the live offer,
-        // but a cancel racing this accept can commit after we read the offer as Offered — re-check the
-        // enrollment before minting (record-before-state mints before the offer-state guard runs).
-        if (enrollment.CancelledAt is not null)
-            throw new InvalidWaitlistOfferTransitionException(offer.Status, WaitlistOfferStatus.Accepted);
-
         if (offer.SlotStartAt is null || string.IsNullOrEmpty(offer.OperationId))
             throw new InvalidOperationException(
                 $"Waitlist offer '{offer.OfferId}' cannot be accepted: missing matched slot or operation id.");
@@ -85,11 +79,21 @@ public sealed class AcceptWaitlistOfferCommandHandler(
 
         // Idempotent replay path: the offer is already Accepted (concurrent winner or retry). Re-submit
         // to 04 (same key → replay, no duplicate) so a crash after the claim still lands the booking.
+        // This runs BEFORE the cancelled-enrollment guard: the booking already exists (04 replays,
+        // never duplicates), and the reconcile path marks FULFILLMENT by stamping CancelledAt — a
+        // retry of an accepted offer must stay a no-op, not turn into a 409.
         if (offer.Status == WaitlistOfferStatus.Accepted)
         {
             await mediator.Send(submit, ct);
             return Unit.Value;
         }
+
+        // Inv-6 / M7: never mint a NEW booking for a cancelled enrollment. Cancel releases the live
+        // offer, but a cancel racing this accept can commit after we read the offer as Offered —
+        // re-check the enrollment before minting (record-before-state mints before the offer-state
+        // guard runs).
+        if (enrollment.CancelledAt is not null)
+            throw new InvalidWaitlistOfferTransitionException(offer.Status, WaitlistOfferStatus.Accepted);
 
         // --- Record-before-state: mint the official confirmed booking BEFORE claiming the offer. ---
         // Spec 04 is idempotent on submit.Request.IdempotencyKey, so concurrent accepts and retries

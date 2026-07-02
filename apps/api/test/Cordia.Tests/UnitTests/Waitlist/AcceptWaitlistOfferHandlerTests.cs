@@ -111,6 +111,46 @@ public class AcceptWaitlistOfferHandlerTests
     }
 
     [Fact]
+    public async Task Accept_AlreadyAccepted_EnrollmentFulfilledOrCancelled_IsStillIdempotentReplay()
+    {
+        // The reconcile path marks FULFILLMENT by stamping CancelledAt (CancelAsync). A legitimate
+        // accept retry (duplicate delivery / retry after a crash) must stay the documented no-op —
+        // not turn into a 409 for a booking that already exists (review PR #65, finding 7).
+        _offerRepo.Setup(r => r.GetAsync(OfferId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Accepted));
+        var fulfilled = SampleEnrollment();
+        fulfilled.CancelledAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        _enrollmentRepo.Setup(r => r.GetAsync(EnrollmentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(fulfilled);
+
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+
+        // Safe replay: re-submits to 04 (idempotent key) and never re-claims.
+        Assert.Single(_submitted);
+        _offerRepo.Verify(r => r.TryResolveAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<WaitlistOfferStatus>(), It.IsAny<WaitlistOfferStatus>(),
+            It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Accept_Fresh_CancelledEnrollment_Throws_Invalid_Transition()
+    {
+        // A FRESH accept (offer still Offered) on a cancelled enrollment must not mint a booking.
+        _offerRepo.Setup(r => r.GetAsync(OfferId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Offered));
+        var cancelled = SampleEnrollment();
+        cancelled.CancelledAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        _enrollmentRepo.Setup(r => r.GetAsync(EnrollmentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(cancelled);
+
+        await Assert.ThrowsAsync<InvalidWaitlistOfferTransitionException>(() =>
+            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None));
+
+        Assert.Empty(_submitted);
+    }
+
+    [Fact]
     public async Task Accept_Terminal_Offer_Throws_Invalid_Transition()
     {
         _offerRepo.Setup(r => r.GetAsync(OfferId, It.IsAny<CancellationToken>()))
