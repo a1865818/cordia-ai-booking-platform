@@ -83,7 +83,9 @@ public class PostgresMessageTransportTests
             NullLogger<PostgresMessageTransport>.Instance);
 
         var envelope = BuildEnvelope("waitlist.offer.notified.v1");
-        await Assert.ThrowsAsync<Cordia.Domain.Exceptions.PoisonMessageException>(
+        // The DEDICATED type: consumer-thrown PoisonMessageExceptions must keep their own
+        // retry-then-dead-letter path and never be mislabelled "unconsumed_message_type".
+        await Assert.ThrowsAsync<Cordia.Domain.Exceptions.UnconsumedMessageTypeException>(
             () => transport.PublishAsync(envelope, LogicalQueue.WaitlistCommands, CancellationToken.None));
     }
 

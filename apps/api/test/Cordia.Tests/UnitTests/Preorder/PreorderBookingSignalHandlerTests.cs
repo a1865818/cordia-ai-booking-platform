@@ -92,4 +92,37 @@ public class PreorderBookingSignalHandlerTests
         Assert.Null(_transition);
         Assert.Empty(_emitted);
     }
+
+    [Fact]
+    public async Task Failed_SagaAlreadyFailedFinal_EmitsCombinedFailureOutcome_NoAdvance()
+    {
+        // Decline-after-revalidation-stale: the saga terminated at FailedFinal BEFORE anything was
+        // reserved and only the re-confirm prompt was sent. When the customer declines,
+        // RespondToAlternatives routes booking_failed here — a plain settle would leave the
+        // customer with ZERO terminal outcome (Inv-8). The handler must emit the combined failure
+        // outcome (Inv-9 identity dedup makes any replay at-most-once to the customer).
+        SagaInState(PreorderSagaState.FailedFinal);
+        var handler = new PreorderBookingFailedCommandHandler(
+            _saga.Object, _outbox.Object, _audit.Object,
+            NullLogger<PreorderBookingFailedCommandHandler>.Instance);
+
+        await handler.Handle(new PreorderBookingFailedCommand("t_1", "msg_1", "corr_1", "op_1"), CancellationToken.None);
+
+        Assert.Null(_transition); // terminal saga is never advanced
+        Assert.Equal(PreorderSagaSupport.OutcomeFailedEventType, Assert.Single(_emitted).MessageType);
+    }
+
+    [Fact]
+    public async Task Failed_Settles_When_SagaCompleted()
+    {
+        SagaInState(PreorderSagaState.Completed); // late failure signal after successful completion
+        var handler = new PreorderBookingFailedCommandHandler(
+            _saga.Object, _outbox.Object, _audit.Object,
+            NullLogger<PreorderBookingFailedCommandHandler>.Instance);
+
+        await handler.Handle(new PreorderBookingFailedCommand("t_1", "msg_1", "corr_1", "op_1"), CancellationToken.None);
+
+        Assert.Null(_transition);
+        Assert.Empty(_emitted);
+    }
 }

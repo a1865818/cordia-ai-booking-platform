@@ -9,6 +9,10 @@ namespace Cordia.Domain.Notifications;
 public static class NotificationIdentity
 {
     // Maps each NotificationEvent to its stable pg/json string label.
+    // MUST cover every NotificationEvent member: Derive indexes it directly, and a missing entry
+    // crashes the send INSIDE the inbox transaction (poison loop → DLQ) for that event type —
+    // exactly how the spec-11 WaitlistOfferExpired sends silently died. An exhaustive unit test
+    // (NotificationIdentityTests) pins full coverage against the enum.
     private static readonly IReadOnlyDictionary<NotificationEvent, string> EventLabels =
         new Dictionary<NotificationEvent, string>
         {
@@ -18,6 +22,8 @@ public static class NotificationIdentity
             [NotificationEvent.BookingConfirmed] = "booking_confirmed",
             [NotificationEvent.NoCapacityAlternatives] = "no_capacity_alternatives",
             [NotificationEvent.WaitlistOffer] = "waitlist_offer",
+            [NotificationEvent.WaitlistOfferExpired] = "waitlist_offer_expired",
+            [NotificationEvent.PreorderCancelled] = "preorder_cancelled",
             [NotificationEvent.FinalFailure] = "final_failure",
             [NotificationEvent.CancelOrModifyConfirmed] = "cancel_or_modify_confirmed",
         };

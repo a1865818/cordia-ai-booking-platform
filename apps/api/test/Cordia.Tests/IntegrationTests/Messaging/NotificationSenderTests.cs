@@ -191,6 +191,53 @@ public class NotificationSenderTests(PostgresFixture fixture)
     }
 
     /// <summary>
+    /// Same end-to-end path for the OFFER-EXPIRED notification: this event previously crashed with
+    /// KeyNotFoundException because NotificationIdentity.EventLabels had no WaitlistOfferExpired
+    /// entry — invisible to mocked-repo unit tests, fatal on the real send (poison loop → DLQ).
+    /// </summary>
+    [Fact]
+    public async Task WaitlistOfferExpired_NoOperationRow_DeliversNotification()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t11-wlexp-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        var operationId = $"op_wl_{Guid.NewGuid():N}"; // no booking_operations row
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "waitlist.offer.expired.v1",
+                CorrelationId = $"wle-{Guid.NewGuid():N}",
+                OperationId = operationId,
+                Payload = $"{{\"offer_id\":\"wlo-1\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await seedCtx.SaveChangesAsync();
+        }
+
+        await using var sp = BuildContainer();
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var notif = await assertCtx.Notifications
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .SingleAsync(n => n.TenantId == tenantId);
+        Assert.Equal(NotificationEvent.WaitlistOfferExpired, notif.EventType);
+        Assert.Equal(NotificationState.Accepted, notif.State);
+        Assert.Null(notif.OperationId);
+        Assert.False(await assertCtx.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .AnyAsync(d => d.TenantId == tenantId && d.MessageId == messageId));
+    }
+
+    /// <summary>
     /// Tenant isolation (§27.6): a notification row created under tenant A is NOT visible
     /// when queried under tenant B — proving the global query filter is enforced (spec 10 §27.6, T6).
     /// </summary>

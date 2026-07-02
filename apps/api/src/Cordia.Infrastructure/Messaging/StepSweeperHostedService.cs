@@ -93,7 +93,7 @@ public sealed class StepSweeperHostedService(
                 await transport.PublishAsync(envelope, queue, ct);
                 published++;
             }
-            catch (PoisonMessageException pex)
+            catch (UnconsumedMessageTypeException pex)
             {
                 // The sweeper only publishes the hardcoded booking.step.continue.v1 — a missing
                 // consumer means the CORE booking-driver registration is gone (a startup/wiring

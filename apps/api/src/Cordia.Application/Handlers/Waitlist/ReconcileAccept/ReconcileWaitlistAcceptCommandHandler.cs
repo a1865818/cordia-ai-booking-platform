@@ -78,16 +78,16 @@ public sealed class ReconcileWaitlistAcceptCommandHandler(
         // Still in-flight — re-check after another delay, bounded so we never schedule forever.
         //
         // RESIDUAL (accepted, spec 11 §12): this reconcile narrows but does NOT fully close the
-        // cross-slot double-offer window. Between the lost-claim mint and the enrollment being marked
-        // terminal above, the enrollee has no live offer and stays eligible, so an INDEPENDENT slot
-        // opening could theoretically offer + accept them a second time inside this delay
-        // (Delay x MaxAttempts). The trade-off is deliberate: we favour eligibility and reconcile off
-        // the real 06 outcome rather than eagerly excluding a not-yet-booked enrollee (which would
-        // strand them if 06 later fails capacity/payment). The triggering race is already extremely
-        // narrow (an expire/decline must win the version-guarded claim in the tiny mint->claim gap AND
-        // a separate opening must run a full offer->accept cycle within the delay). To fully close it,
-        // a future spec would add an "accepted-offer / pending-booking" exclusion to FindEligibleAsync
-        // that is itself released on a terminal-failure outcome.
+        // cross-slot double-offer window — and the window applies to EVERY accept/auto-accept
+        // (claim won or lost; both schedule this probe), not only the lost-claim race. Between the
+        // mint and the probe observing the op as Booked (up to Delay x MaxAttempts, ~15 min at the
+        // defaults), the enrollee's Accepted offer does not exclude them from FindEligibleAsync, so
+        // an INDEPENDENT slot opening can offer — or, under an AutoBookGrant, silently book — them
+        // a second time inside that window. The trade-off is deliberate: we favour eligibility and
+        // reconcile off the real 06 outcome rather than eagerly excluding a not-yet-booked enrollee
+        // (which would strand them if 06 later fails capacity/payment). To fully close it, a future
+        // spec would add an "accepted-offer / pending-booking" exclusion to FindEligibleAsync that
+        // is itself released on a terminal-failure outcome.
         var nextAttempt = command.Attempt + 1;
         if (nextAttempt >= WaitlistAcceptReconcileScheduler.MaxAttempts)
         {

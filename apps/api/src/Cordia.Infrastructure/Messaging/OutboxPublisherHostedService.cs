@@ -108,11 +108,13 @@ public sealed class OutboxPublisherHostedService(
             {
                 await transport.PublishAsync(envelope, queue, ct);
             }
-            catch (PoisonMessageException pex)
+            catch (UnconsumedMessageTypeException pex)
             {
                 // A routable type with no registered consumer (and no intentionally-unconsumed
                 // declaration) is a PERMANENT registration defect — retrying cannot fix it.
                 // Dead-letter immediately, mirroring the unroutable_message_type path above.
+                // (A consumer-thrown PoisonMessageException deliberately falls to the generic
+                // catch below: retry, then publish_attempts_exhausted.)
                 await DeadLetterPoisonAsync(scope, row, "unconsumed_message_type", ct);
                 logger.LogError(
                     pex,

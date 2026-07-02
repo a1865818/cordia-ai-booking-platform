@@ -53,8 +53,9 @@ public sealed class PostgresMessageTransport(
             case DispatchResult.NoConsumer:
                 // NOT delivered: the emitting handler expects a consumer that was never registered.
                 // Throwing lets the outbox publisher dead-letter the row (visible + replayable after
-                // the registration is fixed) instead of vanishing the message.
-                throw new PoisonMessageException(
+                // the registration is fixed) instead of vanishing the message. The dedicated type
+                // keeps consumer-thrown PoisonMessageExceptions on their own retry/DLQ path.
+                throw new UnconsumedMessageTypeException(
                     $"No consumer registered for routable message_type '{envelope.MessageType}' on queue " +
                     $"'{LogicalQueueRegistry.WireName(queue)}' and it is not declared intentionally unconsumed " +
                     "(ConsumerRegistry.RegisterUnconsumed).");

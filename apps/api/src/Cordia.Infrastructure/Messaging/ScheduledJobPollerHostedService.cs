@@ -103,7 +103,7 @@ public sealed class ScheduledJobPollerHostedService(
             {
                 await transport.PublishAsync(envelope, queue, ct);
             }
-            catch (PoisonMessageException pex)
+            catch (UnconsumedMessageTypeException pex)
             {
                 // A routable job_type with no registered consumer is a PERMANENT registration
                 // defect — reclaim-and-retry can never fix it. Terminally mark the job Dead
