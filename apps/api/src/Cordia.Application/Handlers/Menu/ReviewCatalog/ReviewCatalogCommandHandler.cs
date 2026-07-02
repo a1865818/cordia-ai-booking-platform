@@ -30,14 +30,18 @@ public sealed class ReviewCatalogCommandHandler(
         var now = DateTimeOffset.UtcNow;
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            if (command.Edits.Count > 0)
-                await repo.ApplyItemEditsAsync(command.CatalogId, command.Edits, ct2);
-
+            // Transition FIRST: ApplyItemEditsAsync's data-layer guard only updates items whose
+            // catalog is already in_review, so applying edits while still draft_ready matched zero
+            // rows and 404'd every review-with-edits call (review 2026-07-03, C6). Both writes
+            // share this transaction, so a failed edit still rolls the transition back.
             var rows = await repo.TryTransitionStatusAsync(
                 command.TenantId, command.CatalogId, catalog.Version,
                 CatalogStatus.DraftReady, CatalogStatus.InReview, ct2);
             if (rows == 0)
                 throw new InvalidCatalogStateTransitionException(catalog.Status, CatalogStatus.InReview);
+
+            if (command.Edits.Count > 0)
+                await repo.ApplyItemEditsAsync(command.CatalogId, command.Edits, ct2);
 
             await auditRepo.AddAsync(new AuditEvent
             {

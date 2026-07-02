@@ -14,6 +14,12 @@ public sealed class ReviewCatalogValidator : AbstractValidator<ReviewCatalogComm
         // handler dereferences command.Edits.Count. (Sibling EditCatalogItems requires NotEmpty because
         // an edit with no edits is meaningless; a review with none is valid.)
         RuleFor(x => x.Edits).NotNull();
-        RuleForEach(x => x.Edits).ChildRules(e => e.RuleFor(i => i.ItemId).NotEmpty());
+        RuleForEach(x => x.Edits).ChildRules(e =>
+        {
+            e.RuleFor(i => i.ItemId).NotEmpty();
+            // Same money guard as EditCatalogItemsValidator: never let a negative price into a
+            // version that publish would freeze and serve to customers.
+            e.RuleFor(i => i.PriceMinor).GreaterThanOrEqualTo(0).When(i => i.PriceMinor.HasValue);
+        });
     }
 }

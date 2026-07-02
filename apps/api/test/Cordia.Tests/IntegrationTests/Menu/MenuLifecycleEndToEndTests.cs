@@ -118,12 +118,22 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
             Assert.Empty(hiddenWhileDraft);
         }
 
-        // ── Steps 2-4: review → approve → publish via the real handlers. ────────────────────────
-        await RunReviewAsync(tenantId, catalogId);
+        // ── Steps 2-4: review (WITH a non-empty edit — the core §5.2 owner action; this 404'd
+        //    before the review-then-edit ordering fix, review 2026-07-03 C6) → approve → publish. ──
+        string draftItemId;
+        await using (var draftCtx = fixture.CreateContext(tenantId))
+        {
+            draftItemId = await draftCtx.VendorCatalogItems.AsNoTracking().IgnoreQueryFilters()
+                .Where(i => i.TenantId == tenantId && i.CatalogId == catalogId)
+                .Select(i => i.ItemId)
+                .FirstAsync();
+        }
+        await RunReviewAsync(tenantId, catalogId,
+            [new CatalogItemEdit(draftItemId, Name: null, Description: null, PriceMinor: 2500)]);
         await RunApproveAsync(tenantId, catalogId);
         await RunPublishAsync(tenantId, catalogId);
 
-        // ── Step 5: the published item is now (and only now) foreground-visible. ────────────────
+        // ── Step 5: the published item is now (and only now) foreground-visible, with the edit. ──
         await using var assertCtx = fixture.CreateContext(tenantId);
 
         var catalog = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
@@ -134,15 +144,16 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
             .SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
         Assert.Equal(["Sample Dish"], visible.Select(i => i.Name).ToList());
         Assert.All(visible, i => Assert.StartsWith($"{catalogId}:", i.ItemId));
+        Assert.Equal(2500, visible.Single().PriceMinor); // the review edit survived to publish
     }
 
-    private async Task RunReviewAsync(string tenantId, string catalogId)
+    private async Task RunReviewAsync(string tenantId, string catalogId, List<CatalogItemEdit>? edits = null)
     {
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new ReviewCatalogCommandHandler(
             new VendorCatalogRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
         await handler.Handle(
-            new ReviewCatalogCommand(tenantId, catalogId, "owner", new List<CatalogItemEdit>()), CancellationToken.None);
+            new ReviewCatalogCommand(tenantId, catalogId, "owner", edits ?? []), CancellationToken.None);
     }
 
     private async Task RunApproveAsync(string tenantId, string catalogId)
