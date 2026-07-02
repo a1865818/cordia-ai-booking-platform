@@ -37,6 +37,29 @@ public static class PreorderSagaSupport
         };
 
     /// <summary>
+    /// Outcome event for an operator cancel of a ManualReview-parked pre-order (§21.4). ManualReview
+    /// is reached only AFTER 06 committed the booking, so the cancel unwinds the FOOD ORDER only —
+    /// the table reservation stays confirmed. The customer must NOT receive the "booking failed"
+    /// template for a booking they still hold.
+    /// </summary>
+    public const string PreorderCancelledEventType = "notification.preorder_cancelled.v1";
+
+    /// <summary>Builds the terminal "pre-order cancelled, your booking stands" outcome
+    /// (<see cref="PreorderCancelledEventType"/>).</summary>
+    public static OutboxMessage PreorderCancelledOutcome(
+        string tenantId, string sagaId, string operationId, string reason, DateTimeOffset now, string? correlationId = null)
+        => new()
+        {
+            TenantId = tenantId,
+            MessageId = $"obx_{Guid.NewGuid():N}",
+            MessageType = PreorderCancelledEventType,
+            CorrelationId = correlationId ?? operationId,
+            OperationId = operationId,
+            Payload = JsonSerializer.Serialize(new { saga_id = sagaId, operation_id = operationId, reason }),
+            OccurredAt = now,
+        };
+
+    /// <summary>
     /// Builds a NEUTRAL "under review / still confirming" customer notice for a saga parked in
     /// <c>ManualReview</c> (spec 10 <c>NotificationEvent.StillPending</c>). This is deliberately NOT a
     /// terminal outcome — it keeps the customer informed without pre-empting the single combined outcome

@@ -153,6 +153,12 @@ public static class ApplicationServiceCollectionExtensions
             registry.Register("notification.deposit_expired.v1",
                 env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
                     NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            // Spec 11 §21.4 — operator cancel of a ManualReview-parked pre-order. The booking is
+            // already committed and stays confirmed; only the food order is cancelled, so this maps
+            // to the dedicated PreorderCancelled template, never FinalFailure.
+            registry.Register(Handlers.Preorder.PreorderSagaSupport.PreorderCancelledEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.PreorderCancelled, MessagePriority.High, env.CorrelationId));
             // notification.waitlisted.v1 is the informational "added to waitlist" event and is
             // intentionally NOT pushed via this lane — the catalogue's WaitlistOffer is the
             // deadline-bound spec-11 waitlist *match* offer (with {offer_expires_at}), which a

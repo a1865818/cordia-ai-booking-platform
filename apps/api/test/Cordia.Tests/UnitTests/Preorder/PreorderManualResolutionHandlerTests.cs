@@ -236,9 +236,14 @@ public class PreorderManualResolutionHandlerTests
 
         // §5.3 "FailedFinal: holds/items released" — the parked saga's item reservation is released.
         _items.Verify(i => i.ReleaseAsync(TenantId, SagaId, It.IsAny<CancellationToken>()), Times.Once);
+        // C14: the booking is committed and stays confirmed — the cancel outcome must be the
+        // dedicated "pre-order cancelled, booking stands" event, never the FinalFailure template.
+        _outbox.Verify(o => o.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == PreorderSagaSupport.PreorderCancelledEventType),
+            It.IsAny<CancellationToken>()), Times.Once);
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == PreorderSagaSupport.OutcomeFailedEventType),
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<CancellationToken>()), Times.Never);
         _audit.Verify(a => a.AddAsync(
             It.Is<AuditEvent>(e => e.EventType == "preorder.manual_review_cancelled"),
             It.IsAny<CancellationToken>()), Times.Once);

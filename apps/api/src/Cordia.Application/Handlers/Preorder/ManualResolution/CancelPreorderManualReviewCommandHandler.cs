@@ -63,7 +63,10 @@ public sealed class CancelPreorderManualReviewCommandHandler(
             // the reservation leaks against the fulfillment inventory. Idempotent by (tenant, saga).
             await items.ReleaseAsync(command.TenantId, command.SagaId, ct2);
 
-            await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
+            // ManualReview is reached only AFTER 06 committed the booking — the table reservation
+            // stays confirmed. Emit the dedicated "pre-order cancelled, booking stands" outcome,
+            // never the FinalFailure booking template.
+            await outboxRepo.AddAsync(PreorderSagaSupport.PreorderCancelledOutcome(
                 command.TenantId, command.SagaId, saga.OperationId, failureCode, now), ct2);
             // Attributed to the operator (not "system"); the free-form note lives here only.
             await auditRepo.AddAsync(PreorderSagaSupport.Audit(
