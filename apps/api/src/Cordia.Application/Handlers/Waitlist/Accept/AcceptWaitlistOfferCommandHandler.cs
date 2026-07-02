@@ -125,6 +125,12 @@ public sealed class AcceptWaitlistOfferCommandHandler(
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            // The claim is won but the booking outcome belongs to 06 (capacity/payment/provider may
+            // still fail). Schedule the same reconcile probe the lost-claim path uses: once 06 books,
+            // it marks the enrollment fulfilled so FindEligibleAsync never re-offers (or silently
+            // auto-books) the enrollee a second table; on terminal failure they stay eligible.
+            await reconcileScheduler.ScheduleAsync(
+                command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2);
             await auditRepo.AddAsync(new AuditEvent
             {
                 TenantId = command.TenantId,

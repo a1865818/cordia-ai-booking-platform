@@ -93,6 +93,9 @@ public class AutoAcceptWaitlistOfferHandlerTests
             It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<AuditEvent>(e => e.EventType == "waitlist.auto_booked"), It.IsAny<CancellationToken>()), Times.Once);
+        // Claim won → schedule the accept-reconcile probe that marks the enrollment fulfilled once 06
+        // books, so the enrollee is never matched (and silently auto-booked) a second table.
+        _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

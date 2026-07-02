@@ -131,6 +131,11 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            // Same as the customer accept: settle the enrollment off the real 06 outcome. Once the
+            // booking lands, the reconcile marks the enrollment fulfilled so the enrollee can never be
+            // matched (and silently auto-booked) a second table inside their acceptance window.
+            await reconcileScheduler.ScheduleAsync(
+                command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2);
             await auditRepo.AddAsync(new AuditEvent
             {
                 TenantId = command.TenantId,

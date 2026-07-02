@@ -91,6 +91,10 @@ public class AcceptWaitlistOfferHandlerTests
             TenantId, OfferId, It.IsAny<long>(),
             WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted,
             It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // Claim won → schedule the accept-reconcile probe that marks the enrollment fulfilled once 06
+        // books, so the enrollee is never re-offered (or auto-booked) a second table (finding 3).
+        _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

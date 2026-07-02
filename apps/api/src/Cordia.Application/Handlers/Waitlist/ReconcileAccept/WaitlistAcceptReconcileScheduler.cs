@@ -7,7 +7,9 @@ namespace Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 
 /// <summary>
 /// Schedules a delayed <see cref="ReconcileWaitlistAcceptCommand"/> for a waitlist offer whose accept
-/// lost the offer claim after minting the booking (spec 11 §5.1). Mirrors
+/// minted a booking — every accept/auto-accept (claim won or lost) schedules one so the enrollment is
+/// settled off the real 06 outcome (booked → fulfilled, never re-offered; failed → stays eligible)
+/// (spec 11 §5.1). Mirrors
 /// <see cref="OfferExpiryScheduler"/>: inserts a <see cref="ScheduledJob"/> row (JobType
 /// <c>waitlist.commands.reconcile_accept.v1</c>, DestinationQueue <c>waitlist.commands</c>) so the
 /// poller delivers the reconcile back to the <c>waitlist.processor</c> consumer after
