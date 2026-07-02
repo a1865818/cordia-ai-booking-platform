@@ -16,10 +16,14 @@
 > revalidates the live menu, reserves items, then **delegates the whole booking (capacity/payment/
 > provider-create) to the spec-06 operation engine** and awaits its terminal
 > `preorder.commands.booking_committed.v1` / `booking_failed.v1` signal before committing the pre-order
-> and emitting the one combined outcome (Inv-8); compensation unwinds the reserved items and parks a
-> post-commit failure in `ManualReview` for an operator+customer standalone conversion (§21.4). This
+> and emitting the one combined outcome (Inv-8); compensation unwinds the reserved items, and a saga
+> stuck in `CommittingPreorder` past a bounded escalation window (booking committed, pre-order bind
+> impossible — §8 FM#10) is parked `CommittingPreorder → CompensatingBooking → ManualReview` for an
+> operator+customer standalone conversion or cancel (§21.4; cancel releases the item reservation). This
 > delegation supersedes the self-owned `HoldingCapacity` / `AuthorizingPayment` / `CompensatingHold`
-> saga steps sketched in the §5.3 diagram below (those enum members are retained but unwired).
+> saga steps and the saga-level `Reconciling` state sketched in the §5.3 diagram below (those enum
+> members are retained but unwired — message-driven reconcile + the 06 engine's own reconciliation
+> replace them).
 > The malware scanner and isolated extractor remain **deterministic stub ports** with the real
 > isolation boundary enforced + tested (real ClamAV/LLM swap in behind the same ports); the LangGraph
 > extraction agent (empty tool surface, untrusted-text handling) exists in `apps/langgraph` but is

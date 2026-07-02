@@ -17,10 +17,10 @@ namespace Cordia.Application.Handlers.Preorder.CompensateBooking;
 /// advances <c>CompensatingBooking → ManualReview</c> and emits the single combined failure outcome
 /// (Inv-8).</para>
 ///
-/// <para>This state is unreachable in the normal flow (its only former producer, the saga's own
-/// commit-booking step, was removed); the handler is kept as a defensive backstop for reconcile /
-/// recovery. Runs in the inbox transaction; settles when the saga is missing or no longer in
-/// CompensatingBooking (Inv-5/Inv-9).</para>
+/// <para>Producer: <c>ReconcilePreorderSagaCommandHandler</c> escalates a saga stuck in
+/// <c>CommittingPreorder</c> past its escalation window to <c>CompensatingBooking</c> and enqueues
+/// this step (§8 FM#10 — "if pre-order still impossible → ManualReview"). Runs in the inbox
+/// transaction; settles when the saga is missing or no longer in CompensatingBooking (Inv-5/Inv-9).</para>
 ///
 /// <para><b>Inv-8 — parking is not a terminal outcome.</b> The park emits only a NEUTRAL
 /// "still confirming / under review" customer notice, not <c>notification.booking_failed.v1</c>: the

@@ -35,6 +35,7 @@ public class PreorderManualResolutionHandlerTests
     private readonly Mock<IBookingReadRepository> _bookingRead = new();
     private readonly Mock<IBookingRepository> _bookings = new();
     private readonly Mock<IGrantAuthorizationService> _grants = new();
+    private readonly Mock<IPreorderItemReservation> _items = new();
     private readonly Mock<IOutboxRepository> _outbox = new();
     private readonly Mock<IAuditEventRepository> _audit = new();
     private readonly Mock<IUnitOfWork> _uow = new();
@@ -66,7 +67,7 @@ public class PreorderManualResolutionHandlerTests
         NullLogger<ConvertPreorderToStandaloneCommandHandler>.Instance);
 
     private CancelPreorderManualReviewCommandHandler Cancel() => new(
-        _sagaRepo.Object, _outbox.Object, _audit.Object, _uow.Object,
+        _sagaRepo.Object, _items.Object, _outbox.Object, _audit.Object, _uow.Object,
         NullLogger<CancelPreorderManualReviewCommandHandler>.Instance);
 
     private void SetupAdvance(PreorderSagaState from, PreorderSagaState to, int rows) =>
@@ -232,6 +233,9 @@ public class PreorderManualResolutionHandlerTests
             PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal, It.IsAny<DateTimeOffset>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<bool?>(),
             It.IsAny<CancellationToken>()), Times.Once);
+
+        // §5.3 "FailedFinal: holds/items released" — the parked saga's item reservation is released.
+        _items.Verify(i => i.ReleaseAsync(TenantId, SagaId, It.IsAny<CancellationToken>()), Times.Once);
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == PreorderSagaSupport.OutcomeFailedEventType),
             It.IsAny<CancellationToken>()), Times.Once);

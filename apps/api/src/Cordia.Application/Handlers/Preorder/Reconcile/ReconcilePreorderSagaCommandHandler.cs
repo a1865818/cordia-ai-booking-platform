@@ -16,7 +16,10 @@ namespace Cordia.Application.Handlers.Preorder.Reconcile;
 /// engine (<c>CommittingBooking</c>, divergence #2) is nudged by re-emitting
 /// <c>booking.command.requested.v1</c> — the 06 driver is idempotent and re-emits its terminal
 /// booking-outcome signal if the operation already finished. A saga that never acquired anything
-/// (Revalidating) fails clean; one already parked in Reconciling escalates to ManualReview. Runs in
+/// (Revalidating) fails clean; one already parked in Reconciling escalates to ManualReview. A saga
+/// stuck in <c>CommittingPreorder</c> past <see cref="CommitStuckEscalationAfter"/> is not re-driven
+/// forever: it escalates <c>CommittingPreorder → CompensatingBooking → ManualReview</c> (§21.4 /
+/// FM#10 — booking committed, pre-order impossible → operator+customer resolve). Runs in
 /// the inbox transaction; settles for unknown/terminal sagas.
 /// </summary>
 public sealed class ReconcilePreorderSagaCommandHandler(
@@ -27,6 +30,16 @@ public sealed class ReconcilePreorderSagaCommandHandler(
     ILogger<ReconcilePreorderSagaCommandHandler> logger)
     : IRequestHandler<ReconcilePreorderSagaCommand, Unit>
 {
+    /// <summary>
+    /// How long a saga may sit in <see cref="PreorderSagaState.CommittingPreorder"/> (booking already
+    /// committed, pre-order bind not landing) before reconcile stops re-driving the step and parks it
+    /// for operator+customer resolution (§21.4 / §8 FM#10): CommittingPreorder → CompensatingBooking,
+    /// whose handler advances to ManualReview and emits the neutral in-review notice (Inv-8).
+    /// UpdatedAt is stamped only on state transitions, so age-in-state is a durable measure across
+    /// step timeouts and recovery sweeps. Initial value is a §12 SLO placeholder.
+    /// </summary>
+    public static readonly TimeSpan CommitStuckEscalationAfter = TimeSpan.FromMinutes(30);
+
     /// <summary>06 operation states that are a terminal FAILURE for a delegated pre-order booking.</summary>
     private static readonly HashSet<OperationStatus> _terminalFailureStates =
     [
@@ -147,6 +160,36 @@ public sealed class ReconcilePreorderSagaCommandHandler(
             await auditRepo.AddAsync(PreorderSagaSupport.Audit(
                 command.TenantId, "preorder.reconcile_resumed", command.SagaId, command.OperationId, now,
                 new { saga_id = command.SagaId, resumed_state = saga.SagaState.ToString(), op_status = op?.Status.ToString(), renudged_06 = true }), ct);
+            return Unit.Value;
+        }
+
+        // §21.4 / FM#10: the booking is committed but the pre-order bind has not landed for the whole
+        // escalation window — the step timeout and recovery sweeps have been re-driving CommitPreorder
+        // without progress. Stop re-driving (it would loop forever) and park for a human:
+        // CommittingPreorder → CompensatingBooking → ManualReview (operator+customer convert or cancel).
+        if (saga.SagaState == PreorderSagaState.CommittingPreorder
+            && now - saga.UpdatedAt >= CommitStuckEscalationAfter)
+        {
+            PreorderSagaStateMachine.EnsureAllowed(
+                PreorderSagaState.CommittingPreorder, PreorderSagaState.CompensatingBooking);
+            var escalated = await sagaRepo.TryAdvanceStateAsync(
+                command.TenantId, command.SagaId, saga.Version,
+                PreorderSagaState.CommittingPreorder, PreorderSagaState.CompensatingBooking, now,
+                setFailureReason: "commit_preorder_stuck", ct: ct);
+            if (escalated > 0)
+            {
+                await outboxRepo.AddAsync(PreorderSagaMessages.StepMessage(
+                    command.TenantId, PreorderSagaMessages.CompensateBooking,
+                    command.SagaId, command.OperationId, now, command.CorrelationId), ct);
+                await auditRepo.AddAsync(PreorderSagaSupport.Audit(
+                    command.TenantId, "preorder.reconcile_escalated", command.SagaId, command.OperationId, now,
+                    new
+                    {
+                        saga_id = command.SagaId,
+                        to = PreorderSagaState.CompensatingBooking.ToString(),
+                        stuck_since = saga.UpdatedAt,
+                    }), ct);
+            }
             return Unit.Value;
         }
 

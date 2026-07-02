@@ -15,6 +15,7 @@ namespace Cordia.Application.Handlers.Preorder.ManualResolution;
 /// </summary>
 public sealed class CancelPreorderManualReviewCommandHandler(
     IPreorderSagaRepository sagaRepo,
+    IPreorderItemReservation items,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
@@ -56,6 +57,11 @@ public sealed class CancelPreorderManualReviewCommandHandler(
                 setFailureReason: failureCode, ct: ct2) > 0;
             if (!won)
                 return;
+
+            // §5.3 "FailedFinal: holds/items released": ManualReview is reached from
+            // CommittingPreorder, AFTER the items were reserved — cancelling must release them or
+            // the reservation leaks against the fulfillment inventory. Idempotent by (tenant, saga).
+            await items.ReleaseAsync(command.TenantId, command.SagaId, ct2);
 
             await outboxRepo.AddAsync(PreorderSagaSupport.FailureOutcome(
                 command.TenantId, command.SagaId, saga.OperationId, failureCode, now), ct2);
