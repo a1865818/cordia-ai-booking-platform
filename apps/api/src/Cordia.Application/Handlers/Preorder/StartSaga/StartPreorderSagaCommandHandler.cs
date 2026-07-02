@@ -19,12 +19,15 @@ namespace Cordia.Application.Handlers.Preorder.StartSaga;
 /// <list type="bullet">
 /// <item>all valid → advance to ReservingItems (items-first for every pre-order) and enqueue that
 /// step; audit <c>preorder.revalidated</c>. Booking is delegated to the 06 engine after items reserve.</item>
-/// <item>any stale → advance to FailedFinal, emit the AlternativesRequired outcome with the stale
-/// lines, audit <c>preorder.revalidation_failed</c>; NOTHING was acquired, so no compensation.</item>
+/// <item>any stale → advance the saga to FailedFinal, park the operation
+/// <c>Accepted → AlternativesRequired</c> (nothing was acquired) and emit the registered
+/// <c>notification.alternatives_required.v1</c> so the customer is prompted to re-confirm — a new
+/// revision through spec 04, Inv-10; audit <c>preorder.revalidation_failed</c>.</item>
 /// </list>
 /// </summary>
 public sealed class StartPreorderSagaCommandHandler(
     IPreorderSagaRepository sagaRepo,
+    IBookingOperationRepository opRepo,
     LiveItemRevalidationService revalidation,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
@@ -32,8 +35,13 @@ public sealed class StartPreorderSagaCommandHandler(
     ILogger<StartPreorderSagaCommandHandler> logger)
     : IRequestHandler<StartPreorderSagaCommand, Unit>
 {
-    /// <summary>Outbox event: revalidation found stale items; the customer must re-confirm alternatives (spec 06).</summary>
-    public const string AlternativesRequiredEventType = "preorder.alternatives_required.v1";
+    /// <summary>
+    /// Outbox event: revalidation found stale items; the customer must re-confirm (Inv-10). This is
+    /// the spec-10 registered alternatives notification — the operation row exists (Accepted), so the
+    /// sender resolves it normally. The former bespoke <c>preorder.alternatives_required.v1</c> type
+    /// had no registered consumer and was silently dropped by the transport.
+    /// </summary>
+    public const string AlternativesRequiredEventType = "notification.alternatives_required.v1";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -104,10 +112,25 @@ public sealed class StartPreorderSagaCommandHandler(
             return Unit.Value;
         }
 
-        // Stale: nothing acquired → straight to FailedFinal + AlternativesRequired outcome.
+        // Stale: nothing acquired → saga straight to FailedFinal. The saga is terminal because a
+        // re-confirmation is a NEW revision → new operation → new saga (Inv-2/3/10) — this saga is
+        // never resumed.
         PreorderSagaStateMachine.EnsureAllowed(PreorderSagaState.Revalidating, PreorderSagaState.FailedFinal);
         await sagaRepo.TryAdvanceStateAsync(
             command.TenantId, sagaId, expectedVersion: 0, PreorderSagaState.Revalidating, PreorderSagaState.FailedFinal, now, ct: ct);
+
+        // Park the operation in AlternativesRequired (§5.3 Revalidating → AlternativesRequired) so
+        // the customer-visible state matches the prompt they receive; a pre-order op skips the 06
+        // engine start, so without this the row would sit in Accepted forever (Inv-14).
+        var op = await opRepo.GetAsync(command.OperationId, ct);
+        if (op is not null && op.TenantId == command.TenantId && op.Status == OperationStatus.Accepted)
+        {
+            OperationStateMachine.EnsureAllowed(OperationStatus.Accepted, OperationStatus.AlternativesRequired);
+            await opRepo.TryTransitionStatusAsync(
+                command.TenantId, command.OperationId, op.Version,
+                OperationStatus.Accepted, OperationStatus.AlternativesRequired,
+                reason: "preorder_revalidation_stale", ct: ct);
+        }
 
         await outboxRepo.AddAsync(new OutboxMessage
         {

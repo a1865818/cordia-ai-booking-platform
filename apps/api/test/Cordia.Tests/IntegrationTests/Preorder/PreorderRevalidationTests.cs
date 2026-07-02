@@ -27,6 +27,7 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
     private static StartPreorderSagaCommandHandler BuildStart(Cordia.Infrastructure.EntityFramework.ApplicationDbContext ctx)
         => new(
             new PreorderSagaRepository(ctx),
+            new BookingOperationRepository(ctx),
             new LiveItemRevalidationService(new VendorCatalogRepository(ctx)),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
@@ -151,6 +152,12 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
             .AnyAsync(m => m.TenantId == tenantId && m.MessageType == PreorderSagaMessages.ReserveItems));
         Assert.True(await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
             .AnyAsync(a => a.TenantId == tenantId && a.EventType == "preorder.revalidation_failed"));
+
+        // Review finding 2: the operation must not sit in Accepted forever — it parks in
+        // AlternativesRequired so the customer-visible state matches the re-confirm prompt (Inv-10/14).
+        var op = await ctx.BookingOperations.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+        Assert.Equal(OperationStatus.AlternativesRequired, op.Status);
     }
 
     [Fact]

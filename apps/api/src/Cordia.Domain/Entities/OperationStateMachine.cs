@@ -22,6 +22,10 @@ public static class OperationStateMachine
             [OperationStatus.Accepted] = new HashSet<OperationStatus>
             {
                 OperationStatus.Validating,
+                // Spec 11 §5.3 / Inv-10: a pre-order operation's live revalidation runs BEFORE the
+                // 06 engine starts (the saga is the producer gate). Stale items park the op here
+                // directly — nothing was acquired — so the customer is prompted to re-confirm.
+                OperationStatus.AlternativesRequired,
             }.ToFrozenSet(),
             [OperationStatus.Validating] = new HashSet<OperationStatus>
             {

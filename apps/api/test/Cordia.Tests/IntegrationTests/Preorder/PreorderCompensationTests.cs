@@ -33,7 +33,8 @@ namespace Cordia.Tests.IntegrationTests.Preorder;
 public class PreorderCompensationTests(PostgresFixture fixture)
 {
     private static StartPreorderSagaCommandHandler Start(ApplicationDbContext ctx)
-        => new(new PreorderSagaRepository(ctx), new LiveItemRevalidationService(new VendorCatalogRepository(ctx)),
+        => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx),
+            new LiveItemRevalidationService(new VendorCatalogRepository(ctx)),
             new OutboxRepository(ctx), new AuditEventRepository(ctx), new ScheduledJobRepository(ctx), NullLogger<StartPreorderSagaCommandHandler>.Instance);
     private static ReservePreorderItemsCommandHandler Reserve(ApplicationDbContext ctx)
         => new(new PreorderSagaRepository(ctx), new StubPreorderItemReservation(),
