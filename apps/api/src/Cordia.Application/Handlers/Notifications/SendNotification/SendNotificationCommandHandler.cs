@@ -77,7 +77,11 @@ public sealed class SendNotificationCommandHandler(
         {
             TenantId = tenantId,
             NotificationId = notificationId,
-            OperationId = operationId,
+            // No booking_operations row yet (RequiresOperation=false, e.g. a waitlist offer whose
+            // op_wl_* row is minted only at accept) → store NULL so the composite FK is skipped;
+            // the op_wl_* id still keys the notification identity above. A non-null value here
+            // would violate the FK and the offer notification would die on PG 23503.
+            OperationId = op is null ? null : operationId,
             EventType = command.EventType,
             RecipientRef = recipientRef,
             TemplateVersion = template.TemplateVersion,

@@ -855,7 +855,6 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnName("next_eligible_at");
 
                     b.Property<string>("OperationId")
-                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("operation_id");
 
@@ -1857,7 +1856,6 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "OperationId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
                         .HasConstraintName("fk_notifications_booking_operations_tenant_id_operation_id");
                 });
 
