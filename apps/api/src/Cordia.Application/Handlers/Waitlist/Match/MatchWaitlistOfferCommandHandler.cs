@@ -125,7 +125,7 @@ public sealed class MatchWaitlistOfferCommandHandler(
             // ExpireWaitlistOfferCommandHandler releases the hold + re-matches — so the hold and offer can
             // never leak. If auto-accept books first, the offer is Accepted and the expiry job no-ops.
             await offerExpiry.ScheduleAsync(command.TenantId, offerId, expiresAt, ct);
-            await EnqueueAsync(command.TenantId, AutoAcceptWaitlistOfferCommand.MessageType, offerId, enrollment, now, new
+            await EnqueueAsync(command.TenantId, AutoAcceptWaitlistOfferCommand.MessageType, operationId, enrollment, now, new
             {
                 offer_id = offerId,
                 operation_id = operationId,
@@ -135,8 +135,10 @@ public sealed class MatchWaitlistOfferCommandHandler(
         }
 
         // Normal path: schedule the expiry and notify the customer of the deadline-bound offer.
+        // The envelope carries the offer's op_wl_* operation id: the spec-10 sender keys the
+        // notification identity on it (RequiresOperation=false — no booking_operations row yet).
         await offerExpiry.ScheduleAsync(command.TenantId, offerId, expiresAt, ct);
-        await EnqueueAsync(command.TenantId, OfferNotifiedEventType, offerId, enrollment, now, new
+        await EnqueueAsync(command.TenantId, OfferNotifiedEventType, operationId, enrollment, now, new
         {
             offer_id = offerId,
             enrollment_id = enrollment.EnrollmentId,
@@ -150,7 +152,7 @@ public sealed class MatchWaitlistOfferCommandHandler(
     }
 
     private Task EnqueueAsync(
-        string tenantId, string messageType, string offerId, WaitlistEnrollment enrollment,
+        string tenantId, string messageType, string operationId, WaitlistEnrollment enrollment,
         DateTimeOffset now, object payload, CancellationToken ct)
         => outboxRepo.AddAsync(new OutboxMessage
         {
@@ -158,6 +160,7 @@ public sealed class MatchWaitlistOfferCommandHandler(
             MessageId = $"obx_{Guid.NewGuid():N}",
             MessageType = messageType,
             CorrelationId = enrollment.EnrollmentId,
+            OperationId = operationId,
             Payload = JsonSerializer.Serialize(payload),
             OccurredAt = now,
         }, ct);

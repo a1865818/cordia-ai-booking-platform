@@ -156,8 +156,8 @@ public static class ApplicationServiceCollectionExtensions
             // notification.waitlisted.v1 is the informational "added to waitlist" event and is
             // intentionally NOT pushed via this lane — the catalogue's WaitlistOffer is the
             // deadline-bound spec-11 waitlist *match* offer (with {offer_expires_at}), which a
-            // waitlist-entry payload cannot fill (Inv-16). Spec 11 will register its own Critical
-            // WaitlistOffer message type.
+            // waitlist-entry payload cannot fill (Inv-16). Spec 11 registers that Critical
+            // WaitlistOffer type (waitlist.offer.notified.v1) with the waitlist lane below.
 
             // T5a (spec 10): durable notification retry — fired by ScheduledJobPollerHostedService
             // after next_eligible_at has passed. notification_id is extracted from the payload.
@@ -227,6 +227,19 @@ public static class ApplicationServiceCollectionExtensions
                     ExtractString(env.Payload, "operation_id") ?? string.Empty,
                     ExtractString(env.Payload, "enrollment_id") ?? string.Empty,
                     ExtractInt(env.Payload, "attempt") ?? 0));
+
+            // Spec 11 §5.1 — customer-facing offer / offer-expired notifications, delivered through
+            // the spec-10 sender ("notification.sender" inbox dedup, Inv-9). The envelope's
+            // operation id is the offer's op_wl_* id, which has NO booking_operations row until the
+            // offer is accepted — RequiresOperation=false so the sender does not ack-and-drop.
+            registry.Register(MatchWaitlistOfferCommandHandler.OfferNotifiedEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.WaitlistOffer, MessagePriority.Critical, env.CorrelationId,
+                    RequiresOperation: false));
+            registry.Register(ExpireWaitlistOfferCommandHandler.OfferExpiredEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.WaitlistOfferExpired, MessagePriority.Normal, env.CorrelationId,
+                    RequiresOperation: false));
 
             // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All
             // steps are inbox-deduplicated (one transaction each, Inv-5/Inv-9). The start message

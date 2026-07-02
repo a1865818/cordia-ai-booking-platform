@@ -33,6 +33,10 @@ public enum NotificationEvent
     [JsonStringEnumMemberName("waitlist_offer")]
     WaitlistOffer,
 
+    [PgName("waitlist_offer_expired")]
+    [JsonStringEnumMemberName("waitlist_offer_expired")]
+    WaitlistOfferExpired,
+
     [PgName("final_failure")]
     [JsonStringEnumMemberName("final_failure")]
     FinalFailure,

@@ -41,9 +41,13 @@ public sealed class SendNotificationCommandHandler(
         var tenantId = command.TenantId;
         var operationId = command.OperationId;
 
-        // 1. Load operation — must exist and belong to this tenant.
+        // 1. Load operation — must exist and belong to this tenant. Events not yet bound to a
+        //    persisted operation (RequiresOperation=false, e.g. a waitlist offer whose op_wl_*
+        //    row is minted only at accept) proceed without the row at material revision 0.
         var op = await opRepo.GetAsync(operationId, ct);
-        if (op is null || op.TenantId != tenantId)
+        if (op is not null && op.TenantId != tenantId)
+            op = null;
+        if (op is null && command.RequiresOperation)
         {
             logger.LogWarning(
                 "SendNotification: operation {OperationId} not found or wrong tenant {TenantId}; ack-and-drop.",
@@ -52,7 +56,7 @@ public sealed class SendNotificationCommandHandler(
         }
 
         var now = DateTimeOffset.UtcNow;
-        var materialRevision = op.IntentRevision;
+        var materialRevision = op?.IntentRevision ?? 0;
 
         // 2. Resolve recipient (may be null → no valid destination).
         var recipient = await recipientResolver.ResolveAsync(tenantId, operationId, ct);
