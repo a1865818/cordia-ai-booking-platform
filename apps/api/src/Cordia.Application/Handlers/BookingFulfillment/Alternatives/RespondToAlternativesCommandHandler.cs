@@ -54,6 +54,15 @@ public sealed class RespondToAlternativesCommandHandler(
 
             if (command.Response == AlternativesResponse.Waitlist)
             {
+                // Spec 11 §5.3 / Inv-8: a pre-order operation's alternatives resolution is
+                // re-confirm (a NEW revision through spec 04) or decline — never Waitlisted. The
+                // saga has already settled its items and owns the single combined outcome, so
+                // waitlisting here would emit a second, contradictory customer outcome.
+                if (current.IsPreorder)
+                    throw new OperationConflictException(
+                        command.OperationId,
+                        "A pre-order operation cannot be waitlisted — re-confirm with updated items or decline.");
+
                 var rows = await opRepo.TryTransitionStatusAsync(
                     command.TenantId, command.OperationId, current.Version,
                     OperationStatus.AlternativesRequired, OperationStatus.Waitlisted,
