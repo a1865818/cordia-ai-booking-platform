@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from cordia_agent.security.redaction import redact_text
 from cordia_agent.state import AgentState
 
 
@@ -96,8 +97,29 @@ class SessionCheckpointer:
             )
 
         key = self.tenant_scoped_key(state.tenant_id, state.session_id)
-        self._store[key] = state.model_dump_json()
+        self._store[key] = self._scrub_for_persistence(state).model_dump_json()
         return key
+
+    @staticmethod
+    def _scrub_for_persistence(state: AgentState) -> AgentState:
+        """Apply the spec-14 pre-persist transcript rules (Inv-12, §5.2).
+
+        - ``recording_allowed is False`` ⇒ the transcript is suppressed entirely
+          (consent declined / non-recorded session; structured intent is still
+          captured).
+        - Otherwise the transcript text passes through the always-on redaction
+          filter so PAN/CVV/government ids are never durably stored.
+
+        The in-memory ``state`` is never mutated — nodes keep the live turn
+        transcript; only the durable copy is scrubbed.
+        """
+        if state.transcript_text is None:
+            return state
+        if state.recording_allowed is False:
+            return state.model_copy(update={"transcript_text": None})
+        return state.model_copy(
+            update={"transcript_text": redact_text(state.transcript_text)}
+        )
 
     def load(self, tenant_id: str, session_id: str) -> AgentState | None:
         """Reload the ``AgentState`` for *(tenant_id, session_id)*.

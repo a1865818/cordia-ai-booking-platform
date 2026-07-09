@@ -1459,6 +1459,69 @@
       "title": "Confirmation",
       "type": "object"
     },
+    "ConsentPolicyView": {
+      "additionalProperties": false,
+      "description": "Output payload for resolve_consent_policy (spec 14 \u00a75.1).\n\nResolved from tenant + channel jurisdiction config by the API; the agent\nnever decides jurisdiction policy locally.",
+      "properties": {
+        "jurisdiction_policy_id": {
+          "description": "Resolved jurisdiction policy identifier, e.g. 'jp_au_default'.",
+          "title": "Jurisdiction Policy Id",
+          "type": "string"
+        },
+        "consent_policy_version": {
+          "description": "Version of the notice/policy to present, e.g. 'au-default:2026-01'.",
+          "title": "Consent Policy Version",
+          "type": "string"
+        },
+        "notice_required": {
+          "description": "True iff a recording notice + explicit outcome capture is required.",
+          "title": "Notice Required",
+          "type": "boolean"
+        },
+        "notice_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Notice wording to play/display when notice_required; None \u21d2 agent default.",
+          "title": "Notice Text"
+        }
+      },
+      "required": [
+        "jurisdiction_policy_id",
+        "consent_policy_version",
+        "notice_required"
+      ],
+      "title": "ConsentPolicyView",
+      "type": "object"
+    },
+    "ConsentRecordedResult": {
+      "additionalProperties": false,
+      "description": "Output payload for record_consent (spec 14 \u00a75.1).",
+      "properties": {
+        "session_id": {
+          "description": "Session the consent was recorded on.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "recording_allowed": {
+          "description": "Authoritative persisted recording gate after the update.",
+          "title": "Recording Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "recording_allowed"
+      ],
+      "title": "ConsentRecordedResult",
+      "type": "object"
+    },
     "ConsentState": {
       "additionalProperties": false,
       "description": "Recording/transcription consent captured at session start (spec 14 \u00a74.1).",
@@ -2521,6 +2584,37 @@
         "handoff_signalled"
       ]
     },
+    "RecordConsentInput": {
+      "additionalProperties": false,
+      "description": "Input for record_consent \u2014 updates consent_* on the session row via the API (D12).",
+      "properties": {
+        "session_id": {
+          "description": "Conversation session whose consent_* fields are updated.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "consent": {
+          "$ref": "#/$defs/ConsentState",
+          "description": "The captured consent outcome to persist (spec 14 \u00a74.1)."
+        }
+      },
+      "required": [
+        "session_id",
+        "consent"
+      ],
+      "title": "RecordConsentInput",
+      "type": "object"
+    },
+    "RecordConsentStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RecordConsentStatus",
+      "description": "Status codes for record_consent (spec 14 \u00a75.1, D12).",
+      "type": "string",
+      "enum": [
+        "recorded",
+        "session_not_found"
+      ]
+    },
     "RedactionPolicy": {
       "additionalProperties": false,
       "description": "Sensitive-data masking policy (spec 14 \u00a74.1, Inv-12).\n\nPAN/CVV masking is always-on by contract default; ``configured_sensitive_fields``\nstarts empty and is tenant-overridable (Stage-3 gate decision, 2026-07-09).",
@@ -2581,6 +2675,16 @@
         "already_sent",
         "rate_limited",
         "no_verified_destination"
+      ]
+    },
+    "ResolveConsentPolicyStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ResolveConsentPolicyStatus",
+      "description": "Status codes for resolve_consent_policy (spec 14 \u00a75.1).",
+      "type": "string",
+      "enum": [
+        "resolved",
+        "policy_unavailable"
       ]
     },
     "SourceInfo": {

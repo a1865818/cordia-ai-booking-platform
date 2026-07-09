@@ -1,4 +1,4 @@
-"""11 foreground tool definitions bound for the LangGraph agent (spec 03 §4.3).
+"""13 foreground tool definitions bound for the LangGraph agent (spec 03 §4.3; +2 consent tools, spec 14 §5.1).
 
 Each function delegates to EXACTLY ONE ``get_tool_client().call_tool(...)`` call.
 No branching business logic, no direct transport/db/provider imports live here — the
@@ -18,6 +18,7 @@ from cordia_agent.tools.client import get_tool_client
 from cordia_agent.tools.contracts import (
     AvailabilityRequest,
     HandoffRequest,
+    RecordConsentInput,
     SubmitConfirmedIntentInput,
     ToolResultEnvelope,
     VerificationRequest,
@@ -250,6 +251,39 @@ async def request_human_handoff(
 
 
 # ---------------------------------------------------------------------------
+# 12. resolve_consent_policy — PURE_READ (spec 14 §5.1)
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def resolve_consent_policy(channel: str) -> ToolResultEnvelope:
+    """Resolve the recording-consent policy for the current tenant and channel. Call once at session start, before any transcript-bearing turn, to learn whether a recording notice is required and which policy version to present."""
+    return await get_tool_client().call_tool(
+        "resolve_consent_policy",
+        "GET",
+        "/api/consent-policies",
+        params={"channel": channel},
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13. record_consent — BOUNDED_SIDE_EFFECT, session-scoped update (spec 14, D12)
+# ---------------------------------------------------------------------------
+
+
+@tool(args_schema=RecordConsentInput)
+async def record_consent(**kwargs: object) -> ToolResultEnvelope:
+    """Persist the customer's recording-consent outcome onto the conversation session through the Booking API. The session row is created by the channel gateway; this tool only updates its consent fields (single-writer rule, D12)."""
+    inp = RecordConsentInput(**kwargs)
+    return await get_tool_client().call_tool(
+        "record_consent",
+        "POST",
+        f"/api/conversation-sessions/{inp.session_id}/consent",
+        json=inp.consent.model_dump(mode="json"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry — exactly 11 tools; each .name equals the spec name above.
 # ---------------------------------------------------------------------------
 
@@ -265,4 +299,6 @@ FOREGROUND_TOOLS: list = [
     submit_confirmed_intent,
     get_operation_status,
     request_human_handoff,
+    resolve_consent_policy,
+    record_consent,
 ]

@@ -1,4 +1,9 @@
-"""Recursive log redaction for payloads that may carry raw DTMF digits."""
+"""Recursive log redaction for payloads that may carry raw DTMF digits.
+
+String values additionally pass through the spec-14 text redaction filter
+(``cordia_agent.security.redaction.redact_text``) so PAN/CVV/government ids
+never reach a log line (Inv-12).
+"""
 
 from __future__ import annotations
 
@@ -7,8 +12,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from cordia_agent.security.redaction import redact_text
 
-# Log scrub placeholder aligned with spec 14 RedactionPolicy.mask_token.
+
+# Aligned with spec 14 RedactionPolicy.mask_token.
 REDACTION_TOKEN = "[REDACTED]"  # nosec B105
 
 SENSITIVE_DIGIT_FIELD_NAMES = frozenset(
@@ -41,6 +48,8 @@ def _redact_value(value: Any) -> Any:
         return [_redact_value(item) for item in value]
     if isinstance(value, tuple):
         return tuple(_redact_value(item) for item in value)
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 

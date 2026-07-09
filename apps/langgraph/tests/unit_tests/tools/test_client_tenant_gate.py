@@ -126,15 +126,15 @@ async def test_get_tenant_context_exempt_from_gate(client_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Table coverage: 17 tools, identical key sets.
+# Table coverage: 19 tools (17 spec-03 + 2 spec-14 consent), identical key sets.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_all_tools_count_is_17() -> None:
-    """ALL_TOOLS must contain exactly 17 tools (spec 03 §6.6)."""
-    assert len(ALL_TOOLS) == 17, (
-        f"Expected 17 tools in ALL_TOOLS, found {len(ALL_TOOLS)}: {sorted(ALL_TOOLS)}"
+def test_all_tools_count_is_19() -> None:
+    """ALL_TOOLS must contain exactly 19 tools (spec 03 §6.6 + spec 14 §5.1)."""
+    assert len(ALL_TOOLS) == 19, (
+        f"Expected 19 tools in ALL_TOOLS, found {len(ALL_TOOLS)}: {sorted(ALL_TOOLS)}"
     )
 
 
@@ -171,6 +171,8 @@ def test_known_tool_names_present() -> None:
         "check_candidate_availability",
         "request_verification",
         "get_booking_operation_status",
+        "resolve_consent_policy",
+        "record_consent",
     }
     missing = expected_tools - ALL_TOOLS
     assert not missing, f"Expected tool names missing from ALL_TOOLS: {missing}"

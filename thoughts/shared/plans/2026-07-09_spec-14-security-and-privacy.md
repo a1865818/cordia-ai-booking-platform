@@ -165,13 +165,29 @@ typed bindings + status enums (registered). State: additive consent fields on `A
 Graph/topology tests updated. TDD throughout.
 
 Automated verification:
-- [ ] `bun nx test langgraph`
-- [ ] `bun nx lint langgraph`
-- [ ] `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` (new tool enums)
+- [x] `bun nx test langgraph` (731 passed; +25 new security tests)
+- [x] `bun nx lint langgraph`
+- [x] `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` (5 new schema files; `bun nx build api` re-verified green)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- Consent gate implemented as `consent_gate` between `resolve_tenant` and `load_context` with
+  `route_after_consent_gate` → `load_context` | `END` (END = awaiting the customer's reply to
+  the emitted notice). Declined consent maps to `alternative_offered` and **continues the
+  conversation non-recorded** (§5.2 Active_NonRecorded) — no human_handoff edge needed.
+- The customer's consent reply is read from `transcript_text` via a small yes/no classifier
+  (decline wins on ambiguity, "no problem" is a grant) — no change to the strict
+  `AgentInputState` contract was needed.
+- Two new foreground tools (`resolve_consent_policy` PURE_READ, `record_consent`
+  BOUNDED_SIDE_EFFECT) — tool tables now 19 entries, FOREGROUND_TOOLS 13; count-pinning tests
+  updated deliberately.
+- Checkpointer scrubs on persist only (in-memory state keeps the live transcript): PAN/CVV/
+  gov-id always redacted; transcript dropped entirely when `recording_allowed is False`.
+  `recording_allowed is None` (gate unresolved) still redacts — Inv-12 holds pre-consent.
+- LangGraph resolves router type hints at runtime — `AgentState` must be imported for real in
+  router modules, not under `TYPE_CHECKING`.
+- `tests/unit_tests/contracts/test_preorder.py` had pre-existing ruff-format drift (surfaced by
+  `lint langgraph`); reformatted in this phase's commit.
 
 ### Phase 3 — API consent vertical
 

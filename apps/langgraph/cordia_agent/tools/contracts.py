@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.contracts.security import ConsentState
 from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -586,4 +587,57 @@ class BookingChangeValidation(BaseModel):
     )
     capacity_mode: AvailabilityMode = Field(
         description="Availability mode at the time the change validation was run."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Consent-gate tool I/O models (spec 14 §5.1/§5.2, D12)
+# ---------------------------------------------------------------------------
+
+
+class ConsentPolicyView(BaseModel):
+    """Output payload for resolve_consent_policy (spec 14 §5.1).
+
+    Resolved from tenant + channel jurisdiction config by the API; the agent
+    never decides jurisdiction policy locally.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    jurisdiction_policy_id: str = Field(
+        description="Resolved jurisdiction policy identifier, e.g. 'jp_au_default'."
+    )
+    consent_policy_version: str = Field(
+        description="Version of the notice/policy to present, e.g. 'au-default:2026-01'."
+    )
+    notice_required: bool = Field(
+        description="True iff a recording notice + explicit outcome capture is required."
+    )
+    notice_text: str | None = Field(
+        default=None,
+        description="Notice wording to play/display when notice_required; None ⇒ agent default.",
+    )
+
+
+class RecordConsentInput(BaseModel):
+    """Input for record_consent — updates consent_* on the session row via the API (D12)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(
+        description="Conversation session whose consent_* fields are updated."
+    )
+    consent: ConsentState = Field(
+        description="The captured consent outcome to persist (spec 14 §4.1)."
+    )
+
+
+class ConsentRecordedResult(BaseModel):
+    """Output payload for record_consent (spec 14 §5.1)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(description="Session the consent was recorded on.")
+    recording_allowed: bool = Field(
+        description="Authoritative persisted recording gate after the update."
     )

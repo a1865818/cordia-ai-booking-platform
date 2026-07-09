@@ -138,6 +138,20 @@ class SubmitBookingCancellationStatus(str, Enum):
     VERIFICATION_REQUIRED = "verification_required"
 
 
+class ResolveConsentPolicyStatus(str, Enum):
+    """Status codes for resolve_consent_policy (spec 14 §5.1)."""
+
+    RESOLVED = "resolved"
+    POLICY_UNAVAILABLE = "policy_unavailable"
+
+
+class RecordConsentStatus(str, Enum):
+    """Status codes for record_consent (spec 14 §5.1, D12)."""
+
+    RECORDED = "recorded"
+    SESSION_NOT_FOUND = "session_not_found"
+
+
 # AvailabilityMode is OWNED by spec 07 (07-capacity-and-holds.md). It is bound
 # here as a frozen value set so the tool contracts can type against it now.
 # DO NOT redefine elsewhere: spec 07 must IMPORT this symbol, not re-declare it
