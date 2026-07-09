@@ -105,6 +105,8 @@ public static class InfrastructureServiceCollectionExtensions
             .BindConfiguration(CapacityOptions.SectionName);
 
         services.AddScoped<RetentionSweepHandler>();
+        // Spec 14 §24.3 — cross-tenant retention driver consumed by RetentionSweepHostedService.
+        services.AddScoped<IRetentionSweeper, RetentionSweeper>();
 
         // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
         services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();

@@ -21,6 +21,8 @@ public sealed class MessagingOptions
     public MissingNotificationAuditOptions MissingNotificationAudit { get; set; } = new();
 
     public PreorderRecoveryOptions PreorderRecovery { get; set; } = new();
+
+    public RetentionSweepOptions RetentionSweep { get; set; } = new();
 }
 
 /// <summary>Options for the pre-order saga recovery sweeper hosted service (spec 11 §5.3, divergence #3).</summary>
@@ -96,6 +98,22 @@ public sealed class SlaOptions
 
     /// <summary>Maximum number of non-terminal operations to evaluate per tick.</summary>
     public int BatchSize { get; set; } = 100;
+}
+
+/// <summary>Options for the privacy retention sweep hosted service (spec 14 §24.3, spec 12 §6.3).</summary>
+public sealed class RetentionSweepOptions
+{
+    /// <summary>Set to false to disable the retention sweeper (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Hours between sweep cycles. Retention is jurisdiction-window work — daily is plenty.</summary>
+    public int IntervalHours { get; set; } = 24;
+
+    /// <summary>
+    /// Seconds to wait after startup before the first sweep, so boot traffic isn't competing
+    /// with a cross-tenant scan.
+    /// </summary>
+    public int InitialDelaySeconds { get; set; } = 300;
 }
 
 /// <summary>Options for the notification reconcile hosted service (spec 10 §12.8, T4).</summary>
