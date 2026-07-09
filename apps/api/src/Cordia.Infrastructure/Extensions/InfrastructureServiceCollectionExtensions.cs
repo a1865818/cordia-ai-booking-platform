@@ -9,6 +9,7 @@ using Cordia.Infrastructure.Retry;
 using Cordia.Infrastructure.Security;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
+using Cordia.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -114,6 +115,10 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 14 §24.4 — server-side secret custody; values never serialized or logged.
         services.AddSingleton<ISecretStore, ConfigurationSecretStore>();
+
+        // Spec 14 §24.3/§24.4 — tenant-scoped encrypted blob custody (AES-256-GCM at rest,
+        // key resolved lazily from the secret store; expired objects swept by RetentionSweeper).
+        services.AddSingleton<IObjectStore, EncryptedFileObjectStore>();
 
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();

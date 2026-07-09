@@ -246,11 +246,27 @@ wrong/absent key behavior, TTL sweep deletes expired + audits `privacy.retention
 traversal attempts rejected.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api`
+- [x] `bun nx test api` (829 passed) · `bun nx lint api` · `bun nx test-integration api` (337 passed, 2 skipped)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- Traversal guard is an **allow-list** (`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` per segment) —
+  leading dots are rejected outright so `..`/`.hidden` can never form; no sanitize-then-use.
+- The raw-audio 72h default TTL is applied INSIDE `PutAsync` when the caller passes none
+  (fail closed on retention); other purposes get no implicit TTL. Additionally,
+  `GetAsync` returns null for expired-but-not-yet-swept objects, so expiry is enforced at
+  read time, not only at sweep time.
+- `.bin` layout is `nonce(12) ‖ tag(16) ‖ ciphertext`; wrong key surfaces as
+  `AuthenticationTagMismatchException` (GCM authentication), asserted in tests.
+- Object pruning runs at the END of `RetentionSweeper.SweepAllTenantsAsync` in its own
+  try/catch (object-store failure never blocks table sweeps) and audits one
+  `privacy.retention.object_pruned` row per object (control-plane metadata only), matching
+  the existing direct-write + interceptor-sanitized retention audit population.
+- Registered as a SINGLETON (`IObjectStore`) — it holds no scoped state; the key is
+  re-resolved from `ISecretStore` per crypto operation, preserving lazy fail-on-use.
+- No producer writes transcripts/audio through the store yet — the langgraph voice vertical
+  (spec 13) adopts the seam when call artifacts land; the sweep + custody machinery is live
+  from this phase.
 
 ### Phase 7 — langgraph wiring (harness, channels, policy load)
 (a) ToolClient gate 1c: unknown tool name → `tool_not_permitted` envelope (replaces today's

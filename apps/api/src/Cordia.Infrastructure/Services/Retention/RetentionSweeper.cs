@@ -1,4 +1,6 @@
-﻿using Cordia.Domain.Interfaces;
+﻿using System.Text.Json;
+using Cordia.Domain.Entities;
+using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -10,11 +12,15 @@ namespace Cordia.Infrastructure.Services.Retention;
 /// tenants present in the three swept tables (IgnoreQueryFilters — this is a
 /// background entry point authoritative on the ids it discovers, same pattern
 /// as <see cref="RetentionSweepHandler"/>) and runs the three per-tenant
-/// sweeps for each. Per-tenant failures are logged and skipped.
+/// sweeps for each. Per-tenant failures are logged and skipped. After the
+/// table sweeps it prunes expired encrypted objects (<see cref="IObjectStore"/>,
+/// e.g. 72h raw audio) and audits each removal
+/// (<c>privacy.retention.object_pruned</c>).
 /// </summary>
 public sealed class RetentionSweeper(
     ApplicationDbContext db,
     RetentionSweepHandler handler,
+    IObjectStore objectStore,
     ILogger<RetentionSweeper> logger) : IRetentionSweeper
 {
     public async Task<int> SweepAllTenantsAsync(DateTimeOffset now, CancellationToken ct = default)
@@ -47,7 +53,53 @@ public sealed class RetentionSweeper(
             }
         }
 
+        total += await SweepExpiredObjectsAsync(now, ct);
+
         return total;
+    }
+
+    /// <summary>
+    /// Prunes expired encrypted objects and writes one
+    /// <c>privacy.retention.object_pruned</c> audit row per removal (append-only,
+    /// Inv-14; metadata carries control-plane fields only — never object content).
+    /// </summary>
+    private async Task<int> SweepExpiredObjectsAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        try
+        {
+            var pruned = await objectStore.SweepExpiredAsync(now, ct);
+            if (pruned.Count == 0)
+                return 0;
+
+            foreach (var obj in pruned)
+            {
+                db.AuditEvents.Add(new AuditEvent
+                {
+                    TenantId = obj.TenantId,
+                    EventId = $"audit-{Guid.NewGuid():N}",
+                    EventType = "privacy.retention.object_pruned",
+                    Actor = "system",
+                    SubjectRef = obj.ObjectId,
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        reason = "ttl_elapsed",
+                        purpose = obj.Purpose,
+                        expires_at = obj.ExpiresAt,
+                    }),
+                    OccurredAt = now,
+                });
+            }
+            await db.SaveChangesAsync(ct);
+
+            logger.LogInformation("Retention sweep pruned {Count} expired objects", pruned.Count);
+            return pruned.Count;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Object pruning must never block the table sweeps' schedule.
+            logger.LogError(ex, "Expired-object sweep failed; continuing");
+            return 0;
+        }
     }
 
     private async Task<IReadOnlyList<string>> EnumerateTenantsAsync(CancellationToken ct)

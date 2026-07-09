@@ -1,9 +1,14 @@
 ﻿#pragma warning disable xUnit1051
+using System.Security.Cryptography;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
+using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Services.Retention;
+using Cordia.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cordia.Tests.IntegrationTests.Persistence;
@@ -13,13 +18,35 @@ namespace Cordia.Tests.IntegrationTests.Persistence;
 /// RetentionSweepHostedService: enumerates every tenant found in the swept
 /// tables and runs all three per-tenant sweeps, so retention is live wiring,
 /// not dead code. (Single-tenant sweep semantics are covered by
-/// RetentionSweepTests / SecurityRetentionSweepTests.)
+/// RetentionSweepTests / SecurityRetentionSweepTests.) Also proves the
+/// encrypted-object sweep: an expired object is pruned in the same cycle and
+/// audited as <c>privacy.retention.object_pruned</c>.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Postgres")]
 public class RetentionSweeperTests(PostgresFixture fixture)
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
+
+    private sealed class FixedSecretStore(string? value) : ISecretStore
+    {
+        public string? GetSecret(string name) => value;
+
+        public string GetRequiredSecret(string name)
+            => value ?? throw new SecretNotFoundException(name);
+    }
+
+    private static EncryptedFileObjectStore BuildObjectStore(string root)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ObjectStore:Root"] = root,
+            })
+            .Build();
+        var key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        return new EncryptedFileObjectStore(new FixedSecretStore(key), config);
+    }
 
     [Fact]
     public async Task SweepAllTenants_DiscoversAndSweepsEveryTenant()
@@ -57,14 +84,41 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             await ctx.SaveChangesAsync();
         }
 
-        await using (var sweepCtx = fixture.CreateContext("retention-sweeper-driver"))
+        // Tenant A also has an expired encrypted object (e.g. raw audio past its 72h TTL).
+        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var objectStore = BuildObjectStore(objectRoot);
+        await objectStore.PutAsync(
+            tenantA, "raw-audio", "sweepall-audio", new byte[] { 1, 2, 3 },
+            ttl: TimeSpan.FromHours(-1)); // already expired
+
+        try
         {
-            var sweeper = new RetentionSweeper(
-                sweepCtx,
-                new RetentionSweepHandler(sweepCtx),
-                NullLogger<RetentionSweeper>.Instance);
-            var pruned = await sweeper.SweepAllTenantsAsync(Now);
-            Assert.True(pruned >= 2, $"expected at least 2 pruned/anonymized rows, got {pruned}");
+            await using (var sweepCtx = fixture.CreateContext("retention-sweeper-driver"))
+            {
+                var sweeper = new RetentionSweeper(
+                    sweepCtx,
+                    new RetentionSweepHandler(sweepCtx),
+                    objectStore,
+                    NullLogger<RetentionSweeper>.Instance);
+                var pruned = await sweeper.SweepAllTenantsAsync(Now);
+                Assert.True(pruned >= 3, $"expected at least 3 pruned/anonymized rows+objects, got {pruned}");
+            }
+
+            // The expired object is gone and its removal is audited (privacy.retention.object_pruned).
+            Assert.Null(await objectStore.GetAsync(tenantA, "raw-audio", "sweepall-audio"));
+            await using var auditCtx = fixture.CreateContext(tenantA);
+            var objectAudit = await auditCtx.AuditEvents.AsNoTracking()
+                .IgnoreQueryFilters()
+                .SingleAsync(e => e.TenantId == tenantA
+                    && e.EventType == "privacy.retention.object_pruned"
+                    && e.SubjectRef == "sweepall-audio");
+            Assert.Equal("system", objectAudit.Actor);
+            Assert.Contains("raw-audio", objectAudit.Metadata);
+        }
+        finally
+        {
+            if (Directory.Exists(objectRoot))
+                Directory.Delete(objectRoot, recursive: true);
         }
 
         // Tenant A's session anonymized; tenant B's grant pruned — one cycle, both tenants.
