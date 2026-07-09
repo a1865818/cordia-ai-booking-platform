@@ -1,5 +1,5 @@
-﻿using Cordia.Application.Handlers.Security.RecordConsent;
-using Cordia.Domain.Entities;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Handlers.Security.RecordConsent;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Moq;
@@ -14,7 +14,7 @@ public class RecordConsentTests
     private const string SessionId = "sess-1";
 
     private readonly Mock<IConversationSessionRepository> _sessions = new();
-    private readonly Mock<IAuditEventRepository> _auditRepo = new();
+    private readonly Mock<IAuditWriter> _audit = new();
     private readonly Mock<IUnitOfWork> _uow = new();
 
     public RecordConsentTests()
@@ -25,7 +25,7 @@ public class RecordConsentTests
     }
 
     private RecordConsentCommandHandler BuildHandler()
-        => new(_sessions.Object, _auditRepo.Object, _uow.Object);
+        => new(_sessions.Object, _audit.Object, _uow.Object);
 
     private static RecordConsentCommand MakeCommand(
         string outcome = "granted", bool recordingAllowed = true)
@@ -53,13 +53,13 @@ public class RecordConsentTests
 
         Assert.Equal(SessionId, result.SessionId);
         Assert.True(result.RecordingAllowed);
-        _auditRepo.Verify(a => a.AddAsync(
-                It.Is<AuditEvent>(e =>
-                    e.TenantId == TenantId
-                    && e.EventType == "consent.recorded"
-                    && e.SubjectRef == SessionId
-                    && e.Metadata.Contains("\"outcome\":\"granted\"")
-                    && e.Metadata.Contains("\"recording_allowed\":true")),
+        _audit.Verify(a => a.WriteAsync(
+                It.Is<AuditRecord>(r =>
+                    r.TenantId == TenantId
+                    && r.Action == "consent.recorded"
+                    && r.TargetId == SessionId
+                    && r.ActorType == "customer"
+                    && r.Decision == "allow"),
                 It.IsAny<CancellationToken>()),
             Times.Once);
         _uow.Verify(u => u.ExecuteInTransactionAsync(
@@ -78,7 +78,7 @@ public class RecordConsentTests
         await Assert.ThrowsAsync<ConversationSessionNotFoundException>(
             () => BuildHandler().Handle(MakeCommand(), CancellationToken.None));
 
-        _auditRepo.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        _audit.Verify(a => a.WriteAsync(It.IsAny<AuditRecord>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Theory]

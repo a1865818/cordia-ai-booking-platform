@@ -242,13 +242,29 @@ replay: `ReplayDeadLetterCommand` gains ActorId+ReasonCode (controller reads `X-
 integration test proving replay writes the audit row and inbox consumers are unaffected.
 
 Automated verification:
-- [ ] `bun nx test api`
-- [ ] `bun nx lint api`
-- [ ] `bun nx test-integration api`
+- [x] `bun nx test api` (762 passed; +17 new audit/behavior tests)
+- [x] `bun nx lint api`
+- [x] `bun nx test-integration api` (318 passed, 2 pre-existing skips)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- **Allow/deny audit split:** the behavior writes only the DENY audit (effect rolled back, so a
+  standalone denial record is truthful); the ALLOW audit is the handler's job inside the
+  effect's transaction — an audit must never claim an effect that didn't commit. Documented on
+  `IOperatorActionRequest`.
+- DLQ replay already had a well-designed publish-before-mark audit; the retrofit only changed
+  its identity (Actor: "system" → operator's `X-Actor`) and added reason_code + the spec-14
+  metadata envelope via `IAuditWriter`. Event type `dead_letter.replayed` unchanged.
+- Unexpected (non-Domain) exceptions are deliberately NOT audited as deny — the
+  GlobalExceptionHandler still logs them; auditing an unknown crash as a "deny decision" would
+  be untruthful.
+- `AuditMetadataSanitizer` is a C# port of the Python PAN detector (separator-tolerant + Luhn,
+  non-Luhn runs kept) so both lanes mask identically.
+- Pipeline order is now Validation → OperatorAction → InboxDedup; the behavior no-ops for
+  non-marker requests, proven by `NonOperatorRequest_PassesThroughUntouched` and the untouched
+  `InboxDeduplicationBehaviorTests`.
+- xUnit's `xUnit1051` analyzer (enforced by `dotnet format`) requires
+  `TestContext.Current.CancellationToken` on awaited calls in tests.
 
 ### Phase 5 — Log scrubbing + secret custody + retention extension
 

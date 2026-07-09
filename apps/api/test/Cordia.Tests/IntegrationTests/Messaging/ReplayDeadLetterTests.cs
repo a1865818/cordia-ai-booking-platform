@@ -1,5 +1,6 @@
 ﻿#pragma warning disable xUnit1051
 using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Handlers.DeadLetters;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -54,10 +55,10 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
         var ctx = fixture.CreateContext(tenantId);
         var dlqRepo = new DeadLetterRepository(ctx);
         var inboxRepo = new InboxRepository(ctx);
-        var auditRepo = new AuditEventRepository(ctx);
+        var audit = new AuditWriter(new AuditEventRepository(ctx));
         var uow = new UnitOfWork(ctx);
         transport = new ReplayFakeTransport();
-        return new ReplayDeadLetterCommandHandler(dlqRepo, inboxRepo, transport, auditRepo, uow);
+        return new ReplayDeadLetterCommandHandler(dlqRepo, inboxRepo, transport, audit, uow);
     }
 
     private static async Task SeedDlqRowAsync(
@@ -123,7 +124,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         // §6.1 row 1: original message_id preserved
@@ -170,7 +171,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         // §6.1 row 2: new control-message-id
@@ -210,7 +211,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         // §6.1 row 3: ack without re-admit
@@ -249,7 +250,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         await Assert.ThrowsAsync<DeadLetterNotFoundException>(
             () => handler.Handle(
-                new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
                 CancellationToken.None));
     }
 
@@ -283,7 +284,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         // Idempotent no-op: no re-publish, decision is ack-without-readmit.
@@ -322,10 +323,10 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
             var handler1 = new ReplayDeadLetterCommandHandler(
                 new DeadLetterRepository(ctx1), new InboxRepository(ctx1), transport,
-                throwingAudit.Object, new UnitOfWork(ctx1));
+                new AuditWriter(throwingAudit.Object), new UnitOfWork(ctx1));
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                handler1.Handle(new ReplayDeadLetterCommand(tenantId, messageId, consumer), CancellationToken.None));
+                handler1.Handle(new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"), CancellationToken.None));
         }
 
         // Row must still be Quarantined (the mark rolled back).
@@ -341,9 +342,9 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
         {
             var handler2 = new ReplayDeadLetterCommandHandler(
                 new DeadLetterRepository(ctx2), new InboxRepository(ctx2), transport,
-                new AuditEventRepository(ctx2), new UnitOfWork(ctx2));
+                new AuditWriter(new AuditEventRepository(ctx2)), new UnitOfWork(ctx2));
             var result = await handler2.Handle(
-                new ReplayDeadLetterCommand(tenantId, messageId, consumer), CancellationToken.None);
+                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"), CancellationToken.None);
             Assert.Equal(ReplayDecision.NewControlMessageId, result.Decision);
         }
 
@@ -397,7 +398,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         Assert.Single(transport.Published);
@@ -449,7 +450,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
             CancellationToken.None);
 
         Assert.Single(transport.Published);

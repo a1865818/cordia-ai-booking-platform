@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Application.Behaviours;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.AdvanceOperation;
@@ -49,10 +50,12 @@ public static class ApplicationServiceCollectionExtensions
         services.AddMediatR(cfg =>
         {
             cfg.RegisterServicesFromAssembly(assembly);
-            // Pipeline order: 1) Validation → 2) Inbox dedup → 3) Handler.
+            // Pipeline order: 1) Validation → 2) Operator action (spec 14) → 3) Inbox dedup → 4) Handler.
             // Validation runs first so structurally invalid queue-driven requests are rejected
-            // before the inbox transaction is opened.
+            // before the inbox transaction is opened. OperatorActionBehavior is a no-op for
+            // anything that is not an IOperatorActionRequest, so consumer semantics are unchanged.
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationPipelineBehavior<,>));
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(OperatorActionBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(InboxDeduplicationBehavior<,>));
         });
         services.AddValidatorsFromAssembly(assembly);
@@ -294,6 +297,9 @@ public static class ApplicationServiceCollectionExtensions
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
         services.AddScoped<IGrantAuthorizationService, GrantAuthorizationService>();
+
+        // Spec 14 — the audit write path (D13); scoped to share the ambient DbContext/txn.
+        services.AddScoped<IAuditWriter, AuditWriter>();
 
         // Spec 06 T6 retry/escalation helpers — scoped (share the ambient DbContext / UoW).
         services.AddScoped<RetryScheduler>();

@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using Cordia.Domain.Entities;
+﻿using Cordia.Application.Common.Audit;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using MediatR;
@@ -20,7 +19,7 @@ namespace Cordia.Application.Handlers.Security.RecordConsent;
 /// </summary>
 public sealed class RecordConsentCommandHandler(
     IConversationSessionRepository sessions,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<RecordConsentCommand, RecordConsentResult>
 {
@@ -36,7 +35,6 @@ public sealed class RecordConsentCommandHandler(
     public async Task<RecordConsentResult> Handle(RecordConsentCommand command, CancellationToken ct)
     {
         var outcome = OutcomeMap[command.Outcome];
-        var now = DateTimeOffset.UtcNow;
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
@@ -55,22 +53,19 @@ public sealed class RecordConsentCommandHandler(
 
             // Audit within the same transaction as the effect (spec 14 §3.1/§6).
             // Metadata is structured-only (no transcript text, no PII).
-            await auditRepo.AddAsync(
-                new AuditEvent
-                {
-                    TenantId = command.TenantId,
-                    EventId = $"evt_{Guid.NewGuid():N}",
-                    EventType = "consent.recorded",
-                    Actor = "agent",
-                    SubjectRef = command.SessionId,
-                    CorrelationId = command.CorrelationId,
-                    Metadata = JsonSerializer.Serialize(new
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: "customer",
+                    ActorId: "customer",
+                    Action: "consent.recorded",
+                    TargetType: "conversation_session",
+                    TargetId: command.SessionId,
+                    Decision: "allow",
+                    DataClasses: ["consent"],
+                    CorrelationId: command.CorrelationId,
+                    Extra: new
                     {
-                        actor_type = "customer",
-                        action = "consent.recorded",
-                        target_type = "conversation_session",
-                        decision = "allow",
-                        data_classes = new[] { "consent" },
                         outcome = command.Outcome,
                         consent_policy_version = command.ConsentPolicyVersion,
                         jurisdiction_policy_id = command.JurisdictionPolicyId,
@@ -78,8 +73,6 @@ public sealed class RecordConsentCommandHandler(
                         notice_channel = command.NoticeChannel,
                         captured_at = command.CapturedAt,
                     }),
-                    OccurredAt = now,
-                },
                 ct2);
         }, ct);
 

@@ -1,14 +1,29 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using MediatR;
 
 namespace Cordia.Application.Handlers.DeadLetters;
 
 /// <summary>
 /// Command to replay a quarantined dead-letter message (spec 05 §6.1, §10, T7).
-/// The handler applies the §6.1 ID rules exactly.
+/// The handler applies the §6.1 ID rules exactly. An operator action (spec 14
+/// §24.5): requires an actor identity (X-Actor) and a reason code, and the
+/// replay is audited with both.
 /// </summary>
-public sealed record ReplayDeadLetterCommand(string TenantId, string MessageId, string ConsumerName)
-    : IRequest<ReplayDeadLetterResult>;
+public sealed record ReplayDeadLetterCommand(
+    string TenantId,
+    string MessageId,
+    string ConsumerName,
+    string ActorId,
+    string ReasonCode)
+    : IRequest<ReplayDeadLetterResult>, IOperatorActionRequest
+{
+    public string ActionName => "dead_letter.replayed";
+
+    public string TargetType => "dead_letter_message";
+
+    public string TargetId => MessageId;
+}
 
 /// <summary>Outcome of the §6.1 replay decision. Serialized by member name (string) in API responses.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter))]

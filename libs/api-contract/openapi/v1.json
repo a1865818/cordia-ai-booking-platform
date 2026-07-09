@@ -846,6 +846,10 @@
           "messageId": {
             "nullable": true,
             "type": "string"
+          },
+          "reasonCode": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -2673,6 +2677,15 @@
     },
     "/api/dead-letter-messages/replay": {
       "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/*+json": {
