@@ -105,6 +105,10 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped<RetentionSweepHandler>();
 
+        // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
+        services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();
+        services.AddSingleton<IJurisdictionPolicyProvider, JurisdictionPolicyProvider>();
+
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
 

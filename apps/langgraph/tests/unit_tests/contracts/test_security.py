@@ -9,16 +9,16 @@ from pydantic import ValidationError
 
 from cordia_agent.contracts.security import (
     AuditEventEnvelope,
-    ConsentState,
     RedactionPolicy,
+    SessionConsentState,
 )
 
 
 _CAPTURED_AT = datetime.datetime(2026, 7, 9, 10, 0, 0, tzinfo=datetime.UTC)
 
 
-def _make_consent(**overrides: object) -> ConsentState:
-    """Build a minimal valid ConsentState."""
+def _make_consent(**overrides: object) -> SessionConsentState:
+    """Build a minimal valid SessionConsentState."""
     kwargs: dict[str, object] = {
         "consent_policy_version": "us-ca-two-party:2026-01",
         "jurisdiction_policy_id": "jp_us_ca",
@@ -28,7 +28,7 @@ def _make_consent(**overrides: object) -> ConsentState:
         "notice_channel": "voice",
     }
     kwargs.update(overrides)
-    return ConsentState(**kwargs)
+    return SessionConsentState(**kwargs)
 
 
 def _make_audit(**overrides: object) -> AuditEventEnvelope:
@@ -53,7 +53,7 @@ def _make_audit(**overrides: object) -> AuditEventEnvelope:
 @pytest.mark.unit
 def test_consent_state_round_trip() -> None:
     consent = _make_consent()
-    restored = ConsentState.model_validate(consent.model_dump(mode="json"))
+    restored = SessionConsentState.model_validate(consent.model_dump(mode="json"))
     assert restored == consent
     assert restored.recording_allowed is True
 

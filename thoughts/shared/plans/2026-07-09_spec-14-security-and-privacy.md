@@ -204,14 +204,29 @@ integration tests incl. cross-tenant (tenant B cannot record consent on A's sess
 duplicate-post (version token) cases. `bun nx run api-contract:generate-types` after.
 
 Automated verification:
-- [ ] `bun nx test api`
-- [ ] `bun nx lint api`
-- [ ] `bun nx test-integration api`
-- [ ] `bun nx run api-contract:generate-types` (clean)
+- [x] `bun nx test api` (745 passed; +12 new security unit tests)
+- [x] `bun nx lint api`
+- [x] `bun nx test-integration api` (318 passed, 2 pre-existing skips)
+- [x] `bun nx run api-contract:generate-types` (clean; openapi/v1.json updated)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- **Name-collision correction to Phase 1:** the Pydantic `ConsentState` model was renamed
+  `SessionConsentState`. The generated C# class collided with the ratified pg-enum
+  `Cordia.Domain.Enums.ConsentState` inside EF migration Designer files (which import both
+  namespaces and must never be edited). Wire JSON is unchanged — only the type name moved.
+- The controller binds/returns the **generated** contracts (`SessionConsentState`,
+  `ConsentPolicyView`, `ConsentRecordedResult`) directly, so agent↔API wire drift is impossible.
+- `RecordConsent` is deliberately re-recordable (reconnect re-runs the gate, spec 14 §8) —
+  last-write-wins with a version bump; integration test proves version increments.
+- Postgres jsonb normalizes `audit_events.metadata` formatting — tests must parse JSON, not
+  substring-match.
+- **Blast-radius addition (pre-existing flake):** `ScheduledJobPollerTests` (2 tests) compared
+  raw 100ns-tick `DateTimeOffset.UtcNow` against the pg-truncated 6-digit value — fails whenever
+  the 7th fractional digit is non-zero. Added a `TruncateToMicroseconds` helper in that test
+  file only. Unrelated to spec 14.
+- Local Postgres (docker compose `cordia-postgres`) was not running; started it for the
+  integration suites.
 
 ### Phase 4 — Audit writer + operator-action spine + reason-coded replay
 

@@ -93,7 +93,7 @@ from cordia_agent.contracts.preorder import (
 )
 from cordia_agent.contracts.security import (
     AuditEventEnvelope,
-    ConsentState,
+    SessionConsentState,
     RedactionPolicy,
 )
 from cordia_agent.streaming.reconnect import ReconnectOutcome
@@ -156,7 +156,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         Confirmation,
         ConsentPolicyView,
         ConsentRecordedResult,
-        ConsentState,
+        SessionConsentState,
         HandoffPackage,
         HandoffRequest,
         HandoffResult,

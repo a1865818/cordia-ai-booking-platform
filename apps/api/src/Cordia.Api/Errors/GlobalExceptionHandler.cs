@@ -118,6 +118,13 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Invalid catalog state transition", ex.Message, cancellationToken);
                 return true;
 
+            case ConversationSessionNotFoundException ex:
+                logger.LogWarning(ex, "Conversation session not found: tenant={TenantId} session={SessionId}",
+                    ex.TenantId, ex.SessionId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Conversation session not found", ex.Message, cancellationToken);
+                return true;
+
             case CatalogNotFoundException ex:
                 logger.LogWarning(ex, "Vendor catalog not found: {CatalogId}", ex.CatalogId);
                 await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,

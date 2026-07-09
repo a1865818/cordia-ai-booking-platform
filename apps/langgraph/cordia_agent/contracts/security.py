@@ -3,7 +3,7 @@
 Pydantic is the source of truth here; C#/TS/Zod are generated from these models
 via the type pipeline (``shared-schemas:generate-types``).
 
-- ``ConsentState`` — recording/transcription consent outcome carried on the
+- ``SessionConsentState`` — recording/transcription consent outcome carried on the
   session and stamped onto the submission envelope (§24.1, workflow 5.1/5.2).
   ``outcome`` is closed to the ratified ``consent_state`` pg-enum values
   (spec 12 owns the enum; the strings here must match it verbatim).
@@ -27,7 +27,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field
 
 
-class ConsentState(BaseModel):
+class SessionConsentState(BaseModel):
     """Recording/transcription consent captured at session start (spec 14 §4.1)."""
 
     model_config = {"extra": "forbid"}

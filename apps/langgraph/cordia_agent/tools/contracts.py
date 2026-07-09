@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
-from cordia_agent.contracts.security import ConsentState
+from cordia_agent.contracts.security import SessionConsentState
 from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -627,7 +627,7 @@ class RecordConsentInput(BaseModel):
     session_id: str = Field(
         description="Conversation session whose consent_* fields are updated."
     )
-    consent: ConsentState = Field(
+    consent: SessionConsentState = Field(
         description="The captured consent outcome to persist (spec 14 §4.1)."
     )
 

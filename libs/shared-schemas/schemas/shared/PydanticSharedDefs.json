@@ -1522,65 +1522,6 @@
       "title": "ConsentRecordedResult",
       "type": "object"
     },
-    "ConsentState": {
-      "additionalProperties": false,
-      "description": "Recording/transcription consent captured at session start (spec 14 \u00a74.1).",
-      "properties": {
-        "consent_policy_version": {
-          "description": "Version of the notice/policy presented, e.g. 'us-ca-two-party:2026-01'.",
-          "title": "Consent Policy Version",
-          "type": "string"
-        },
-        "jurisdiction_policy_id": {
-          "description": "Policy resolved from tenant + caller jurisdiction.",
-          "title": "Jurisdiction Policy Id",
-          "type": "string"
-        },
-        "outcome": {
-          "description": "Consent outcome; values match the ratified consent_state pg-enum (spec 12).",
-          "enum": [
-            "granted",
-            "declined",
-            "not_required",
-            "alternative_offered"
-          ],
-          "title": "Outcome",
-          "type": "string"
-        },
-        "recording_allowed": {
-          "description": "Gate for transcript/audio capture; False \u21d2 no transcript persisted (\u00a75.2).",
-          "title": "Recording Allowed",
-          "type": "boolean"
-        },
-        "captured_at": {
-          "description": "When the outcome was captured (offset-aware ISO-8601).",
-          "format": "date-time",
-          "title": "Captured At",
-          "type": "string"
-        },
-        "notice_channel": {
-          "description": "Channel the required notice was played/displayed on.",
-          "enum": [
-            "voice",
-            "web",
-            "messaging",
-            "email"
-          ],
-          "title": "Notice Channel",
-          "type": "string"
-        }
-      },
-      "required": [
-        "consent_policy_version",
-        "jurisdiction_policy_id",
-        "outcome",
-        "recording_allowed",
-        "captured_at",
-        "notice_channel"
-      ],
-      "title": "ConsentState",
-      "type": "object"
-    },
     "CustomerRef": {
       "additionalProperties": false,
       "description": "Reference to the customer; all optional (anonymous sessions).",
@@ -2594,7 +2535,7 @@
           "type": "string"
         },
         "consent": {
-          "$ref": "#/$defs/ConsentState",
+          "$ref": "#/$defs/SessionConsentState",
           "description": "The captured consent outcome to persist (spec 14 \u00a74.1)."
         }
       },
@@ -2686,6 +2627,65 @@
         "resolved",
         "policy_unavailable"
       ]
+    },
+    "SessionConsentState": {
+      "additionalProperties": false,
+      "description": "Recording/transcription consent captured at session start (spec 14 \u00a74.1).",
+      "properties": {
+        "consent_policy_version": {
+          "description": "Version of the notice/policy presented, e.g. 'us-ca-two-party:2026-01'.",
+          "title": "Consent Policy Version",
+          "type": "string"
+        },
+        "jurisdiction_policy_id": {
+          "description": "Policy resolved from tenant + caller jurisdiction.",
+          "title": "Jurisdiction Policy Id",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "Consent outcome; values match the ratified consent_state pg-enum (spec 12).",
+          "enum": [
+            "granted",
+            "declined",
+            "not_required",
+            "alternative_offered"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "recording_allowed": {
+          "description": "Gate for transcript/audio capture; False \u21d2 no transcript persisted (\u00a75.2).",
+          "title": "Recording Allowed",
+          "type": "boolean"
+        },
+        "captured_at": {
+          "description": "When the outcome was captured (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "notice_channel": {
+          "description": "Channel the required notice was played/displayed on.",
+          "enum": [
+            "voice",
+            "web",
+            "messaging",
+            "email"
+          ],
+          "title": "Notice Channel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consent_policy_version",
+        "jurisdiction_policy_id",
+        "outcome",
+        "recording_allowed",
+        "captured_at",
+        "notice_channel"
+      ],
+      "title": "SessionConsentState",
+      "type": "object"
     },
     "SourceInfo": {
       "additionalProperties": false,

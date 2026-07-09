@@ -93,6 +93,13 @@ public class ScheduledJobPollerTests(PostgresFixture fixture)
                 .SetProperty(j => j.LeaseExpiresAt, (DateTimeOffset?)null));
     }
 
+    /// <summary>
+    /// PostgreSQL timestamptz keeps 6 fractional digits; .NET ticks carry 7.
+    /// Truncate before insert so exact round-trip equality assertions hold.
+    /// </summary>
+    private static DateTimeOffset TruncateToMicroseconds(DateTimeOffset value)
+        => new(value.Ticks - (value.Ticks % 10), value.Offset);
+
     // ── Test 1: ClaimDueAsync is cross-tenant, sets Status=Claimed+lease, does NOT change Attempt ──
 
     [Fact]
@@ -307,7 +314,9 @@ public class ScheduledJobPollerTests(PostgresFixture fixture)
     {
         await NeutralizeExistingClaimableAsync();
         var tenantId = $"t5-sr-{Guid.NewGuid():N}";
-        var now = DateTimeOffset.UtcNow;
+        // Truncate to microseconds: PostgreSQL timestamptz stores 6 fractional
+        // digits, so a raw 100ns-tick value fails exact round-trip equality.
+        var now = TruncateToMicroseconds(DateTimeOffset.UtcNow);
         var originalRunAfter = now.AddMinutes(-5);
 
         ScheduledJob job;
@@ -345,7 +354,8 @@ public class ScheduledJobPollerTests(PostgresFixture fixture)
     public async Task RescheduleAsync_IncrementsAttempt_SetsNewRunAfter_ClearsLease()
     {
         var tenantId = $"t5-ra-{Guid.NewGuid():N}";
-        var now = DateTimeOffset.UtcNow;
+        // Truncated for exact timestamptz round-trip equality (see Test 5).
+        var now = TruncateToMicroseconds(DateTimeOffset.UtcNow);
         var newRunAfter = now.AddMinutes(10);
 
         ScheduledJob job;

@@ -3,7 +3,7 @@
 Runs immediately after ``resolve_tenant`` and before any transcript-bearing
 node. Resolves the jurisdiction policy for (tenant, channel) via the API,
 plays/displays the required notice, captures the customer's outcome from the
-turn transcript, and persists the ``ConsentState`` through the Booking API
+turn transcript, and persists the ``SessionConsentState`` through the Booking API
 (single-writer rule, D12 — the gate updates ``consent_*``; the channel gateway
 creates the session row).
 
@@ -28,7 +28,7 @@ from typing import Literal
 
 from langgraph.graph import END
 
-from cordia_agent.contracts.security import ConsentState
+from cordia_agent.contracts.security import SessionConsentState
 from cordia_agent.state import AgentState, Channel
 from cordia_agent.tools.client_binding import (
     parse_consent_policy,
@@ -87,7 +87,7 @@ async def _record(
     recording_allowed: bool,
 ) -> dict:
     """Persist the outcome via record_consent; fail-closed on any failure."""
-    consent = ConsentState(
+    consent = SessionConsentState(
         consent_policy_version=consent_policy_version,
         jurisdiction_policy_id=jurisdiction_policy_id,
         outcome=outcome,
