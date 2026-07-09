@@ -118,11 +118,18 @@ Tests: interceptor masks a PAN planted in any writer's metadata (pick an unteste
 site), ids/hashes in metadata survive, existing audit assertions all green.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api`
+- [x] `bun nx test api` (796) · `bun nx lint api` · `bun nx test-integration api` (333)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- Interceptor registered in `ApplicationDbContext.OnConfiguring` (not DI) so every context —
+  production, both test fixtures, design-time — gets it with zero extra wiring.
+- `PreorderSagaSupport.Audit`/StartSaga helper were deliberately NOT routed through
+  `AuditEnvelope.Build`: forcing the envelope keys into their metadata would churn asserted
+  shapes for zero Inv-12 gain (the interceptor already covers them). The two-population norm
+  is documented on `IAuditWriter`/`AuditWriter`.
+- Skipped the planned empty-CorrelationId→null normalization — some writers legitimately set
+  non-null empties and no consumer distinguishes; not worth the assertion churn.
 
 ### Phase 3 — Operator spine expansion (api)
 Add `ReasonCode` + `IOperatorActionRequest` to: UploadMenu, ReviewCatalog, EditCatalogItems,

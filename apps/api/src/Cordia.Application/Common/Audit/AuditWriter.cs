@@ -1,66 +1,24 @@
-﻿using System.Text.Json;
-using System.Text.Json.Nodes;
-using Cordia.Domain.Entities;
-using Cordia.Domain.Interfaces;
-using Cordia.Domain.Security;
+﻿using Cordia.Domain.Interfaces;
 
 namespace Cordia.Application.Common.Audit;
 
 /// <summary>
-/// Builds the ratified spec-12 audit_events row from a typed
-/// <see cref="AuditRecord"/> and appends it via the insert-only repository
-/// (append-only, Inv-14). The spec-14 envelope fields with no dedicated
-/// column (actor_type, target_type, decision, reason_code, data_classes,
-/// causation_id) ride in the sanitized metadata jsonb (D13) — no DDL change.
+/// The spec-14 audit write path (D13) for security-DECISION events —
+/// consent, grant issuance/denial, sensitive reads, operator/owner actions —
+/// where the envelope (actor_type, reason_code, decision, data_classes)
+/// matters. Delegates row construction to <see cref="AuditEnvelope.Build"/>
+/// and appends via the insert-only repository (append-only, Inv-14).
+///
+/// Two-population norm (gate decision 2026-07-10): workflow-PROGRESS events
+/// (system-actor state-transition trail, e.g. operation.booked,
+/// preorder.committed) legitimately stay as direct <c>AuditEvent</c> writes
+/// inside their handlers' transactions — the DbContext-level
+/// <c>AuditEventSanitizationInterceptor</c> gives every row Inv-12 metadata
+/// hygiene regardless of write path. New SECURITY-decision events must come
+/// through this writer.
 /// </summary>
 public sealed class AuditWriter(IAuditEventRepository auditRepo) : IAuditWriter
 {
     public async Task WriteAsync(AuditRecord record, CancellationToken ct = default)
-    {
-        var metadata = new JsonObject
-        {
-            ["actor_type"] = record.ActorType,
-            ["action"] = record.Action,
-            ["target_type"] = record.TargetType,
-            ["target_id"] = record.TargetId,
-            ["decision"] = record.Decision,
-            ["data_classes"] = new JsonArray(
-                record.DataClasses.Select(dc => (JsonNode?)dc).ToArray()),
-        };
-        if (record.ReasonCode is not null)
-            metadata["reason_code"] = record.ReasonCode;
-        if (record.CausationId is not null)
-            metadata["causation_id"] = record.CausationId;
-
-        if (record.Extra is not null)
-        {
-            var extra = JsonSerializer.SerializeToNode(record.Extra) as JsonObject;
-            if (extra is not null)
-            {
-                foreach (var (key, value) in extra.ToList())
-                {
-                    extra.Remove(key);
-                    // Canonical envelope keys win — Extra can never overwrite
-                    // the authoritative decision/reason_code/etc.
-                    if (!metadata.ContainsKey(key))
-                        metadata[key] = value;
-                }
-            }
-        }
-
-        await auditRepo.AddAsync(
-            new AuditEvent
-            {
-                TenantId = record.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = record.Action,
-                Actor = record.ActorId,
-                SubjectRef = record.TargetId,
-                CorrelationId = record.CorrelationId,
-                OperationId = record.OperationId,
-                Metadata = SensitiveDataMask.Sanitize(metadata.ToJsonString()),
-                OccurredAt = record.OccurredAt ?? DateTimeOffset.UtcNow,
-            },
-            ct);
-    }
+        => await auditRepo.AddAsync(AuditEnvelope.Build(record), ct);
 }
