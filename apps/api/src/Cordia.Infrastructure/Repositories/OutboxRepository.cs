@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,6 +11,9 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
 {
     public async Task AddAsync(OutboxMessage message, CancellationToken ct = default)
     {
+        // Inv-12 choke point: no queue envelope may carry unmasked sensitive data. Control-plane
+        // ids/hashes are exempt so idempotency joins and Inv-2 hash comparisons round-trip.
+        message.Payload = SensitiveDataMask.SanitizeJson(message.Payload);
         db.OutboxMessages.Add(message);
         await db.SaveChangesAsync(ct);
     }
@@ -20,6 +24,8 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
         if (list.Count == 0)
             return;
 
+        foreach (var message in list)
+            message.Payload = SensitiveDataMask.SanitizeJson(message.Payload);
         db.OutboxMessages.AddRange(list);
         await db.SaveChangesAsync(ct);
     }

@@ -1,4 +1,6 @@
-﻿using System.Text.RegularExpressions;
+﻿using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Cordia.Domain.Security;
 
@@ -48,6 +50,96 @@ public static partial class SensitiveDataMask
 
     [GeneratedRegex(@"\b[0-9]{3}[ -][0-9]{3}[ -][0-9]{3}\b")]
     private static partial Regex Tfn();
+
+    // Control-plane identifier keys are system-minted and must round-trip
+    // byte-for-byte (mirrors _CONTROL_PLANE_* in cordia_agent/security/redaction.py):
+    // masking a digit-run inside e.g. operation_id/payload_hash would break
+    // idempotency joins and the Inv-2 durability comparison.
+    private static readonly string[] _controlPlaneKeySuffixes =
+        ["_id", "_key", "_hash", "_ref", "_version"];
+
+    private static readonly HashSet<string> _controlPlaneKeys = ["id", "seq", "ts"];
+
+    /// <summary>
+    /// Structure-aware sanitizer for queue/outbox payload JSON (Inv-12), mirroring
+    /// Python <c>redact_payload</c>: every string VALUE passes through
+    /// <see cref="Sanitize(string)"/> except values under control-plane identifier
+    /// keys (<c>*_id</c>/<c>*_key</c>/<c>*_hash</c>/<c>*_ref</c>/<c>*_version</c>,
+    /// plus bare <c>id</c>/<c>seq</c>/<c>ts</c>), which are preserved verbatim.
+    /// Object/array shape, key names, and non-string scalars are untouched. When
+    /// nothing needed masking the ORIGINAL string is returned byte-identical.
+    /// Text that fails to parse as JSON is masked wholesale via
+    /// <see cref="Sanitize(string)"/> (fail closed — never store unscreened text).
+    /// </summary>
+    public static string SanitizeJson(string json)
+    {
+        if (string.IsNullOrEmpty(json) || CountAsciiDigits(json) < 3)
+            return json;
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return Sanitize(json);
+        }
+
+        var changed = false;
+        var sanitized = WalkNode(root, exempt: false, ref changed);
+        return changed ? (sanitized?.ToJsonString() ?? "null") : json;
+    }
+
+    private static bool IsControlPlaneKey(string key)
+    {
+        if (_controlPlaneKeys.Contains(key))
+            return true;
+        foreach (var suffix in _controlPlaneKeySuffixes)
+        {
+            if (key.EndsWith(suffix, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static JsonNode? WalkNode(JsonNode? node, bool exempt, ref bool changed)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (key, value) in obj.ToList())
+                {
+                    // The exemption applies to the string DIRECTLY under the key; nested
+                    // structures under an id-suffixed key are still walked (parity with
+                    // redact_payload, which only passes through `isinstance(item, str)`).
+                    var childExempt = IsControlPlaneKey(key) && value is JsonValue;
+                    var replacement = WalkNode(value, childExempt, ref changed);
+                    if (!ReferenceEquals(replacement, value))
+                        obj[key] = replacement;
+                }
+                return node;
+            case JsonArray arr:
+                for (var i = 0; i < arr.Count; i++)
+                {
+                    var value = arr[i];
+                    var replacement = WalkNode(value, exempt: false, ref changed);
+                    if (!ReferenceEquals(replacement, value))
+                        arr[i] = replacement;
+                }
+                return node;
+            case JsonValue value when value.TryGetValue<string>(out var text):
+                if (exempt)
+                    return node;
+                var masked = Sanitize(text);
+                if (ReferenceEquals(masked, text) || masked == text)
+                    return node;
+                changed = true;
+                return JsonValue.Create(masked);
+            default:
+                return node;
+        }
+    }
 
     public static string Sanitize(string text)
     {

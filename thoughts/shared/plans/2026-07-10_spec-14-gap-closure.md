@@ -214,11 +214,23 @@ digit-run values preserved; every existing outbox/scheduled-job fixture byte-ide
 the sanitizer (no-op proof); consumer id-extraction round-trip.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api`
+- [x] `bun nx test api` (815 passed) · `bun nx lint api` · `bun nx test-integration api` (337 passed, 2 skipped)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- `SanitizeJson` returns the **original string instance** when no value needed masking (a
+  `changed` flag tracked through the walk) — the byte-identity no-op guarantee is structural,
+  not dependent on `ToJsonString()` reproducing the input formatting. Byte-identity covers
+  whitespace/formatting too (asserted with a spaced-JSON vector).
+- The control-plane exemption applies only to a string DIRECTLY under the key — an object
+  nested under an `*_id` key is still walked, exactly matching `redact_payload`'s
+  `isinstance(item, str)` pass-through (pinned by a test).
+- Invalid JSON masks wholesale via `Sanitize(raw)` (fail closed), matching the plan.
+- Strongest no-op proof: the full 337-test integration suite (publisher ticks, saga
+  outcomes, inbox dedup, consumer id-extraction) runs THROUGH the sanitizing add paths
+  unchanged — plus 7 representative payload-shape vectors asserted byte-identical in unit
+  tests. Interpolated raw string literals containing `}}` next to `{{…}}` interpolations
+  need the `$$$`/`{{{…}}}` form (CS9007).
 
 ### Phase 6 — Encrypted object store (api)
 `Domain/Interfaces/IObjectStore.cs` (Put/Get/Delete/SweepExpiredAsync; tenant-scoped ids,
