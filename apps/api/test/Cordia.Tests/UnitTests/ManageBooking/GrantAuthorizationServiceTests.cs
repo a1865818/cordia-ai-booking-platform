@@ -1,8 +1,10 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Microsoft.Extensions.DependencyInjection;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.ManageBooking;
@@ -10,6 +12,14 @@ namespace Cordia.Tests.UnitTests.ManageBooking;
 [Trait("Category", "Unit")]
 public class GrantAuthorizationServiceTests
 {
+    private static readonly Mock<IAuditWriter> Audit = new();
+
+    // The service writes deny audits through a fresh DI scope; back it with a mock.
+    private static readonly IServiceScopeFactory ScopeFactory = new ServiceCollection()
+        .AddScoped(_ => Audit.Object)
+        .BuildServiceProvider()
+        .GetRequiredService<IServiceScopeFactory>();
+
     [Fact]
     public async Task RequireGrantAsync_ReturnsPresentedValidGrant()
     {
@@ -33,7 +43,7 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(grant);
 
-        var service = new GrantAuthorizationService(repo.Object);
+        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
 
         var result = await service.RequireGrantAsync(
             "tenant-1",
@@ -61,7 +71,7 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync((VerificationGrant?)null);
 
-        var service = new GrantAuthorizationService(repo.Object);
+        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
 
         var ex = await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.RequireGrantAsync(
@@ -93,7 +103,7 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(0);
 
-        var service = new GrantAuthorizationService(repo.Object);
+        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.ConsumeGrantAsync(

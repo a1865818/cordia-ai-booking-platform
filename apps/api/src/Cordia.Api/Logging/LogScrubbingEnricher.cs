@@ -25,11 +25,26 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
     // caught by the value-level SensitiveDataMask sweep below regardless of
     // the property name. "token" intentionally over-matches (Access/Refresh/
     // continuation tokens are all credential-adjacent — fail safe).
-    private static readonly string[] SensitiveNameFragments =
+    private static readonly string[] BaselineNameFragments =
     [
         "password", "secret", "token", "apikey", "api_key",
         "authorization", "credential", "cvv", "card_number",
     ];
+
+    private readonly string[] _sensitiveNameFragments;
+
+    /// <param name="configuredSensitiveFields">
+    /// Deployment/tenant-configured sensitive property-name selectors
+    /// (spec 14 §4.1 RedactionPolicy.configured_sensitive_fields — the API-side
+    /// loading seam, bound from the <c>Redaction:SensitiveFields</c>
+    /// configuration section in Program.cs). Merged with the always-on baseline.
+    /// </param>
+    public LogScrubbingEnricher(IReadOnlyList<string>? configuredSensitiveFields = null)
+    {
+        _sensitiveNameFragments = configuredSensitiveFields is { Count: > 0 }
+            ? [.. BaselineNameFragments, .. configuredSensitiveFields]
+            : BaselineNameFragments;
+    }
 
     public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
     {
@@ -48,7 +63,7 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
     /// <c>{@Object}</c> log call cannot bypass the mask (Inv-12). Returns the
     /// SAME instance when nothing changed (cheap no-op path).
     /// </summary>
-    private static LogEventPropertyValue ScrubValue(string name, LogEventPropertyValue value)
+    private LogEventPropertyValue ScrubValue(string name, LogEventPropertyValue value)
     {
         switch (value)
         {
@@ -104,9 +119,9 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
         }
     }
 
-    private static bool IsSensitiveName(string name)
+    private bool IsSensitiveName(string name)
     {
-        foreach (var fragment in SensitiveNameFragments)
+        foreach (var fragment in _sensitiveNameFragments)
         {
             if (name.Contains(fragment, StringComparison.OrdinalIgnoreCase))
                 return true;

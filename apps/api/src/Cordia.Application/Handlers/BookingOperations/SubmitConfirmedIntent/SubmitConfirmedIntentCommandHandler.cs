@@ -32,7 +32,8 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     IBookingIntentRepository intentRepo,
     IBookingOperationRepository operationRepo,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo)
+    IAuditEventRepository auditRepo,
+    IConversationSessionRepository sessions)
     : IRequestHandler<SubmitConfirmedIntentCommand, AcceptanceResult>
 {
     // §13.3: retain idempotency records for booking life + dispute/audit window.
@@ -291,6 +292,15 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 };
             await outboxRepo.AddAsync(outbox, ct2);
 
+            // Spec 14 §4.2 — stamp the consent state in force at acceptance onto
+            // the durable acceptance audit, so the workflow can later prove
+            // recording/processing was permitted for THIS submission even if the
+            // session's consent row is subsequently re-recorded. One PK read
+            // inside the acceptance transaction (§7 budget: negligible).
+            var session = string.IsNullOrWhiteSpace(revision.SourceSessionId)
+                ? null
+                : await sessions.GetAsync(command.TenantId, revision.SourceSessionId, ct2);
+
             await auditRepo.AddAsync(new AuditEvent
             {
                 TenantId = command.TenantId,
@@ -304,6 +314,14 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 {
                     intent_id = revision.IntentId,
                     intent_revision = revision.Revision,
+                    consent = session is null ? null : new
+                    {
+                        state = session.ConsentState?.ToString(),
+                        policy_version = session.ConsentPolicyVersion,
+                        jurisdiction_policy_id = session.JurisdictionPolicyId,
+                        recording_allowed = session.RecordingAllowed,
+                        recorded_at = session.ConsentRecordedAt,
+                    },
                 }),
                 OccurredAt = now,
             }, ct2);

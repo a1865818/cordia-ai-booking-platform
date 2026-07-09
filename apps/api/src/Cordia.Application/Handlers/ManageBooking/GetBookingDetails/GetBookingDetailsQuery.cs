@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.ManageBooking.FindManageableBookings;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
@@ -20,7 +21,8 @@ public sealed record GetBookingDetailsResult(
 public sealed class GetBookingDetailsQueryHandler(
     IBookingReadRepository readBookings,
     IBookingRepository bookings,
-    IGrantAuthorizationService grants)
+    IGrantAuthorizationService grants,
+    IAuditWriter audit)
     : IRequestHandler<GetBookingDetailsQuery, GetBookingDetailsResult>
 {
     public async Task<GetBookingDetailsResult> Handle(GetBookingDetailsQuery request, CancellationToken ct)
@@ -54,8 +56,23 @@ public sealed class GetBookingDetailsQueryHandler(
         }
         catch (VerificationRequiredException)
         {
+            // The deny decision was audited inside GrantAuthorizationService.
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.RequiresVerification, minimal);
         }
+
+        // Spec 14 §3.1 step 5 / §5.1 — sensitive READS are audited like writes.
+        await audit.WriteAsync(
+            new AuditRecord(
+                TenantId: request.TenantId,
+                ActorType: "customer",
+                ActorId: authoritative.CustomerId,
+                Action: "read_sensitive_booking",
+                TargetType: "booking",
+                TargetId: projection.BookingId,
+                Decision: "allow",
+                DataClasses: ["pii", "booking"],
+                Extra: new { grant_id = grantId }),
+            ct);
 
         return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.Ok, minimal);
     }

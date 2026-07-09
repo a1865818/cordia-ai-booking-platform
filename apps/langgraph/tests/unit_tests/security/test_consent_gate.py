@@ -262,6 +262,28 @@ def test_classifier_decline_wins_and_no_problem_is_grant() -> None:
 
 
 @pytest.mark.unit
+async def test_reply_with_total_policy_failure_clears_pending_and_continues() -> None:
+    """Customer answered but stash is lost AND re-resolution fails: the reply
+    is stashed for retry, the stale notice is CLEARED (never re-played), and
+    the turn continues non-recorded instead of re-awaiting."""
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        return _json_response(500, {"status": "error"})
+
+    set_tool_client(_make_client(handle))
+    state = _state(
+        pending_consent_notice="This call is recorded. OK?",
+        transcript_text="yes that's fine",
+    )
+    update = await consent_gate(state)
+    assert update["consent_reply"] == "granted"
+    assert update["pending_consent_notice"] is None
+    assert update["recording_allowed"] is False
+    merged = state.model_copy(update=update)
+    assert route_after_consent_gate(merged) == "load_context"
+
+
+@pytest.mark.unit
 def test_classifier_uncertainty_never_reads_as_consent() -> None:
     """'not sure' / 'maybe' must fail closed to None, never granted (§6)."""
     assert classify_consent_response("I'm not sure") is None
@@ -277,6 +299,24 @@ async def test_fresh_decline_overrides_stashed_grant_retry() -> None:
         consent_reply="granted",  # stashed from a failed persist last turn
         consent_policy=_POLICY_REQUIRED,
         transcript_text="actually no, stop recording please",
+    )
+    update = await consent_gate(state)
+    assert update["consent_state"]["outcome"] == "alternative_offered"
+    assert update["recording_allowed"] is False
+    assert calls["record_bodies"][0]["recording_allowed"] is False
+
+
+@pytest.mark.unit
+async def test_unrelated_affirmative_never_upgrades_stashed_decline() -> None:
+    """The notice is not pending on the retry turn, so 'yes please' (answering
+    some unrelated agent question) must NOT flip a stashed decline to granted
+    — overrides only work in the fail-safe direction."""
+    handle, calls = _handler(_POLICY_REQUIRED)
+    set_tool_client(_make_client(handle))
+    state = _state(
+        consent_reply="declined",  # stashed from a failed persist last turn
+        consent_policy=_POLICY_REQUIRED,
+        transcript_text="yes please, 7pm works great",
     )
     update = await consent_gate(state)
     assert update["consent_state"]["outcome"] == "alternative_offered"

@@ -10,10 +10,12 @@ var builder = WebApplication.CreateBuilder(args);
 // --- Logging ---
 // The scrubbing enricher runs on EVERY event (spec 14 §24.4, Inv-12): credential-named
 // properties and Luhn-valid PAN shapes never reach a sink. Sinks/levels stay config-driven.
+// Redaction:SensitiveFields adds deployment/tenant-configured selectors (spec 14 §4.1).
 builder.Host.UseSerilog((context, loggerConfig) =>
     loggerConfig
         .ReadFrom.Configuration(context.Configuration)
-        .Enrich.With(new LogScrubbingEnricher()));
+        .Enrich.With(new LogScrubbingEnricher(
+            context.Configuration.GetSection("Redaction:SensitiveFields").Get<string[]>())));
 
 // --- Layers ---
 builder.Services.AddApplication();

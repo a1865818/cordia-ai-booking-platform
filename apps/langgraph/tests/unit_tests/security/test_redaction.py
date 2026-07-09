@@ -66,6 +66,29 @@ def test_cvv_compact_form_masked() -> None:
 
 
 @pytest.mark.unit
+def test_adjacent_independent_numbers_are_not_fused_into_a_pan() -> None:
+    """Two phone numbers one space apart (or a spaced date-time) must not be
+    masked as one fused 20-digit 'PAN' — groups longer than 6 digits signal
+    independent numbers, evaluated per-group."""
+    text = "call 0412345678 0298765432 anytime"
+    assert redact_text(text) == text
+    stamp = "2026-07-09 18 55 30"
+    assert redact_text(stamp) == stamp
+    # A solid Luhn-valid PAN inside such a context is still masked.
+    mixed = f"ref 0412345678 {VISA_PAN} end"
+    out = redact_text(mixed)
+    assert VISA_PAN not in out
+    assert "0412345678" in out
+
+
+@pytest.mark.unit
+def test_very_long_digit_runs_mask_unconditionally() -> None:
+    """>50-digit runs mask without window-scanning (fail-closed + DoS cap)."""
+    blob = "9" * 60
+    assert redact_text(f"blob {blob} end") == f"blob {MASK} end"
+
+
+@pytest.mark.unit
 def test_pan_embedded_in_longer_digit_run_is_masked() -> None:
     """A PAN inside a >19-digit run must not fail open (Inv-12, fail-closed).
 
@@ -129,3 +152,41 @@ def test_redact_payload_handles_scalars_and_none() -> None:
     assert redact_payload(None) is None
     assert redact_payload(7) == 7
     assert redact_payload(f"pan {VISA_PAN}") == f"pan {MASK}"
+
+
+@pytest.mark.unit
+def test_control_plane_keys_are_exempt_but_free_text_is_not() -> None:
+    """*_id/*_key/*_hash values are system-minted and must round-trip even
+    when they contain a chance Luhn-valid digit run; free-text siblings are
+    still scrubbed."""
+    payload = {
+        "idempotency_key": "idem_ca7a996c93714390930497c7e0772c63",
+        "payload_hash": "9" * 20,
+        "notes": f"card {VISA_PAN}",
+    }
+    out = redact_payload(payload)
+    assert out["idempotency_key"] == payload["idempotency_key"]
+    assert out["payload_hash"] == payload["payload_hash"]
+    assert VISA_PAN not in out["notes"]
+
+
+@pytest.mark.unit
+def test_active_policy_registry_drives_default_redaction() -> None:
+    """The tenant policy installed via set_redaction_policy applies wherever
+    no explicit policy argument is passed (spec 14 §4.1 loading seam)."""
+    from cordia_agent.security.policy import (
+        reset_redaction_policy,
+        set_redaction_policy,
+    )
+
+    try:
+        set_redaction_policy(
+            RedactionPolicy(configured_sensitive_fields=["member_number"])
+        )
+        out = redact_payload({"member_number": "M-1", "other": "ok"})
+        assert out["member_number"] == MASK
+        assert out["other"] == "ok"
+    finally:
+        reset_redaction_policy()
+    # After reset the baseline (empty tenant list) applies again.
+    assert redact_payload({"member_number": "M-1"})["member_number"] == "M-1"

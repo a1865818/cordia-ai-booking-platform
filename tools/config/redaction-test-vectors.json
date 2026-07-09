@@ -1,0 +1,21 @@
+{
+  "description": "Shared redaction test vectors (spec 14, Inv-12). Consumed by BOTH apps/langgraph/tests/unit_tests/security/test_redaction.py and apps/api Cordia.Tests SensitiveDataMaskParityTests so the two lane filters cannot silently drift. expect_masked refers to the default policy (PAN/CVV always on, government-id on).",
+  "vectors": [
+    { "input": "my card is 4111111111111111 thanks", "expect_masked": true, "class": "pan" },
+    { "input": "card 4111 1111 1111 1111 ok", "expect_masked": true, "class": "pan-spaced" },
+    { "input": "card 4111-1111-1111-1111 ok", "expect_masked": true, "class": "pan-dashed" },
+    { "input": "amex 378282246310005", "expect_masked": true, "class": "pan-15" },
+    { "input": "ref 4111111111111112", "expect_masked": false, "class": "non-luhn-16" },
+    { "input": "blob 9941111111111111142 end", "expect_masked": false, "class": "19-digit-non-luhn-whole" },
+    { "input": "blob 99411111111111111142 end", "expect_masked": true, "class": "pan-embedded-in-20" },
+    { "input": "the CVV is 123", "expect_masked": true, "class": "cvv" },
+    { "input": "cvv123", "expect_masked": true, "class": "cvv-compact" },
+    { "input": "party of 123 people", "expect_masked": false, "class": "bare-3-digits" },
+    { "input": "SSN 123-45-6789 on file", "expect_masked": true, "class": "ssn" },
+    { "input": "my TFN is 123 456 782", "expect_masked": true, "class": "tfn" },
+    { "input": "table for 4 at 7:30, phone 0412345678", "expect_masked": false, "class": "short-numbers" },
+    { "input": "call 0412345678 0298765432 anytime", "expect_masked": false, "class": "adjacent-phones" },
+    { "input": "2026-07-09 18 55 30", "expect_masked": false, "class": "spaced-datetime" },
+    { "input": "blob 999999999999999999999999999999999999999999999999999999999999 end", "expect_masked": true, "class": "long-run-cap" }
+  ]
+}

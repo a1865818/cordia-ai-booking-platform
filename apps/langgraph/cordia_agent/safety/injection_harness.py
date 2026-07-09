@@ -18,6 +18,7 @@ Design:
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,9 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from cordia_agent.safety.tenant_context import TenantContext
+
+
+_log = logging.getLogger(__name__)
 
 
 class TrustLevel(str, Enum):
@@ -112,5 +116,21 @@ def is_tool_invocation_permitted(
     """
     trust = source.trust if isinstance(source, LabeledContent) else source
     if trust is TrustLevel.UNTRUSTED:
+        # Spec 14 §5.3/§3.2 — log the tool DECISION only: tool name, trust,
+        # and outcome. Never the content (no secrets, no PAN).
+        _log.warning(
+            "tool_decision denied tool=%s trust=%s reason=untrusted_source",
+            tool_name,
+            trust.value,
+        )
         return False
-    return allowlist.is_allowed(tool_name)
+    allowed = allowlist.is_allowed(tool_name)
+    if not allowed:
+        _log.warning(
+            "tool_decision denied tool=%s trust=%s reason=not_on_allowlist",
+            tool_name,
+            trust.value,
+        )
+    else:
+        _log.info("tool_decision allowed tool=%s trust=%s", tool_name, trust.value)
+    return allowed

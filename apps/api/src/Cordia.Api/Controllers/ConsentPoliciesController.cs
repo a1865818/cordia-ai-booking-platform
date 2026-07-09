@@ -33,7 +33,12 @@ public class ConsentPoliciesController(IMediator mediator, ITenantContext tenant
             JurisdictionPolicyId = policy.JurisdictionPolicyId,
             ConsentPolicyVersion = policy.ConsentPolicyVersion,
             NoticeRequired = policy.NoticeRequired,
-            NoticeText = policy.NoticeText,
+            // Null is a REAL wire value here (spec: None ⇒ agent plays its default
+            // notice; the agent does `policy.notice_text or DEFAULT_NOTICE`). The
+            // generated property is non-nullable only because of the tracked
+            // quicktype nullability gap (see Program.cs) — do NOT "fix" this to
+            // `?? string.Empty`; that would change wire semantics.
+            NoticeText = policy.NoticeText!,
         });
     }
 }

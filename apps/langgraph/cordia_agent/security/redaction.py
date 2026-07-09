@@ -19,14 +19,16 @@ only (spec 14 §7 latency budget: < 5 ms per turn-emit).
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from cordia_agent.contracts.security import RedactionPolicy
+from cordia_agent.security.policy import get_redaction_policy
 
 
-_DEFAULT_POLICY = RedactionPolicy()
+if TYPE_CHECKING:
+    from cordia_agent.contracts.security import RedactionPolicy
+
 
 # Any contiguous run of >= 13 digits allowing single space/dash separators.
 # Runs LONGER than 19 digits are still candidates: a PAN concatenated with
@@ -57,17 +59,27 @@ def _luhn_valid(digits: str) -> bool:
     return total % 10 == 0
 
 
+# Window-scanning a very long run is O(n·133); past this length we mask
+# unconditionally — strictly MORE fail-closed and O(1), and it bounds the CPU
+# an adversarial multi-kilodigit paste can consume (measured ~1s per 100k
+# digits without the cap).
+_UNCONDITIONAL_MASK_DIGITS = 50
+
+
 def _contains_pan(digits: str) -> bool:
     """True iff *digits* is, or contains, a Luhn-valid 13-19 digit window.
 
     A run of exactly 13-19 digits is a PAN iff it passes Luhn. A LONGER run is
     treated as a PAN when ANY 13-19 digit window inside it passes Luhn — the
     fail-closed reading of Inv-12 (mask a long digit blob that may embed a
-    card number rather than let it through).
+    card number rather than let it through). Runs past
+    ``_UNCONDITIONAL_MASK_DIGITS`` mask without scanning (fail-closed + DoS cap).
     """
     n = len(digits)
     if n <= 19:
         return _luhn_valid(digits)
+    if n > _UNCONDITIONAL_MASK_DIGITS:
+        return True
     for size in range(19, 12, -1):
         for start in range(n - size + 1):
             if _luhn_valid(digits[start : start + size]):
@@ -75,16 +87,35 @@ def _contains_pan(digits: str) -> bool:
     return False
 
 
+# PANs are grouped in short chunks when spoken/typed with separators (4-4-4-4,
+# 4-6-5, …) — never in chunks longer than 6 digits. A space-separated group
+# LONGER than that inside a candidate run signals independent adjacent numbers
+# (two phone numbers, a date-time), not one card number, so such runs are
+# evaluated per-group instead of merged (precision: two 10-digit phones one
+# space apart must not be masked as a fused 20-digit "PAN").
+_MAX_PAN_GROUP_DIGITS = 6
+
+
+def _mask_candidate_run(run: str, token: str) -> str:
+    """Mask a single separator-tolerant candidate run (or its sub-groups)."""
+    groups = run.split(" ")
+    digit_lengths = [len(g.replace("-", "")) for g in groups]
+    if len(groups) > 1 and any(
+        length > _MAX_PAN_GROUP_DIGITS for length in digit_lengths
+    ):
+        # Independent adjacent numbers — evaluate each group on its own.
+        masked_groups = [
+            token if length >= 13 and _contains_pan(group.replace("-", "")) else group
+            for group, length in zip(groups, digit_lengths, strict=True)
+        ]
+        return " ".join(masked_groups)
+    digits = run.replace(" ", "").replace("-", "")
+    return token if _contains_pan(digits) else run
+
+
 def _mask_pans(text: str, token: str) -> str:
     """Mask separator-tolerant digit runs that are/contain a Luhn-valid PAN (Inv-12)."""
-
-    def _replace(match: re.Match[str]) -> str:
-        digits = re.sub(r"[ -]", "", match.group(0))
-        if _contains_pan(digits):
-            return token
-        return match.group(0)
-
-    return _PAN_CANDIDATE.sub(_replace, text)
+    return _PAN_CANDIDATE.sub(lambda m: _mask_candidate_run(m.group(0), token), text)
 
 
 def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
@@ -97,12 +128,19 @@ def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
     Returns:
         The scrubbed text; the input string is never mutated.
     """
-    effective = policy or _DEFAULT_POLICY
+    effective = policy or get_redaction_policy()
     token = effective.mask_token
 
     # Fast path: nothing to mask can exist with fewer than 3 digits (the
     # minimum for CVV); skips the regex sweeps for the typical digitless turn.
-    if sum(ch.isdigit() for ch in text) < 3:
+    # Short-circuits on the third digit (mirrors the C# CountAsciiDigits).
+    digits_seen = 0
+    for ch in text:
+        if ch.isdigit():
+            digits_seen += 1
+            if digits_seen >= 3:
+                break
+    if digits_seen < 3:
         return text
 
     # PAN and CVV masking are always-on regardless of policy flags (Inv-12).
@@ -116,24 +154,38 @@ def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
     return out
 
 
+# Control-plane identifier keys are EXEMPT from value-level text redaction:
+# they are system-minted (uuid/hex/hash), never customer speech, and masking a
+# chance Luhn-valid digit run inside e.g. ``idem_<uuid4hex>`` corrupts the
+# durable copy and breaks the Inv-2 pre-submit durability comparison (a ~0.4%
+# per-key collision, observed empirically). Keys named in
+# ``configured_sensitive_fields`` still mask wholesale regardless.
+_CONTROL_PLANE_KEY_SUFFIXES = ("_id", "_key", "_hash", "_ref", "_version")
+_CONTROL_PLANE_KEYS = frozenset({"id", "seq", "ts"})
+
+
+def _is_control_plane_key(key: str) -> bool:
+    return key in _CONTROL_PLANE_KEYS or key.endswith(_CONTROL_PLANE_KEY_SUFFIXES)
+
+
 def redact_payload(value: Any, policy: RedactionPolicy | None = None) -> Any:
     """Return a scrubbed copy of a structured payload (dict/list/model/scalar).
 
     Values under keys named in ``policy.configured_sensitive_fields`` are
-    replaced wholesale with the mask token; every string value additionally
-    passes through :func:`redact_text`. The input is never mutated.
+    replaced wholesale with the mask token; every OTHER string value passes
+    through :func:`redact_text`, except values under control-plane identifier
+    keys (``*_id``/``*_key``/``*_hash``/``*_ref``/``*_version``), which are
+    system-minted and must round-trip byte-for-byte. The input is never
+    mutated.
     """
-    effective = policy or _DEFAULT_POLICY
+    effective = policy or get_redaction_policy()
     sensitive = set(effective.configured_sensitive_fields)
 
     def _walk(node: Any) -> Any:
         if isinstance(node, BaseModel):
             return _walk(node.model_dump(mode="json"))
         if isinstance(node, dict):
-            return {
-                key: (effective.mask_token if key in sensitive else _walk(item))
-                for key, item in node.items()
-            }
+            return {key: _walk_entry(key, item) for key, item in node.items()}
         if isinstance(node, list):
             return [_walk(item) for item in node]
         if isinstance(node, tuple):
@@ -141,5 +193,12 @@ def redact_payload(value: Any, policy: RedactionPolicy | None = None) -> Any:
         if isinstance(node, str):
             return redact_text(node, effective)
         return node
+
+    def _walk_entry(key: str, item: Any) -> Any:
+        if key in sensitive:
+            return effective.mask_token
+        if _is_control_plane_key(key) and isinstance(item, str):
+            return item
+        return _walk(item)
 
     return _walk(value)

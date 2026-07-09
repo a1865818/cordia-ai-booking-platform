@@ -27,6 +27,7 @@ public class SubmitConfirmedIntentPreorderRoutingTests
     private readonly Mock<IBookingOperationRepository> _ops = new();
     private readonly Mock<IOutboxRepository> _outbox = new();
     private readonly Mock<IAuditEventRepository> _audit = new();
+    private readonly Mock<IConversationSessionRepository> _sessions = new();
 
     private BookingOperation? _capturedOp;
     private readonly List<OutboxMessage> _capturedOutbox = new();
@@ -55,10 +56,12 @@ public class SubmitConfirmedIntentPreorderRoutingTests
             .Callback<OutboxMessage, CancellationToken>((m, _) => _capturedOutbox.Add(m))
             .Returns(Task.CompletedTask);
         _audit.Setup(r => r.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        _sessions.Setup(r => r.GetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
     }
 
     private SubmitConfirmedIntentCommandHandler CreateHandler() =>
-        new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object);
+        new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object, _sessions.Object);
 
     [Fact]
     public async Task Preorder_Routes_To_Saga_Start_And_Marks_Operation()

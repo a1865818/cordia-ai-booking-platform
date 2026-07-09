@@ -177,13 +177,17 @@ async def consent_gate(state: AgentState) -> dict:
     if state.consent_state is not None:
         return {}
 
-    # A prior turn classified the reply but the persist failed — retry it,
-    # UNLESS the current transcript carries a fresh explicit reply: the
-    # customer's latest statement always wins ("yes" then persist-failure then
-    # "actually, no" must record declined, never the stale grant).
+    # A prior turn classified the reply but the persist failed — retry it.
+    # The notice is NOT pending on this turn, so the current transcript is a
+    # normal conversational utterance, not a consent answer: it may only
+    # override the stash in the FAIL-SAFE direction. A fresh explicit decline
+    # ("actually, stop recording") downgrades a stashed grant; a stray
+    # affirmative ("yes please", answering an unrelated question) must NEVER
+    # upgrade a stashed decline (consent fail-open).
     if state.consent_reply in ("granted", "declined"):
-        fresh = classify_consent_response(state.transcript_text or "")
-        reply: Literal["granted", "declined"] = fresh or state.consent_reply  # type: ignore[assignment]
+        reply: Literal["granted", "declined"] = state.consent_reply  # type: ignore[assignment]
+        if classify_consent_response(state.transcript_text or "") == "declined":
+            reply = "declined"
         policy = _stashed_policy(state) or await _resolve_policy(state)
         if policy is None:
             return {"recording_allowed": False, "consent_reply": reply}
@@ -198,8 +202,14 @@ async def consent_gate(state: AgentState) -> dict:
         policy = _stashed_policy(state) or await _resolve_policy(state)
         if policy is None:
             # Policy stash lost AND re-resolution failed — stash the reply so
-            # the next turn retries without re-asking.
-            return {"recording_allowed": False, "consent_reply": response}
+            # the next turn retries without re-asking, and CLEAR the pending
+            # notice (the customer already answered; leaving it set would
+            # route to END and re-await/re-play the notice).
+            return {
+                "recording_allowed": False,
+                "consent_reply": response,
+                "pending_consent_notice": None,
+            }
         return await _record_reply(state, policy, response)
 
     # First pass for this session — resolve the jurisdiction policy ONCE.
