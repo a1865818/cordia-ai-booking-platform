@@ -63,3 +63,36 @@ def test_clean_transcript_round_trips_unchanged() -> None:
     stored = cp.load("tenant_a", "sess_1")
     assert stored is not None
     assert stored.transcript_text == "a table for four at seven"
+
+
+@pytest.mark.unit
+def test_pan_in_any_captured_field_is_scrubbed_not_just_transcript() -> None:
+    """Customer speech lands in captured free-text fields too — a PAN spoken
+    into a special request must never be durably stored (Inv-12)."""
+    from cordia_agent.state import (
+        BookingDraft,
+        BookingRequest,
+        Channel,
+        OperationType,
+        SourceInfo,
+    )
+
+    cp = SessionCheckpointer()
+    draft = BookingDraft(
+        tenant_id="tenant_a",
+        session_id="sess_1",
+        schema_version="v1",
+        tenant_policy_version="v1",
+        request=BookingRequest(
+            operation=OperationType.create,
+            special_requests=[f"put it on card {VISA_PAN}"],
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+    state = _state(draft=draft, recording_allowed=True)
+    cp.save(state)
+    stored = cp.load("tenant_a", "sess_1")
+    assert stored is not None
+    assert stored.draft is not None
+    assert VISA_PAN not in stored.draft.request.special_requests[0]
+    assert "[REDACTED]" in stored.draft.request.special_requests[0]

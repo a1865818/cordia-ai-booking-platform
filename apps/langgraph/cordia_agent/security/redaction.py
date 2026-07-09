@@ -28,12 +28,15 @@ from cordia_agent.contracts.security import RedactionPolicy
 
 _DEFAULT_POLICY = RedactionPolicy()
 
-# 13-19 digits allowing single space/dash separators between digit groups.
-_PAN_CANDIDATE = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
+# Any contiguous run of >= 13 digits allowing single space/dash separators.
+# Runs LONGER than 19 digits are still candidates: a PAN concatenated with
+# adjacent digits must not escape masking (fail closed, Inv-12).
+_PAN_CANDIDATE = re.compile(r"\d(?:[ -]?\d){12,}")
 
-# CVV/CVC/security code followed shortly (optional connector word) by 3-4 digits.
+# CVV/CVC/security code followed (optionally compactly, e.g. "cvv123") by 3-4
+# digits — no word boundary required between the keyword and the digits.
 _CVV_IN_CONTEXT = re.compile(
-    r"(?i)\b(cvv2?|cvc|security code)\b([\s:=-]*(?:is|was|number|no\.?)?[\s:=-]*)(\d{3,4})\b"
+    r"(?i)\b(cvv2?|cvc|security code)([\s:=-]*(?:is|was|number|no\.?)?[\s:=-]*)(\d{3,4})\b"
 )
 
 # US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).
@@ -54,12 +57,30 @@ def _luhn_valid(digits: str) -> bool:
     return total % 10 == 0
 
 
+def _contains_pan(digits: str) -> bool:
+    """True iff *digits* is, or contains, a Luhn-valid 13-19 digit window.
+
+    A run of exactly 13-19 digits is a PAN iff it passes Luhn. A LONGER run is
+    treated as a PAN when ANY 13-19 digit window inside it passes Luhn — the
+    fail-closed reading of Inv-12 (mask a long digit blob that may embed a
+    card number rather than let it through).
+    """
+    n = len(digits)
+    if n <= 19:
+        return _luhn_valid(digits)
+    for size in range(19, 12, -1):
+        for start in range(n - size + 1):
+            if _luhn_valid(digits[start : start + size]):
+                return True
+    return False
+
+
 def _mask_pans(text: str, token: str) -> str:
-    """Mask separator-tolerant Luhn-valid 13-19 digit runs (always-on, Inv-12)."""
+    """Mask separator-tolerant digit runs that are/contain a Luhn-valid PAN (Inv-12)."""
 
     def _replace(match: re.Match[str]) -> str:
         digits = re.sub(r"[ -]", "", match.group(0))
-        if 13 <= len(digits) <= 19 and _luhn_valid(digits):
+        if _contains_pan(digits):
             return token
         return match.group(0)
 
@@ -78,6 +99,11 @@ def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
     """
     effective = policy or _DEFAULT_POLICY
     token = effective.mask_token
+
+    # Fast path: nothing to mask can exist with fewer than 3 digits (the
+    # minimum for CVV); skips the regex sweeps for the typical digitless turn.
+    if sum(ch.isdigit() for ch in text) < 3:
+        return text
 
     # PAN and CVV masking are always-on regardless of policy flags (Inv-12).
     out = _mask_pans(text, token)

@@ -55,7 +55,7 @@ TOOL_DEADLINES: dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
-    # PURE_READ (11 tools) — safe to retry exactly once on timeout.
+    # PURE_READ (12 tools) — safe to retry exactly once on timeout.
     "get_tenant_context": SideEffectClass.PURE_READ,
     "find_customer_context": SideEffectClass.PURE_READ,
     "search_vendor_catalog": SideEffectClass.PURE_READ,
@@ -87,7 +87,7 @@ TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
 
 ALL_TOOLS: frozenset[str] = frozenset(TOOL_DEADLINES)
 
-# Internal consistency guard — both tables must cover exactly the same 17 tools.
+# Internal consistency guard — both tables must cover exactly the same 19 tools.
 # A real raise (not assert) so the guard survives `python -O` bytecode stripping.
 if not (set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == set(ALL_TOOLS)):
     raise RuntimeError(
@@ -116,7 +116,7 @@ def is_retryable(tool_name: str) -> bool:
     DURABLE_MUTATION tools are never retried.
 
     Args:
-        tool_name: One of the 17 canonical tool names.
+        tool_name: One of the 19 canonical tool names.
 
     Returns:
         ``True`` for PURE_READ tools, ``False`` otherwise.

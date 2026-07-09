@@ -73,11 +73,12 @@ def _reset_after_test():
 
 
 def _handler(policy: dict, record_status: int = 200):
-    """Fake API serving the consent policy + record endpoints; counts records."""
-    calls = {"record": 0, "record_bodies": []}
+    """Fake API serving the consent policy + record endpoints; counts calls."""
+    calls = {"record": 0, "record_bodies": [], "policy": 0}
 
     def handle(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/api/consent-policies":
+            calls["policy"] += 1
             return _json_response(200, policy)
         if req.url.path.endswith("/consent"):
             calls["record"] += 1
@@ -112,12 +113,13 @@ async def test_not_required_records_and_allows_recording() -> None:
 
 
 @pytest.mark.unit
-async def test_notice_required_emits_notice_and_awaits() -> None:
+async def test_notice_required_emits_notice_stashes_policy_and_awaits() -> None:
     handle, calls = _handler(_POLICY_REQUIRED)
     set_tool_client(_make_client(handle))
     update = await consent_gate(_state())
     assert update["pending_consent_notice"] == "This call is recorded. OK?"
     assert update["recording_allowed"] is False
+    assert update["consent_policy"]["jurisdiction_policy_id"] == "jp_us_ca"
     assert "consent_state" not in update
     assert calls["record"] == 0, "must not record before the customer replies"
     merged = _state(**update)
@@ -125,18 +127,25 @@ async def test_notice_required_emits_notice_and_awaits() -> None:
 
 
 @pytest.mark.unit
-async def test_granted_reply_records_and_allows() -> None:
+async def test_granted_reply_records_with_stashed_policy_no_second_resolve() -> None:
     handle, calls = _handler(_POLICY_REQUIRED)
     set_tool_client(_make_client(handle))
     state = _state(
         pending_consent_notice="This call is recorded. OK?",
+        consent_policy=_POLICY_REQUIRED,
         transcript_text="yes that's fine",
     )
     update = await consent_gate(state)
     assert update["recording_allowed"] is True
     assert update["consent_state"]["outcome"] == "granted"
+    assert (
+        update["consent_state"]["consent_policy_version"] == "us-ca-two-party:2026-01"
+    )
     assert update["pending_consent_notice"] is None
     assert calls["record"] == 1
+    assert calls["policy"] == 0, (
+        "the stashed policy must be reused — no second round trip"
+    )
     assert calls["record_bodies"][0]["recording_allowed"] is True
     assert route_after_consent_gate(_state(**update)) == "load_context"
 
@@ -147,6 +156,7 @@ async def test_declined_reply_records_alternative_and_suppresses() -> None:
     set_tool_client(_make_client(handle))
     state = _state(
         pending_consent_notice="This call is recorded. OK?",
+        consent_policy=_POLICY_REQUIRED,
         transcript_text="no, please don't record me",
     )
     update = await consent_gate(state)
@@ -197,6 +207,38 @@ async def test_record_failure_fails_closed_and_retries_next_turn() -> None:
 
 
 @pytest.mark.unit
+async def test_record_failure_after_grant_never_reasks_the_customer() -> None:
+    """A persist failure must not discard the customer's reply (§8 fail table)."""
+    handle, calls = _handler(_POLICY_REQUIRED, record_status=500)
+    set_tool_client(_make_client(handle))
+    state = _state(
+        pending_consent_notice="This call is recorded. OK?",
+        consent_policy=_POLICY_REQUIRED,
+        transcript_text="yes go ahead",
+    )
+    update = await consent_gate(state)
+    # Reply stashed; notice NOT re-emitted; conversation continues non-recorded.
+    assert update["consent_reply"] == "granted"
+    assert update["pending_consent_notice"] is None
+    assert update["recording_allowed"] is False
+    merged = state.model_copy(update=update)
+    assert route_after_consent_gate(merged) == "load_context"
+
+    # Next turn: the API recovers; the stashed reply is persisted directly —
+    # no notice, no re-classification of the (unrelated) new transcript.
+    handle2, calls2 = _handler(_POLICY_REQUIRED)
+    set_tool_client(_make_client(handle2))
+    retry_state = merged.model_copy(
+        update={"transcript_text": "table for four on friday"}
+    )
+    retry_update = await consent_gate(retry_state)
+    assert retry_update["consent_state"]["outcome"] == "granted"
+    assert retry_update["recording_allowed"] is True
+    assert retry_update["consent_reply"] is None
+    assert calls2["record"] == 1
+
+
+@pytest.mark.unit
 async def test_already_recorded_is_idempotent_passthrough() -> None:
     def handle(req: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError("no API call expected once consent is recorded")
@@ -217,3 +259,26 @@ def test_classifier_decline_wins_and_no_problem_is_grant() -> None:
     assert classify_consent_response("no, don't record, but okay") == "declined"
     assert classify_consent_response("yes please") == "granted"
     assert classify_consent_response("hmm what") is None
+
+
+@pytest.mark.unit
+def test_classifier_uncertainty_never_reads_as_consent() -> None:
+    """'not sure' / 'maybe' must fail closed to None, never granted (§6)."""
+    assert classify_consent_response("I'm not sure") is None
+    assert classify_consent_response("maybe, what does that mean?") is None
+
+
+@pytest.mark.unit
+async def test_fresh_decline_overrides_stashed_grant_retry() -> None:
+    """A later explicit decline must beat a stale stashed grant (fail-closed)."""
+    handle, calls = _handler(_POLICY_REQUIRED)
+    set_tool_client(_make_client(handle))
+    state = _state(
+        consent_reply="granted",  # stashed from a failed persist last turn
+        consent_policy=_POLICY_REQUIRED,
+        transcript_text="actually no, stop recording please",
+    )
+    update = await consent_gate(state)
+    assert update["consent_state"]["outcome"] == "alternative_offered"
+    assert update["recording_allowed"] is False
+    assert calls["record_bodies"][0]["recording_allowed"] is False

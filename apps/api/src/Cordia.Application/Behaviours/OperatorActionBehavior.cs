@@ -4,6 +4,7 @@ using Cordia.Domain.Exceptions;
 using FluentValidation;
 using FluentValidation.Results;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Cordia.Application.Behaviours;
 
@@ -16,12 +17,16 @@ namespace Cordia.Application.Behaviours;
 /// code is missing (structural backstop behind the FluentValidation rules) and
 /// (b) appends a DENY audit event when a typed <see cref="DomainException"/>
 /// escapes the handler — the effect's transaction rolled back, so the denial
-/// is recorded in its own transaction. The ALLOW audit is the handler's job,
-/// inside the effect's transaction (see <see cref="IOperatorActionRequest"/>).
+/// is recorded in its own transaction. The deny write resolves a FRESH DI
+/// scope (fresh DbContext): the request-scoped context's change tracker may
+/// still hold entities the rolled-back transaction staged, and flushing the
+/// audit through it could durably persist exactly the state the rollback
+/// discarded. The ALLOW audit is the handler's job, inside the effect's
+/// transaction (see <see cref="IOperatorActionRequest"/>).
 ///
 /// Pipeline order: Validation → OperatorAction → InboxDedup → Handler.
 /// </summary>
-public sealed class OperatorActionBehavior<TRequest, TResponse>(IAuditWriter audit)
+public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFactory scopeFactory)
     : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
@@ -49,6 +54,8 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IAuditWriter aud
         }
         catch (DomainException ex)
         {
+            using var scope = scopeFactory.CreateScope();
+            var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: op.TenantId,

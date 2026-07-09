@@ -145,7 +145,10 @@ public sealed class ReplayDeadLetterCommandHandler(
                         consumer_name = command.ConsumerName,
                         replay_decision = decision.ToString(),
                         dispatched_message_id = dispatchedMessageId,
-                    }),
+                    },
+                    // Same clock value as the published envelope's OccurredAt
+                    // so audit and message correlate exactly.
+                    OccurredAt: now),
                 ct2);
         }, ct);
 

@@ -4,6 +4,7 @@ using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
 using FluentValidation;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.Security;
@@ -12,6 +13,17 @@ namespace Cordia.Tests.UnitTests.Security;
 public class OperatorActionBehaviorTests
 {
     private readonly Mock<IAuditWriter> _audit = new();
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public OperatorActionBehaviorTests()
+    {
+        // The behavior resolves IAuditWriter from a FRESH scope for deny
+        // audits; back that scope with the mock.
+        _scopeFactory = new ServiceCollection()
+            .AddScoped(_ => _audit.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+    }
 
     private sealed record PlainRequest : IRequest<string>;
 
@@ -30,7 +42,7 @@ public class OperatorActionBehaviorTests
     [Fact]
     public async Task NonOperatorRequest_PassesThroughUntouched()
     {
-        var behavior = new OperatorActionBehavior<PlainRequest, string>(_audit.Object);
+        var behavior = new OperatorActionBehavior<PlainRequest, string>(_scopeFactory);
 
         var result = await behavior.Handle(
             new PlainRequest(), _ => Task.FromResult("ok"), CancellationToken.None);
@@ -45,7 +57,7 @@ public class OperatorActionBehaviorTests
     [InlineData("", "")]
     public async Task MissingActorOrReason_FailsClosedBeforeTheHandlerRuns(string actor, string reason)
     {
-        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_audit.Object);
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
         var handlerRan = false;
 
         await Assert.ThrowsAsync<ValidationException>(() => behavior.Handle(
@@ -64,7 +76,7 @@ public class OperatorActionBehaviorTests
     [Fact]
     public async Task Success_DoesNotWriteTheAllowAudit_ThatIsTheHandlersJob()
     {
-        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_audit.Object);
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
 
         var result = await behavior.Handle(
             new OperatorRequest("tenant-a", "ops.jane", "reason"),
@@ -78,7 +90,7 @@ public class OperatorActionBehaviorTests
     [Fact]
     public async Task DomainException_WritesDenyAuditAndRethrows()
     {
-        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_audit.Object);
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
 
         await Assert.ThrowsAsync<TargetNotFound>(() => behavior.Handle(
             new OperatorRequest("tenant-a", "ops.jane", "reason"),
@@ -100,7 +112,7 @@ public class OperatorActionBehaviorTests
     [Fact]
     public async Task UnexpectedException_IsNotAuditedAsDeny_AndPropagates()
     {
-        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_audit.Object);
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => behavior.Handle(
             new OperatorRequest("tenant-a", "ops.jane", "reason"),

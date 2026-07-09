@@ -104,7 +104,7 @@ public class ConsentEndpointTests(AcceptanceApiFixture fixture)
         // jsonb normalizes formatting — parse rather than substring-match.
         using var metadata = JsonDocument.Parse(audit.Metadata);
         Assert.Equal("granted", metadata.RootElement.GetProperty("outcome").GetString());
-        Assert.Equal("customer", metadata.RootElement.GetProperty("actor_type").GetString());
+        Assert.Equal("agent", metadata.RootElement.GetProperty("actor_type").GetString());
         Assert.True(metadata.RootElement.GetProperty("recording_allowed").GetBoolean());
     }
 

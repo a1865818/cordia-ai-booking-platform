@@ -3,16 +3,22 @@
 Runs immediately after ``resolve_tenant`` and before any transcript-bearing
 node. Resolves the jurisdiction policy for (tenant, channel) via the API,
 plays/displays the required notice, captures the customer's outcome from the
-turn transcript, and persists the ``SessionConsentState`` through the Booking API
-(single-writer rule, D12 — the gate updates ``consent_*``; the channel gateway
-creates the session row).
+turn transcript, and persists the ``SessionConsentState`` through the Booking
+API (single-writer rule, D12 — the gate updates ``consent_*``; the channel
+gateway creates the session row).
+
+The policy is resolved ONCE per session and stashed on state
+(``consent_policy``), so the reply turn records against the exact policy
+version the customer was shown — no second round trip, no version skew.
 
 Fail-closed defaults (spec 14 §6):
 - Policy resolution fails      → continue NON-recorded this turn; the gate
   retries on the next turn (``consent_state`` stays ``None``).
 - Customer declines            → ``alternative_offered`` outcome, continue
   NON-recorded (structured intent still captured; no transcript persisted).
-- record_consent fails         → continue NON-recorded; re-captured next turn.
+- record_consent fails         → continue NON-recorded; the classified reply
+  is stashed (``consent_reply``) and the persist retried next turn WITHOUT
+  re-asking the customer.
 - Notice required, no reply    → emit the notice and END the turn (await).
 
 The gate never evaluates jurisdiction policy locally and never lets transcript
@@ -35,7 +41,7 @@ from cordia_agent.tools.client_binding import (
     record_consent_call,
     resolve_consent_policy_call,
 )
-from cordia_agent.tools.contracts import RecordConsentInput
+from cordia_agent.tools.contracts import ConsentPolicyView, RecordConsentInput
 
 
 DEFAULT_NOTICE = (
@@ -59,13 +65,20 @@ _DECLINE_PATTERN = re.compile(
     r"|\bno\b(?!\s+problem))"
 )
 
+# Uncertainty beats both: "I'm not sure" must never read as consent (§6
+# fail-closed) — the gate keeps awaiting instead.
+_UNCERTAIN_PATTERN = re.compile(r"(?i)\b(not sure|unsure|maybe|hard to say)\b")
+
 
 def classify_consent_response(text: str) -> Literal["granted", "declined"] | None:
     """Map an explicit customer reply onto a consent outcome, else ``None``.
 
-    Decline wins over grant when both patterns match (fail-closed): "no, don't
-    record, but okay let's continue" must not be read as consent.
+    Precedence (fail-closed): uncertainty → ``None`` (re-ask); decline wins
+    over grant when both match ("no, don't record, but okay let's continue"
+    must not be read as consent); a bare affirmative grants.
     """
+    if _UNCERTAIN_PATTERN.search(text):
+        return None
     if _DECLINE_PATTERN.search(text):
         return "declined"
     if _GRANT_PATTERN.search(text):
@@ -78,18 +91,28 @@ def _notice_channel(state: AgentState) -> str:
     return _NOTICE_CHANNEL.get(channel, "voice")
 
 
+def _channel_value(state: AgentState) -> str:
+    channel = state.source.channel if state.source is not None else Channel.voice
+    return channel.value
+
+
 async def _record(
     state: AgentState,
+    policy: ConsentPolicyView,
     *,
-    jurisdiction_policy_id: str,
-    consent_policy_version: str,
+    reply: Literal["granted", "declined"] | None,
     outcome: Literal["granted", "declined", "not_required", "alternative_offered"],
     recording_allowed: bool,
 ) -> dict:
-    """Persist the outcome via record_consent; fail-closed on any failure."""
+    """Persist the outcome via record_consent; fail-closed on any failure.
+
+    On persist failure the classified *reply* (when there is one) is stashed
+    in ``consent_reply`` so the next turn retries the persist directly instead
+    of re-emitting the notice and discarding the customer's answer.
+    """
     consent = SessionConsentState(
-        consent_policy_version=consent_policy_version,
-        jurisdiction_policy_id=jurisdiction_policy_id,
+        consent_policy_version=policy.consent_policy_version,
+        jurisdiction_policy_id=policy.jurisdiction_policy_id,
         outcome=outcome,
         recording_allowed=recording_allowed,
         captured_at=datetime.datetime.now(datetime.UTC),
@@ -99,14 +122,53 @@ async def _record(
         RecordConsentInput(session_id=state.session_id or "", consent=consent)
     )
     if not env.ok:
-        # Fail-closed: not persisted ⇒ non-recorded this turn; the gate retries
-        # next turn because consent_state stays None (§8 failure table).
-        return {"recording_allowed": False, "pending_consent_notice": None}
+        # Fail-closed: not persisted ⇒ non-recorded this turn; retried next
+        # turn via consent_reply (consent_state stays None, §8 failure table).
+        return {
+            "recording_allowed": False,
+            "pending_consent_notice": None,
+            "consent_reply": reply,
+        }
     return {
         "consent_state": consent.model_dump(mode="json"),
         "recording_allowed": recording_allowed,
         "pending_consent_notice": None,
+        "consent_reply": None,
     }
+
+
+async def _record_reply(
+    state: AgentState,
+    policy: ConsentPolicyView,
+    reply: Literal["granted", "declined"],
+) -> dict:
+    """Map a classified reply onto its ratified outcome and persist it."""
+    if reply == "granted":
+        return await _record(
+            state, policy, reply=reply, outcome="granted", recording_allowed=True
+        )
+    # Declined ⇒ non-recorded alternative (§5.2 AlternativeOffered).
+    return await _record(
+        state,
+        policy,
+        reply=reply,
+        outcome="alternative_offered",
+        recording_allowed=False,
+    )
+
+
+def _stashed_policy(state: AgentState) -> ConsentPolicyView | None:
+    if state.consent_policy is None:
+        return None
+    try:
+        return ConsentPolicyView.model_validate(state.consent_policy)
+    except Exception:
+        return None
+
+
+async def _resolve_policy(state: AgentState) -> ConsentPolicyView | None:
+    env = await resolve_consent_policy_call(_channel_value(state))
+    return parse_consent_policy(env)
 
 
 async def consent_gate(state: AgentState) -> dict:
@@ -115,69 +177,58 @@ async def consent_gate(state: AgentState) -> dict:
     if state.consent_state is not None:
         return {}
 
+    # A prior turn classified the reply but the persist failed — retry it,
+    # UNLESS the current transcript carries a fresh explicit reply: the
+    # customer's latest statement always wins ("yes" then persist-failure then
+    # "actually, no" must record declined, never the stale grant).
+    if state.consent_reply in ("granted", "declined"):
+        fresh = classify_consent_response(state.transcript_text or "")
+        reply: Literal["granted", "declined"] = fresh or state.consent_reply  # type: ignore[assignment]
+        policy = _stashed_policy(state) or await _resolve_policy(state)
+        if policy is None:
+            return {"recording_allowed": False, "consent_reply": reply}
+        return await _record_reply(state, policy, reply)
+
     # Awaiting the customer's reply to a previously-emitted notice.
     if state.pending_consent_notice is not None:
         response = classify_consent_response(state.transcript_text or "")
         if response is None:
             # Unparseable reply — keep awaiting; stay non-recorded meanwhile.
             return {"recording_allowed": False}
-        env = await resolve_consent_policy_call(_channel_value(state))
-        policy = parse_consent_policy(env)
+        policy = _stashed_policy(state) or await _resolve_policy(state)
         if policy is None:
-            return {"recording_allowed": False, "pending_consent_notice": None}
-        if response == "granted":
-            return await _record(
-                state,
-                jurisdiction_policy_id=policy.jurisdiction_policy_id,
-                consent_policy_version=policy.consent_policy_version,
-                outcome="granted",
-                recording_allowed=True,
-            )
-        # Declined ⇒ non-recorded alternative (§5.2 AlternativeOffered).
-        return await _record(
-            state,
-            jurisdiction_policy_id=policy.jurisdiction_policy_id,
-            consent_policy_version=policy.consent_policy_version,
-            outcome="alternative_offered",
-            recording_allowed=False,
-        )
+            # Policy stash lost AND re-resolution failed — stash the reply so
+            # the next turn retries without re-asking.
+            return {"recording_allowed": False, "consent_reply": response}
+        return await _record_reply(state, policy, response)
 
-    # First pass for this session — resolve the jurisdiction policy.
-    env = await resolve_consent_policy_call(_channel_value(state))
-    policy = parse_consent_policy(env)
+    # First pass for this session — resolve the jurisdiction policy ONCE.
+    policy = await _resolve_policy(state)
     if policy is None:
         # Fail-closed: no policy ⇒ non-recorded; retry next turn.
         return {"recording_allowed": False}
 
     if not policy.notice_required:
         return await _record(
-            state,
-            jurisdiction_policy_id=policy.jurisdiction_policy_id,
-            consent_policy_version=policy.consent_policy_version,
-            outcome="not_required",
-            recording_allowed=True,
+            state, policy, reply=None, outcome="not_required", recording_allowed=True
         )
 
-    # Notice required — emit it and await the customer's reply (END this turn).
+    # Notice required — emit it, stash the policy, await the reply (END).
     return {
         "pending_consent_notice": policy.notice_text or DEFAULT_NOTICE,
+        "consent_policy": policy.model_dump(mode="json"),
         "recording_allowed": False,
     }
-
-
-def _channel_value(state: AgentState) -> str:
-    channel = state.source.channel if state.source is not None else Channel.voice
-    return channel.value
 
 
 def route_after_consent_gate(state: AgentState) -> str:
     """Route to load_context once consent is settled; END while awaiting a reply.
 
     ``consent_state`` set ⇒ settled (recorded or non-recorded) — continue.
-    ``pending_consent_notice`` set (and not yet settled) ⇒ the notice was just
+    ``pending_consent_notice`` set (and not settled) ⇒ the notice was just
     emitted or the reply was unparseable — END the turn and await the customer.
-    Neither ⇒ policy resolution failed — continue NON-recorded (fail-closed;
-    retried next turn).
+    Neither ⇒ policy resolution or persist failed — continue NON-recorded
+    (fail-closed; retried next turn via first-pass or ``consent_reply``).
     """
     if state.consent_state is not None:
         return "load_context"

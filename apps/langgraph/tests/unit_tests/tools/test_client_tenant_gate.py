@@ -9,7 +9,7 @@ Tested invariants:
 - get_tenant_context is EXEMPT from the gate — it DOES hit the transport
   even when no context has been set.
 - Table coverage: ``set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == ALL_TOOLS``
-  and ``len(ALL_TOOLS) == 17``.
+  and ``len(ALL_TOOLS) == 19``.
 """
 
 from __future__ import annotations

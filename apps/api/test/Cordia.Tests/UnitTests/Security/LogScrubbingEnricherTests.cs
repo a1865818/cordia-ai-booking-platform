@@ -46,6 +46,37 @@ public class LogScrubbingEnricherTests
     }
 
     [Fact]
+    public void NestedDestructuredValues_AreScrubbedToo()
+    {
+        // {@Object} destructuring produces StructureValue/SequenceValue trees —
+        // a PAN or credential inside them must not bypass the mask (Inv-12).
+        var structure = new StructureValue(
+        [
+            new LogEventProperty("CardNumber", new ScalarValue("4111111111111111")),
+            new LogEventProperty("ApiKey", new ScalarValue("sk_live_abc")),
+            new LogEventProperty(
+                "Notes",
+                new SequenceValue([new ScalarValue("pan 4111 1111 1111 1111 spoken")])),
+        ]);
+        var logEvent = new LogEvent(
+            DateTimeOffset.UtcNow,
+            LogEventLevel.Information,
+            exception: null,
+            new MessageTemplateParser().Parse("test"),
+            [new LogEventProperty("Request", structure)]);
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        var scrubbed = (StructureValue)logEvent.Properties["Request"];
+        var byName = scrubbed.Properties.ToDictionary(p => p.Name, p => p.Value);
+        Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)byName["CardNumber"]).Value);
+        Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)byName["ApiKey"]).Value);
+        var note = (string)((ScalarValue)((SequenceValue)byName["Notes"]).Elements[0]).Value!;
+        Assert.DoesNotContain("4111", note);
+        Assert.Contains(LogScrubbingEnricher.MaskToken, note);
+    }
+
+    [Fact]
     public void BenignProperties_AreLeftUntouched()
     {
         var logEvent = MakeEvent(

@@ -40,7 +40,10 @@ public sealed class AuditWriter(IAuditEventRepository auditRepo) : IAuditWriter
                 foreach (var (key, value) in extra.ToList())
                 {
                     extra.Remove(key);
-                    metadata[key] = value;
+                    // Canonical envelope keys win — Extra can never overwrite
+                    // the authoritative decision/reason_code/etc.
+                    if (!metadata.ContainsKey(key))
+                        metadata[key] = value;
                 }
             }
         }
@@ -56,7 +59,7 @@ public sealed class AuditWriter(IAuditEventRepository auditRepo) : IAuditWriter
                 CorrelationId = record.CorrelationId,
                 OperationId = record.OperationId,
                 Metadata = SensitiveDataMask.Sanitize(metadata.ToJsonString()),
-                OccurredAt = DateTimeOffset.UtcNow,
+                OccurredAt = record.OccurredAt ?? DateTimeOffset.UtcNow,
             },
             ct);
     }

@@ -19,4 +19,5 @@ public sealed record AuditRecord(
     string? CorrelationId = null,
     string? CausationId = null,
     string? OperationId = null,
-    object? Extra = null);       // action-specific structured fields (sanitized)
+    object? Extra = null,        // action-specific structured fields (sanitized)
+    DateTimeOffset? OccurredAt = null); // pass the effect's clock so audit + effect share one timestamp

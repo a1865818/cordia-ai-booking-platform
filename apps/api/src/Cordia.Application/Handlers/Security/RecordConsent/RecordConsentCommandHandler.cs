@@ -53,11 +53,15 @@ public sealed class RecordConsentCommandHandler(
 
             // Audit within the same transaction as the effect (spec 14 §3.1/§6).
             // Metadata is structured-only (no transcript text, no PII).
+            // Actor is the AGENT (the software recording on the customer's
+            // behalf — the true acting principal; there is no authenticated
+            // customer identity here). The customer's decision is the outcome
+            // field in the metadata, not the actor column.
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: command.TenantId,
-                    ActorType: "customer",
-                    ActorId: "customer",
+                    ActorType: "agent",
+                    ActorId: "agent",
                     Action: "consent.recorded",
                     TargetType: "conversation_session",
                     TargetId: command.SessionId,

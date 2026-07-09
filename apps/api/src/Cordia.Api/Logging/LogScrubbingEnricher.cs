@@ -20,28 +20,87 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
 {
     public const string MaskToken = SensitiveDataMask.MaskToken;
 
+    // NOTE: matched as substrings of the property NAME. Deliberately no bare
+    // "pan" fragment — it over-matches SpanId/CompanyName/etc.; PAN VALUES are
+    // caught by the value-level SensitiveDataMask sweep below regardless of
+    // the property name. "token" intentionally over-matches (Access/Refresh/
+    // continuation tokens are all credential-adjacent — fail safe).
     private static readonly string[] SensitiveNameFragments =
     [
         "password", "secret", "token", "apikey", "api_key",
-        "authorization", "credential", "pan", "cvv", "card_number",
+        "authorization", "credential", "cvv", "card_number",
     ];
 
     public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
     {
         foreach (var (name, value) in logEvent.Properties.ToList())
         {
-            if (value is not ScalarValue { Value: string text })
-                continue;
+            var scrubbed = ScrubValue(name, value);
+            if (!ReferenceEquals(scrubbed, value))
+                logEvent.AddOrUpdateProperty(new LogEventProperty(name, scrubbed));
+        }
+    }
 
-            if (IsSensitiveName(name))
-            {
-                logEvent.AddOrUpdateProperty(new LogEventProperty(name, new ScalarValue(MaskToken)));
-                continue;
-            }
+    /// <summary>
+    /// Recursively scrubs a property value — destructured objects
+    /// (<see cref="StructureValue"/>), arrays (<see cref="SequenceValue"/>),
+    /// and dictionaries are walked so a PAN or credential nested inside a
+    /// <c>{@Object}</c> log call cannot bypass the mask (Inv-12). Returns the
+    /// SAME instance when nothing changed (cheap no-op path).
+    /// </summary>
+    private static LogEventPropertyValue ScrubValue(string name, LogEventPropertyValue value)
+    {
+        switch (value)
+        {
+            case ScalarValue { Value: string text }:
+                if (IsSensitiveName(name))
+                    return new ScalarValue(MaskToken);
+                var scrubbed = SensitiveDataMask.Sanitize(text);
+                return scrubbed == text ? value : new ScalarValue(scrubbed);
 
-            var scrubbed = SensitiveDataMask.Sanitize(text);
-            if (!ReferenceEquals(scrubbed, text) && scrubbed != text)
-                logEvent.AddOrUpdateProperty(new LogEventProperty(name, new ScalarValue(scrubbed)));
+            case StructureValue structure:
+                {
+                    var changed = false;
+                    var properties = new List<LogEventProperty>(structure.Properties.Count);
+                    foreach (var property in structure.Properties)
+                    {
+                        var inner = ScrubValue(property.Name, property.Value);
+                        changed |= !ReferenceEquals(inner, property.Value);
+                        properties.Add(new LogEventProperty(property.Name, inner));
+                    }
+                    return changed ? new StructureValue(properties, structure.TypeTag) : value;
+                }
+
+            case SequenceValue sequence:
+                {
+                    var changed = false;
+                    var elements = new List<LogEventPropertyValue>(sequence.Elements.Count);
+                    foreach (var element in sequence.Elements)
+                    {
+                        var inner = ScrubValue(name, element);
+                        changed |= !ReferenceEquals(inner, element);
+                        elements.Add(inner);
+                    }
+                    return changed ? new SequenceValue(elements) : value;
+                }
+
+            case DictionaryValue dictionary:
+                {
+                    var changed = false;
+                    var elements = new List<KeyValuePair<ScalarValue, LogEventPropertyValue>>(
+                        dictionary.Elements.Count);
+                    foreach (var (key, element) in dictionary.Elements)
+                    {
+                        var keyName = key.Value as string ?? name;
+                        var inner = ScrubValue(keyName, element);
+                        changed |= !ReferenceEquals(inner, element);
+                        elements.Add(new KeyValuePair<ScalarValue, LogEventPropertyValue>(key, inner));
+                    }
+                    return changed ? new DictionaryValue(elements) : value;
+                }
+
+            default:
+                return value;
         }
     }
 

@@ -2566,7 +2566,7 @@
           }
         },
         "tags": [
-          "Consent"
+          "ConsentPolicies"
         ]
       }
     },
@@ -2671,7 +2671,7 @@
           }
         },
         "tags": [
-          "Consent"
+          "ConversationSessions"
         ]
       }
     },
@@ -4121,7 +4121,10 @@
       "name": "Catalog"
     },
     {
-      "name": "Consent"
+      "name": "ConsentPolicies"
+    },
+    {
+      "name": "ConversationSessions"
     },
     {
       "name": "DeadLetterMessages"

@@ -58,7 +58,7 @@ public class RecordConsentTests
                     r.TenantId == TenantId
                     && r.Action == "consent.recorded"
                     && r.TargetId == SessionId
-                    && r.ActorType == "customer"
+                    && r.ActorType == "agent"
                     && r.Decision == "allow"),
                 It.IsAny<CancellationToken>()),
             Times.Once);

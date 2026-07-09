@@ -284,7 +284,7 @@ async def record_consent(**kwargs: object) -> ToolResultEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# Registry — exactly 11 tools; each .name equals the spec name above.
+# Registry — exactly 13 tools; each .name equals the spec name above.
 # ---------------------------------------------------------------------------
 
 FOREGROUND_TOOLS: list = [

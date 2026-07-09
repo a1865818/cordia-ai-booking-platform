@@ -373,6 +373,22 @@ class AgentState(BaseModel):
             "customer's granted/declined reply (§5.2 AwaitOutcome)."
         ),
     )
+    consent_policy: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: the ConsentPolicyView resolved on the gate's first "
+            "pass, stashed so the reply turn records against the SAME policy "
+            "version the customer was shown (no re-resolution)."
+        ),
+    )
+    consent_reply: str | None = Field(
+        default=None,
+        description=(
+            "Internal: a classified consent reply ('granted'/'declined') "
+            "whose record_consent persist failed — retried next turn without "
+            "re-asking the customer."
+        ),
+    )
     # --- Internal clarification channels (02-G, §8.5) ---
     # These fields are NOT exported to AgentInputState/AgentOutputState and do
     # not appear in the generated JSON schemas.  They are purely internal

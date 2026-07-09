@@ -59,6 +59,26 @@ def test_cvv_in_context_masked() -> None:
 
 
 @pytest.mark.unit
+def test_cvv_compact_form_masked() -> None:
+    """'cvv123' with no separator must not escape masking (Inv-12)."""
+    assert redact_text("cvv123") == f"cvv{MASK}"
+    assert redact_text("CVC456 ok") == f"CVC{MASK} ok"
+
+
+@pytest.mark.unit
+def test_pan_embedded_in_longer_digit_run_is_masked() -> None:
+    """A PAN inside a >19-digit run must not fail open (Inv-12, fail-closed).
+
+    Runs of exactly 13-19 digits stay precise (whole-run Luhn only, so a
+    non-Luhn 16-digit reference survives); anything longer is window-scanned
+    and masked wholesale when any 13-19 digit window is Luhn-valid.
+    """
+    embedded = f"99{VISA_PAN}42"  # 20-digit run embedding a Luhn-valid PAN
+    assert VISA_PAN not in redact_text(f"blob {embedded} end")
+    assert MASK in redact_text(f"blob {embedded} end")
+
+
+@pytest.mark.unit
 def test_ssn_masked() -> None:
     assert redact_text("SSN 123-45-6789 on file") == f"SSN {MASK} on file"
 
