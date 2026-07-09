@@ -3,7 +3,7 @@
 **Date:** 2026-07-09 · **Branch:** `feature/spec-14` (at `2f592d4`, even with main)
 **Spec:** `docs/specs/14-security-and-privacy.md` · **Research/baseline:**
 `thoughts/shared/research/2026-07-09_18-55-30_spec-14-security-privacy-baseline.md`
-**Status:** IN PROGRESS
+**Status:** COMPLETE — all 6 phases implemented, verified, and validated (see Validation Report)
 
 Governing directive (spec-11 precedent): treat the repo as a single evolving architecture —
 integrate with existing mechanisms (single front doors), never add parallel implementations.
@@ -350,3 +350,39 @@ Discoveries and notable information:
       unchanged; acceptance flow unaffected).
 - [ ] Regression: notification delivery receipt still writes its existing audit event shape
       (baseline #3).
+
+## Validation Report (Stage 6, 2026-07-09)
+
+**Automated checks (final run, HEAD = 8ee3701):** api unit 779 ✓ · api integration 330 ✓
+(2 pre-existing skips) · api lint ✓ · langgraph unit 741 ✓ · langgraph lint ✓ · web 2 ✓ ·
+schema + C#/TS/Zod + api-contract regeneration clean · zero EF migrations (as planned).
+
+### Regression diff against the Stage-1 baseline audit
+
+Every **must-stay-byte-for-byte** item verified with `git diff 2f592d4..HEAD` — EMPTY diff for:
+`TenantResolutionMiddleware`, `ApplicationDbContext` (tenant-filter mechanism),
+`GrantAuthorizationService` + `VerificationGrantRepository`, `InboxDeduplicationBehavior`,
+`AuditEvent` entity + insert-only repository, `safety/` (injection harness + TenantContext),
+`menu/` (extraction isolation), `tools/client.py` (ToolClient gating). Their existing suites
+are green in the final run.
+
+**Intentionally changed** items match the plan exactly:
+baseline #6 ConversationSession (consent update handlers added, update-only per D12);
+#7 pipeline order (OperatorAction inserted, no-op for non-marker requests — inbox tests green);
+#8 GlobalExceptionHandler (one additive 404 case); #9 Serilog (+scrubbing enricher);
+#12 DTMF masking (delegates to redact_text, original outputs preserved — test green);
+#14 graph topology (+consent_gate, topology test updated); #15 checkpointer (scrub/suppress).
+
+**Release-blocking invariant re-check:** Inv-1 (injection corpus: untrusted text can never
+invoke a tool), Inv-5 (record_consent is BOUNDED_SIDE_EFFECT/no-retry; inbox dedup untouched),
+Inv-11 (grant scope failures proven against real SQL; forged identity finds no grant),
+Inv-12 (redaction on transcript/checkpoint/frames/logs/audit-metadata in both lanes),
+Inv-13 (structural filter test + live two-tenant probe), Inv-14/15 (audit append-only
+untouched; replay preserves history and is now reason-coded + operator-attributed).
+
+**Explained deviations (all documented in phase discoveries):** Pydantic model renamed
+`ConsentState`→`SessionConsentState` (C# collision with the ratified pg-enum in immutable
+migration designers; wire JSON unchanged); enricher lives in `Cordia.Api/Logging` not
+Infrastructure (Serilog reference lives in Api; no new packages); three blast-radius additions
+for pre-existing environment defects (`clarify.py` strftime portability, exporter LF newlines,
+`ScheduledJobPollerTests` timestamp precision). No unexplained deviations. **Verdict: clean.**
