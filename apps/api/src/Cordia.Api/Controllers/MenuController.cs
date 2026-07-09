@@ -5,6 +5,7 @@ using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Application.Handlers.Menu.ReviewCatalog;
 using Cordia.Application.Handlers.Menu.UploadMenu;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Cordia.Domain.Menu;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
@@ -42,8 +43,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
         // source_artifact_ref is enforced by UploadMenuValidator via the validation pipeline —
         // validators are the sole source of required-field enforcement (docs/dotnet-api-patterns.md).
 
@@ -74,8 +74,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var edits = (body?.Edits ?? [])
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
@@ -102,8 +101,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var edits = (body.Edits ?? [])
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
@@ -129,8 +127,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty), ct);
 
@@ -150,8 +147,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty), ct);
 

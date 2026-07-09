@@ -4,6 +4,7 @@ using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -34,8 +35,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         string operationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var status = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
         return status is null ? NotFound() : Ok(status);
@@ -61,8 +61,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         string operationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Existence check (also covers tenant mismatch — GetOperationStatusQuery returns null).
         var op = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
@@ -112,8 +111,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Existence check: 404 if not found (also covers tenant mismatch).
         var existing = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
@@ -157,8 +155,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Map resolution string (case-insensitive) → enum.
         ManualReviewResolution resolution;
@@ -218,8 +215,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromBody] AlternativesRequest body,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Map response string (case-insensitive) → enum.
         AlternativesResponse response;

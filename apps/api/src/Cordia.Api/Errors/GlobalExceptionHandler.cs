@@ -86,6 +86,20 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case TenantScopeMissingException ex:
+                // Same wire shape as the controllers' historical hand-rolled 400 (spec 14 §24.1).
+                logger.LogInformation(ex, "Tenant scope missing");
+                await WriteProblemAsync(httpContext, StatusCodes.Status400BadRequest,
+                    "Missing tenant", ex.Message, cancellationToken);
+                return true;
+
+            case ConsentRequiredException ex:
+                logger.LogWarning(ex, "Consent required: scope={RequiredScope} subject={SubjectRef}",
+                    ex.RequiredScope, ex.SubjectRef);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Consent required", ex.Message, cancellationToken);
+                return true;
+
             case AuthorizationFailedException ex:
                 logger.LogWarning(ex, "Authorization failed: action={ActionName}", ex.ActionName);
                 await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,

@@ -1,6 +1,7 @@
 ﻿using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.Preorder.ManualResolution;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -41,8 +42,7 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new ConvertPreorderToStandaloneCommand(
             tenant.TenantId, sagaId, ResolveOperator(actor), body.GrantId ?? string.Empty,
@@ -65,8 +65,7 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new CancelPreorderManualReviewCommand(
             tenant.TenantId, sagaId, ResolveOperator(actor), body?.Reason,

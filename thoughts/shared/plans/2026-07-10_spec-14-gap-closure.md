@@ -183,11 +183,26 @@ check; `AuthorizationFailedException` (→403; used by OperatorActionBehavior fr
 cases + tests; controller 400 bodies keep title "Missing tenant".
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api`
+- [x] `bun nx test api` (802 passed) · `bun nx lint api` · `bun nx test-integration api` (337 passed, 2 skipped)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- `TenantGuard` lives in **`Cordia.Domain.Security`** (next to `SensitiveDataMask`) — it
+  depends only on `ITenantContext` + the Domain exception, so no Api-layer placement needed.
+  All 31 hand-rolled `if (IsNullOrWhiteSpace(tenant.TenantId)) return Problem(400…)` sites
+  across 11 controllers were replaced with `TenantGuard.RequireTenant(tenant);` — wire shape
+  proven identical by a body-asserting unit test (title "Missing tenant", detail
+  "X-Tenant-Id header is required.").
+- Webhook secret precedence: `Secrets:NotificationsWebhookSecret` (ISecretStore) **wins over**
+  the legacy `Notifications:WebhookSecret`; when the store value is set the legacy value no
+  longer authenticates. Covered by two new Alba tests (store-only + precedence) that build
+  dedicated hosts; constant-time compare untouched.
+- `ConsentRequiredException(requiredScope, subjectRef)` → 409 "Consent required"; consumers
+  documented in the exception XML doc (consent-gated transcript/recording reads, spec 13
+  session surfaces) — first throwing call site arrives with the Phase-6/7 object-store and
+  consent wiring.
+- No existing test asserted the hand-rolled 400 body beyond status, so the exception-path
+  migration was assertion-compatible; 5 MissingTenant endpoint tests keep passing unchanged.
 
 ### Phase 5 — Queue payload sanitization (api)
 `SensitiveDataMask.SanitizeJson(string json)` — System.Text.Json.Nodes walk mirroring Python

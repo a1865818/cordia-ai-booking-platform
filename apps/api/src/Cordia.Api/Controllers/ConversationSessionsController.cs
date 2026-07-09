@@ -1,6 +1,7 @@
 ﻿using Cordia.Application.Handlers.Security.RecordConsent;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -32,8 +33,7 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
         if (consent is null)
             return Problem(statusCode: 400, title: "Missing body", detail: "A JSON SessionConsentState body is required.");
 
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(
             RecordConsentCommand.FromContract(

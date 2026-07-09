@@ -1,6 +1,7 @@
 ﻿using Cordia.Application.Handlers.Security.ResolveJurisdictionPolicy;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -22,8 +23,7 @@ public class ConsentPoliciesController(IMediator mediator, ITenantContext tenant
         [FromQuery] string channel,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var policy = await mediator.Send(
             new ResolveJurisdictionPolicyQuery(tenant.TenantId, channel), ct);

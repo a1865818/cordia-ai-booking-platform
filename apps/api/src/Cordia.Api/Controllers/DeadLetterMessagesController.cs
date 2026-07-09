@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Handlers.DeadLetters;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -32,8 +33,7 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
         if (body is null)
             return Problem(statusCode: 400, title: "Missing body", detail: "A JSON body with messageId, consumerName, and reasonCode is required.");
 
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Spec 14 §24.5 — operator identity (X-Actor shim) + reason code are
         // mandatory for replay; the validator/behavior reject empty values.
