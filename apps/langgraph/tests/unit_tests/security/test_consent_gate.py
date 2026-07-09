@@ -14,6 +14,10 @@ from cordia_agent.security.consent import (
     consent_gate,
     route_after_consent_gate,
 )
+from cordia_agent.security.policy import (
+    get_redaction_policy,
+    reset_redaction_policy,
+)
 from cordia_agent.state import AgentState, Channel, SourceInfo
 from cordia_agent.tools.client import (
     ToolClient,
@@ -70,6 +74,7 @@ def _state(**overrides: object) -> AgentState:
 def _reset_after_test():
     yield
     reset_tool_client()
+    reset_redaction_policy()
 
 
 def _handler(policy: dict, record_status: int = 200):
@@ -304,6 +309,62 @@ async def test_fresh_decline_overrides_stashed_grant_retry() -> None:
     assert update["consent_state"]["outcome"] == "alternative_offered"
     assert update["recording_allowed"] is False
     assert calls["record_bodies"][0]["recording_allowed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Tenant redaction-policy install (spec 14 §4.1 — gap closure phase 7c)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_policy_with_redaction_installs_tenant_redaction_policy() -> None:
+    """First-pass resolution installs the API-served tenant redaction policy."""
+    policy = dict(_POLICY_NOT_REQUIRED)
+    policy["redaction"] = {
+        "mask_pan": True,
+        "mask_cvv": True,
+        "mask_government_id": True,
+        "configured_sensitive_fields": ["allergy_notes", "loyalty_number"],
+        "mask_token": "[REDACTED]",
+    }
+    handle, _calls = _handler(policy)
+    set_tool_client(_make_client(handle))
+
+    await consent_gate(_state())
+
+    active = get_redaction_policy()
+    assert active.configured_sensitive_fields == ["allergy_notes", "loyalty_number"]
+
+
+@pytest.mark.unit
+async def test_stashed_policy_with_redaction_reinstalls_on_reuse() -> None:
+    """The stashed-policy path installs too (fresh process, replayed state)."""
+    stashed = dict(_POLICY_REQUIRED)
+    stashed["redaction"] = {"configured_sensitive_fields": ["allergy_notes"]}
+    handle, _calls = _handler(_POLICY_REQUIRED)
+    set_tool_client(_make_client(handle))
+    state = _state(
+        pending_consent_notice="This call is recorded. OK?",
+        consent_policy=stashed,
+        transcript_text="yes that's fine",
+    )
+
+    await consent_gate(state)
+
+    assert get_redaction_policy().configured_sensitive_fields == ["allergy_notes"]
+
+
+@pytest.mark.unit
+async def test_policy_without_redaction_keeps_baseline() -> None:
+    """Absent redaction (older server) ⇒ the always-on baseline stays active."""
+    handle, _calls = _handler(_POLICY_NOT_REQUIRED)
+    set_tool_client(_make_client(handle))
+
+    await consent_gate(_state())
+
+    active = get_redaction_policy()
+    assert active.mask_pan is True
+    assert active.configured_sensitive_fields == []
 
 
 @pytest.mark.unit

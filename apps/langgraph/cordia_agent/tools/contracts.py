@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
-from cordia_agent.contracts.security import SessionConsentState
+from cordia_agent.contracts.security import RedactionPolicy, SessionConsentState
 from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -616,6 +616,14 @@ class ConsentPolicyView(BaseModel):
     notice_text: str | None = Field(
         default=None,
         description="Notice wording to play/display when notice_required; None ⇒ agent default.",
+    )
+    redaction: RedactionPolicy | None = Field(
+        default=None,
+        description=(
+            "Tenant redaction policy resolved by the API (spec 14 §4.1); the "
+            "consent gate installs it via set_redaction_policy. None ⇒ the "
+            "always-on baseline stays active (additive, older servers omit it)."
+        ),
     )
 
 

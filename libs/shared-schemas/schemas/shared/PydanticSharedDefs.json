@@ -1490,6 +1490,18 @@
           "default": null,
           "description": "Notice wording to play/display when notice_required; None \u21d2 agent default.",
           "title": "Notice Text"
+        },
+        "redaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RedactionPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tenant redaction policy resolved by the API (spec 14 \u00a74.1); the consent gate installs it via set_redaction_policy. None \u21d2 the always-on baseline stays active (additive, older servers omit it)."
         }
       },
       "required": [

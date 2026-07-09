@@ -5,6 +5,7 @@ using Alba;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Tests.IntegrationTests.Acceptance;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Security;
@@ -53,6 +54,57 @@ public class ConsentEndpointTests(AcceptanceApiFixture fixture)
         Assert.True(doc.RootElement.GetProperty("notice_required").GetBoolean());
         Assert.False(string.IsNullOrEmpty(
             doc.RootElement.GetProperty("jurisdiction_policy_id").GetString()));
+    }
+
+    [Fact]
+    public async Task GetConsentPolicy_NoSensitiveFieldsConfigured_OmitsRedaction()
+    {
+        // The shared fixture host has no Redaction:SensitiveFields config, so the
+        // additive redaction field must be omitted (agent keeps its baseline).
+        var tenantId = $"t14-policy-nored-{Guid.NewGuid():N}";
+        var response = await fixture.Host.Scenario(x =>
+        {
+            x.Get.Url("/api/consent-policies?channel=voice");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        using var doc = JsonDocument.Parse(await response.ReadAsTextAsync());
+        var hasRedaction = doc.RootElement.TryGetProperty("redaction", out var redaction)
+            && redaction.ValueKind != JsonValueKind.Null;
+        Assert.False(hasRedaction, "redaction must be omitted when no sensitive fields are configured");
+    }
+
+    [Fact]
+    public async Task GetConsentPolicy_WithSensitiveFieldsConfig_ServesRedactionPolicy()
+    {
+        // Spec 14 §4.1 (gap closure 7c): Redaction:SensitiveFields config rides out
+        // on the ConsentPolicyView so the agent's consent gate can install it.
+        var tenantId = $"t14-policy-red-{Guid.NewGuid():N}";
+
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Test");
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            builder.UseSetting("Redaction:SensitiveFields:0", "allergy_notes");
+            builder.UseSetting("Redaction:SensitiveFields:1", "loyalty_number");
+        });
+
+        var response = await host.Scenario(x =>
+        {
+            x.Get.Url("/api/consent-policies?channel=voice");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        using var doc = JsonDocument.Parse(await response.ReadAsTextAsync());
+        var redaction = doc.RootElement.GetProperty("redaction");
+        Assert.True(redaction.GetProperty("mask_pan").GetBoolean());
+        Assert.True(redaction.GetProperty("mask_cvv").GetBoolean());
+        var fields = redaction.GetProperty("configured_sensitive_fields")
+            .EnumerateArray().Select(f => f.GetString()).ToArray();
+        Assert.Equal(["allergy_notes", "loyalty_number"], fields);
     }
 
     [Fact]

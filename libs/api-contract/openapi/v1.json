@@ -344,6 +344,9 @@
           "notice_text": {
             "nullable": true,
             "type": "string"
+          },
+          "redaction": {
+            "$ref": "#/components/schemas/RedactionPolicy"
           }
         },
         "type": "object"
@@ -805,6 +808,35 @@
             "type": "string"
           },
           "type": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "RedactionPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "configured_sensitive_fields": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "mask_cvv": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "mask_government_id": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "mask_pan": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "mask_token": {
             "nullable": true,
             "type": "string"
           }

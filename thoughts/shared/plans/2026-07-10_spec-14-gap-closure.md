@@ -283,11 +283,32 @@ raises), policy install (consent gate sets registry; reset in teardown), API ret
 from config.
 
 Automated verification:
-- [ ] `bun nx test langgraph` · `bun nx lint langgraph` · `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` · `bun nx build api` · `bun nx test api` · `bun nx test-integration api` · `bun nx run api-contract:generate-types`
+- [x] `bun nx test langgraph` (801 passed) · `bun nx lint langgraph` · `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` · `bun nx build api` · `bun nx test api` (829) · `bun nx test-integration api` (339) · `bun nx run api-contract:generate-types`
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- Gate 1c sits at **step 0** of `ToolClient.call_tool` — BEFORE the Inv-13 tenant gate — so
+  an off-surface tool name is always reported as `tool_not_permitted`, never misattributed
+  as a tenant problem (pinned by a test). The canonical-name check applies unconditionally;
+  `set_tool_allowlist` only narrows. With no allowlist installed the gate is a proven no-op
+  for all 19 canonical tools.
+- Allowlist-deny decisions log through `is_tool_invocation_permitted` with
+  `source=TrustLevel.SYSTEM` (the invocation originates from this process's code path —
+  UNTRUSTED content is stopped at the harness boundary before a tool call can form).
+- `PromptChannels` is a plain frozen class, NOT a Pydantic model — Pydantic v2 wraps
+  validator `ValueError`s in `ValidationError`, which would have swallowed the typed
+  `ChannelSeparationError` contract. Channels are tuples behind properties (no mutation
+  API), misfiling raises in BOTH directions (system↛untrusted too).
+- `ConsentPolicyView.redaction` regenerated cleanly into C# (`RedactionPolicy Redaction`,
+  null-omitted) — no quicktype enum-suffix issues. The controller serves it from
+  `Redaction:SensitiveFields` config and returns **null when the list is empty/absent** so
+  older agents and the baseline posture are untouched (both shapes covered by API tests).
+- The consent gate installs the redaction policy inside `_stashed_policy`/`_resolve_policy`
+  (the two funnels every policy-bearing path flows through) — first resolution, stashed
+  reuse, and the consent-reply retry all install without per-branch duplication.
+- `from_tenant_context` docstring now records WHY it is broken scaffolding
+  (`allowed_policy_ids` holds policy ids, not tool names) and points to
+  `set_tool_allowlist`; removal deferred (spec-15 owns the field's future).
 
 ### Phase 8 — Full validation + regression diff
 All-lane suites; regression diff against BOTH baseline docs (items 1–24); invariant re-check

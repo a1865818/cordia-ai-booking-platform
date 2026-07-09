@@ -28,6 +28,7 @@ _HINT_TENANT_NOT_RESOLVED = "I'm having trouble reaching this business right now
 _HINT_VERIFICATION_REQUIRED = (
     "I need to verify your identity before I can make that change."
 )
+_HINT_TOOL_NOT_PERMITTED = "I can't do that here."
 
 
 def map_http_error(
@@ -143,6 +144,36 @@ def verification_required_envelope(
         ok=False,
         status="verification_required",
         customer_hint=_HINT_VERIFICATION_REQUIRED,
+        data=None,
+        correlation_id=correlation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def tool_not_permitted_envelope(
+    *,
+    tool_name: str,
+    correlation_id: str,
+) -> ToolResultEnvelope:
+    """Return a ``tool_not_permitted`` envelope when the Inv-12 tool gate fires.
+
+    Called by ``ToolClient.call_tool`` before touching the transport when the
+    requested tool is not one of the canonical tool names, or when an installed
+    ``ToolAllowlist`` denies it (spec 14 §8.11 / §27.1 — gate 1c). Replaces the
+    pre-gate behaviour where an unknown name raised a raw ``KeyError``.
+
+    Args:
+        tool_name: The tool that was refused (for logging correlation).
+        correlation_id: Best-effort correlation ID.
+
+    Returns:
+        A ``ToolResultEnvelope`` with ``ok=False``,
+        ``status="tool_not_permitted"``, and a safe generic hint.
+    """
+    return ToolResultEnvelope(
+        ok=False,
+        status="tool_not_permitted",
+        customer_hint=_HINT_TOOL_NOT_PERMITTED,
         data=None,
         correlation_id=correlation_id,
         schema_version=SCHEMA_VERSION,

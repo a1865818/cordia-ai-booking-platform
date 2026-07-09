@@ -28,6 +28,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from cordia_agent.safety.injection_harness import (
+    ToolAllowlist,
+    TrustLevel,
+    is_tool_invocation_permitted,
+)
 from cordia_agent.tools._timeouts import (
     GRANT_REQUIRED_TOOLS,
     TOOL_DEADLINES,
@@ -40,6 +45,7 @@ from cordia_agent.tools.errors import (
     map_http_error,
     map_transport_failure,
     tenant_not_resolved_envelope,
+    tool_not_permitted_envelope,
     verification_required_envelope,
 )
 
@@ -55,6 +61,9 @@ class ToolClient:
     ``httpx.AsyncClient`` — no real network is ever touched in tests.
 
     Invariants enforced:
+    - Inv-12 (gate 1c): a non-canonical tool name — or one denied by an
+      installed ``ToolAllowlist`` — returns ``tool_not_permitted`` without
+      touching the transport (spec 14 §8.11/§27.1).
     - Inv-13: data tools return ``tenant_not_resolved`` without touching the
       transport when ``tenant_context`` is ``None``.
     - Inv-2:  ``operation_id`` / ``idempotency_key`` are passed verbatim from
@@ -70,6 +79,7 @@ class ToolClient:
         http: httpx.AsyncClient,
         *,
         tenant_context: TenantContext | None = None,
+        allowlist: ToolAllowlist | None = None,
     ) -> None:
         """Initialise the client with an injected HTTP transport.
 
@@ -78,9 +88,26 @@ class ToolClient:
                 ``MockTransport`` in tests.
             tenant_context: Optional resolved ``TenantContext``; may be set
                 later via ``set_tenant_context``.
+            allowlist: Optional ``ToolAllowlist`` narrowing the canonical tool
+                set further (gate 1c); may be set later via
+                ``set_tool_allowlist``. ``None`` ⇒ all canonical tools pass.
         """
         self._http = http
         self._tenant_context = tenant_context
+        self._allowlist = allowlist
+
+    def set_tool_allowlist(self, allowlist: ToolAllowlist) -> None:
+        """Install an explicit ``ToolAllowlist`` narrowing the tool surface.
+
+        Gate 1c (spec 14 §8.11 / §27.1): once installed, ``call_tool`` refuses
+        any tool the allowlist denies with a ``tool_not_permitted`` envelope,
+        logging the decision through ``is_tool_invocation_permitted``. The
+        canonical-name check applies regardless; this only narrows further.
+
+        Args:
+            allowlist: The immutable allowlist to enforce for this session.
+        """
+        self._allowlist = allowlist
 
     def set_tenant_context(self, ctx: TenantContext) -> None:
         """Store the resolved ``TenantContext`` for subsequent calls.
@@ -146,14 +173,38 @@ class ToolClient:
             A ``ToolResultEnvelope`` with ``ok=True`` on success, or
             ``ok=False`` with a safe ``customer_hint`` on any error.
         """
-        # ------------------------------------------------------------------
-        # 1. Inv-13 gate: refuse data tools when tenant context is absent.
-        # ------------------------------------------------------------------
         ctx = self._tenant_context
 
         # A per-call fallback correlation_id when there is no context.
         fallback_correlation_id = str(uuid.uuid4())
 
+        # ------------------------------------------------------------------
+        # 0. Gate 1c (Inv-12, spec 14 §8.11/§27.1): refuse tools that are not
+        # canonical, or that an installed allowlist denies — BEFORE any other
+        # gate, replacing the old raw KeyError for unknown names. The decision
+        # (never the content) is logged via is_tool_invocation_permitted.
+        # ------------------------------------------------------------------
+        if tool_name not in TOOL_DEADLINES or (
+            self._allowlist is not None
+            and not is_tool_invocation_permitted(
+                tool_name,
+                allowlist=self._allowlist,
+                # The invocation originates from this process's own code path,
+                # never from customer text — UNTRUSTED content is stopped at
+                # the harness boundary before it can reach a tool call.
+                source=TrustLevel.SYSTEM,
+            )
+        ):
+            return tool_not_permitted_envelope(
+                tool_name=tool_name,
+                correlation_id=(
+                    ctx.correlation_id if ctx is not None else fallback_correlation_id
+                ),
+            )
+
+        # ------------------------------------------------------------------
+        # 1. Inv-13 gate: refuse data tools when tenant context is absent.
+        # ------------------------------------------------------------------
         if tool_name != "get_tenant_context" and ctx is None:
             return tenant_not_resolved_envelope(
                 tool_name=tool_name,

@@ -35,6 +35,7 @@ from typing import Literal
 from langgraph.graph import END
 
 from cordia_agent.contracts.security import SessionConsentState
+from cordia_agent.security.policy import set_redaction_policy
 from cordia_agent.state import AgentState, Channel
 from cordia_agent.tools.client_binding import (
     parse_consent_policy,
@@ -157,18 +158,35 @@ async def _record_reply(
     )
 
 
+def _install_redaction(policy: ConsentPolicyView | None) -> ConsentPolicyView | None:
+    """Install the tenant redaction policy the moment a policy view is in hand.
+
+    Spec 14 §4.1: the API resolves the tenant's ``RedactionPolicy`` and ships
+    it on the ConsentPolicyView; installing it here (first resolution AND
+    stashed-policy reuse — every path that yields a policy) makes the tenant's
+    configured sensitive-field selectors live for the rest of the session.
+    Absent ⇒ the always-on baseline stays active. Returns *policy* unchanged
+    so call sites can wrap in place.
+    """
+    if policy is not None and policy.redaction is not None:
+        set_redaction_policy(policy.redaction)
+    return policy
+
+
 def _stashed_policy(state: AgentState) -> ConsentPolicyView | None:
     if state.consent_policy is None:
         return None
     try:
-        return ConsentPolicyView.model_validate(state.consent_policy)
+        return _install_redaction(
+            ConsentPolicyView.model_validate(state.consent_policy)
+        )
     except Exception:
         return None
 
 
 async def _resolve_policy(state: AgentState) -> ConsentPolicyView | None:
     env = await resolve_consent_policy_call(_channel_value(state))
-    return parse_consent_policy(env)
+    return _install_redaction(parse_consent_policy(env))
 
 
 async def consent_gate(state: AgentState) -> dict:
