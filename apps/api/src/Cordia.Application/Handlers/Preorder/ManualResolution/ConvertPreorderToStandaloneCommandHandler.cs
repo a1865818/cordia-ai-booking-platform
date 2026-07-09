@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -35,7 +36,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
     IBookingRepository bookings,
     IGrantAuthorizationService grants,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow,
     ILogger<ConvertPreorderToStandaloneCommandHandler> logger)
     : IRequestHandler<ConvertPreorderToStandaloneCommand, Unit>
@@ -111,16 +112,21 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                 OccurredAt = now,
             }, ct2);
 
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "preorder.standalone_converted",
-                Actor = command.OperatorActor,
-                SubjectRef = command.SagaId,
-                CorrelationId = command.SagaId,
-                OperationId = saga.OperationId,
-                Metadata = JsonSerializer.Serialize(new
+            // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: "operator",
+                ActorId: command.OperatorActor,
+                Action: "preorder.standalone_converted",
+                TargetType: "preorder_saga",
+                TargetId: command.SagaId,
+                Decision: "allow",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.SagaId,
+                OperationId: saga.OperationId,
+                OccurredAt: now,
+                Extra: new
                 {
                     saga_id = command.SagaId,
                     operation_id = saga.OperationId,
@@ -130,9 +136,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                     customer_grant_id = command.GrantId,
                     customer_ref = booking.CustomerId,
                     booking_id = booking.BookingId,
-                }),
-                OccurredAt = now,
-            }, ct2);
+                }), ct2);
         }, ct);
 
         if (!won)

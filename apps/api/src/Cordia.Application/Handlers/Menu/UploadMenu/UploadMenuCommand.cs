@@ -1,4 +1,5 @@
-﻿using MediatR;
+﻿using Cordia.Application.Common.Authorization;
+using MediatR;
 
 namespace Cordia.Application.Handlers.Menu.UploadMenu;
 
@@ -15,4 +16,14 @@ public sealed record UploadMenuCommand(
     string TenantId,
     string Actor,
     string SourceArtifactRef,
-    string VersionLabel) : IRequest<string>;
+    string VersionLabel,
+    string ReasonCode) : IRequest<string>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => Actor;
+
+    public string ActionName => "catalog.uploaded";
+
+    public string TargetType => "vendor_catalog";
+
+    public string TargetId => SourceArtifactRef;
+}

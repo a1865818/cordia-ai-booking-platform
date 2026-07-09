@@ -1,4 +1,6 @@
-﻿using MediatR;
+﻿using Cordia.Application.Common.Authorization;
+using FluentValidation;
+using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 
@@ -17,4 +19,29 @@ public sealed record ResumeWorkflowStepCommand(
     string TenantId,
     string OperationId,
     string ReplayCommandId,
-    string Actor) : IRequest<Unit>;
+    string Actor,
+    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => Actor;
+
+    public string ActionName => "operation.replay";
+
+    public string TargetType => "booking_operation";
+
+    public string TargetId => OperationId;
+}
+
+/// <summary>Requires actor + reason code before an operator re-drive (spec 06 Inv-15; spec 14 §24.5).</summary>
+public sealed class ResumeWorkflowStepValidator : AbstractValidator<ResumeWorkflowStepCommand>
+{
+    public ResumeWorkflowStepValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.OperationId).NotEmpty();
+        RuleFor(x => x.ReplayCommandId).NotEmpty();
+        RuleFor(x => x.Actor).NotEmpty()
+            .WithMessage("An operator actor is required to resume a parked operation (Inv-15).");
+        RuleFor(x => x.ReasonCode).NotEmpty()
+            .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+    }
+}

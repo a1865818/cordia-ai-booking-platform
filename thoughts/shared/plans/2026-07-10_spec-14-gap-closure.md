@@ -144,11 +144,33 @@ mapping lands same phase to keep tests green). Update the affected unit/integrat
 (inventoried; ~15 files).
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api` · `bun nx run api-contract:generate-types`
+- [x] `bun nx test api` (796 passed) · `bun nx lint api` · `bun nx test-integration api` (335 passed, 2 skipped) · `bun nx run api-contract:generate-types`
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- Reason code is transported as an **`X-Reason-Code` header** on all nine staff endpoints
+  (menu ×5, preorder ×2, booking-operations resume/resolve) — consistent with the X-Actor
+  shim, keeps body-less endpoints body-less; the plan's "body field or query" wording is
+  superseded.
+- `AuthorizationFailedException` (→403, `Cordia.Domain.Exceptions`) landed in THIS phase
+  including the GlobalExceptionHandler mapping (the plan's "mapping lands same phase" note);
+  OperatorActionBehavior's backstop now throws it instead of FluentValidation
+  `ValidationException`. In practice the per-command validators fire first (pipeline order
+  Validation → OperatorAction), so missing headers surface as **400** at the HTTP layer and
+  the 403 backstop covers commands whose validators don't guard actor/reason.
+- `ResumeWorkflowStepCommand` / `ResolveManualReviewCommand` had **no validators at all** —
+  added `ResumeWorkflowStepValidator` / `ResolveManualReviewValidator` (tenant, operation,
+  replayCommandId, actor, reason code).
+- Silent actor defaults removed: Menu `"owner"`, Preorder `"operator"`, BookingOperations
+  `"ops"` — absent X-Actor now flows through empty and fails closed.
+- `ConvertPreorderToStandalone` keeps its OperationId in the envelope; `AuditRecord` already
+  carried an `OperationId` field so no envelope change was needed.
+- Fail-closed regression tests added: `Approve_MissingActorAndReasonHeaders_IsRejected`
+  (MenuControllerTests) and `Resolve_MissingActorAndReasonHeaders_IsRejected`
+  (ManualRecoveryEndpointTests), both asserting rejection AND no state advance.
+- 403 added to `ProducesResponseType` on all nine endpoints (OpenAPI contract regenerated).
+- Test-file churn was 10 files (not ~15): 4 Menu unit test files were already retrofitted in
+  Goal-1 work; PreorderController has no HTTP-level test file.
 
 ### Phase 4 — Secrets consumption + typed exceptions (api)
 `NotificationWebhooksController` resolves the shared secret via

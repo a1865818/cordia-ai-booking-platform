@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -36,7 +37,7 @@ public class ResumeWorkflowStepCommandHandlerTests
     }
 
     private ResumeWorkflowStepCommandHandler CreateHandler() =>
-        new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, _auditRepo.Object, _uow.Object);
+        new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, new AuditWriter(_auditRepo.Object), _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
         new()
@@ -79,7 +80,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         var handler = CreateHandler();
         await handler.Handle(
-            new ResumeWorkflowStepCommand(tenantId, operationId, replayId, actor),
+            new ResumeWorkflowStepCommand(tenantId, operationId, replayId, actor, "rc_test"),
             CancellationToken.None);
 
         // Assert outbox: booking.command.requested.v1 continuation.
@@ -109,7 +110,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand("t1", "op-x", "rpl_1", "ops"),
+                new ResumeWorkflowStepCommand("t1", "op-x", "rpl_1", "ops", "rc_test"),
                 CancellationToken.None));
     }
 
@@ -132,7 +133,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops"),
+                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test"),
                 CancellationToken.None));
     }
 
@@ -156,7 +157,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops"),
+                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test"),
                 CancellationToken.None));
     }
 }

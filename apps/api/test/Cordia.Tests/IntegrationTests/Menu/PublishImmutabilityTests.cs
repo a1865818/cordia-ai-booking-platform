@@ -1,4 +1,5 @@
 ﻿#pragma warning disable xUnit1051
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -42,8 +43,8 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
     {
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new PublishCatalogCommandHandler(
-            new VendorCatalogRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
-        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner"), CancellationToken.None);
+            new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
+        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test"), CancellationToken.None);
     }
 
     [Fact]

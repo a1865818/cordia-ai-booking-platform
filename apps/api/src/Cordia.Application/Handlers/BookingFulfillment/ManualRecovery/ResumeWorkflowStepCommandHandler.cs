@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -25,7 +26,7 @@ public sealed class ResumeWorkflowStepCommandHandler(
     IBookingOperationRepository opRepo,
     IOperationWorkItemRepository workItemRepo,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<ResumeWorkflowStepCommand, Unit>
 {
@@ -105,23 +106,26 @@ public sealed class ResumeWorkflowStepCommandHandler(
             }, ct2);
 
             // Audit with the distinct ReplayCommandId (Inv-15).
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "operation.replay",
-                Actor = command.Actor,
-                SubjectRef = command.OperationId,
-                CorrelationId = command.OperationId,
-                OperationId = command.OperationId,
-                Metadata = JsonSerializer.Serialize(new
+            // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: "operator",
+                ActorId: command.Actor,
+                Action: "operation.replay",
+                TargetType: "booking_operation",
+                TargetId: command.OperationId,
+                Decision: "allow",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.OperationId,
+                OperationId: command.OperationId,
+                OccurredAt: now,
+                Extra: new
                 {
                     replay_command_id = command.ReplayCommandId,
                     actor = command.Actor,
                     kind = "resume",
-                }),
-                OccurredAt = now,
-            }, ct2);
+                }), ct2);
         }, ct);
 
         return Unit.Value;

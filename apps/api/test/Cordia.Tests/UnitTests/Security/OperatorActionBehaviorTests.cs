@@ -2,7 +2,6 @@
 using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
-using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -60,7 +59,8 @@ public class OperatorActionBehaviorTests
         var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
         var handlerRan = false;
 
-        await Assert.ThrowsAsync<ValidationException>(() => behavior.Handle(
+        // Typed 403 (spec 14 §24.5): missing actor/reason is an authorization failure, not a 400.
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => behavior.Handle(
             new OperatorRequest("tenant-a", actor, reason),
             _ =>
             {

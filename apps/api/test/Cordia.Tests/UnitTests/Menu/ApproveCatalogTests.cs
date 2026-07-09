@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Menu.ApproveCatalog;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Handlers.Menu.ApproveCatalog;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -30,13 +31,13 @@ public class ApproveCatalogTests
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
 
-    private ApproveCatalogCommandHandler BuildHandler() => new(_repo.Object, _audit.Object, _uow.Object);
+    private ApproveCatalogCommandHandler BuildHandler() => new(_repo.Object, new AuditWriter(_audit.Object), _uow.Object);
 
     private void SetupCatalog(CatalogStatus status, long version = 0)
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version });
 
-    private static ApproveCatalogCommand Command() => new(Tenant, CatalogId, "alice");
+    private static ApproveCatalogCommand Command() => new(Tenant, CatalogId, "alice", "rc_test");
 
     [Fact]
     public async Task InReview_Approves_RecordingApprover_AndAudits()

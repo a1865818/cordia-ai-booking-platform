@@ -1,8 +1,6 @@
 ﻿using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
-using FluentValidation;
-using FluentValidation.Results;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,8 +11,9 @@ namespace Cordia.Application.Behaviours;
 /// implement <see cref="IOperatorActionRequest"/> — inbox consumers and
 /// customer-facing commands are untouched (Inv-5).
 ///
-/// For operator requests it (a) fails closed when the actor identity or reason
-/// code is missing (structural backstop behind the FluentValidation rules) and
+/// For operator requests it (a) fails closed with a typed
+/// <see cref="AuthorizationFailedException"/> (403) when the actor identity or
+/// reason code is missing (structural backstop behind the FluentValidation rules) and
 /// (b) appends a DENY audit event when a typed <see cref="DomainException"/>
 /// escapes the handler — the effect's transaction rolled back, so the denial
 /// is recorded in its own transaction. The deny write resolves a FRESH DI
@@ -40,12 +39,11 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
 
         if (string.IsNullOrWhiteSpace(op.ActorId) || string.IsNullOrWhiteSpace(op.ReasonCode))
         {
-            throw new ValidationException(new[]
-            {
-                new ValidationFailure(
-                    nameof(IOperatorActionRequest.ReasonCode),
-                    "Operator actions require an actor identity (X-Actor) and a reason code (spec 14 §24.5)."),
-            });
+            // Typed 403 (not a 400 validation error): the request is well-formed but the caller
+            // has not established WHO is acting or WHY — an authorization failure (§24.5).
+            throw new AuthorizationFailedException(
+                op.ActionName,
+                "Operator actions require an actor identity (X-Actor) and a reason code (X-Reason-Code) (spec 14 §24.5).");
         }
 
         try

@@ -1,4 +1,5 @@
-﻿using MediatR;
+﻿using Cordia.Application.Common.Authorization;
+using MediatR;
 
 namespace Cordia.Application.Handlers.Menu.PublishCatalog;
 
@@ -10,4 +11,14 @@ namespace Cordia.Application.Handlers.Menu.PublishCatalog;
 public sealed record PublishCatalogCommand(
     string TenantId,
     string CatalogId,
-    string Actor) : IRequest<Unit>;
+    string Actor,
+    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => Actor;
+
+    public string ActionName => "catalog.published";
+
+    public string TargetType => "vendor_catalog";
+
+    public string TargetId => CatalogId;
+}

@@ -228,7 +228,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
 
         // Send ResumeWorkflowStepCommand → ManualReview → Reconciling + continuation outbox.
         await mediator.Send(
-            new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops"));
+            new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test"));
 
         // Assert: op is now Reconciling.
         await using (var assertCtx = fixture.CreateContext(tenantId))
@@ -333,7 +333,8 @@ public class ManualRecoveryTests(PostgresFixture fixture)
                 ManualReviewResolution.Booked,
                 extRef,
                 replayCommandId,
-                "ops-agent"));
+                "ops-agent",
+                "rc_test"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -417,7 +418,8 @@ public class ManualRecoveryTests(PostgresFixture fixture)
                 ManualReviewResolution.FailedFinal,
                 ProviderRef: null,
                 replayCommandId,
-                "ops-agent"));
+                "ops-agent",
+                "rc_test"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -479,7 +481,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             mediator.Send(new ResumeWorkflowStepCommand(
-                tenantId, operationId, $"rpl_{Guid.NewGuid():N}", "ops")));
+                tenantId, operationId, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test")));
     }
 
     [Fact]
@@ -506,7 +508,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             mediator.Send(new ResolveManualReviewCommand(
                 tenantId, operationId, ManualReviewResolution.FailedFinal,
-                ProviderRef: null, $"rpl_{Guid.NewGuid():N}", "ops")));
+                ProviderRef: null, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test")));
     }
 
     // ── Scenario 5 (C10): Resume closes the open work item ───────────────────────────────────
@@ -551,7 +553,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         tenantCtx5.TenantId = tenantId;
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
-        await mediator.Send(new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops"));
+        await mediator.Send(new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -749,6 +751,9 @@ public class ManualRecoveryEndpointTests(AcceptanceApiFixture fixture)
                 .RawJson("""{"resolution":"failed_final"}""")
                 .ToUrl($"/api/booking-operations/{operationId}/resolve");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            // Spec 14 §24.5 fail-closed: operator actions require actor + reason code.
+            x.WithRequestHeader("X-Actor", "ops-agent");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
             x.StatusCodeShouldBe(HttpStatusCode.Accepted);
         });
 
@@ -788,6 +793,9 @@ public class ManualRecoveryEndpointTests(AcceptanceApiFixture fixture)
                 .RawJson("{}")
                 .ToUrl($"/api/booking-operations/{operationId}/resume");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            // Spec 14 §24.5: headers present so the 409 state guard (not the 400 validator) fires.
+            x.WithRequestHeader("X-Actor", "ops-agent");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
             x.StatusCodeShouldBe(HttpStatusCode.Conflict); // 409
         });
     }
@@ -829,6 +837,29 @@ public class ManualRecoveryEndpointTests(AcceptanceApiFixture fixture)
                 .ToUrl($"/api/booking-operations/{operationId}/resolve");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.StatusCodeShouldBe(HttpStatusCode.BadRequest); // 400, not 409
+        });
+    }
+
+    // ── T5b (spec 14 §24.5): POST /resolve without actor/reason headers → 400 ────────────────
+
+    /// <summary>
+    /// Spec 14 §24.5 fail-closed: an operator resolution WITHOUT X-Actor / X-Reason-Code must be
+    /// rejected (400 from the command validator; the OperatorActionBehavior 403 is the backstop) —
+    /// never silently attributed to a default actor.
+    /// </summary>
+    [Fact]
+    public async Task Resolve_MissingActorAndReasonHeaders_IsRejected()
+    {
+        var tenantId = $"acc-mr5b-{Guid.NewGuid():N}";
+        var operationId = await SeedManualReviewOpAsync(tenantId);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post
+                .RawJson("""{"resolution":"failed_final"}""")
+                .ToUrl($"/api/booking-operations/{operationId}/resolve");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.BadRequest); // validator fails closed
         });
     }
 

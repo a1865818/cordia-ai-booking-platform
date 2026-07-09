@@ -86,6 +86,12 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case AuthorizationFailedException ex:
+                logger.LogWarning(ex, "Authorization failed: action={ActionName}", ex.ActionName);
+                await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
+                    "Authorization failed", ex.Message, cancellationToken);
+                return true;
+
             case VerificationRequiredException ex:
                 logger.LogWarning(ex, "Verification required: tenant={TenantId} customer={CustomerRef} action={Action} booking={TargetBookingId}",
                     ex.TenantId, ex.CustomerRef, ex.Action, ex.TargetBookingId);

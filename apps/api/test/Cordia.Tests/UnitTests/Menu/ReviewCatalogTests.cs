@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Menu.ReviewCatalog;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Handlers.Menu.ReviewCatalog;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -33,14 +34,14 @@ public class ReviewCatalogTests
     }
 
     private ReviewCatalogCommandHandler BuildHandler()
-        => new(_repo.Object, _audit.Object, _uow.Object);
+        => new(_repo.Object, new AuditWriter(_audit.Object), _uow.Object);
 
     private void SetupCatalog(CatalogStatus status, long version = 0)
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version });
 
     private static ReviewCatalogCommand Command(IReadOnlyList<CatalogItemEdit>? edits = null)
-        => new(Tenant, CatalogId, "owner", edits ?? []);
+        => new(Tenant, CatalogId, "owner", edits ?? [], "rc_test");
 
     [Fact]
     public async Task DraftReady_TransitionsToInReview_AndAudits()

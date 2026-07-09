@@ -1,4 +1,6 @@
-﻿using MediatR;
+﻿using Cordia.Application.Common.Authorization;
+using FluentValidation;
+using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 
@@ -21,7 +23,32 @@ public sealed record ResolveManualReviewCommand(
     ManualReviewResolution Resolution,
     string? ProviderRef,
     string ReplayCommandId,
-    string Actor) : IRequest<Unit>;
+    string Actor,
+    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => Actor;
+
+    public string ActionName => "operation.manual_resolved";
+
+    public string TargetType => "booking_operation";
+
+    public string TargetId => OperationId;
+}
+
+/// <summary>Requires actor + reason code before a manual resolution (spec 06 Inv-15; spec 14 §24.5).</summary>
+public sealed class ResolveManualReviewValidator : AbstractValidator<ResolveManualReviewCommand>
+{
+    public ResolveManualReviewValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.OperationId).NotEmpty();
+        RuleFor(x => x.ReplayCommandId).NotEmpty();
+        RuleFor(x => x.Actor).NotEmpty()
+            .WithMessage("An operator actor is required to resolve a ManualReview operation (Inv-15).");
+        RuleFor(x => x.ReasonCode).NotEmpty()
+            .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+    }
+}
 
 /// <summary>Resolution outcomes for a ManualReview booking operation.</summary>
 public enum ManualReviewResolution

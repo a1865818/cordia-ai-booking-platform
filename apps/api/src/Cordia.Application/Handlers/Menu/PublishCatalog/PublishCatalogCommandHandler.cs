@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+﻿using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -16,7 +16,7 @@ namespace Cordia.Application.Handlers.Menu.PublishCatalog;
 /// </summary>
 public sealed class PublishCatalogCommandHandler(
     IVendorCatalogRepository repo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<PublishCatalogCommand, Unit>
 {
@@ -41,7 +41,7 @@ public sealed class PublishCatalogCommandHandler(
                 if (supersededRows == 0)
                     throw new InvalidCatalogStateTransitionException(CatalogStatus.Published, CatalogStatus.Superseded);
 
-                await auditRepo.AddAsync(BuildAudit(command, "catalog.superseded", prior.CatalogId,
+                await audit.WriteAsync(BuildAudit(command, "catalog.superseded", prior.CatalogId,
                     new { superseded_by = command.CatalogId }, now), ct2);
             }
 
@@ -51,25 +51,27 @@ public sealed class PublishCatalogCommandHandler(
             if (publishedRows == 0)
                 throw new InvalidCatalogStateTransitionException(catalog.Status, CatalogStatus.Published);
 
-            await auditRepo.AddAsync(BuildAudit(command, "catalog.published", command.CatalogId,
+            await audit.WriteAsync(BuildAudit(command, "catalog.published", command.CatalogId,
                 new { version_label = catalog.VersionLabel }, now), ct2);
         }, ct);
 
         return Unit.Value;
     }
 
-    private static AuditEvent BuildAudit(
+    // Spec 14 §24.5 — both publish-transaction events carry the owner's reason-coded envelope.
+    private static AuditRecord BuildAudit(
         PublishCatalogCommand command, string eventType, string subjectRef, object metadata, DateTimeOffset now)
-        => new()
-        {
-            TenantId = command.TenantId,
-            EventId = $"evt_{Guid.NewGuid():N}",
-            EventType = eventType,
-            Actor = command.Actor,
-            SubjectRef = subjectRef,
-            CorrelationId = command.CatalogId,
-            OperationId = null,
-            Metadata = JsonSerializer.Serialize(metadata),
-            OccurredAt = now,
-        };
+        => new(
+            TenantId: command.TenantId,
+            ActorType: "owner",
+            ActorId: command.Actor,
+            Action: eventType,
+            TargetType: "vendor_catalog",
+            TargetId: subjectRef,
+            Decision: "allow",
+            DataClasses: ["catalog"],
+            ReasonCode: command.ReasonCode,
+            CorrelationId: command.CatalogId,
+            OccurredAt: now,
+            Extra: metadata);
 }

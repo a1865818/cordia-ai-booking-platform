@@ -10,5 +10,6 @@ public sealed class ApproveCatalogValidator : AbstractValidator<ApproveCatalogCo
         RuleFor(x => x.TenantId).NotEmpty();
         RuleFor(x => x.CatalogId).NotEmpty();
         RuleFor(x => x.Actor).NotEmpty();
+        RuleFor(x => x.ReasonCode).NotEmpty();
     }
 }

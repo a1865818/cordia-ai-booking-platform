@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+﻿using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -15,7 +15,7 @@ namespace Cordia.Application.Handlers.Menu.ReviewCatalog;
 /// </summary>
 public sealed class ReviewCatalogCommandHandler(
     IVendorCatalogRepository repo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<ReviewCatalogCommand, Unit>
 {
@@ -43,18 +43,22 @@ public sealed class ReviewCatalogCommandHandler(
             if (command.Edits.Count > 0)
                 await repo.ApplyItemEditsAsync(command.CatalogId, command.Edits, ct2);
 
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "catalog.in_review",
-                Actor = command.Actor,
-                SubjectRef = command.CatalogId,
-                CorrelationId = command.CatalogId,
-                OperationId = null,
-                Metadata = JsonSerializer.Serialize(new { edit_count = command.Edits.Count }),
-                OccurredAt = now,
-            }, ct2);
+            // Spec 14 §24.5 — owner action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: "owner",
+                    ActorId: command.Actor,
+                    Action: "catalog.in_review",
+                    TargetType: "vendor_catalog",
+                    TargetId: command.CatalogId,
+                    Decision: "allow",
+                    DataClasses: ["catalog"],
+                    ReasonCode: command.ReasonCode,
+                    CorrelationId: command.CatalogId,
+                    OccurredAt: now,
+                    Extra: new { edit_count = command.Edits.Count }),
+                ct2);
         }, ct);
 
         return Unit.Value;

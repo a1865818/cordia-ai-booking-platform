@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using Cordia.Domain.Entities;
+﻿using Cordia.Application.Common.Audit;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
@@ -15,7 +14,7 @@ namespace Cordia.Application.Handlers.Menu.EditCatalogItems;
 /// </summary>
 public sealed class EditCatalogItemsCommandHandler(
     IVendorCatalogRepository repo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<EditCatalogItemsCommand, Unit>
 {
@@ -32,18 +31,22 @@ public sealed class EditCatalogItemsCommandHandler(
         {
             await repo.ApplyItemEditsAsync(command.CatalogId, command.Edits, ct2);
 
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "catalog.items_edited",
-                Actor = command.Actor,
-                SubjectRef = command.CatalogId,
-                CorrelationId = command.CatalogId,
-                OperationId = null,
-                Metadata = JsonSerializer.Serialize(new { edit_count = command.Edits.Count }),
-                OccurredAt = now,
-            }, ct2);
+            // Spec 14 §24.5 — owner action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: "owner",
+                    ActorId: command.Actor,
+                    Action: "catalog.items_edited",
+                    TargetType: "vendor_catalog",
+                    TargetId: command.CatalogId,
+                    Decision: "allow",
+                    DataClasses: ["catalog"],
+                    ReasonCode: command.ReasonCode,
+                    CorrelationId: command.CatalogId,
+                    OccurredAt: now,
+                    Extra: new { edit_count = command.Edits.Count }),
+                ct2);
         }, ct);
 
         return Unit.Value;

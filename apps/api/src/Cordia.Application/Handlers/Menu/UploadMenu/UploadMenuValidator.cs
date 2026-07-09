@@ -11,5 +11,6 @@ public sealed class UploadMenuValidator : AbstractValidator<UploadMenuCommand>
         RuleFor(x => x.Actor).NotEmpty();
         RuleFor(x => x.SourceArtifactRef).NotEmpty();
         RuleFor(x => x.VersionLabel).NotEmpty();
+        RuleFor(x => x.ReasonCode).NotEmpty();
     }
 }
