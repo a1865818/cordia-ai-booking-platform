@@ -264,9 +264,10 @@ Discoveries and notable information:
   the existing direct-write + interceptor-sanitized retention audit population.
 - Registered as a SINGLETON (`IObjectStore`) — it holds no scoped state; the key is
   re-resolved from `ISecretStore` per crypto operation, preserving lazy fail-on-use.
-- No producer writes transcripts/audio through the store yet — the langgraph voice vertical
-  (spec 13) adopts the seam when call artifacts land; the sweep + custody machinery is live
-  from this phase.
+- No producer writes transcripts/audio through the store yet — transcript/audio capture is
+  spec 01/02 territory (spec 13's ModelTraceSink is another candidate consumer), and the
+  artifact metadata table is a tracked deferred item for spec 12; the sweep + custody
+  machinery is live from this phase.
 
 ### Phase 7 — langgraph wiring (harness, channels, policy load)
 (a) ToolClient gate 1c: unknown tool name → `tool_not_permitted` envelope (replaces today's
@@ -374,10 +375,15 @@ gate 1c); tenant redaction policy loaded at runtime ✔ (P7c via ConsentPolicyVi
 consent_gate); channel-separation enforcement ✔ (P7b PromptChannels). shared-schemas:
 additive regen only ✔.
 
-Residual (tracked, out of scope): role taxonomy for X-Actor (08/14 open decision);
-`from_tenant_context` removal (spec-15 owns `allowed_policy_ids`); first object-store
-producer (spec 13 voice artifacts); `ConsentRequiredException` first throwing call site
-(consent-gated transcript reads); artifact metadata table (spec 12 deferred DDL item).
+Residual (tracked, out of scope — see docs/specs/README.md "Known deferred items" +
+spec 14 §12): role taxonomy for X-Actor (§31 open decision flagged by 08 + 14; registry
+lists it as "tracked, not yet owned by a spec"); `from_tenant_context` removal (spec-15
+owns `allowed_policy_ids`); first object-store producer — transcript/audio capture is
+spec 01/02 territory (spec 13's ModelTraceSink is another candidate consumer), blocked on
+the artifact metadata table that is "not yet in 12" (D17-frozen catalog) and on the
+jurisdiction retention windows (spec 14 §12 open decision #1); `ConsentRequiredException`
+first throwing call site (a consent-gated transcript read/write surface — downstream of
+that same missing producer; spec 14 §10 mandates only define + map, which is done).
 
 ## Manual verification checklist
 
