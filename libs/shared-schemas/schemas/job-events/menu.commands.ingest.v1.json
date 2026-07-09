@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/menu.commands.ingest.v1.json",
+  "title": "MenuCommandsIngestV1",
+  "description": "Queue-only trigger contract (spec 11 §4.4, §5.2) that crosses the broker to the isolated menu-ingestion consumer (consumer 'menu.processor'). It instructs the worker to run the pipeline for an already-uploaded catalog: scan → (quarantine | extract → draft). Carries NO secrets, PAN, or transcript text (Inv-12); source_artifact_ref is an opaque tenant-scoped object-storage handle, never the artifact bytes or any credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "correlation_id",
+    "catalog_id",
+    "source_artifact_ref"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "menu.commands.ingest.v1",
+      "description": "Explicit schema discriminator; always 'menu.commands.ingest.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes are scoped to this tenant (Inv-13)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Correlation identifier propagated across all messages in the ingestion chain."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause (nullable for synthetic/system-generated triggers)."
+    },
+    "catalog_id": {
+      "type": "string",
+      "description": "Stable id of the vendor_catalogs row (status 'uploaded') this ingestion processes."
+    },
+    "source_artifact_ref": {
+      "type": "string",
+      "description": "Opaque tenant-scoped object-storage reference to the uploaded artifact (e.g. 's3://tenant/...'). NEVER the artifact bytes, a URL with credentials, or any secret (Inv-12)."
+    }
+  }
+}

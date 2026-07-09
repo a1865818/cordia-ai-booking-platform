@@ -123,18 +123,25 @@ public sealed class ProcessDepositEventCommandHandler(
                 OccurredAt = now,
             }, ct);
 
-            // Emit notification.deposit_expired.v1.
+            // Spec 11 §5.3 / Inv-8: a pre-order operation signals the saga (booking_failed, reason
+            // deposit_expired) so it compensates the reserved items and emits the ONE combined
+            // outcome — a direct customer notice here would be a premature first outcome that the
+            // saga's later booking_failed compensation would duplicate. A normal operation keeps
+            // the customer-facing deposit-expired notification.
             await outboxRepo.AddAsync(new OutboxMessage
             {
                 TenantId = tenantId,
                 MessageId = $"obx_{Guid.NewGuid():N}",
                 OperationId = operationId,
-                MessageType = "notification.deposit_expired.v1",
+                MessageType = op.IsPreorder
+                    ? Cordia.Application.Handlers.Preorder.PreorderSagaMessages.BookingFailed
+                    : "notification.deposit_expired.v1",
                 CorrelationId = operationId,
                 Payload = JsonSerializer.Serialize(new
                 {
                     operation_id = operationId,
                     tenant_id = tenantId,
+                    reason = "deposit_expired",
                 }),
                 OccurredAt = now,
             }, ct);

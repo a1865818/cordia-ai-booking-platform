@@ -139,12 +139,14 @@ public sealed class CompensateOperationCommandHandler(
                         await capacityReservation.ReleaseByOperationAsync(
                             tenantId, operationId, ReleaseReason.Compensated, ct2);
 
+                        // Spec 11 §5.3: a pre-order op signals the saga (→ compensate items) instead
+                        // of emitting the customer failure notification directly.
                         await outboxRepo.AddAsync(new OutboxMessage
                         {
                             TenantId = tenantId,
                             MessageId = $"obx_{Guid.NewGuid():N}",
                             OperationId = operationId,
-                            MessageType = "notification.booking_failed.v1",
+                            MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.FailedOutcomeType(freshOp.IsPreorder),
                             CorrelationId = operationId,
                             Payload = JsonSerializer.Serialize(new
                             {
@@ -240,12 +242,13 @@ public sealed class CompensateOperationCommandHandler(
                 await capacityReservation.ReleaseByOperationAsync(
                     tenantId, operationId, ReleaseReason.Compensated, ct2);
 
+                // Spec 11 §5.3: a pre-order op signals the saga instead of notifying the customer.
                 await outboxRepo.AddAsync(new OutboxMessage
                 {
                     TenantId = tenantId,
                     MessageId = $"obx_{Guid.NewGuid():N}",
                     OperationId = operationId,
-                    MessageType = "notification.booking_failed.v1",
+                    MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.FailedOutcomeType(freshOp.IsPreorder),
                     CorrelationId = operationId,
                     Payload = JsonSerializer.Serialize(new
                     {

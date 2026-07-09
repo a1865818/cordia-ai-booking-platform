@@ -129,6 +129,115 @@ public class NotificationSenderTests(PostgresFixture fixture)
     }
 
     /// <summary>
+    /// Spec 11 §5.1 / review 2026-07-03 C1: a waitlist offer notification is emitted BEFORE any
+    /// booking_operations row exists (the op_wl_* operation is minted only at accept). The send
+    /// must survive the real outbox → transport → sender → INSERT path: the notifications row is
+    /// created with a NULL operation_id (composite FK skipped), state Accepted, and the outbox row
+    /// is published — never FK-rejected (PG 23503) or dead-lettered.
+    /// </summary>
+    [Fact]
+    public async Task WaitlistOffer_NoOperationRow_DeliversNotification_WithNullOperationId()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t11-wlntf-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        var operationId = $"op_wl_{Guid.NewGuid():N}"; // deliberately NO booking_operations row
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "waitlist.offer.notified.v1",
+                CorrelationId = $"wle-{Guid.NewGuid():N}",
+                OperationId = operationId,
+                Payload = $"{{\"offer_id\":\"wlo-1\",\"offer_expires_at\":\"2026-07-03T10:00:00Z\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await seedCtx.SaveChangesAsync();
+        }
+
+        await using var sp = BuildContainer();
+        var publisher = BuildPublisher(sp);
+        await publisher.PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var notifications = await assertCtx.Notifications
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(n => n.TenantId == tenantId)
+            .ToListAsync();
+
+        Assert.Single(notifications);
+        var notif = notifications[0];
+        Assert.Equal(NotificationEvent.WaitlistOffer, notif.EventType);
+        Assert.Equal(MessagePriority.Critical, notif.Priority);
+        Assert.Equal(NotificationState.Accepted, notif.State);
+        Assert.Null(notif.OperationId); // FK skipped — no booking_operations row exists yet
+
+        // The outbox row was published (not left unpublished, not dead-lettered).
+        var outboxRow = await assertCtx.OutboxMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .FirstAsync(m => m.TenantId == tenantId && m.MessageId == messageId);
+        Assert.NotNull(outboxRow.PublishedAt);
+        Assert.False(await assertCtx.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .AnyAsync(d => d.TenantId == tenantId && d.MessageId == messageId));
+    }
+
+    /// <summary>
+    /// Same end-to-end path for the OFFER-EXPIRED notification: this event previously crashed with
+    /// KeyNotFoundException because NotificationIdentity.EventLabels had no WaitlistOfferExpired
+    /// entry — invisible to mocked-repo unit tests, fatal on the real send (poison loop → DLQ).
+    /// </summary>
+    [Fact]
+    public async Task WaitlistOfferExpired_NoOperationRow_DeliversNotification()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+
+        var tenantId = $"t11-wlexp-{Guid.NewGuid():N}";
+        var messageId = $"msg-{Guid.NewGuid():N}";
+        var operationId = $"op_wl_{Guid.NewGuid():N}"; // no booking_operations row
+
+        await using (var seedCtx = fixture.CreateContext(tenantId))
+        {
+            seedCtx.OutboxMessages.Add(new OutboxMessage
+            {
+                TenantId = tenantId,
+                MessageId = messageId,
+                MessageType = "waitlist.offer.expired.v1",
+                CorrelationId = $"wle-{Guid.NewGuid():N}",
+                OperationId = operationId,
+                Payload = $"{{\"offer_id\":\"wlo-1\"}}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await seedCtx.SaveChangesAsync();
+        }
+
+        await using var sp = BuildContainer();
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var notif = await assertCtx.Notifications
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .SingleAsync(n => n.TenantId == tenantId);
+        Assert.Equal(NotificationEvent.WaitlistOfferExpired, notif.EventType);
+        Assert.Equal(NotificationState.Accepted, notif.State);
+        Assert.Null(notif.OperationId);
+        Assert.False(await assertCtx.DeadLetterMessages
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .AnyAsync(d => d.TenantId == tenantId && d.MessageId == messageId));
+    }
+
+    /// <summary>
     /// Tenant isolation (§27.6): a notification row created under tenant A is NOT visible
     /// when queried under tenant B — proving the global query filter is enforced (spec 10 §27.6, T6).
     /// </summary>

@@ -84,7 +84,10 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IAuditEventRepository, AuditEventRepository>();
         services.AddScoped<IDepositSessionRepository, DepositSessionRepository>();
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
+        services.AddScoped<IWaitlistEnrollmentRepository, WaitlistEnrollmentRepository>();
+        services.AddScoped<IVendorCatalogRepository, VendorCatalogRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
+        services.AddScoped<IPreorderSagaRepository, PreorderSagaRepository>();
 
         // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
         services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();
@@ -114,6 +117,16 @@ public static class InfrastructureServiceCollectionExtensions
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).
         services.AddSingleton<IDepositPolicy, NoDepositPolicy>();
         services.AddSingleton<IVerificationService, NoUserActionRequiredService>();
+
+        // Spec 11 — menu ingestion ports (deterministic stubs; real ClamAV / LangGraph extractor
+        // swap in later behind these ports). Stateless → singletons.
+        services.AddSingleton<IArtifactScanner, StubArtifactScanner>();
+        services.AddSingleton<IIsolatedMenuExtractor, StubIsolatedMenuExtractor>();
+
+        // Spec 11 — pre-order item-reservation port (deterministic stub; real POS adapter swaps in
+        // later behind this port). Stateless → singleton. Payment is no longer a saga concern: the
+        // whole booking (incl. spec-09 payment) is delegated to the spec-06 engine (§5.3, divergence #2).
+        services.AddSingleton<IPreorderItemReservation, StubPreorderItemReservation>();
 
         // Spec 06 T11 validation policy seam — singleton (always-pass stub; spec 04 real engine replaces).
         services.AddSingleton<IValidationPolicy, AlwaysValidPolicy>();

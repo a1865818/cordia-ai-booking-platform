@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.commands.match.v1.json",
+  "title": "WaitlistCommandsMatchV1",
+  "description": "Queue-only trigger contract (spec 11 §5.1) crossing the broker to the waitlist consumer (consumer 'waitlist.processor'). Instructs the worker to offer a freed first-party opening to the next eligible enrollee: find the FIFO-first enrollee, reserve a temporary hold, and make a deadline-bound offer (auto-booking it when a recorded consent grant permits). Emitted on initial enrollment-driven matching and as a re-match after a decline/expiry. Carries NO secrets or PII beyond opaque ids (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "location_id",
+    "service_id",
+    "slot_id",
+    "slot_start",
+    "available_seats"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.commands.match.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.commands.match.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes are scoped to this tenant (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (typically the freed slot id)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause (nullable for synthetic/system-generated triggers)."
+    },
+    "location_id": {
+      "type": "string",
+      "description": "Location of the matched opening; part of the enrollee-eligibility criteria."
+    },
+    "service_id": {
+      "type": "string",
+      "description": "Service of the matched opening; part of the enrollee-eligibility criteria."
+    },
+    "slot_id": {
+      "type": "string",
+      "description": "First-party slot of the freed opening; re-reserved against a temporary hold when offered."
+    },
+    "slot_start": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Start time of the matched slot; checked against the enrollee's acceptable window and carried into the offer."
+    },
+    "available_seats": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Seats available in the matched opening; bounds the enrollee party size that can be offered. Must be ≥ 1 — a 0/negative opening cannot offer any seat."
+    }
+  }
+}

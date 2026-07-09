@@ -2,6 +2,25 @@
 
 namespace Cordia.Domain.Interfaces;
 
+/// <summary>Outcome of dispatching a <see cref="JobEnvelope"/> to the consumer registry.</summary>
+public enum DispatchResult
+{
+    /// <summary>A registered consumer handled the message.</summary>
+    Dispatched,
+
+    /// <summary>
+    /// The message type is deliberately emitted without a consumer (audit trail / future consumer);
+    /// the transport treats it as delivered.
+    /// </summary>
+    IntentionallyUnconsumed,
+
+    /// <summary>
+    /// No consumer AND not declared intentionally unconsumed — a producer/registration defect.
+    /// The transport surfaces this loudly (dead-letter) instead of silently dropping the message.
+    /// </summary>
+    NoConsumer,
+}
+
 /// <summary>
 /// Domain seam for dispatching a <see cref="JobEnvelope"/> to its registered consumer handler (§3, OD-1).
 /// Decouples <see cref="IMessageTransport"/> in Infrastructure from MediatR/Application.
@@ -10,9 +29,9 @@ public interface IQueueConsumerDispatcher
 {
     /// <summary>
     /// Dispatches <paramref name="envelope"/> (routed to <paramref name="queue"/>) to its registered
-    /// consumer handler. Returns <see langword="true"/> if a consumer handled it; <see langword="false"/>
-    /// if none is registered (caller logs and treats as delivered — see §3 / OD-1, consumers are owned
-    /// by spec 06).
+    /// consumer handler. See <see cref="DispatchResult"/> for the three outcomes — an undeclared
+    /// missing consumer is NOT silently treated as delivered (spec 11 review root cause: dropped
+    /// waitlist-offer / preorder-alternatives notifications).
     /// </summary>
-    Task<bool> DispatchAsync(JobEnvelope envelope, LogicalQueue queue, CancellationToken ct = default);
+    Task<DispatchResult> DispatchAsync(JobEnvelope envelope, LogicalQueue queue, CancellationToken ct = default);
 }

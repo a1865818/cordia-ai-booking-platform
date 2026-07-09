@@ -1,0 +1,4 @@
+{
+  "title": "PublishedCatalog",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/PublishedCatalog"
+}

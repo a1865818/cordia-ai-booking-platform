@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.commands.offer_expiry.v1.json",
+  "title": "WaitlistCommandsOfferExpiryV1",
+  "description": "Durable scheduled-job contract (spec 11 §5.1) fired by the scheduled-job poller at/after an offer's deadline, routed to the waitlist consumer (consumer 'waitlist.processor'). Instructs the worker to expire the still-outstanding offer, release its temporary hold, and re-match the freed opening. Idempotent and self-settling: if the offer was already accepted/declined/expired the handler is a no-op. Carries only the offer id (Inv-12); the handler reloads the offer/enrollment to reconstruct the re-match criteria.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "offer_id"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.commands.offer_expiry.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.commands.offer_expiry.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes are scoped to this tenant (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (nullable)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause (nullable for scheduled triggers)."
+    },
+    "offer_id": {
+      "type": "string",
+      "description": "Stable id of the waitlist_offers row whose deadline elapsed."
+    }
+  }
+}

@@ -1,7 +1,7 @@
 ﻿namespace Cordia.Domain.Messaging;
 
 /// <summary>
-/// The 8 logical queues in the Cordia messaging topology (§3, §10, §12.1).
+/// The logical queues in the Cordia messaging topology (§3, §10, §12.1).
 /// Physical consolidation is allowed; these contracts stay distinct.
 /// This enum is NOT a PostgreSQL enum — no [PgName]/[JsonStringEnumMemberName] attributes.
 /// </summary>
@@ -15,6 +15,9 @@ public enum LogicalQueue
     WaitlistCommands,
     MenuCommands,
     OperationsReview,
+    // Spec 11 — pre-order saga lane (consumer "preorder.processor"). Each saga step + compensation
+    // + reconcile message routes here; ordering is not required (per-saga state is version-guarded).
+    PreorderCommands,
 }
 
 /// <summary>
@@ -43,11 +46,12 @@ public static class LogicalQueueRegistry
         ("notification.",        LogicalQueue.NotificationCommands),
         ("waitlist.",            LogicalQueue.WaitlistCommands),
         ("menu.",                LogicalQueue.MenuCommands),
+        ("preorder.",            LogicalQueue.PreorderCommands),
         ("operations.",          LogicalQueue.OperationsReview),
         ("capacity.",            LogicalQueue.BookingCommands),
     ];
 
-    /// <summary>All 8 logical queue metadata entries.</summary>
+    /// <summary>All 9 logical queue metadata entries.</summary>
     public static readonly IReadOnlyList<LogicalQueueMetadata> All =
     [
         new(LogicalQueue.BookingCommands,     "booking.commands",     OrderingRequired: true,  ["booking.finalizer", "booking.manage"]),
@@ -57,6 +61,7 @@ public static class LogicalQueueRegistry
         new(LogicalQueue.NotificationCommands,"notification.commands",OrderingRequired: false, ["notification.sender"]),
         new(LogicalQueue.WaitlistCommands,    "waitlist.commands",    OrderingRequired: false, ["waitlist.processor"]),
         new(LogicalQueue.MenuCommands,        "menu.commands",        OrderingRequired: false, ["menu.processor"]),
+        new(LogicalQueue.PreorderCommands,    "preorder.commands",    OrderingRequired: false, ["preorder.processor"]),
         new(LogicalQueue.OperationsReview,    "operations.review",    OrderingRequired: false, ["operations.reviewer"]),
     ];
 

@@ -80,7 +80,14 @@ from cordia_agent.tools.contracts import (
     VerificationRequest,
     VerificationSentResult,
 )
+from cordia_agent.contracts.catalog import CatalogItem, Money, PublishedCatalog
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.contracts.preorder import (
+    PreorderDraft,
+    PreorderDraftLine,
+    PreorderLineReference,
+    PreorderReference,
+)
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -134,6 +141,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BookingProjectionRef,
         BookingRequest,
         CanonicalBookingDraft,
+        CatalogItem,
         Confirmation,
         HandoffPackage,
         HandoffRequest,
@@ -143,9 +151,15 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         IntentRevision,
         ManageableBooking,
         MaskedDtmfSignal,
+        Money,
         OperationAcceptedResponse,
         OperationStatusView,
         PolicyValidationResult,
+        PreorderDraft,
+        PreorderDraftLine,
+        PreorderLineReference,
+        PreorderReference,
+        PublishedCatalog,
         SubmitCancellationInput,
         SubmitConfirmedIntentInput,
         SubmitConfirmedIntentRequest,

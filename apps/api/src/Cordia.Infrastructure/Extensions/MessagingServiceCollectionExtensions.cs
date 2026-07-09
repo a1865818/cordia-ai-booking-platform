@@ -57,6 +57,11 @@ internal static class MessagingServiceCollectionExtensions
         // Alba integration tests are unaffected.
         services.AddHostedService<MissingNotificationAuditHostedService>();
 
+        // Spec 11 §5.3 (divergence #3): pre-order saga recovery sweeper backstop; disabled via
+        // Messaging:PreorderRecovery:Enabled=false in appsettings.Test.json so existing Alba
+        // integration tests are unaffected.
+        services.AddHostedService<PreorderRecoverySweeperHostedService>();
+
         return services;
     }
 }

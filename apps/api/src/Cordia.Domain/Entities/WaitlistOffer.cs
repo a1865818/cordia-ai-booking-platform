@@ -20,6 +20,15 @@ public class WaitlistOffer : ITenantScoped
 
     public string? OperationId { get; set; }
 
+    /// <summary>First-party slot reserved for this offer (the freed opening); needed to re-reserve on re-match.</summary>
+    public string? SlotId { get; set; }
+
+    /// <summary>Start time of the matched slot; carried into the booking + the offer notification.</summary>
+    public DateTimeOffset? SlotStartAt { get; set; }
+
+    /// <summary>Seats available in the matched opening; the re-match criteria after a decline/expiry.</summary>
+    public int AvailableSeats { get; set; }
+
     public WaitlistOfferStatus Status { get; set; }
 
     public DateTimeOffset? OfferExpiresAt { get; set; }

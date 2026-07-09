@@ -6,7 +6,10 @@ namespace Cordia.Domain.Entities;
 /// <summary>
 /// Notification delivery row with optimistic-concurrency version token.
 /// PK (tenant_id, notification_id) = §22.1 unique logical-dedup constraint (Inv-9).
-/// FK to booking_operations ON DELETE RESTRICT.
+/// FK to booking_operations ON DELETE RESTRICT — enforced only when <see cref="OperationId"/> is
+/// non-null: spec-11 waitlist offer/expiry events carry an <c>op_wl_*</c> id whose
+/// booking_operations row is minted only at accept, so those rows store NULL here (the envelope's
+/// operation id still keys the notification identity for dedup).
 /// </summary>
 public class Notification : ITenantScoped
 {
@@ -14,7 +17,7 @@ public class Notification : ITenantScoped
 
     public string NotificationId { get; set; } = string.Empty;
 
-    public string OperationId { get; set; } = string.Empty;
+    public string? OperationId { get; set; }
 
     public NotificationEvent EventType { get; set; }
 

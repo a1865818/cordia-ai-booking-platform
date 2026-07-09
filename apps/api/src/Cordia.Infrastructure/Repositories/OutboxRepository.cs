@@ -14,6 +14,16 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
         await db.SaveChangesAsync(ct);
     }
 
+    public async Task AddRangeAsync(IEnumerable<OutboxMessage> messages, CancellationToken ct = default)
+    {
+        var list = messages as ICollection<OutboxMessage> ?? messages.ToList();
+        if (list.Count == 0)
+            return;
+
+        db.OutboxMessages.AddRange(list);
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task<IReadOnlyList<OutboxMessage>> ClaimUnpublishedAsync(
         string tenantId,
         int limit,

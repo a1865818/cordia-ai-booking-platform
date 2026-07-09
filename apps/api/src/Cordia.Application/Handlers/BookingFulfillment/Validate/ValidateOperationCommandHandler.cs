@@ -174,12 +174,18 @@ public sealed class ValidateOperationCommandHandler(
 
                     var nowR = DateTimeOffset.UtcNow;
 
+                    // Spec 11 §5.3 / Inv-8: a pre-order operation signals the saga (booking_failed,
+                    // reason from the policy) so it compensates the reserved items and emits the
+                    // ONE combined outcome; a normal operation keeps the customer-facing rejected
+                    // notification.
                     await outboxRepo.AddAsync(new OutboxMessage
                     {
                         TenantId = tenantId,
                         MessageId = $"obx_{Guid.NewGuid():N}",
                         OperationId = operationId,
-                        MessageType = "notification.rejected.v1",
+                        MessageType = afterValidating.IsPreorder
+                            ? Cordia.Application.Handlers.Preorder.PreorderSagaMessages.BookingFailed
+                            : "notification.rejected.v1",
                         CorrelationId = operationId,
                         Payload = JsonSerializer.Serialize(new
                         {

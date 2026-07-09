@@ -27,6 +27,20 @@ public class PreorderSaga : ITenantScoped
 
     public string? DepositSessionId { get; set; }
 
+    /// <summary>
+    /// True once a parked pre-order has been resolved into a standalone order (§21.4, set by the
+    /// operator convert path); false (default) for a booking-attached pre-order. The saga never starts
+    /// standalone — booking is always delegated to the spec-06 engine (divergence #2).
+    /// </summary>
+    public bool IsStandalone { get; set; }
+
+    /// <summary>
+    /// Coarse machine reason recorded when the saga reaches FailedFinal / ManualReview (compensation
+    /// or an unconfirmable external undo); null while healthy. For audit + outcome context — never
+    /// card data or PII (Inv-12).
+    /// </summary>
+    public string? FailureReason { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }

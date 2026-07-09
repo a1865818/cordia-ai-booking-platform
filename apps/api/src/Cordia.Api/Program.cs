@@ -82,6 +82,35 @@ builder.Services.AddSwaggerGen(c =>
             new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.Null },
         },
     });
+
+    // Dev-only: expose the X-Tenant-Id / X-Actor header shims (resolved by TenantResolutionMiddleware)
+    // as Swagger "Authorize" fields so the Swagger UI can exercise the tenant-scoped endpoints. Type the
+    // tenant once via the Authorize button and it is attached to every "Try it out" request. Not
+    // registered outside Development, where a signed-context resolver (spec 08/15) replaces the shim.
+    if (builder.Environment.IsDevelopment())
+    {
+        c.AddSecurityDefinition("TenantId", new Microsoft.OpenApi.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
+            In = Microsoft.OpenApi.ParameterLocation.Header,
+            Name = "X-Tenant-Id",
+            Description = "Dev tenant id (e.g. 'demo'). Sent on every request after you click Authorize.",
+        });
+        c.AddSecurityDefinition("Actor", new Microsoft.OpenApi.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
+            In = Microsoft.OpenApi.ParameterLocation.Header,
+            Name = "X-Actor",
+            Description = "Optional actor id recorded in audit events (e.g. 'owner1').",
+        });
+        // Microsoft.OpenApi 2.0 API: reference a defined scheme via OpenApiSecuritySchemeReference,
+        // supplied through the AddSecurityRequirement(document => ...) overload (empty scope list).
+        c.AddSecurityRequirement(document => new Microsoft.OpenApi.OpenApiSecurityRequirement
+        {
+            [new Microsoft.OpenApi.OpenApiSecuritySchemeReference("TenantId", document)] = [],
+            [new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Actor", document)] = [],
+        });
+    }
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<Cordia.Api.Errors.GlobalExceptionHandler>();

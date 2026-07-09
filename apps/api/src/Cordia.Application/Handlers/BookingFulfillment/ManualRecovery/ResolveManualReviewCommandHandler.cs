@@ -76,13 +76,14 @@ public sealed class ResolveManualReviewCommandHandler(
                     throw new OperationConflictException(command.OperationId,
                         "Concurrent modification — could not transition ManualReview → Booked.");
 
-                // Inv-8: notification.booking_confirmed.v1 in the same transaction.
+                // Inv-8: outcome in the same transaction. Spec 11 §5.3: a pre-order op signals the
+                // saga instead of notifying the customer directly.
                 await outboxRepo.AddAsync(new OutboxMessage
                 {
                     TenantId = command.TenantId,
                     MessageId = $"obx_{Guid.NewGuid():N}",
                     OperationId = command.OperationId,
-                    MessageType = "notification.booking_confirmed.v1",
+                    MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.ConfirmedOutcomeType(opInTxn.IsPreorder),
                     CorrelationId = command.OperationId,
                     CausationId = command.ReplayCommandId,
                     Payload = JsonSerializer.Serialize(new
@@ -115,7 +116,7 @@ public sealed class ResolveManualReviewCommandHandler(
                     TenantId = command.TenantId,
                     MessageId = $"obx_{Guid.NewGuid():N}",
                     OperationId = command.OperationId,
-                    MessageType = "notification.booking_failed.v1",
+                    MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.FailedOutcomeType(opInTxn.IsPreorder),
                     CorrelationId = command.OperationId,
                     CausationId = command.ReplayCommandId,
                     Payload = JsonSerializer.Serialize(new

@@ -19,6 +19,27 @@ public sealed class MessagingOptions
     public NotificationReconcileOptions NotificationReconcile { get; set; } = new();
 
     public MissingNotificationAuditOptions MissingNotificationAudit { get; set; } = new();
+
+    public PreorderRecoveryOptions PreorderRecovery { get; set; } = new();
+}
+
+/// <summary>Options for the pre-order saga recovery sweeper hosted service (spec 11 §5.3, divergence #3).</summary>
+public sealed class PreorderRecoveryOptions
+{
+    /// <summary>Set to false to disable the sweeper (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Milliseconds between sweeper ticks. Safety-net cadence (mirrors the step sweeper). Default: 30 s.
+    /// </summary>
+    public int IntervalMs { get; set; } = 30000;
+
+    /// <summary>
+    /// A non-terminal saga must have been untouched for at least this many seconds before it is
+    /// considered stuck and eligible for a reconcile sweep. Must exceed the longest per-step timeout
+    /// window so the primary reconcile timer fires first; the sweeper is the backstop. Default: 900 s.
+    /// </summary>
+    public int StalenessSeconds { get; set; } = 900;
 }
 
 /// <summary>Options for the scheduled-job poller hosted service (§7, T5).</summary>

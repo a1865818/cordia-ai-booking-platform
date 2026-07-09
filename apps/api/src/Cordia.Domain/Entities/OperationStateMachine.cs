@@ -22,6 +22,15 @@ public static class OperationStateMachine
             [OperationStatus.Accepted] = new HashSet<OperationStatus>
             {
                 OperationStatus.Validating,
+                // Spec 11 §5.3 / Inv-10: a pre-order operation's live revalidation runs BEFORE the
+                // 06 engine starts (the saga is the producer gate). Stale items park the op here
+                // directly — nothing was acquired — so the customer is prompted to re-confirm.
+                OperationStatus.AlternativesRequired,
+                // Spec 11 §5.3 / §8 FM#8: a pre-order that fails at item-reserve BEFORE the 06
+                // engine is ever triggered has no engine-owned path out of Accepted — the saga's
+                // compensation terminalizes the operation in lockstep with the failure outcome so
+                // the row never contradicts the terminal notification the customer received.
+                OperationStatus.FailedFinal,
             }.ToFrozenSet(),
             [OperationStatus.Validating] = new HashSet<OperationStatus>
             {

@@ -14,13 +14,17 @@ public sealed class MediatRQueueConsumerDispatcher(
     IMediator mediator,
     ConsumerRegistry registry) : IQueueConsumerDispatcher
 {
-    public async Task<bool> DispatchAsync(JobEnvelope envelope, LogicalQueue queue, CancellationToken ct = default)
+    public async Task<DispatchResult> DispatchAsync(JobEnvelope envelope, LogicalQueue queue, CancellationToken ct = default)
     {
         if (!registry.TryGet(envelope.MessageType, out var factory))
-            return false;
+        {
+            return registry.IsIntentionallyUnconsumed(envelope.MessageType)
+                ? DispatchResult.IntentionallyUnconsumed
+                : DispatchResult.NoConsumer;
+        }
 
         var request = factory(envelope);
         await mediator.Send(request, ct);
-        return true;
+        return DispatchResult.Dispatched;
     }
 }

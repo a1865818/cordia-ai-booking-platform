@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.offer.notified.v1.json",
+  "title": "WaitlistOfferNotifiedV1",
+  "description": "Outbox event (spec 11 §5.1) emitted when a deadline-bound waitlist offer is sent to a customer. Drives the customer-facing 'a spot opened up' notification carrying the accept/decline deadline. Carries only opaque ids and the customer's chosen notification channel (Inv-12); no PII payload, secrets, or transcript text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "offer_id",
+    "enrollment_id",
+    "offer_expires_at"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.offer.notified.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.offer.notified.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (the enrollment id)."
+    },
+    "offer_id": {
+      "type": "string",
+      "description": "Stable id of the waitlist_offers row offered to the customer."
+    },
+    "enrollment_id": {
+      "type": "string",
+      "description": "Stable id of the originating waitlist_enrollments row."
+    },
+    "customer_ref": {
+      "type": ["string", "null"],
+      "description": "Opaque tenant-scoped customer reference; never raw contact details (Inv-12)."
+    },
+    "notification_channel": {
+      "type": ["string", "null"],
+      "description": "Customer's chosen delivery channel for the offer notification."
+    },
+    "offer_expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Deadline by which the customer must accept; the offer auto-expires afterward."
+    },
+    "slot_start_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Start time of the matched slot being offered."
+    }
+  }
+}

@@ -35,7 +35,26 @@ public class WaitlistEnrollment : ITenantScoped
     /// <summary>jsonb — auto-book configuration; null when auto-book disabled.</summary>
     public string? AutoBook { get; set; }
 
+    /// <summary>
+    /// Authenticated customer identity captured at enroll time (spec 11 §5.1, divergence #1). Stamped
+    /// onto the <c>IntentConfirmation</c> when the offer is accepted, so a waitlist accept mints a real
+    /// confirmed revision tied to THIS customer (Inv-1) — not to whoever merely saw the offer
+    /// notification. Defaults to <see cref="CustomerRef"/> when not separately supplied.
+    /// </summary>
+    public string IdentityRef { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Verification level established when the customer enrolled (§8.8 vocabulary:
+    /// <c>unverified | channel_verified | identity_verified | high_assurance</c>). Carried onto the
+    /// acceptance confirmation as the "verified follow-up" assurance (§5.1); defaults to
+    /// <c>unverified</c> so the accept never over-claims identity assurance.
+    /// </summary>
+    public string VerificationLevel { get; set; } = "unverified";
+
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>When the enrollment was cancelled (Inv-6, terminal); null while active. Cancelled enrollments are never matched.</summary>
+    public DateTimeOffset? CancelledAt { get; set; }
 
     /// <summary>Optimistic-concurrency token (§22.1); default 0.</summary>
     public long Version { get; set; }

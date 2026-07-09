@@ -37,6 +37,8 @@ public sealed class NotificationTemplateResolver : INotificationTemplateResolver
         NotificationEvent.BookingConfirmed => "booking_confirmed",
         NotificationEvent.NoCapacityAlternatives => "no_capacity_alternatives",
         NotificationEvent.WaitlistOffer => "waitlist_offer",
+        NotificationEvent.WaitlistOfferExpired => "waitlist_offer_expired",
+        NotificationEvent.PreorderCancelled => "preorder_cancelled",
         NotificationEvent.FinalFailure => "final_failure",
         NotificationEvent.CancelOrModifyConfirmed => "cancel_or_modify_confirmed",
         _ => eventType.ToString().ToLowerInvariant(),
@@ -70,6 +72,10 @@ public sealed class NotificationTemplateResolver : INotificationTemplateResolver
             "Unfortunately we couldn't secure your first-choice slot. Please review the alternatives provided.",
         NotificationEvent.WaitlistOffer =>
             "Good news — a spot opened up! Your waitlist offer expires at {offer_expires_at}. Reply to confirm.",
+        NotificationEvent.WaitlistOfferExpired =>
+            "Your waitlist offer has expired and the table was released. You're still on the waitlist for the next opening.",
+        NotificationEvent.PreorderCancelled =>
+            "Your pre-order has been cancelled. Your table reservation is unchanged and remains confirmed.",
         NotificationEvent.FinalFailure =>
             "We were unable to complete your booking. Our team will follow up with you shortly.",
         NotificationEvent.CancelOrModifyConfirmed =>

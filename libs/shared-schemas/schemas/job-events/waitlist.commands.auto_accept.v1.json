@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/waitlist.commands.auto_accept.v1.json",
+  "title": "WaitlistCommandsAutoAcceptV1",
+  "description": "Queue-only command (spec 11 §5.1, §20) crossing the broker to the waitlist consumer (consumer 'waitlist.processor'). Enqueued by the matcher when a matched slot satisfies a recorded AutoBookGrant: instructs the platform to auto-book the offer by minting an auditable spec-04 confirmed revision (carrying the grant's consent evidence, Inv-1) rather than finalizing capacity directly. Handled by a plain (non-inbox) consumer so it can open its own transaction to call spec-04; idempotent via the spec-04 key + the offer's version-guarded claim. Carries NO secrets or PII beyond opaque ids (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "offer_id"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "waitlist.commands.auto_accept.v1",
+      "description": "Explicit schema discriminator; always 'waitlist.commands.auto_accept.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope. All consumer-side writes are scoped to this tenant (Inv-13)."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Correlation identifier propagated across the waitlist chain (typically the enrollment id)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the direct cause (the match that scheduled the auto-book)."
+    },
+    "offer_id": {
+      "type": "string",
+      "description": "Stable id of the waitlist_offers row to auto-book; the handler reloads it for the slot + operation id."
+    },
+    "operation_id": {
+      "type": ["string", "null"],
+      "description": "Provisional booking operation id the offer's capacity hold was reserved against (spec 07); the spec-04 submission mints under this id so the 06 engine reuses the hold."
+    }
+  }
+}
