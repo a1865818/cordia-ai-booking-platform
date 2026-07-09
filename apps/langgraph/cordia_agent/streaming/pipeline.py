@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from cordia_agent.security.redaction import redact_text
 from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming.barge_in import BargeInController
 from cordia_agent.streaming.progress_filler import ProgressFiller
@@ -28,6 +29,15 @@ if TYPE_CHECKING:
     from cordia_agent.streaming.agent_port import AgentOutputFrame, AgentPort
     from cordia_agent.streaming.providers import STTProvider, TTSProvider
     from cordia_agent.streaming.turn_manager import StreamFrame
+
+
+def _scrub_transcript_frame(frame: StreamFrame) -> StreamFrame:
+    """Return a copy of a transcript frame with its text redacted (Inv-12)."""
+    if isinstance(frame, TranscriptPartialFrame | TranscriptFinalFrame):
+        scrubbed = redact_text(frame.text)
+        if scrubbed != frame.text:
+            return frame.model_copy(update={"text": scrubbed})
+    return frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +85,10 @@ class Pipeline:
             causation_id=session.causation_id,
         )
         async for transcript in self._stt.transcribe(pcm_chunks, envelope=envelope):
-            yield transcript
+            # Spec 14 pre-emit redaction (Inv-12): PAN/CVV/gov-id shapes never
+            # leave the model boundary inside a transcript frame — downstream
+            # consumers (UI, logs, traces) only ever see the scrubbed text.
+            yield _scrub_transcript_frame(transcript)
             if isinstance(transcript, TranscriptPartialFrame):
                 for frame in self._barge_in.caller_speech_started(transcript).frames:
                     yield frame

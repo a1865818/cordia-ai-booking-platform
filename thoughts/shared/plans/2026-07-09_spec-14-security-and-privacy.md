@@ -316,15 +316,27 @@ redaction ingress/egress corpus test (PAN/CVV/gov-id/configured fields masked in
 frames, and logs). Full-lane regression run.
 
 Automated verification:
-- [ ] `bun nx test api`
-- [ ] `bun nx test-integration api`
-- [ ] `bun nx test langgraph`
-- [ ] `bun nx lint api` && `bun nx lint langgraph` (run separately)
-- [ ] `bun nx test web` (unchanged, regression only)
+- [x] `bun nx test api` (779 passed)
+- [x] `bun nx test-integration api` (330 passed, 2 pre-existing skips)
+- [x] `bun nx test langgraph` (741 passed)
+- [x] `bun nx lint api` and `bun nx lint langgraph` (both green, run separately)
+- [x] `bun nx test web` (2 passed, regression only)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- **Phase-2 leftover closed here:** transcript-frame scrubbing in the streaming pipeline
+  (`_scrub_transcript_frame` before yield) had been promised in Phase 2 but not wired; done in
+  this phase with a test proving PANs never leave in `TranscriptPartial/FinalFrame.text`.
+- The structural isolation test found exactly one non-`ITenantScoped` mapped entity:
+  `TenantChannelEndpoint` — correct by design (spec 15 tenant-RESOLUTION registry, looked up
+  before tenant scope exists) and now on the test's justified allowlist, which acts as the
+  merge gate for future unscoped entities.
+- Grant scope failures (expired/wrong-action/wrong-booking/wrong-tenant/consumed/forged
+  caller identity) are proven against the REAL repository SQL — the pre-existing unit suite
+  only mocked it.
+- The prompt-injection corpus exercises `is_tool_invocation_permitted` + the empty extraction
+  allowlist + redaction end-to-end; ToolAllowlist immutability asserted structurally (no
+  add/extend/update API).
 
 ## Manual verification checklist (post-implementation)
 
