@@ -2,6 +2,7 @@
 using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.Security;
@@ -80,7 +81,7 @@ public class AuditWriterTests
             .WriteAsync(MakeRecord(extra: new { note = "customer read card 4111111111111111" }), TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain("4111111111111111", written!.Metadata);
-        Assert.Contains(AuditMetadataSanitizer.MaskToken, written.Metadata);
+        Assert.Contains(SensitiveDataMask.MaskToken, written.Metadata);
     }
 
     [Theory]
@@ -91,8 +92,8 @@ public class AuditWriterTests
     [InlineData("0412345678", false)]           // 10-digit phone → kept
     public void Sanitizer_MasksOnlyLuhnValidPans(string value, bool masked)
     {
-        var result = AuditMetadataSanitizer.Sanitize($"{{\"v\":\"{value}\"}}");
-        Assert.Equal(masked, result.Contains(AuditMetadataSanitizer.MaskToken));
+        var result = SensitiveDataMask.Sanitize($"{{\"v\":\"{value}\"}}");
+        Assert.Equal(masked, result.Contains(SensitiveDataMask.MaskToken));
         Assert.Equal(!masked, result.Contains(value));
     }
 }

@@ -6,6 +6,7 @@ using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Retry;
+using Cordia.Infrastructure.Security;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
 using Microsoft.EntityFrameworkCore;
@@ -108,6 +109,9 @@ public static class InfrastructureServiceCollectionExtensions
         // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
         services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();
         services.AddSingleton<IJurisdictionPolicyProvider, JurisdictionPolicyProvider>();
+
+        // Spec 14 §24.4 — server-side secret custody; values never serialized or logged.
+        services.AddSingleton<ISecretStore, ConfigurationSecretStore>();
 
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();

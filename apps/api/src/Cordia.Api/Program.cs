@@ -1,14 +1,19 @@
 ﻿using Cordia.Application.Extensions;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
+using Cordia.Api.Logging;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Logging ---
+// The scrubbing enricher runs on EVERY event (spec 14 §24.4, Inv-12): credential-named
+// properties and Luhn-valid PAN shapes never reach a sink. Sinks/levels stay config-driven.
 builder.Host.UseSerilog((context, loggerConfig) =>
-    loggerConfig.ReadFrom.Configuration(context.Configuration));
+    loggerConfig
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.With(new LogScrubbingEnricher()));
 
 // --- Layers ---
 builder.Services.AddApplication();

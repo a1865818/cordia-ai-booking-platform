@@ -46,4 +46,38 @@ public static class RetentionPolicy
 
     /// <summary>Returns <c>true</c> when <paramref name="status"/> is a terminal operation status.</summary>
     public static bool IsTerminal(OperationStatus status) => Terminal.Contains(status);
+
+    // ── Spec 14 retention windows (Stage-3 gate decision 2026-07-09) ──────────────
+    // Deployment-configurable defaults; jurisdiction-specific values remain an open
+    // decision (spec 12 §13 / spec 14 §12). audit_events is NEVER pruned.
+
+    /// <summary>Default window after session end before customer_ref anonymization (90 days).</summary>
+    public static readonly TimeSpan DefaultSessionAnonymizationWindow = TimeSpan.FromDays(90);
+
+    /// <summary>Default window after grant expiry/consumption before physical pruning (30 days).</summary>
+    public static readonly TimeSpan DefaultGrantPruneWindow = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// A session is anonymized (customer_ref tombstoned, spec 14 §24.3 — anonymize,
+    /// never hard-delete) once it has ENDED and the window has elapsed. Live
+    /// sessions (ended_at null) are never touched.
+    /// </summary>
+    public static bool ShouldAnonymizeSession(
+        DateTimeOffset? endedAt,
+        DateTimeOffset now,
+        TimeSpan window)
+        => endedAt is not null && endedAt.Value + window < now;
+
+    /// <summary>
+    /// A verification grant is prunable once it is consumed or expired AND the
+    /// window has elapsed. Active (unexpired, unconsumed) grants are never
+    /// eligible — a future expiry keeps <c>expiresAt + window</c> in the future.
+    /// </summary>
+    public static bool ShouldPruneGrant(
+        DateTimeOffset expiresAt,
+        DateTimeOffset? consumedAt,
+        DateTimeOffset now,
+        TimeSpan window)
+        => (consumedAt is not null && consumedAt.Value + window < now)
+           || expiresAt + window < now;
 }

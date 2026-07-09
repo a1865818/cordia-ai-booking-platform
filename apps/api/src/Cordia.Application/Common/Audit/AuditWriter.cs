@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 
 namespace Cordia.Application.Common.Audit;
 
@@ -54,7 +55,7 @@ public sealed class AuditWriter(IAuditEventRepository auditRepo) : IAuditWriter
                 SubjectRef = record.TargetId,
                 CorrelationId = record.CorrelationId,
                 OperationId = record.OperationId,
-                Metadata = AuditMetadataSanitizer.Sanitize(metadata.ToJsonString()),
+                Metadata = SensitiveDataMask.Sanitize(metadata.ToJsonString()),
                 OccurredAt = DateTimeOffset.UtcNow,
             },
             ct);

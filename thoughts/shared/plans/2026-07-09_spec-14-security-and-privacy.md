@@ -281,13 +281,25 @@ session_anonymized` audit; (b) expired-and-consumed verification-grant pruning p
 at the Stage-3 gate. Idempotency sweep untouched (regression tests re-run).
 
 Automated verification:
-- [ ] `bun nx test api`
-- [ ] `bun nx lint api`
-- [ ] `bun nx test-integration api`
+- [x] `bun nx test api` (779 passed; +17 new tests)
+- [x] `bun nx lint api`
+- [x] `bun nx test-integration api` (320 passed, 2 pre-existing skips)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+- **Layering correction:** the PAN sanitizer moved to `Cordia.Domain/Security/SensitiveDataMask`
+  (pure, dependency-free) because Application → Infrastructure means Infrastructure cannot use
+  Application types; and the Serilog enricher lives in `Cordia.Api/Logging` (only Cordia.Api
+  references Serilog — no new package added, matching "Api owns Program.cs/Serilog").
+- Serilog enrichers cannot rewrite an attached `Exception` object; the compensating controls
+  (documented on the enricher) are the `ISecretStore` never-in-message contract and the
+  GlobalExceptionHandler's generic 500 for unmapped exceptions. `SecretNotFoundException` is
+  deliberately unmapped.
+- Session retention ANONYMIZES (`customer_ref` → null, row + consent evidence preserved) —
+  never hard-deletes (§24.3); grant pruning only touches consumed/expired grants; audit_events
+  is never pruned. Windows: 90d/30d defaults in `RetentionPolicy`, caller-overridable.
+- No scheduled caller exists for any retention sweep (pre-existing: the idempotency sweep has
+  none either) — wiring sweeps to `scheduled_jobs` is spec 05/12 follow-up work, not spec 14's.
 
 ### Phase 6 — §27.6 cross-cutting security test suite
 
