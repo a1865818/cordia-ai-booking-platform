@@ -153,11 +153,12 @@ def render_datetime_spell_back(
     Returns:
         A deterministic spell-back string containing date, local time, and timezone.
     """
-    # (a) Date portion — "Friday, 13 June 2026"
-    date_str = dt.strftime("%A, %-d %B %Y")
+    # (a) Date portion — "Friday, 13 June 2026" (no %-d: not portable to Windows)
+    date_str = dt.strftime(f"%A, {dt.day} %B %Y")
 
-    # (b) Local time — "7:00 PM"
-    time_str = dt.strftime("%-I:%M %p")
+    # (b) Local time — "7:00 PM" (no %-I: not portable to Windows)
+    hour_12 = dt.hour % 12 or 12
+    time_str = dt.strftime(f"{hour_12}:%M %p")
 
     # (c) Timezone
     if tz_label:

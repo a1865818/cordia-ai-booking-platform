@@ -88,6 +88,11 @@ from cordia_agent.contracts.preorder import (
     PreorderLineReference,
     PreorderReference,
 )
+from cordia_agent.contracts.security import (
+    AuditEventEnvelope,
+    ConsentState,
+    RedactionPolicy,
+)
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -133,6 +138,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     ],
     "models": [
         AcceptanceResult,
+        AuditEventEnvelope,
         AvailabilityCandidate,
         AvailabilityRequest,
         AvailabilityResult,
@@ -143,6 +149,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         CanonicalBookingDraft,
         CatalogItem,
         Confirmation,
+        ConsentState,
         HandoffPackage,
         HandoffRequest,
         HandoffResult,
@@ -160,6 +167,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         PreorderLineReference,
         PreorderReference,
         PublishedCatalog,
+        RedactionPolicy,
         SubmitCancellationInput,
         SubmitConfirmedIntentInput,
         SubmitConfirmedIntentRequest,
@@ -265,7 +273,7 @@ def write_shared_defs(shared_defs: dict[str, Any]) -> None:
         "title": "Pydantic Shared Definitions",
         "$defs": shared_defs,
     }
-    SHARED_DEFS_FILE.write_text(json.dumps(document, indent=2) + "\n")
+    SHARED_DEFS_FILE.write_text(json.dumps(document, indent=2) + "\n", newline="\n")
 
 
 def write_wrappers() -> list[str]:
@@ -280,7 +288,9 @@ def write_wrappers() -> list[str]:
                 "title": title,
                 "$ref": f"../shared/PydanticSharedDefs.json#/$defs/{title}",
             }
-            (out_dir / f"{title}.json").write_text(json.dumps(wrapper, indent=2) + "\n")
+            (out_dir / f"{title}.json").write_text(
+                json.dumps(wrapper, indent=2) + "\n", newline="\n"
+            )
             written.append(title)
     return written
 
@@ -292,7 +302,7 @@ def write_enums() -> list[str]:
     written: list[str] = []
     for enum_cls in ENUM_REGISTRY:
         (out_dir / f"{enum_cls.__name__}.json").write_text(
-            json.dumps(enum_schema(enum_cls), indent=2) + "\n"
+            json.dumps(enum_schema(enum_cls), indent=2) + "\n", newline="\n"
         )
         written.append(enum_cls.__name__)
     return written

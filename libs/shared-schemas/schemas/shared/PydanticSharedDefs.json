@@ -342,6 +342,123 @@
       "title": "AudioStartedFrame",
       "type": "object"
     },
+    "AuditEventEnvelope": {
+      "additionalProperties": false,
+      "description": "Cross-service audit record emitted by either lane (spec 14 \u00a74.1, D13).",
+      "properties": {
+        "audit_event_id": {
+          "description": "Stable opaque id for the audit record.",
+          "title": "Audit Event Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Owning tenant (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Request/session correlation id (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Id of the message/command that caused this event.",
+          "title": "Causation Id"
+        },
+        "actor_type": {
+          "description": "Class of actor that performed the action.",
+          "enum": [
+            "customer",
+            "owner",
+            "operator",
+            "agent",
+            "system"
+          ],
+          "title": "Actor Type",
+          "type": "string"
+        },
+        "actor_id": {
+          "description": "Actor identity, e.g. operator handle or 'system'.",
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "action": {
+          "description": "Action performed, e.g. 'read_sensitive_booking', 'operator_replay'.",
+          "title": "Action",
+          "type": "string"
+        },
+        "target_type": {
+          "description": "Kind of target, e.g. 'booking', 'transcript'.",
+          "title": "Target Type",
+          "type": "string"
+        },
+        "target_id": {
+          "description": "Target identifier.",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required for owner/operator actions (\u00a724.5); None for others.",
+          "title": "Reason Code"
+        },
+        "decision": {
+          "description": "Whether the action was allowed or denied (both are audited, \u00a73.1).",
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "data_classes": {
+          "description": "Data classes touched, e.g. ['pii', 'booking', 'payment_token'].",
+          "items": {
+            "type": "string"
+          },
+          "title": "Data Classes",
+          "type": "array"
+        },
+        "occurred_at": {
+          "description": "When the audited action occurred (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "audit_event_id",
+        "tenant_id",
+        "correlation_id",
+        "actor_type",
+        "actor_id",
+        "action",
+        "target_type",
+        "target_id",
+        "decision",
+        "data_classes",
+        "occurred_at"
+      ],
+      "title": "AuditEventEnvelope",
+      "type": "object"
+    },
     "AvailabilityCandidate": {
       "additionalProperties": false,
       "description": "A single available candidate slot (spec 03 \u00a74.3).",
@@ -1340,6 +1457,65 @@
         "verification_level"
       ],
       "title": "Confirmation",
+      "type": "object"
+    },
+    "ConsentState": {
+      "additionalProperties": false,
+      "description": "Recording/transcription consent captured at session start (spec 14 \u00a74.1).",
+      "properties": {
+        "consent_policy_version": {
+          "description": "Version of the notice/policy presented, e.g. 'us-ca-two-party:2026-01'.",
+          "title": "Consent Policy Version",
+          "type": "string"
+        },
+        "jurisdiction_policy_id": {
+          "description": "Policy resolved from tenant + caller jurisdiction.",
+          "title": "Jurisdiction Policy Id",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "Consent outcome; values match the ratified consent_state pg-enum (spec 12).",
+          "enum": [
+            "granted",
+            "declined",
+            "not_required",
+            "alternative_offered"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "recording_allowed": {
+          "description": "Gate for transcript/audio capture; False \u21d2 no transcript persisted (\u00a75.2).",
+          "title": "Recording Allowed",
+          "type": "boolean"
+        },
+        "captured_at": {
+          "description": "When the outcome was captured (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "notice_channel": {
+          "description": "Channel the required notice was played/displayed on.",
+          "enum": [
+            "voice",
+            "web",
+            "messaging",
+            "email"
+          ],
+          "title": "Notice Channel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consent_policy_version",
+        "jurisdiction_policy_id",
+        "outcome",
+        "recording_allowed",
+        "captured_at",
+        "notice_channel"
+      ],
+      "title": "ConsentState",
       "type": "object"
     },
     "CustomerRef": {
@@ -2344,6 +2520,46 @@
         "failed",
         "handoff_signalled"
       ]
+    },
+    "RedactionPolicy": {
+      "additionalProperties": false,
+      "description": "Sensitive-data masking policy (spec 14 \u00a74.1, Inv-12).\n\nPAN/CVV masking is always-on by contract default; ``configured_sensitive_fields``\nstarts empty and is tenant-overridable (Stage-3 gate decision, 2026-07-09).",
+      "properties": {
+        "mask_pan": {
+          "default": true,
+          "description": "Always-on card-number masking (Inv-12).",
+          "title": "Mask Pan",
+          "type": "boolean"
+        },
+        "mask_cvv": {
+          "default": true,
+          "description": "Always-on CVV/CVC masking (Inv-12).",
+          "title": "Mask Cvv",
+          "type": "boolean"
+        },
+        "mask_government_id": {
+          "default": true,
+          "description": "Government-identifier masking (SSN/TFN-style patterns).",
+          "title": "Mask Government Id",
+          "type": "boolean"
+        },
+        "configured_sensitive_fields": {
+          "description": "Tenant-defined field-name selectors masked in payloads/logs; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Configured Sensitive Fields",
+          "type": "array"
+        },
+        "mask_token": {
+          "default": "[REDACTED]",
+          "description": "Replacement token for masked spans.",
+          "title": "Mask Token",
+          "type": "string"
+        }
+      },
+      "title": "RedactionPolicy",
+      "type": "object"
     },
     "RequestHumanHandoffStatus": {
       "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
