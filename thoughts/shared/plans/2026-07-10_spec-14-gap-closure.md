@@ -316,11 +316,68 @@ All-lane suites; regression diff against BOTH baseline docs (items 1–24); inva
 validation report appended here.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx test-integration api` · `bun nx test langgraph` · `bun nx lint api` · `bun nx lint langgraph` · `bun nx test web`
+- [x] `bun nx test api` (829 passed) · `bun nx test-integration api` (339 passed, 2 skipped) · `bun nx test langgraph` (801 passed) · `bun nx lint api` (exit 0) · `bun nx lint langgraph` (exit 0) · `bun nx test web` (2 passed)
 
 Discoveries and notable information:
 
-- _(left blank for the implementer)_
+#### Validation report — 2026-07-10 (gap-closure phases 1–8 complete)
+
+Commits: Phase 1 retention scheduling + Phase 2 audit interceptor/envelope (committed
+2026-07-10 am), `1e7e0cb` (P3 operator spine), `4b93530` (P4 secrets + typed exceptions),
+`9e995fe` (P5 queue sanitization), `5ad05ea` (P6 encrypted object store), `9c024fd`
+(P7 langgraph wiring). All-lane suites green at HEAD.
+
+**Regression diff — 2026-07-09 baseline items 1–16** (original spec-14 baseline):
+- (1–5, DDL/enums/D13): zero migrations added; `audit_events`/`conversation_sessions`
+  shapes untouched; envelope fields still ride in metadata jsonb. INTACT.
+- (6) EF tenant filter, (7) MediatR pipeline order (Validation → OperatorAction →
+  InboxDedup → Handler — OperatorAction position unchanged since Goal-1), (8)
+  GlobalExceptionHandler unmapped→500, (9) Serilog: INTACT (new switch cases are additive).
+- (10) injection harness UNTRUSTED-never-invokes: STRENGTHENED (gate 1c enforces it on the
+  live tool path); (11) extraction isolation: STRENGTHENED (PromptChannels adds construction-
+  time channel separation; allowlist still empty); (12) DTMF redaction untouched;
+  (13) ToolClient tenant gating: byte-stable (all 19 canonical tools pass gate 1c with no
+  allowlist — pinned by test); (14) graph topology unchanged this pass (consent_gate edge was
+  the Goal-1 change); (15) checkpointer scrubbing untouched; (16) shared redaction corpus:
+  both parity suites still green.
+
+**Regression diff — 2026-07-10 delta items 17–24**:
+- (17) hosted services: RetentionSweepHostedService follows the gate pattern, Test config
+  disables it; the other 7 untouched. (18) ad-hoc audit rows: EventType/Actor stable at every
+  migrated site (`catalog.*`, `preorder.standalone_converted`, `preorder.manual_review_cancelled`,
+  `operation.replay`, `operation.manual_resolved`); tests assert via parsed JSON keys.
+- (19) staff endpoints now REQUIRE X-Actor/X-Reason-Code — the approved intentional break
+  (gate decision); fail-closed regression tests assert rejection + no state advance.
+- (20) webhook constant-time compare preserved through the ISecretStore re-source (store
+  value wins; both sources tested). (21) queue sanitizer: control-plane keys exempt,
+  byte-identity no-op guarantee structural; full integration suite (publisher/dedup/consumer
+  id-extraction) runs through it green. (22) ToolClient headers/retry/gates byte-stable.
+- (23/24) `ConsentPolicyView.redaction` additive-optional; shared-schemas + api-contract
+  regenerated; older-agent posture (null ⇒ baseline) covered by tests on both sides.
+
+**Invariant re-check**: Inv-2 — operation_id/idempotency_key/payload_hash round-trip
+byte-for-byte through the sanitizer (control-plane exemption + no-op vectors); Inv-5 — inbox
+consumers untouched, no `IInboxConsumerRequest` gained operator semantics; Inv-11 —
+grant gate untouched, operator actions now uniformly actor+reason-coded; Inv-12 —
+strengthened at four choke points (audit interceptor, queue sanitizer, object-store
+encryption, prompt channels); Inv-13 — tenant scoping now guarded by one typed
+`TenantGuard` across all 11 controllers; Inv-14 — audit path append-only, denials audited
+via fresh-scope writer.
+
+**Gap list coverage (goal statement)**: retention jobs scheduled ✔ (P1); audit writes
+uniform ✔ (P2+P3); operator/owner coverage broad ✔ (P3, 9 commands + DLQ replay);
+ISecretStore consumed ✔ (P4 webhook + P6 object-store key); encrypted object store ✔ (P6,
+tenant-scoped AES-256-GCM + 72h raw-audio TTL swept + audited); typed security exceptions ✔
+(P4: TenantScopeMissing→400, AuthorizationFailed→403, ConsentRequired→409);
+queue/outbox redaction ✔ (P5). langgraph: allowlist harness on the live tool path ✔ (P7
+gate 1c); tenant redaction policy loaded at runtime ✔ (P7c via ConsentPolicyView +
+consent_gate); channel-separation enforcement ✔ (P7b PromptChannels). shared-schemas:
+additive regen only ✔.
+
+Residual (tracked, out of scope): role taxonomy for X-Actor (08/14 open decision);
+`from_tenant_context` removal (spec-15 owns `allowed_policy_ids`); first object-store
+producer (spec 13 voice artifacts); `ConsentRequiredException` first throwing call site
+(consent-gated transcript reads); artifact metadata table (spec 12 deferred DDL item).
 
 ## Manual verification checklist
 
