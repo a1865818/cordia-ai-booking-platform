@@ -1,4 +1,5 @@
 ﻿using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -84,11 +85,34 @@ public sealed partial class EncryptedFileObjectStore(
         tag.CopyTo(blob, NonceSize);
         ciphertext.CopyTo(blob, NonceSize + TagSize);
 
-        await File.WriteAllBytesAsync(path, blob, ct);
-        await File.WriteAllTextAsync(
-            MetaPath(path),
-            JsonSerializer.Serialize(new ObjectMeta(now, effectiveTtl is null ? null : now + effectiveTtl, purpose)),
-            ct);
+        var metaBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+            new ObjectMeta(now, effectiveTtl is null ? null : now + effectiveTtl, purpose)));
+
+        // Write the meta sidecar FIRST, then the blob — each via a temp file + atomic rename.
+        // Because reads and the sweep are fail-closed on a missing/corrupt meta (M3), the
+        // decryptable .bin must never become visible without its sidecar; a crash between the
+        // two renames leaves at most an orphan the next sweep prunes, never a live object with
+        // no provable retention state.
+        await WriteAtomicAsync(MetaPath(path), metaBytes, ct);
+        await WriteAtomicAsync(path, blob, ct);
+    }
+
+    /// <summary>Writes <paramref name="bytes"/> to <paramref name="finalPath"/> atomically:
+    /// a sibling temp file is written then renamed into place (atomic on the same volume), so a
+    /// reader never observes a partially written file and a crash leaves only a stray temp.</summary>
+    private static async Task WriteAtomicAsync(string finalPath, byte[] bytes, CancellationToken ct)
+    {
+        var tmp = $"{finalPath}.tmp-{Guid.NewGuid():N}";
+        try
+        {
+            await File.WriteAllBytesAsync(tmp, bytes, ct);
+            File.Move(tmp, finalPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tmp))
+                File.Delete(tmp);
+        }
     }
 
     public async Task<byte[]?> GetAsync(
@@ -98,12 +122,21 @@ public sealed partial class EncryptedFileObjectStore(
         if (!File.Exists(path))
             return null;
 
-        // Expired-but-not-yet-swept objects are already unreadable (fail closed).
+        // Fail closed (M3): a blob whose meta sidecar is missing or unparseable has no provable
+        // retention state, so treat it as expired rather than decrypt-and-return. A present meta
+        // with a null ExpiresAt is a legitimate no-TTL object and is served.
         var meta = await ReadMetaAsync(MetaPath(path), ct);
-        if (meta?.ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow)
+        if (meta is null)
+            return null;
+        if (meta.ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow)
             return null;
 
         var blob = await File.ReadAllBytesAsync(path, ct);
+        // A blob shorter than nonce+tag is truncated/corrupt — fail closed, never underflow the
+        // plaintext length below.
+        if (blob.Length < NonceSize + TagSize)
+            return null;
+
         var plaintext = new byte[blob.Length - NonceSize - TagSize];
         using var aes = new AesGcm(ResolveKey(), TagSize);
         aes.Decrypt(
@@ -156,25 +189,45 @@ public sealed partial class EncryptedFileObjectStore(
         if (!Directory.Exists(Root))
             return pruned;
 
-        foreach (var metaPath in Directory.EnumerateFiles(Root, "*.meta.json", SearchOption.AllDirectories))
+        // Enumerate the encrypted blobs (the content-bearing artifacts), not the meta sidecars:
+        // a blob whose meta is missing/unparseable would otherwise be invisible to a meta-driven
+        // sweep and linger forever (dead weight — already unreadable via GetAsync). Prune it
+        // fail-closed here so the store cannot accumulate orphaned ciphertext (M3).
+        foreach (var binPath in Directory.EnumerateFiles(Root, "*.bin", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
+            var metaPath = MetaPath(binPath);
             var meta = await ReadMetaAsync(metaPath, ct);
-            if (meta?.ExpiresAt is not { } expiresAt || expiresAt > now)
+
+            string reason;
+            DateTimeOffset? expiresAt;
+            if (meta is null)
+            {
+                reason = "missing_or_corrupt_meta";
+                expiresAt = null;
+            }
+            else if (meta.ExpiresAt is { } exp && exp <= now)
+            {
+                reason = "ttl_elapsed";
+                expiresAt = exp;
+            }
+            else
+            {
+                // Live object: a future TTL, or a legitimate no-TTL object (ExpiresAt null).
                 continue;
+            }
 
-            // {root}/{tenant}/{purpose}/{id}.meta.json
-            var purposeDir = Path.GetDirectoryName(metaPath)!;
+            // {root}/{tenant}/{purpose}/{id}.bin
+            var purposeDir = Path.GetDirectoryName(binPath)!;
             var tenantDir = Path.GetDirectoryName(purposeDir)!;
-            var objectId = Path.GetFileName(metaPath)[..^".meta.json".Length];
+            var objectId = Path.GetFileName(binPath)[..^".bin".Length];
 
-            var binPath = Path.Combine(purposeDir, objectId + ".bin");
-            if (File.Exists(binPath))
-                File.Delete(binPath);
-            File.Delete(metaPath);
+            File.Delete(binPath);
+            if (File.Exists(metaPath))
+                File.Delete(metaPath);
 
             pruned.Add(new PrunedObject(
-                Path.GetFileName(tenantDir), Path.GetFileName(purposeDir), objectId, expiresAt));
+                Path.GetFileName(tenantDir), Path.GetFileName(purposeDir), objectId, expiresAt, reason));
         }
 
         return pruned;

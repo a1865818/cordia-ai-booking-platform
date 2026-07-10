@@ -239,6 +239,85 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task MissingMeta_FailsClosed_GetReturnsNull()
+    {
+        // M3: a decryptable blob whose meta sidecar is gone has no provable retention state —
+        // it must NOT decrypt-and-return (the previous behavior leaked it fail-open).
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+        File.Delete(Path.Combine(_root, "t-a", "transcript", "obj-1.meta.json"));
+
+        Assert.Null(await store.GetAsync("t-a", "transcript", "obj-1"));
+    }
+
+    [Fact]
+    public async Task CorruptMeta_FailsClosed_GetReturnsNull()
+    {
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+        await File.WriteAllTextAsync(
+            Path.Combine(_root, "t-a", "transcript", "obj-1.meta.json"),
+            "{ this is not valid json",
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(await store.GetAsync("t-a", "transcript", "obj-1"));
+    }
+
+    [Fact]
+    public async Task NoTtlObject_WithIntactMeta_IsStillServed()
+    {
+        // Fail-closed must not become fail-shut: a present meta with a null ExpiresAt is a
+        // legitimate no-TTL object and must round-trip.
+        var store = Store();
+        await store.PutAsync("t-a", "attachment", "obj-1", new byte[] { 7, 8, 9 });
+
+        Assert.Equal(new byte[] { 7, 8, 9 }, await store.GetAsync("t-a", "attachment", "obj-1"));
+    }
+
+    [Fact]
+    public async Task SweepExpired_PrunesOrphanBlobWithMissingMeta_FailClosed()
+    {
+        // M3: a blob whose meta is absent would be invisible to a meta-driven sweep and linger
+        // forever as unreadable ciphertext. The blob-driven sweep prunes it, reason-coded.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "orphan-1", new byte[] { 1, 2, 3 });
+        File.Delete(Path.Combine(_root, "t-a", "transcript", "orphan-1.meta.json"));
+
+        var pruned = await store.SweepExpiredAsync(DateTimeOffset.UtcNow);
+
+        var only = Assert.Single(pruned);
+        Assert.Equal(("t-a", "transcript", "orphan-1"), (only.TenantId, only.Purpose, only.ObjectId));
+        Assert.Equal("missing_or_corrupt_meta", only.Reason);
+        Assert.Null(only.ExpiresAt);
+        Assert.False(File.Exists(Path.Combine(_root, "t-a", "transcript", "orphan-1.bin")));
+    }
+
+    [Fact]
+    public async Task TruncatedBlob_ShorterThanNonceAndTag_FailsClosed_NoUnderflow()
+    {
+        // M3-adjacent: a blob shorter than nonce(12)+tag(16) must return null, not throw an
+        // ArgumentOutOfRange from a negative plaintext length.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+        await File.WriteAllBytesAsync(
+            Path.Combine(_root, "t-a", "transcript", "obj-1.bin"),
+            new byte[10],
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(await store.GetAsync("t-a", "transcript", "obj-1"));
+    }
+
+    [Fact]
+    public async Task Put_LeavesNoTempFilesBehind()
+    {
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+
+        var stray = Directory.EnumerateFiles(_root, "*.tmp-*", SearchOption.AllDirectories);
+        Assert.Empty(stray);
+    }
+
+    [Fact]
     public async Task Delete_RemovesObjectAndSidecar()
     {
         var store = Store();

@@ -39,9 +39,13 @@ public interface IObjectStore
     Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(DateTimeOffset now, CancellationToken ct = default);
 }
 
-/// <summary>One object removed by <see cref="IObjectStore.SweepExpiredAsync"/>.</summary>
+/// <summary>One object removed by <see cref="IObjectStore.SweepExpiredAsync"/>.
+/// <paramref name="ExpiresAt"/> is null when the object was pruned fail-closed for a
+/// missing/unparseable meta sidecar rather than an elapsed TTL; <paramref name="Reason"/>
+/// distinguishes the two (<c>ttl_elapsed</c> vs <c>missing_or_corrupt_meta</c>).</summary>
 public sealed record PrunedObject(
     string TenantId,
     string Purpose,
     string ObjectId,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset? ExpiresAt,
+    string Reason = "ttl_elapsed");

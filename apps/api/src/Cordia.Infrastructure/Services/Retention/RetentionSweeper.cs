@@ -82,7 +82,7 @@ public sealed class RetentionSweeper(
                     SubjectRef = obj.ObjectId,
                     Metadata = JsonSerializer.Serialize(new
                     {
-                        reason = "ttl_elapsed",
+                        reason = obj.Reason,
                         purpose = obj.Purpose,
                         expires_at = obj.ExpiresAt,
                     }),
