@@ -90,4 +90,32 @@ public class LogScrubbingEnricherTests
         Assert.Equal("5260181590830166", GetString(logEvent, "Reference"));
         Assert.Equal(4, (logEvent.Properties["PartySize"] as ScalarValue)?.Value);
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void BlankConfiguredField_DoesNotMaskEveryProperty(string blank)
+    {
+        // Bug 1: IsSensitiveName uses substring Contains, and name.Contains("") is ALWAYS true. A
+        // single empty/whitespace configured field would make EVERY property match and mask every
+        // log line — a self-inflicted outage. Blank entries must be dropped before merging.
+        var logEvent = MakeEvent(("TenantId", "tenant-a"), ("PartySize", 4));
+
+        new LogScrubbingEnricher([blank]).Enrich(logEvent, null!);
+
+        Assert.Equal("tenant-a", GetString(logEvent, "TenantId"));
+        Assert.Equal(4, (logEvent.Properties["PartySize"] as ScalarValue)?.Value);
+    }
+
+    [Fact]
+    public void ConfiguredSensitiveField_IsHonored_AlongsideTheBaseline()
+    {
+        // A real (non-blank) configured selector still merges with the baseline and masks by name.
+        var logEvent = MakeEvent(("SessionCookie", "abc123"), ("TenantId", "tenant-a"));
+
+        new LogScrubbingEnricher(["cookie"]).Enrich(logEvent, null!);
+
+        Assert.Equal(LogScrubbingEnricher.MaskToken, GetString(logEvent, "SessionCookie"));
+        Assert.Equal("tenant-a", GetString(logEvent, "TenantId")); // untouched — selector is specific
+    }
 }

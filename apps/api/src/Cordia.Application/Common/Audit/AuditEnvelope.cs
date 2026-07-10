@@ -55,9 +55,13 @@ public static class AuditEnvelope
             SubjectRef = record.TargetId,
             CorrelationId = record.CorrelationId,
             OperationId = record.OperationId,
-            // Defense-in-depth: the DbContext-level AuditEventSanitizationInterceptor
-            // re-sanitizes every row at save time regardless of write path.
-            Metadata = SensitiveDataMask.Sanitize(metadata.ToJsonString()),
+            // Structure-aware sanitize (not free-text Sanitize): the metadata IS a JSON object, so
+            // SanitizeJson preserves the control-plane id exemption (target_id/operation_id/grant_id/
+            // *_ref/...) while still masking a PAN in any free-text field. Free-text Sanitize would
+            // corrupt a Luhn-coincidental numeric/string target_id to [REDACTED], breaking audit joins.
+            // Defense-in-depth: the DbContext-level AuditEventSanitizationInterceptor re-sanitizes
+            // every row at save time (also via SanitizeJson) regardless of write path.
+            Metadata = SensitiveDataMask.SanitizeJson(metadata.ToJsonString()),
             OccurredAt = record.OccurredAt ?? DateTimeOffset.UtcNow,
         };
     }

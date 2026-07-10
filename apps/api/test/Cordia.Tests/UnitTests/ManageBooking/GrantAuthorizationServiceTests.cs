@@ -5,6 +5,7 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.ManageBooking;
@@ -43,7 +44,8 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(grant);
 
-        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
+        var service = new GrantAuthorizationService(
+            repo.Object, ScopeFactory, NullLogger<GrantAuthorizationService>.Instance);
 
         var result = await service.RequireGrantAsync(
             "tenant-1",
@@ -72,7 +74,8 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync((VerificationGrant?)null);
 
-        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
+        var service = new GrantAuthorizationService(
+            repo.Object, ScopeFactory, NullLogger<GrantAuthorizationService>.Instance);
 
         var ex = await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.RequireGrantAsync(
@@ -108,7 +111,8 @@ public class GrantAuthorizationServiceTests
                 null, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((VerificationGrant?)null);
 
-        var service = new GrantAuthorizationService(repo.Object, scopeFactory);
+        var service = new GrantAuthorizationService(
+            repo.Object, scopeFactory, NullLogger<GrantAuthorizationService>.Instance);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.RequireGrantAsync(
@@ -146,7 +150,8 @@ public class GrantAuthorizationServiceTests
                 "booking-9", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((VerificationGrant?)null);
 
-        var service = new GrantAuthorizationService(repo.Object, scopeFactory);
+        var service = new GrantAuthorizationService(
+            repo.Object, scopeFactory, NullLogger<GrantAuthorizationService>.Instance);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.RequireGrantAsync(
@@ -167,6 +172,40 @@ public class GrantAuthorizationServiceTests
     }
 
     [Fact]
+    public async Task RequireGrantAsync_WhenDenyAuditWriteFails_StillThrowsVerificationRequired_Not500()
+    {
+        // A DENY must surface as a 403 (VerificationRequiredException) even if the deny-audit write
+        // throws (e.g. the audit store is down). Without the swallow, the storage exception would
+        // propagate and the GlobalExceptionHandler would map it to a generic 500, masking the
+        // authorization decision. The audit gap is logged; the 403 is non-negotiable.
+        var audit = new Mock<IAuditWriter>();
+        audit.Setup(a => a.WriteAsync(It.IsAny<AuditRecord>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("audit store unavailable"));
+        var scopeFactory = new ServiceCollection()
+            .AddScoped(_ => audit.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        var repo = new Mock<IVerificationGrantRepository>();
+        repo.Setup(r => r.FindValidGrantByIdAsync(
+                "tenant-1", "grant-z", "cust-1", VerificationActionEnum.Modify,
+                "booking-1", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationGrant?)null);
+
+        var service = new GrantAuthorizationService(
+            repo.Object, scopeFactory, NullLogger<GrantAuthorizationService>.Instance);
+
+        var ex = await Assert.ThrowsAsync<VerificationRequiredException>(() =>
+            service.RequireGrantAsync(
+                "tenant-1", "grant-z", "cust-1", VerificationActionEnum.Modify,
+                "booking-1", targetType: "booking",
+                ct: TestContext.Current.CancellationToken));
+
+        Assert.Equal("tenant-1", ex.TenantId);
+        // The audit write was attempted (and failed) — proving the swallow, not a skip.
+        audit.Verify(a => a.WriteAsync(It.IsAny<AuditRecord>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task ConsumeGrantAsync_WhenRepositoryDoesNotConsume_ThrowsVerificationRequired()
     {
         var repo = new Mock<IVerificationGrantRepository>(MockBehavior.Strict);
@@ -180,7 +219,8 @@ public class GrantAuthorizationServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(0);
 
-        var service = new GrantAuthorizationService(repo.Object, ScopeFactory);
+        var service = new GrantAuthorizationService(
+            repo.Object, ScopeFactory, NullLogger<GrantAuthorizationService>.Instance);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
             service.ConsumeGrantAsync(

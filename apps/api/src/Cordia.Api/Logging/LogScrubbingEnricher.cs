@@ -41,8 +41,14 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
     /// </param>
     public LogScrubbingEnricher(IReadOnlyList<string>? configuredSensitiveFields = null)
     {
-        _sensitiveNameFragments = configuredSensitiveFields is { Count: > 0 }
-            ? [.. BaselineNameFragments, .. configuredSensitiveFields]
+        // Drop blank/whitespace entries first: IsSensitiveName uses substring Contains, and
+        // "".Contains("") / name.Contains("") is ALWAYS true — a single empty configured field
+        // would make EVERY property match and mask every log line (a self-inflicted outage).
+        var configured = configuredSensitiveFields?
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .ToArray();
+        _sensitiveNameFragments = configured is { Length: > 0 }
+            ? [.. BaselineNameFragments, .. configured]
             : BaselineNameFragments;
     }
 

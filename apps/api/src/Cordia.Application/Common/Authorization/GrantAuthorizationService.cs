@@ -4,6 +4,7 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Application.Common.Authorization;
 
@@ -19,7 +20,8 @@ namespace Cordia.Application.Common.Authorization;
 /// </summary>
 public sealed class GrantAuthorizationService(
     IVerificationGrantRepository grants,
-    IServiceScopeFactory scopeFactory) : IGrantAuthorizationService
+    IServiceScopeFactory scopeFactory,
+    ILogger<GrantAuthorizationService> logger) : IGrantAuthorizationService
 {
     public async Task<VerificationGrant> RequireGrantAsync(
         string tenantId,
@@ -81,34 +83,53 @@ public sealed class GrantAuthorizationService(
         string? targetBookingId,
         string targetType)
     {
-        using var scope = scopeFactory.CreateScope();
-        var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
-        await audit.WriteAsync(
-            new AuditRecord(
-                TenantId: tenantId,
-                ActorType: "customer",
-                ActorId: customerRef,
-                Action: "verification.grant_denied",
-                // The resource type the grant authorizes — "booking" by default, but a transcript
-                // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
-                // booking. Hard-coding "booking" misattributed transcript denials to a booking
-                // resource and broke audit-trail integrity for sensitive-read refusals.
-                TargetType: targetType,
-                TargetId: targetBookingId ?? grantId,
-                Decision: "deny",
-                // Keep DataClasses in lockstep with TargetType (was hard-coded ["booking","pii"],
-                // which mislabeled a transcript denial's data classes just as the target type was
-                // mislabeled). A conversation_session read exposes [pii, transcript], not booking data.
-                DataClasses: targetType == "conversation_session"
-                    ? ["pii", "transcript"]
-                    : ["booking", "pii"],
-                Extra: new
-                {
-                    requested_action = action.ToString(),
-                    grant_id = grantId,
-                }),
-            // CancellationToken.None (B2): the denial record must survive both the caller's
-            // transaction rollback AND a client disconnect that cancels the request token.
-            CancellationToken.None);
+        // The deny audit is best-effort relative to the DENIAL ITSELF: both callers write it
+        // immediately BEFORE throwing VerificationRequiredException (the 403). If the audit store
+        // is unavailable, an unhandled exception here would propagate out of RequireGrantAsync/
+        // ConsumeGrantAsync and surface as a generic 500 — converting an authorization DENIAL into
+        // an apparent server error and masking the security decision from the caller. Swallow the
+        // audit-write failure (logged Warning for the trail) so the intended 403 is always the
+        // thrown outcome. The audit-record gap is the lesser evil versus a mislabeled 500.
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: tenantId,
+                    ActorType: "customer",
+                    ActorId: customerRef,
+                    Action: "verification.grant_denied",
+                    // The resource type the grant authorizes — "booking" by default, but a transcript
+                    // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
+                    // booking. Hard-coding "booking" misattributed transcript denials to a booking
+                    // resource and broke audit-trail integrity for sensitive-read refusals.
+                    TargetType: targetType,
+                    TargetId: targetBookingId ?? grantId,
+                    Decision: "deny",
+                    // Keep DataClasses in lockstep with TargetType (was hard-coded ["booking","pii"],
+                    // which mislabeled a transcript denial's data classes just as the target type was
+                    // mislabeled). A conversation_session read exposes [pii, transcript], not booking data.
+                    DataClasses: targetType == "conversation_session"
+                        ? ["pii", "transcript"]
+                        : ["booking", "pii"],
+                    Extra: new
+                    {
+                        requested_action = action.ToString(),
+                        grant_id = grantId,
+                    }),
+                // CancellationToken.None (B2): the denial record must survive both the caller's
+                // transaction rollback AND a client disconnect that cancels the request token.
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to write verification deny audit for tenant {TenantId}, action {Action}, target {TargetType}; proceeding with the 403 denial",
+                tenantId,
+                action,
+                targetType);
+        }
     }
 }

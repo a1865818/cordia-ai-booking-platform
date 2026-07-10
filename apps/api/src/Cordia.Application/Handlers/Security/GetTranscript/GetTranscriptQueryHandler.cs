@@ -53,8 +53,10 @@ public sealed class GetTranscriptQueryHandler(
                 "Reading a transcript requires a read_sensitive verification grant or a staff role with a reason code (spec 14 §3.1).");
         }
 
-        var session = await sessions.GetAsync(query.TenantId, query.SessionId, ct)
-            ?? throw new ConversationSessionNotFoundException(query.TenantId, query.SessionId);
+        // Load the session as NULLABLE and do NOT 404 before authorizing: a caller presenting only a
+        // non-empty (possibly bogus) grant_id must not be able to distinguish an absent session
+        // (would-be 404) from a present one (403). The auth below decides existence-safely.
+        var session = await sessions.GetAsync(query.TenantId, query.SessionId, ct);
 
         string actorType;
         string actorId;
@@ -66,27 +68,37 @@ public sealed class GetTranscriptQueryHandler(
         // enforced — the path is chosen by credential VALIDITY, not by grant presence.
         if (hasStaffRole)
         {
+            // Staff/operator is a real, server-checked credential (like GetModelTrace): a missing
+            // session is a truthful 404 for them.
+            if (session is null)
+                throw new ConversationSessionNotFoundException(query.TenantId, query.SessionId);
             actorType = query.ActorRole!;
             actorId = query.ActorId!;
         }
         else
         {
-            // Grant path (§3.1 step 3, spec 08 consumed as-is): the grant must belong to the
-            // session's OWN customer — a session without a customer ref cannot be grant-read.
-            // The service deny-audits through a fresh scope and throws 403 on any mismatch.
+            // Grant path (§3.1 step 3, spec 08 consumed as-is): authorize against the session's OWN
+            // customer ref. A MISSING session yields an EMPTY owner ref, which matches no grant, so
+            // RequireGrantAsync deny-audits and throws 403 — identical to a bogus/mismatched grant on
+            // a real session. A caller presenting only a non-empty but BOGUS grant_id therefore can no
+            // longer tell an absent session (would-be 404) from a present one (403): the existence
+            // oracle stays closed even against a credential-shaped grant. Success proves the session
+            // exists and is owned by the grant's customer (an empty ref never matches a real grant).
             await grants.RequireGrantAsync(
-                query.TenantId, query.GrantId!, session.CustomerRef ?? string.Empty,
+                query.TenantId, query.GrantId!, session?.CustomerRef ?? string.Empty,
                 VerificationActionEnum.ReadSensitive, targetBookingId: null,
                 // A transcript read is a conversation_session resource, not a booking — so the
                 // service's deny audit attributes the refusal to the right resource type.
                 targetType: "conversation_session", ct: ct);
             actorType = "customer";
-            actorId = session.CustomerRef ?? "customer";
+            actorId = session!.CustomerRef ?? "customer";
         }
 
         // (4) Consent AFTER authorization: recording was never permitted ⇒ there is no lawful
-        // transcript to read — 409, and the refusal itself is on the trail.
-        if (session.RecordingAllowed != true)
+        // transcript to read — 409, and the refusal itself is on the trail. `session` is non-null
+        // here — the staff path 404'd a missing one and the grant path authorized against a real
+        // owner ref (a missing session's empty ref would have 403'd above).
+        if (session!.RecordingAllowed != true)
         {
             await WriteDenyAsync(query, session.CustomerRef, reason: "consent_absent");
             throw new ConsentRequiredException("transcript", query.SessionId);

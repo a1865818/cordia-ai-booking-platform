@@ -217,6 +217,36 @@ public class GetTranscriptTests
     }
 
     [Fact]
+    public async Task BogusGrant_MissingSession_Denies403_NotA404_NoExistenceOracle()
+    {
+        // L5 / Bug 3: a caller presenting only a non-empty but BOGUS grant_id must not be able to
+        // tell an absent session (would-be 404) from a present one (403). The handler loads the
+        // session nullable and authorizes against its OWN customer ref — a missing session yields an
+        // EMPTY ref that matches no real grant, so RequireGrantAsync 403s exactly as it would for a
+        // bogus grant on a real session. A ConversationSessionNotFoundException here would re-open
+        // the oracle.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+        // The real repo returns no grant for an empty customer ref → the service 403s. Model that:
+        // the empty-ref authorization attempt throws VerificationRequiredException.
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new VerificationRequiredException(
+                Tenant, string.Empty, VerificationActionEnum.ReadSensitive, null));
+
+        // 403 (VerificationRequired), NOT 404 (ConversationSessionNotFound) — the oracle stays closed.
+        await Assert.ThrowsAsync<VerificationRequiredException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "bogus-grant", null, null, null), CancellationToken.None));
+
+        // The grant was authorized against the EMPTY owner ref of the missing session (not skipped),
+        // proving the handler never revealed absence via a pre-auth 404.
+        _grants.Verify(g => g.RequireGrantAsync(
+            Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+            null, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task NoCredentials_MissingSession_Denies403_NotA404_NoExistenceOracle()
     {
         // L5: a caller with only tenant scope must not distinguish an absent session (would-be
