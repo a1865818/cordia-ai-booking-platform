@@ -16,8 +16,13 @@ VISA_PAN_SPACED = "4111 1111 1111 1111"
 VISA_PAN_DASHED = "4111-1111-1111-1111"
 AMEX_PAN = "378282246310005"  # 15 digits
 
-# 16 digits that FAIL Luhn — must NOT be masked (precision control).
+# 16 digits that fail a WHOLE-run Luhn check but embed a Luhn-valid 13-19
+# window (1111111111112) — masked fail-closed (Inv-12), see _contains_pan.
 NON_LUHN_16 = "4111111111111112"
+
+# 16 digits with NO Luhn-valid 13-19 window anywhere — the precision anchor
+# that proves the filter is not simply "mask every 16-digit run".
+CLEAN_16 = "5260181590830166"
 
 
 @pytest.mark.unit
@@ -38,9 +43,20 @@ def test_amex_15_digit_pan_masked() -> None:
 
 
 @pytest.mark.unit
-def test_non_luhn_digit_run_not_masked() -> None:
-    """A 16-digit non-Luhn number is not a PAN — must survive (no over-redaction)."""
-    assert redact_text(f"ref {NON_LUHN_16}") == f"ref {NON_LUHN_16}"
+def test_digit_run_embedding_luhn_window_is_masked() -> None:
+    """A 13+ digit run embedding a Luhn-valid window masks fail-closed (Inv-12),
+    even when the whole run fails Luhn — a card padded with adjacent digits
+    must not escape."""
+    assert redact_text(f"ref {NON_LUHN_16}") == f"ref {MASK}"
+    # A 17-digit run = 16-digit PAN + one trailing pad digit (the M1 case).
+    assert redact_text(f"my card is {VISA_PAN}2 please") == f"my card is {MASK} please"
+
+
+@pytest.mark.unit
+def test_digit_run_without_luhn_window_survives() -> None:
+    """Precision anchor: a 16-digit run with NO embedded Luhn window is left
+    intact — the filter is fail-closed, not indiscriminate."""
+    assert redact_text(f"order {CLEAN_16} shipped") == f"order {CLEAN_16} shipped"
 
 
 @pytest.mark.unit
@@ -90,11 +106,11 @@ def test_very_long_digit_runs_mask_unconditionally() -> None:
 
 @pytest.mark.unit
 def test_pan_embedded_in_longer_digit_run_is_masked() -> None:
-    """A PAN inside a >19-digit run must not fail open (Inv-12, fail-closed).
+    """A PAN inside a longer digit run must not fail open (Inv-12, fail-closed).
 
-    Runs of exactly 13-19 digits stay precise (whole-run Luhn only, so a
-    non-Luhn 16-digit reference survives); anything longer is window-scanned
-    and masked wholesale when any 13-19 digit window is Luhn-valid.
+    Every run of >= 13 digits is window-scanned and masked wholesale when any
+    13-19 digit window is Luhn-valid — so a card padded with adjacent digits
+    (here 4 pad digits) cannot escape.
     """
     embedded = f"99{VISA_PAN}42"  # 20-digit run embedding a Luhn-valid PAN
     assert VISA_PAN not in redact_text(f"blob {embedded} end")

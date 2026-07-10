@@ -82,12 +82,12 @@ public class LogScrubbingEnricherTests
         var logEvent = MakeEvent(
             ("TenantId", "tenant-a"),
             ("PartySize", 4),
-            ("Reference", "4111111111111112")); // non-Luhn — must survive
+            ("Reference", "5260181590830166")); // no embedded Luhn window — must survive
 
         new LogScrubbingEnricher().Enrich(logEvent, null!);
 
         Assert.Equal("tenant-a", GetString(logEvent, "TenantId"));
-        Assert.Equal("4111111111111112", GetString(logEvent, "Reference"));
+        Assert.Equal("5260181590830166", GetString(logEvent, "Reference"));
         Assert.Equal(4, (logEvent.Properties["PartySize"] as ScalarValue)?.Value);
     }
 }

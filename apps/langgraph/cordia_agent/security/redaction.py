@@ -5,8 +5,10 @@ tenant-configured sensitive fields in structured payloads, BEFORE anything
 leaves the model boundary into a checkpoint, queue message, trace, or log.
 
 Precision rules:
-- PAN detection requires 13-19 digits (separator-tolerant) AND a passing Luhn
-  check — a random 16-digit reference number is NOT masked.
+- PAN detection masks any 13+ digit run (separator-tolerant) that embeds a
+  Luhn-valid 13-19 digit window. This is fail-closed (Inv-12): a card padded
+  with adjacent digits cannot escape, at the cost of masking a non-card
+  reference number that coincidentally embeds such a window.
 - CVV detection requires a cvv/cvc/security-code context word — a bare 3-digit
   party size is NOT masked.
 - PAN/CVV masking is always-on: a policy cannot disable it (Inv-12); only
@@ -31,14 +33,18 @@ if TYPE_CHECKING:
 
 
 # Any contiguous run of >= 13 digits allowing single space/dash separators.
-# Runs LONGER than 19 digits are still candidates: a PAN concatenated with
+# Every such run is window-scanned (see _contains_pan): a PAN concatenated with
 # adjacent digits must not escape masking (fail closed, Inv-12).
 _PAN_CANDIDATE = re.compile(r"\d(?:[ -]?\d){12,}")
 
 # CVV/CVC/security code followed (optionally compactly, e.g. "cvv123") by 3-4
-# digits — no word boundary required between the keyword and the digits.
+# digits — no word boundary required between the keyword and the digits. The
+# middle group is one separator run plus an optional (filler-word + separator
+# run): collapsing the former S*(word)?S* — two adjacent stars over the same
+# class — to a single leading star removes the O(n^2) backtracking (ReDoS).
+# Python `re` has no match timeout, so bounding the shape structurally IS the fix.
 _CVV_IN_CONTEXT = re.compile(
-    r"(?i)\b(cvv2?|cvc|security code)([\s:=-]*(?:is|was|number|no\.?)?[\s:=-]*)(\d{3,4})\b"
+    r"(?i)\b(cvv2?|cvc|security code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)(\d{3,4})\b"
 )
 
 # US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).
@@ -67,20 +73,20 @@ _UNCONDITIONAL_MASK_DIGITS = 50
 
 
 def _contains_pan(digits: str) -> bool:
-    """True iff *digits* is, or contains, a Luhn-valid 13-19 digit window.
+    """True iff *digits* contains a Luhn-valid 13-19 digit window.
 
-    A run of exactly 13-19 digits is a PAN iff it passes Luhn. A LONGER run is
-    treated as a PAN when ANY 13-19 digit window inside it passes Luhn — the
-    fail-closed reading of Inv-12 (mask a long digit blob that may embed a
-    card number rather than let it through). Runs past
+    EVERY run of >= 13 digits is window-scanned (sizes 19..13), not just runs
+    longer than 19: a PAN padded with adjacent digits (e.g. a 16-digit card
+    with one trailing digit) fails a whole-run Luhn check but must still be
+    masked (Inv-12 fail-closed — card data must never escape). This
+    deliberately over-masks: a non-Luhn 14-19 digit reference number that
+    happens to embed a Luhn-valid window is masked too. Runs past
     ``_UNCONDITIONAL_MASK_DIGITS`` mask without scanning (fail-closed + DoS cap).
     """
     n = len(digits)
-    if n <= 19:
-        return _luhn_valid(digits)
     if n > _UNCONDITIONAL_MASK_DIGITS:
         return True
-    for size in range(19, 12, -1):
+    for size in range(min(19, n), 12, -1):
         for start in range(n - size + 1):
             if _luhn_valid(digits[start : start + size]):
                 return True

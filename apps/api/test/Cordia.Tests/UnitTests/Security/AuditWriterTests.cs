@@ -88,9 +88,10 @@ public class AuditWriterTests
     [InlineData("4111 1111 1111 1111", true)]   // Luhn-valid, spaced → masked
     [InlineData("4111-1111-1111-1111", true)]   // Luhn-valid, dashed → masked
     [InlineData("378282246310005", true)]       // 15-digit Amex → masked
-    [InlineData("4111111111111112", false)]     // non-Luhn 16 digits → kept
+    [InlineData("41111111111111112", true)]     // 16-digit PAN + 1 pad digit → masked (fail-closed)
+    [InlineData("5260181590830166", false)]     // 16 digits, no embedded Luhn window → kept
     [InlineData("0412345678", false)]           // 10-digit phone → kept
-    public void Sanitizer_MasksOnlyLuhnValidPans(string value, bool masked)
+    public void Sanitizer_MasksPansAndEmbeddedPans(string value, bool masked)
     {
         var result = SensitiveDataMask.Sanitize($"{{\"v\":\"{value}\"}}");
         Assert.Equal(masked, result.Contains(SensitiveDataMask.MaskToken));

@@ -7,13 +7,15 @@ namespace Cordia.Domain.Security;
 /// <summary>
 /// Masks sensitive values in free text (Inv-12), mirroring the foreground
 /// detector in <c>cordia_agent/security/redaction.py</c>: Luhn-valid PANs
-/// (separator-tolerant; runs longer than 19 digits are window-scanned or,
-/// past 50 digits, masked unconditionally — fail closed + DoS cap),
-/// CVV-in-context, and SSN/TFN-shaped government identifiers. Space-separated
-/// groups longer than 6 digits inside a candidate run signal independent
-/// adjacent numbers (two phones, a date-time) and are evaluated per-group.
-/// Non-Luhn 13-19 digit runs are left intact so reference numbers are not
-/// over-redacted. Pure and dependency-free (Domain) so the audit write path
+/// (separator-tolerant; runs of 13+ digits are window-scanned or, past 50
+/// digits, masked unconditionally — fail closed + DoS cap), CVV-in-context,
+/// and SSN/TFN-shaped government identifiers. Space-separated groups longer
+/// than 6 digits inside a candidate run signal independent adjacent numbers
+/// (two phones, a date-time) and are evaluated per-group. Any digit run that
+/// embeds a Luhn-valid 13-19 window is masked (fail closed) so a card padded
+/// with adjacent digits cannot escape — at the cost of masking a non-card
+/// reference number that coincidentally embeds such a window. Pure and
+/// dependency-free (Domain) so the audit write path
 /// (Application) and the log scrubber (Api) share one implementation.
 ///
 /// Deliberate asymmetries vs the Python filter: (a) this lane ALWAYS masks
@@ -40,8 +42,15 @@ public static partial class SensitiveDataMask
     private static partial Regex PanCandidate();
 
     // CVV/CVC/security code followed (optionally compactly, e.g. "cvv123")
-    // by 3-4 digits — no word boundary required before the digits.
-    [GeneratedRegex(@"\b(cvv2?|cvc|security code)([\s:=-]*(?:is|was|number|no\.?)?[\s:=-]*)([0-9]{3,4})\b", RegexOptions.IgnoreCase)]
+    // by 3-4 digits — no word boundary required before the digits. The middle
+    // group is one separator run plus an optional (filler-word + separator run):
+    // collapsing the former S*(word)?S* — two adjacent stars over the same class
+    // — to a single leading star removes the O(n^2) backtracking (ReDoS). A 100ms
+    // match timeout is a defence-in-depth cap since [GeneratedRegex] is backtracking.
+    [GeneratedRegex(
+        @"\b(cvv2?|cvc|security code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)([0-9]{3,4})\b",
+        RegexOptions.IgnoreCase,
+        matchTimeoutMilliseconds: 100)]
     private static partial Regex CvvInContext();
 
     // US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).
@@ -199,22 +208,21 @@ public static partial class SensitiveDataMask
     }
 
     /// <summary>
-    /// True iff <paramref name="digits"/> is, or contains, a Luhn-valid 13-19
-    /// digit window. Exact-length runs (13-19) are checked as a whole —
-    /// keeping non-Luhn reference numbers intact — while longer runs are
-    /// window-scanned and masked wholesale when any window passes (Inv-12
-    /// fail-closed: a PAN concatenated with adjacent digits must not escape).
-    /// Runs past <see cref="UnconditionalMaskDigits"/> mask without scanning.
+    /// True iff <paramref name="digits"/> contains a Luhn-valid 13-19 digit
+    /// window. EVERY run of >= 13 digits is window-scanned (sizes 19..13), not
+    /// just runs longer than 19: a PAN padded with adjacent digits (e.g. a
+    /// 16-digit card with one trailing digit) fails a whole-run Luhn check but
+    /// must still be masked (Inv-12 fail-closed — card data must never escape).
+    /// This deliberately over-masks: a non-Luhn 14-19 digit reference number
+    /// that happens to embed a Luhn-valid window is masked too. Runs past
+    /// <see cref="UnconditionalMaskDigits"/> mask without scanning (DoS cap).
     /// </summary>
     private static bool ContainsPan(string digits)
     {
-        if (digits.Length <= 19)
-            return LuhnValid(digits.AsSpan());
-
         if (digits.Length > UnconditionalMaskDigits)
             return true;
 
-        for (var size = 19; size >= 13; size--)
+        for (var size = Math.Min(19, digits.Length); size >= 13; size--)
         {
             for (var start = 0; start <= digits.Length - size; start++)
             {
