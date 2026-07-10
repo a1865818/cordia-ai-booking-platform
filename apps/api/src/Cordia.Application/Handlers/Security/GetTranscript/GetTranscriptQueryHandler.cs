@@ -90,15 +90,27 @@ public sealed class GetTranscriptQueryHandler(
                 // A transcript read is a conversation_session resource, not a booking — so the
                 // service's deny audit attributes the refusal to the right resource type.
                 targetType: "conversation_session", ct: ct);
+
+            // Fail CLOSED, not with an NRE: RequireGrantAsync should never authorize against the
+            // empty owner ref a missing session yields (no real grant carries an empty CustomerRef),
+            // so a null session should already have 403'd above. Do NOT trust that invariant to be
+            // enforced elsewhere — if a malformed empty-ref grant ever slips through, throw the SAME
+            // 403 rather than dereferencing a null session below (which would surface as a generic
+            // 500 AND leak existence via the differing status). This keeps the oracle shut and makes
+            // `session` provably non-null for the rest of the method.
+            if (session is null)
+                throw new VerificationRequiredException(
+                    query.TenantId, string.Empty, VerificationActionEnum.ReadSensitive, targetBookingId: null);
+
             actorType = "customer";
-            actorId = session!.CustomerRef ?? "customer";
+            actorId = session.CustomerRef ?? "customer";
         }
 
         // (4) Consent AFTER authorization: recording was never permitted ⇒ there is no lawful
         // transcript to read — 409, and the refusal itself is on the trail. `session` is non-null
-        // here — the staff path 404'd a missing one and the grant path authorized against a real
-        // owner ref (a missing session's empty ref would have 403'd above).
-        if (session!.RecordingAllowed != true)
+        // here — the staff path 404'd a missing one and the grant path 403'd a missing one (both
+        // branches throw before reaching this point on a null session).
+        if (session.RecordingAllowed != true)
         {
             await WriteDenyAsync(query, session.CustomerRef, reason: "consent_absent");
             throw new ConsentRequiredException("transcript", query.SessionId);

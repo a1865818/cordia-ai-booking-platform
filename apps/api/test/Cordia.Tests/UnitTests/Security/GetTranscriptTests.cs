@@ -247,6 +247,29 @@ public class GetTranscriptTests
     }
 
     [Fact]
+    public async Task GrantPath_AnomalousEmptyRefGrant_MissingSession_FailsClosed403_NotNre500()
+    {
+        // Defense-in-depth for Bug 3: the handler must not NRE (→ 500) if RequireGrantAsync ever
+        // authorizes against the empty owner ref a missing session yields (a malformed empty-ref
+        // grant slipping past validation). It must fail CLOSED with the same 403 and keep the
+        // existence oracle shut — never dereference the null session.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+        // Simulate the anomaly: the grant service RETURNS a grant for the empty ref instead of 403ing.
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "empty-ref-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VerificationGrant { TenantId = Tenant, GrantId = "empty-ref-grant", CustomerRef = string.Empty });
+
+        // 403 (VerificationRequired), never a NullReferenceException / 500.
+        await Assert.ThrowsAsync<VerificationRequiredException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "empty-ref-grant", null, null, null), CancellationToken.None));
+
+        // The store is never read for a session that does not exist.
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task NoCredentials_MissingSession_Denies403_NotA404_NoExistenceOracle()
     {
         // L5: a caller with only tenant scope must not distinguish an absent session (would-be
