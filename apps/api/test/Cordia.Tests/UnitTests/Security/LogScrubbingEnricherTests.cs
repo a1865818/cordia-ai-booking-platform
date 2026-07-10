@@ -77,6 +77,27 @@ public class LogScrubbingEnricherTests
     }
 
     [Fact]
+    public void NumericPanScalars_AreMasked_BenignNumbersUntouched()
+    {
+        // Parity with SanitizeJson's numeric branch (Inv-12): {Card} logged as the NUMBER
+        // 4111111111111111L must mask like the string form; a double formats fixed-point so
+        // scientific notation can't smuggle the digits past detection. A 13-digit non-Luhn
+        // epoch-millis long and an ordinary int pass through byte-identical.
+        var logEvent = MakeEvent(
+            ("Card", 4111111111111111L),
+            ("CardAsDouble", 4111111111111111.0d),
+            ("OccurredAtMs", 1719878400000L),
+            ("PartySize", 4));
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        Assert.Equal(LogScrubbingEnricher.MaskToken, GetString(logEvent, "Card"));
+        Assert.Equal(LogScrubbingEnricher.MaskToken, GetString(logEvent, "CardAsDouble"));
+        Assert.Equal(1719878400000L, (logEvent.Properties["OccurredAtMs"] as ScalarValue)?.Value);
+        Assert.Equal(4, (logEvent.Properties["PartySize"] as ScalarValue)?.Value);
+    }
+
+    [Fact]
     public void NestedScalarsUnderCredentialNamedProperty_AreMasked()
     {
         // Bug 2: logger.Information("{@Password}", new { Value = "hunter2" }) left "hunter2"

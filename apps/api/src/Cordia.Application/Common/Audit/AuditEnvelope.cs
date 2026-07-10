@@ -51,7 +51,16 @@ public static class AuditEnvelope
             TenantId = record.TenantId,
             EventId = $"evt_{Guid.NewGuid():N}",
             EventType = record.Action,
-            Actor = record.ActorId,
+            // Free-text sanitize: ActorId can be CLIENT-supplied (customerRef on grant
+            // denials, session.CustomerRef on transcript reads), so a PAN-shaped value
+            // must not land raw in the top-level actor column (Inv-12). System actors
+            // ("system"/"ops.jane"/"agent") carry no maskable shape and pass byte-identical;
+            // the rare Luhn-coincidental 13+ digit customer id masks fail-closed — nothing
+            // queries or joins on actor, so over-masking costs only that row's attribution.
+            // Defense-in-depth, mirroring Metadata: AuditEventSanitizationInterceptor
+            // re-sanitizes actor at save time — keep BOTH; the interceptor alone covers the
+            // ~45 direct `new AuditEvent` sites that never pass through this envelope.
+            Actor = SensitiveDataMask.Sanitize(record.ActorId),
             SubjectRef = record.TargetId,
             CorrelationId = record.CorrelationId,
             OperationId = record.OperationId,

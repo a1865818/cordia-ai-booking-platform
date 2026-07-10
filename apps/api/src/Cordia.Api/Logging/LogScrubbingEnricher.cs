@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Security;
+﻿using System.Globalization;
+using Cordia.Domain.Security;
 using Serilog.Core;
 using Serilog.Events;
 
@@ -81,15 +82,44 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
                 // A sensitive name/subtree masks EVERY non-null scalar, not just strings —
                 // {@Secret} destructured to new { Value = 4111111111111111L } must not leak
                 // the numeric form (Inv-12 fail-closed; null stays null: the mask token there
-                // would fabricate a value that never existed). Non-sensitive non-string
-                // scalars pass through — only string values can carry a PAN/SSN shape worth
-                // the value-level sweep here (numeric log properties are counts/ids).
+                // would fabricate a value that never existed).
                 if (sensitive)
                     return scalar.Value is null ? value : new ScalarValue(MaskToken);
-                if (scalar.Value is not string text)
-                    return value;
-                var scrubbed = SensitiveDataMask.Sanitize(text);
-                return scrubbed == text ? value : new ScalarValue(scrubbed);
+                if (scalar.Value is string text)
+                {
+                    var scrubbed = SensitiveDataMask.Sanitize(text);
+                    return scrubbed == text ? value : new ScalarValue(scrubbed);
+                }
+
+                // Numeric PAN parity with SanitizeJson's numeric branch: {Card} logged as the
+                // NUMBER 4111111111111111L must mask like the string form. Only these types can
+                // render 13+ digits (int/uint cap at 10; Serilog stringifies unknown types like
+                // BigInteger, so the string branch above catches those). Below 1e12 nothing can
+                // render a 13-digit contiguous run (a float/double fraction renders 6 digits max
+                // under F6 and '.' breaks the run), so timers/ids/totals skip the format+scan on
+                // this hot path; decimal stays ungated — its fraction alone can carry a 13+ digit
+                // run at any magnitude. Floats format fixed-point (default ToString goes
+                // scientific past ~1e15 and the digits would evade detection — same trap the
+                // Python lane fixed); a float/double past 2^53 lost the exact digits BEFORE
+                // reaching this enricher, so detection operates on the rounded rendering, and a
+                // Luhn-coincidental large numeric id over-masks fail-closed exactly like the
+                // string lane (Inv-12 recall-over-precision, the accepted posture). Anything
+                // maskable replaces the WHOLE scalar with the token, never a partial value.
+                var raw = scalar.Value switch
+                {
+                    long and > -1_000_000_000_000 and < 1_000_000_000_000 => null,
+                    ulong and < 1_000_000_000_000UL => null,
+                    double and > -1e12 and < 1e12 => null,
+                    float and > -1e12f and < 1e12f => null,
+                    long or ulong or decimal =>
+                        Convert.ToString(scalar.Value, CultureInfo.InvariantCulture),
+                    double d => d.ToString("F6", CultureInfo.InvariantCulture),
+                    float f => f.ToString("F6", CultureInfo.InvariantCulture),
+                    _ => null,
+                };
+                if (raw is not null && SensitiveDataMask.Sanitize(raw) != raw)
+                    return new ScalarValue(MaskToken);
+                return value;
 
             case StructureValue structure:
                 {

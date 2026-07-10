@@ -9,8 +9,8 @@ namespace Cordia.Infrastructure.EntityFramework.Interceptors;
 /// Spec 14 / Inv-12 uniform audit hygiene: EVERY <see cref="AuditEvent"/> row
 /// insert — whether written through <c>IAuditWriter</c>, an ad hoc handler
 /// <c>new AuditEvent</c>, or a direct <c>db.AuditEvents.Add</c> — has its
-/// metadata run through <see cref="SensitiveDataMask.Sanitize"/> before it is
-/// persisted. This is the single choke point that makes the 35+ existing
+/// metadata (structure-aware) and actor (free-text) run through
+/// <see cref="SensitiveDataMask"/> before it is persisted. This is the single choke point that makes the 35+ existing
 /// write sites (and any future one) uniformly safe without per-site churn;
 /// <c>IAuditWriter</c> remains the richer envelope for security-DECISION
 /// events, while workflow-progress events stay direct-but-sanitized.
@@ -56,6 +56,19 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
                 // intact while masking PANs in free-text fields. Free-text Sanitize would corrupt a
                 // Luhn-coincidental id to [REDACTED]. Non-JSON metadata falls back to a wholesale mask.
                 entry.Entity.Metadata = SensitiveDataMask.SanitizeJson(metadata);
+
+            // The actor column is free text that can be CLIENT-supplied at several of the
+            // ~45 direct `new AuditEvent` sites (confirmation.Identity on submit paths,
+            // customerRef via AuditEnvelope) — a PAN-shaped value must mask here too, not
+            // just in metadata (Inv-12). Free-text Sanitize is safe: system actors have no
+            // maskable shape, and nothing queries or joins on actor.
+            var actor = entry.Entity.Actor;
+            if (!string.IsNullOrEmpty(actor))
+            {
+                var maskedActor = SensitiveDataMask.Sanitize(actor);
+                if (maskedActor != actor)
+                    entry.Entity.Actor = maskedActor;
+            }
         }
     }
 }

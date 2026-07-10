@@ -84,6 +84,24 @@ public class AuditWriterTests
         Assert.Contains(SensitiveDataMask.MaskToken, written.Metadata);
     }
 
+    [Fact]
+    public async Task WriteAsync_MasksPanShapedActorId()
+    {
+        // The actor column can carry CLIENT-supplied identity (customerRef on grant
+        // denials, session.CustomerRef on transcript reads) — a PAN-shaped value must
+        // not land raw in the top-level audit_events.actor column (Inv-12). Benign
+        // system actors ("ops.jane") are pinned untouched by MapsOntoTheRatifiedRowShape.
+        AuditEvent? written = null;
+        _repo.Setup(r => r.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEvent, CancellationToken>((e, _) => written = e)
+            .Returns(Task.CompletedTask);
+
+        await new AuditWriter(_repo.Object).WriteAsync(
+            MakeRecord() with { ActorId = "4111111111111111" }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(SensitiveDataMask.MaskToken, written!.Actor);
+    }
+
     [Theory]
     [InlineData("4111 1111 1111 1111", true)]   // Luhn-valid, spaced → masked
     [InlineData("4111-1111-1111-1111", true)]   // Luhn-valid, dashed → masked
