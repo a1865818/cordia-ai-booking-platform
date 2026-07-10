@@ -35,9 +35,17 @@ public interface IObjectStore
     Task<IReadOnlyList<string>> ListIdsAsync(
         string tenantId, string purpose, string prefix = "", CancellationToken ct = default);
 
-    /// <summary>Deletes every object whose TTL elapsed before <paramref name="now"/> and
-    /// returns what was pruned so the caller can audit each removal
-    /// (<c>privacy.retention.object_pruned</c>).</summary>
+    /// <summary>IDENTIFIES (without deleting) every object whose TTL elapsed before
+    /// <paramref name="now"/> — or whose meta is missing/corrupt — so the caller can durably
+    /// record the removal (<c>privacy.retention.object_pruned</c>) BEFORE deleting via
+    /// <see cref="DeleteAsync"/>. Idempotent: an object left undeleted (crash, or a failed delete)
+    /// is simply re-identified next cycle. Content-less orphan meta sidecars are reaped in passing
+    /// (no audit obligation) and not returned.</summary>
+    Task<IReadOnlyList<PrunedObject>> ScanExpiredAsync(DateTimeOffset now, CancellationToken ct = default);
+
+    /// <summary>Convenience scan-then-delete (see <see cref="ScanExpiredAsync"/>): deletes every
+    /// expired object and returns what was pruned. Does NOT give the audit-before-delete ordering
+    /// retention requires — for that, use <see cref="ScanExpiredAsync"/> + <see cref="DeleteAsync"/>.</summary>
     Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(DateTimeOffset now, CancellationToken ct = default);
 }
 

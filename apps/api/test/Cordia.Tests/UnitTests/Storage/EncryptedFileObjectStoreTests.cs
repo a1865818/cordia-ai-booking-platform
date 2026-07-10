@@ -155,6 +155,27 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanExpired_IdentifiesWithoutDeleting_SoAuditCanCommitFirst()
+    {
+        // L1: the retention driver audits each removal BEFORE deleting the bytes, which requires a
+        // NON-destructive identify. ScanExpiredAsync must report the expired object yet leave it on
+        // disk; the caller then deletes it via DeleteAsync.
+        var store = Store();
+        await store.PutAsync("t-a", "raw-audio", "expired-1", new byte[] { 1 }, ttl: TimeSpan.FromHours(-1));
+
+        var expired = await store.ScanExpiredAsync(DateTimeOffset.UtcNow);
+
+        var only = Assert.Single(expired);
+        Assert.Equal(("t-a", "raw-audio", "expired-1"), (only.TenantId, only.Purpose, only.ObjectId));
+        Assert.True(
+            File.Exists(Path.Combine(_root, "t-a", "raw-audio", "expired-1.bin")),
+            "ScanExpiredAsync must NOT delete — the caller commits the audit first");
+
+        Assert.True(await store.DeleteAsync("t-a", "raw-audio", "expired-1"));
+        Assert.False(File.Exists(Path.Combine(_root, "t-a", "raw-audio", "expired-1.bin")));
+    }
+
+    [Fact]
     public async Task ExpiredButNotYetSwept_IsAlreadyUnreadable()
     {
         var store = Store();

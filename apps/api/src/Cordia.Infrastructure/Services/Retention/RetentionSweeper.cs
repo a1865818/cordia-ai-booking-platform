@@ -73,23 +73,28 @@ public sealed class RetentionSweeper(
     }
 
     /// <summary>
-    /// Prunes expired encrypted objects and writes one
-    /// <c>privacy.retention.object_pruned</c> audit row per removal (append-only,
-    /// Inv-14; metadata carries control-plane fields only — never object content).
+    /// Prunes expired encrypted objects, writing one <c>privacy.retention.object_pruned</c> audit
+    /// row per removal (append-only, Inv-14; metadata carries control-plane fields only — never
+    /// object content). The audit rows are COMMITTED BEFORE the blobs are deleted (L1): the store
+    /// is identified non-destructively (<see cref="IObjectStore.ScanExpiredAsync"/>), the trail is
+    /// saved, then each blob is removed. If the audit save throws, nothing is deleted and the same
+    /// objects are re-identified and re-audited next cycle; if a delete fails after the commit, the
+    /// object is re-identified and re-audited next cycle too (at-least-once pruning + audit — a
+    /// removal is never left with no trail, matching the platform's audit posture).
     /// </summary>
     private async Task<int> SweepExpiredObjectsAsync(DateTimeOffset now, CancellationToken ct)
     {
         try
         {
-            var pruned = await objectStore.SweepExpiredAsync(now, ct);
-            if (pruned.Count == 0)
+            var expired = await objectStore.ScanExpiredAsync(now, ct);
+            if (expired.Count == 0)
                 return 0;
 
             // Own scope for the audit writes — same isolation posture as the per-tenant sweeps.
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            foreach (var obj in pruned)
+            foreach (var obj in expired)
             {
                 db.AuditEvents.Add(new AuditEvent
                 {
@@ -107,10 +112,14 @@ public sealed class RetentionSweeper(
                     OccurredAt = now,
                 });
             }
+            // Commit the trail FIRST — only then remove the bytes (L1).
             await db.SaveChangesAsync(ct);
 
-            logger.LogInformation("Retention sweep pruned {Count} expired objects", pruned.Count);
-            return pruned.Count;
+            foreach (var obj in expired)
+                await objectStore.DeleteAsync(obj.TenantId, obj.Purpose, obj.ObjectId, ct);
+
+            logger.LogInformation("Retention sweep pruned {Count} expired objects", expired.Count);
+            return expired.Count;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

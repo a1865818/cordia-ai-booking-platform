@@ -199,28 +199,29 @@ public sealed partial class EncryptedFileObjectStore(
         return Task.FromResult(ids);
     }
 
-    public async Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(
+    public async Task<IReadOnlyList<PrunedObject>> ScanExpiredAsync(
         DateTimeOffset now, CancellationToken ct = default)
     {
-        var pruned = new List<PrunedObject>();
+        var expired = new List<PrunedObject>();
         if (!Directory.Exists(Root))
-            return pruned;
+            return expired;
 
-        // Pass 1 — enumerate the encrypted blobs (the content-bearing artifacts), not the meta
-        // sidecars: a blob whose meta is missing/unparseable would otherwise be invisible to a
-        // meta-driven sweep and linger forever (dead weight — already unreadable via GetAsync).
-        // Prune it fail-closed here so the store cannot accumulate orphaned ciphertext (M3).
+        // Pass 1 — IDENTIFY (without deleting) the expired encrypted blobs so the caller can
+        // durably record the pruning intent (audit) BEFORE the bytes are removed (L1). Enumerate
+        // the blobs (the content-bearing artifacts), not the meta sidecars: a blob whose meta is
+        // missing/unparseable would otherwise be invisible to a meta-driven sweep and linger
+        // forever (dead weight — already unreadable via GetAsync). It is reported fail-closed here
+        // so the store cannot accumulate orphaned ciphertext (M3).
         //
-        // Single-node assumption: read-decide-delete is not atomic against a concurrent PutAsync
-        // renewing the SAME id at the instant of the sweep (a lock-free filesystem TOCTOU). The
-        // current callers write each object id exactly once (transcript {sessionId}.{seq}, unique
-        // trace/audio ids), so no renewal races in practice; a multi-writer deployment would need
-        // per-object locking.
+        // Single-node assumption: scan-then-delete (the caller deletes via DeleteAsync) is not
+        // atomic against a concurrent PutAsync renewing the SAME id at the instant of the sweep (a
+        // lock-free filesystem TOCTOU). The current callers write each object id exactly once
+        // (transcript {sessionId}.{seq}, unique trace/audio ids), so no renewal races in practice;
+        // a multi-writer deployment would need per-object locking.
         foreach (var binPath in Directory.EnumerateFiles(Root, "*.bin", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
-            var metaPath = MetaPath(binPath);
-            var meta = await ReadMetaAsync(metaPath, ct);
+            var meta = await ReadMetaAsync(MetaPath(binPath), ct);
 
             string reason;
             DateTimeOffset? expiresAt;
@@ -245,19 +246,15 @@ public sealed partial class EncryptedFileObjectStore(
             var tenantDir = Path.GetDirectoryName(purposeDir)!;
             var objectId = Path.GetFileName(binPath)[..^".bin".Length];
 
-            File.Delete(binPath);
-            if (File.Exists(metaPath))
-                File.Delete(metaPath);
-
-            pruned.Add(new PrunedObject(
+            expired.Add(new PrunedObject(
                 Path.GetFileName(tenantDir), Path.GetFileName(purposeDir), objectId, expiresAt, reason));
         }
 
         // Pass 2 — reap meta sidecars with no blob: crash orphans from a PutAsync that wrote the
-        // meta but died before the blob rename (or from an interrupted delete above). These hold
-        // only control-plane fields (no ciphertext), but would accumulate forever since pass 1
-        // never sees them. Guarded by OrphanMetaGrace so an in-flight Put's not-yet-renamed blob
-        // is never mistaken for an orphan; an unparseable orphan (no blob) is removed at once.
+        // meta but died before the blob rename. These hold only control-plane fields (no
+        // ciphertext) and carry no audit obligation, so they are removed here directly rather than
+        // reported. Guarded by OrphanMetaGrace so an in-flight Put's not-yet-renamed blob is never
+        // mistaken for an orphan; an unparseable orphan (no blob) is removed at once.
         foreach (var metaPath in Directory.EnumerateFiles(Root, "*.meta.json", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
@@ -270,7 +267,19 @@ public sealed partial class EncryptedFileObjectStore(
                 File.Delete(metaPath);
         }
 
-        return pruned;
+        return expired;
+    }
+
+    public async Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(
+        DateTimeOffset now, CancellationToken ct = default)
+    {
+        // Convenience scan-then-delete for callers that do not need the audit-before-delete
+        // ordering (tests / direct use). RetentionSweeper instead calls ScanExpiredAsync, commits
+        // the audit rows, then DeleteAsync — so bytes are never removed without a durable trail.
+        var expired = await ScanExpiredAsync(now, ct);
+        foreach (var obj in expired)
+            await DeleteAsync(obj.TenantId, obj.Purpose, obj.ObjectId, ct);
+        return expired;
     }
 
     private byte[] ResolveKey()
