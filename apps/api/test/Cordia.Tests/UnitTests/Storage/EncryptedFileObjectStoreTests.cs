@@ -103,12 +103,27 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task WrongKey_FailsAuthentication()
+    public async Task WrongKey_FailsClosed_ReturnsNull()
     {
+        // B3: a wrong key makes the GCM tag fail — return null (fail closed) like every other
+        // corrupt-object path, never let a CryptographicException bubble to the caller as a 500.
         await Store(KeyA).PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
 
-        await Assert.ThrowsAsync<AuthenticationTagMismatchException>(
-            () => Store(KeyB).GetAsync("t-a", "transcript", "obj-1"));
+        Assert.Null(await Store(KeyB).GetAsync("t-a", "transcript", "obj-1"));
+    }
+
+    [Fact]
+    public async Task TamperedBlob_FailsClosed_ReturnsNull()
+    {
+        // B3: a ciphertext bit-flip (valid length, right key) fails GCM authentication → null.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+        var binPath = Path.Combine(_root, "t-a", "transcript", "obj-1.bin");
+        var bytes = await File.ReadAllBytesAsync(binPath, TestContext.Current.CancellationToken);
+        bytes[^1] ^= 0xFF; // flip a ciphertext byte
+        await File.WriteAllBytesAsync(binPath, bytes, TestContext.Current.CancellationToken);
+
+        Assert.Null(await store.GetAsync("t-a", "transcript", "obj-1"));
     }
 
     [Fact]

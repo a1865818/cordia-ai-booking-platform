@@ -153,12 +153,22 @@ public sealed partial class EncryptedFileObjectStore(
             return null;
 
         var plaintext = new byte[blob.Length - NonceSize - TagSize];
-        using var aes = new AesGcm(ResolveKey(), TagSize);
-        aes.Decrypt(
-            blob.AsSpan(0, NonceSize),
-            blob.AsSpan(NonceSize + TagSize),
-            blob.AsSpan(NonceSize, TagSize),
-            plaintext);
+        try
+        {
+            using var aes = new AesGcm(ResolveKey(), TagSize);
+            aes.Decrypt(
+                blob.AsSpan(0, NonceSize),
+                blob.AsSpan(NonceSize + TagSize),
+                blob.AsSpan(NonceSize, TagSize),
+                plaintext);
+        }
+        catch (CryptographicException)
+        {
+            // Tampered/truncated-but-valid-length ciphertext, or a wrong key ⇒ the GCM tag fails.
+            // Fail closed like every other corrupt-object path here (return null) rather than let
+            // a CryptographicException bubble into the caller as a 500 (B3).
+            return null;
+        }
         return plaintext;
     }
 
@@ -333,8 +343,12 @@ public sealed partial class EncryptedFileObjectStore(
             // must not be served or treated as live (M3).
             return string.IsNullOrEmpty(meta?.Purpose) ? null : meta;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or IOException)
         {
+            // Unparseable JSON, OR the sidecar vanished between File.Exists and the read (a
+            // concurrent DeleteAsync / sweep → FileNotFoundException, an IOException) ⇒ treat as
+            // missing metadata (null), so GetAsync returns null and ScanExpiredAsync keeps going
+            // instead of aborting the whole sweep with a 500 (B7).
             return null;
         }
     }

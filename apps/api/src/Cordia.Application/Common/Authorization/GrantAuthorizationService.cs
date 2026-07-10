@@ -41,7 +41,7 @@ public sealed class GrantAuthorizationService(
 
         if (grant is null)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, ct);
+            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
 
@@ -66,7 +66,7 @@ public sealed class GrantAuthorizationService(
             ct);
         if (rows == 0)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, ct);
+            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
     }
@@ -76,8 +76,7 @@ public sealed class GrantAuthorizationService(
         string grantId,
         string customerRef,
         VerificationActionEnum action,
-        string? targetBookingId,
-        CancellationToken ct)
+        string? targetBookingId)
     {
         using var scope = scopeFactory.CreateScope();
         var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
@@ -96,6 +95,8 @@ public sealed class GrantAuthorizationService(
                     requested_action = action.ToString(),
                     grant_id = grantId,
                 }),
-            ct);
+            // CancellationToken.None (B2): the denial record must survive both the caller's
+            // transaction rollback AND a client disconnect that cancels the request token.
+            CancellationToken.None);
     }
 }

@@ -47,7 +47,7 @@ public sealed class GetTranscriptQueryHandler(
         if (!hasGrant && !hasStaffRole)
         {
             // Inv-11: session/customer identity alone never authorizes a sensitive read.
-            await WriteDenyAsync(query, customerRef: null, reason: "no_grant_or_staff_role", ct);
+            await WriteDenyAsync(query, customerRef: null, reason: "no_grant_or_staff_role");
             throw new AuthorizationFailedException(
                 Action,
                 "Reading a transcript requires a read_sensitive verification grant or a staff role with a reason code (spec 14 §3.1).");
@@ -59,28 +59,33 @@ public sealed class GetTranscriptQueryHandler(
         string actorType;
         string actorId;
 
-        if (hasGrant)
+        // Prefer the staff-role path when a valid staff role is present (B1). The query contract
+        // permits BOTH a grant and staff credentials; taking the grant branch on presence alone
+        // would deny an otherwise-authorized staff read whenever the grant is stale/wrong. A valid
+        // staff role authorizes the read on its own, so a redundant (or bad) grant is never
+        // enforced — the path is chosen by credential VALIDITY, not by grant presence.
+        if (hasStaffRole)
+        {
+            actorType = query.ActorRole!;
+            actorId = query.ActorId!;
+        }
+        else
         {
             // Grant path (§3.1 step 3, spec 08 consumed as-is): the grant must belong to the
             // session's OWN customer — a session without a customer ref cannot be grant-read.
             // The service deny-audits through a fresh scope and throws 403 on any mismatch.
             await grants.RequireGrantAsync(
-                query.TenantId, query.GrantId, session.CustomerRef ?? string.Empty,
+                query.TenantId, query.GrantId!, session.CustomerRef ?? string.Empty,
                 VerificationActionEnum.ReadSensitive, targetBookingId: null, ct);
             actorType = "customer";
             actorId = session.CustomerRef ?? "customer";
-        }
-        else
-        {
-            actorType = query.ActorRole!;
-            actorId = query.ActorId!;
         }
 
         // (4) Consent AFTER authorization: recording was never permitted ⇒ there is no lawful
         // transcript to read — 409, and the refusal itself is on the trail.
         if (session.RecordingAllowed != true)
         {
-            await WriteDenyAsync(query, session.CustomerRef, reason: "consent_absent", ct);
+            await WriteDenyAsync(query, session.CustomerRef, reason: "consent_absent");
             throw new ConsentRequiredException("transcript", query.SessionId);
         }
 
@@ -116,7 +121,8 @@ public sealed class GetTranscriptQueryHandler(
         // meaning depends on turn order, so the reader owns the guarantee.
         turns.Sort((a, b) => a.Seq.CompareTo(b.Seq));
 
-        // (5) ALLOW audit for the sensitive read (§5.1: reads are audited like writes).
+        // (5) ALLOW audit for the sensitive read (§5.1: reads are audited like writes). Written on
+        // CancellationToken.None (B2): an audit record must persist even if the client disconnects.
         await audit.WriteAsync(new AuditRecord(
             TenantId: query.TenantId,
             ActorType: actorType,
@@ -131,14 +137,15 @@ public sealed class GetTranscriptQueryHandler(
             Extra: new
             {
                 turn_count = turns.Count,
-                access_path = string.IsNullOrWhiteSpace(query.GrantId) ? "staff_role" : "verification_grant",
-            }), ct);
+                access_path = hasStaffRole ? "staff_role" : "verification_grant",
+            }), CancellationToken.None);
 
         return new TranscriptView(query.SessionId, turns);
     }
 
-    private Task WriteDenyAsync(
-        GetTranscriptQuery query, string? customerRef, string reason, CancellationToken ct)
+    // Deny audits are written on CancellationToken.None (B2) so a denial record is durable even
+    // when the request is canceled by a client disconnect mid-authorization.
+    private Task WriteDenyAsync(GetTranscriptQuery query, string? customerRef, string reason)
         => audit.WriteAsync(new AuditRecord(
             TenantId: query.TenantId,
             // Fallback convention (matches OperatorActionBehavior/GetModelTrace): an ASSERTED
@@ -157,5 +164,5 @@ public sealed class GetTranscriptQueryHandler(
             DataClasses: ["pii", "transcript"],
             ReasonCode: string.IsNullOrWhiteSpace(query.ReasonCode) ? null : query.ReasonCode,
             CorrelationId: query.SessionId,
-            Extra: new { error = reason }), ct);
+            Extra: new { error = reason }), CancellationToken.None);
 }

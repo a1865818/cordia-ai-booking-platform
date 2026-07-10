@@ -144,13 +144,13 @@ public class OperatorActionBehaviorTests
     }
 
     [Fact]
-    public async Task DomainException_WritesDenyAuditAndRethrows()
+    public async Task AuthorizationFailureFromHandler_WritesDenyAuditAndRethrows()
     {
         var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
 
-        await Assert.ThrowsAsync<TargetNotFound>(() => behavior.Handle(
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => behavior.Handle(
             new OperatorRequest("tenant-a", "ops.jane", "reason"),
-            _ => throw new TargetNotFound("nope"),
+            _ => throw new AuthorizationFailedException("operator.test_action", "denied inside handler"),
             CancellationToken.None));
 
         _audit.Verify(a => a.WriteAsync(
@@ -162,6 +162,42 @@ public class OperatorActionBehaviorTests
                     && r.TargetId == "target-1"
                     && r.ReasonCode == "reason"),
                 It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task NonAuthorizationDomainException_IsNotAuditedAsDeny_AndPropagates()
+    {
+        // B4: a business-rule DomainException (e.g. a 404/409, here a stand-in) is NOT an
+        // authorization denial — the narrowed catch must let it through without a DENY row.
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
+
+        await Assert.ThrowsAsync<TargetNotFound>(() => behavior.Handle(
+            new OperatorRequest("tenant-a", "ops.jane", "reason"),
+            _ => throw new TargetNotFound("nope"),
+            CancellationToken.None));
+
+        _audit.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task DenyAudit_IsWrittenOnAnUncanceledToken_EvenWhenTheRequestIsCanceled()
+    {
+        // B2: a client disconnect cancels the request token, but the DENY record must still persist
+        // — the behavior writes the audit on CancellationToken.None, not the request token.
+        var behavior = new OperatorActionBehavior<OperatorRequest, string>(_scopeFactory);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => behavior.Handle(
+            new OperatorRequest("tenant-a", "ops.jane", "reason",
+                ActorRole: StaffRole.Operator, RequiredRole: StaffRole.Owner), // role mismatch → deny
+            _ => Task.FromResult("ok"),
+            cts.Token));
+
+        _audit.Verify(a => a.WriteAsync(
+                It.Is<AuditRecord>(r => r.Decision == "deny"),
+                It.Is<CancellationToken>(t => !t.IsCancellationRequested)),
             Times.Once);
     }
 

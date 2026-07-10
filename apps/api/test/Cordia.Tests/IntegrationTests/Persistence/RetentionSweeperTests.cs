@@ -73,6 +73,32 @@ public class RetentionSweeperTests(PostgresFixture fixture)
         }
     }
 
+    /// <summary>Wraps a real object store but throws on <see cref="DeleteAsync"/> for ONE object id,
+    /// so the sweep's per-object fault isolation (B5) can be exercised against a live store.</summary>
+    private sealed class FailingDeleteStore(IObjectStore inner, string failObjectId) : IObjectStore
+    {
+        public Task PutAsync(string tenantId, string purpose, string objectId, ReadOnlyMemory<byte> content,
+            TimeSpan? ttl = null, CancellationToken ct = default)
+            => inner.PutAsync(tenantId, purpose, objectId, content, ttl, ct);
+
+        public Task<byte[]?> GetAsync(string tenantId, string purpose, string objectId, CancellationToken ct = default)
+            => inner.GetAsync(tenantId, purpose, objectId, ct);
+
+        public Task<bool> DeleteAsync(string tenantId, string purpose, string objectId, CancellationToken ct = default)
+            => objectId == failObjectId
+                ? throw new IOException($"simulated delete failure for {objectId}")
+                : inner.DeleteAsync(tenantId, purpose, objectId, ct);
+
+        public Task<IReadOnlyList<string>> ListIdsAsync(string tenantId, string purpose, string prefix = "", CancellationToken ct = default)
+            => inner.ListIdsAsync(tenantId, purpose, prefix, ct);
+
+        public Task<IReadOnlyList<PrunedObject>> ScanExpiredAsync(DateTimeOffset now, CancellationToken ct = default)
+            => inner.ScanExpiredAsync(now, ct);
+
+        public Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(DateTimeOffset now, CancellationToken ct = default)
+            => inner.SweepExpiredAsync(now, ct);
+    }
+
     private static EncryptedFileObjectStore BuildObjectStore(string root)
     {
         var config = new ConfigurationBuilder()
@@ -172,5 +198,53 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             .IgnoreQueryFilters()
             .AnyAsync(g => g.TenantId == tenantB && g.GrantId == "sweepall-grant");
         Assert.True(grantGone, "tenant B's expired grant should have been pruned");
+    }
+
+    [Fact]
+    public async Task ObjectSweep_OneDeleteFails_OtherExpiredObjectsAreStillDeleted()
+    {
+        // B5: a single DeleteAsync failure must not abort the delete loop — every OTHER expired
+        // object still gets pruned this cycle (per-object fault isolation, matching the per-tenant loop).
+        var tenant = $"t14-delfail-{Guid.NewGuid():N}";
+        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var real = BuildObjectStore(objectRoot);
+
+        // Two expired objects; deletion of "audio-fails" is rigged to throw.
+        await real.PutAsync(tenant, "raw-audio", "audio-fails", new byte[] { 1 }, ttl: TimeSpan.FromHours(-1));
+        await real.PutAsync(tenant, "raw-audio", "audio-ok", new byte[] { 2 }, ttl: TimeSpan.FromHours(-1));
+        var store = new FailingDeleteStore(real, failObjectId: "audio-fails");
+
+        try
+        {
+            var sweeper = new RetentionSweeper(
+                new FixtureScopeFactory(fixture), store, NullLogger<RetentionSweeper>.Instance);
+
+            // The sweep must not throw despite the rigged delete failure.
+            await sweeper.SweepAllTenantsAsync(Now);
+
+            // The healthy object was pruned; the rigged one survives (its delete threw) and will be
+            // re-identified and re-deleted next cycle — but it never blocked its sibling. Both are
+            // expired, so GetAsync returns null for either regardless of deletion; ScanExpiredAsync
+            // is what distinguishes a still-on-disk blob (re-identified) from a deleted one (gone).
+            var stillExpiredOnDisk = (await real.ScanExpiredAsync(Now)).Select(o => o.ObjectId).ToList();
+            Assert.DoesNotContain("audio-ok", stillExpiredOnDisk);
+            Assert.Contains("audio-fails", stillExpiredOnDisk);
+
+            // Both removals were audited BEFORE the deletes (audit-first, L1) — a blob left behind
+            // still carries a trail.
+            await using var auditCtx = fixture.CreateContext(tenant);
+            var audited = await auditCtx.AuditEvents.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(e => e.TenantId == tenant && e.EventType == "privacy.retention.object_pruned")
+                .Select(e => e.SubjectRef)
+                .ToListAsync();
+            Assert.Contains("audio-ok", audited);
+            Assert.Contains("audio-fails", audited);
+        }
+        finally
+        {
+            if (Directory.Exists(objectRoot))
+                Directory.Delete(objectRoot, recursive: true);
+        }
     }
 }

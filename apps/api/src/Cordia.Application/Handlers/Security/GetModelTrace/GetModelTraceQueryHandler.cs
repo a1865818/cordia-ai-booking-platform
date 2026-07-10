@@ -25,7 +25,7 @@ public sealed class GetModelTraceQueryHandler(
             || string.IsNullOrWhiteSpace(query.ReasonCode)
             || !StaffRole.Satisfies(query.ActorRole, StaffRole.Operator))
         {
-            await WriteAuditAsync(query, decision: "deny", found: null, ct);
+            await WriteAuditAsync(query, decision: "deny", found: null);
             throw new AuthorizationFailedException(
                 Action,
                 "Viewing a model trace requires a staff role (operator or owner) with an actor identity and a reason code (spec 13 §25.3 / spec 14 §3.1).");
@@ -34,7 +34,7 @@ public sealed class GetModelTraceQueryHandler(
         var bytes = await store.GetAsync(query.TenantId, Purpose, query.TraceId, ct);
 
         // The view attempt itself is audited whether or not the trace exists (§4.3).
-        await WriteAuditAsync(query, decision: "allow", found: bytes is not null, ct);
+        await WriteAuditAsync(query, decision: "allow", found: bytes is not null);
 
         if (bytes is null)
             return null;
@@ -50,8 +50,10 @@ public sealed class GetModelTraceQueryHandler(
             Ts: doc.RootElement.GetProperty("ts").GetDateTimeOffset());
     }
 
+    // Audits are written on CancellationToken.None (B2) so the record — a DENY refusal or the
+    // §4.3 view record — is durable even if the client disconnects and cancels the request token.
     private Task WriteAuditAsync(
-        GetModelTraceQuery query, string decision, bool? found, CancellationToken ct)
+        GetModelTraceQuery query, string decision, bool? found)
         => audit.WriteAsync(new AuditRecord(
             TenantId: query.TenantId,
             ActorType: StaffRole.IsKnown(query.ActorRole) ? query.ActorRole! : "operator",
@@ -63,5 +65,5 @@ public sealed class GetModelTraceQueryHandler(
             DataClasses: ["model_trace"],
             ReasonCode: string.IsNullOrWhiteSpace(query.ReasonCode) ? null : query.ReasonCode,
             CorrelationId: query.TraceId,
-            Extra: found is null ? new { } : new { found }), ct);
+            Extra: found is null ? new { } : new { found }), CancellationToken.None);
 }

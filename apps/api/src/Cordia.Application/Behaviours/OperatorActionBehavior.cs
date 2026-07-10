@@ -20,9 +20,11 @@ namespace Cordia.Application.Behaviours;
 /// (GD-1: owner-required actions demand owner; operator-required actions accept
 /// operator or owner) BEFORE the handler — a mismatch writes a DENY audit
 /// through a fresh DI scope and throws the same 403 — and
-/// (b) appends a DENY audit event when a typed <see cref="DomainException"/>
-/// escapes the handler — the effect's transaction rolled back, so the denial
-/// is recorded in its own transaction. The deny write resolves a FRESH DI
+/// (b) appends a DENY audit event when an <see cref="AuthorizationFailedException"/>
+/// escapes the handler — a genuine authorization refusal, not an ordinary
+/// business error (those, and self-audited grant denials, flow through
+/// untouched). The effect's transaction rolled back, so the denial is recorded
+/// in its own transaction. The deny write resolves a FRESH DI
 /// scope (fresh DbContext): the request-scoped context's change tracker may
 /// still hold entities the rolled-back transaction staged, and flushing the
 /// audit through it could durably persist exactly the state the rollback
@@ -72,7 +74,9 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
                         has_role = !string.IsNullOrWhiteSpace(op.ActorRole),
                         has_reason = !string.IsNullOrWhiteSpace(op.ReasonCode),
                     }),
-                ct);
+                // CancellationToken.None (B2): the denial record must persist even if the client
+                // disconnects and cancels the request token.
+                CancellationToken.None);
             throw new AuthorizationFailedException(
                 op.ActionName,
                 "Operator actions require an actor identity (X-Actor), a staff role (X-Actor-Role), and a reason code (X-Reason-Code) (spec 14 §24.5).");
@@ -99,7 +103,7 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
                     DataClasses: ["operations"],
                     ReasonCode: op.ReasonCode,
                     Extra: new { provided_role = op.ActorRole, required_role = op.RequiredRole, error = "role_not_satisfied" }),
-                ct);
+                CancellationToken.None); // B2: durable even if the client disconnects.
             throw new AuthorizationFailedException(
                 op.ActionName,
                 $"This action requires the '{op.RequiredRole}' role (spec 14 §24.5, GD-1 role matrix).");
@@ -109,8 +113,15 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
         {
             return await next(ct);
         }
-        catch (DomainException ex)
+        catch (AuthorizationFailedException ex)
         {
+            // Narrowed from `catch (DomainException)` (B4): only a genuine AUTHORIZATION denial
+            // thrown from inside the handler is a DENY decision. A broad DomainException catch
+            // mis-labeled ordinary business failures (e.g. PreorderSagaNotFoundException → 404,
+            // InvalidPreorderSagaTransitionException → 409) as denials, and double-counted the
+            // ones a self-auditing dependency already recorded (a handler's ConsumeGrantAsync
+            // deny-audits before throwing VerificationRequiredException). Those now flow through
+            // untouched — only truly-unaudited authz refusals are recorded here.
             using var scope = scopeFactory.CreateScope();
             var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
             await audit.WriteAsync(
@@ -127,7 +138,7 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
                     DataClasses: ["operations"],
                     ReasonCode: op.ReasonCode,
                     Extra: new { error = ex.GetType().Name }),
-                ct);
+                CancellationToken.None); // B2: durable even if the client disconnects.
             throw;
         }
     }

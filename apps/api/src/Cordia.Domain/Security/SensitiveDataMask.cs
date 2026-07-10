@@ -144,14 +144,28 @@ public static partial class SensitiveDataMask
                         arr[i] = replacement;
                 }
                 return node;
-            case JsonValue value when value.TryGetValue<string>(out var text):
+            case JsonValue value:
                 if (exempt)
                     return node;
-                var masked = Sanitize(text);
-                if (ReferenceEquals(masked, text) || masked == text)
+                if (value.TryGetValue<string>(out var text))
+                {
+                    var masked = Sanitize(text);
+                    if (ReferenceEquals(masked, text) || masked == text)
+                        return node;
+                    changed = true;
+                    return JsonValue.Create(masked);
+                }
+                // Non-string scalar (number / bool): a numeric PAN/SSN must not slip through this
+                // choke point just because it was written unquoted, e.g. {"card":4111111111111111}
+                // (B6). Sanitize its textual form; when masking changes it, replace with the masked
+                // STRING (a JSON number cannot hold the mask token). Byte-identical when unmasked —
+                // bools and ordinary numbers have no 13+ digit run / CVV context, so they pass through.
+                var raw = value.ToString();
+                var maskedRaw = Sanitize(raw);
+                if (maskedRaw == raw)
                     return node;
                 changed = true;
-                return JsonValue.Create(masked);
+                return JsonValue.Create(maskedRaw);
             default:
                 return node;
         }

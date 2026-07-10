@@ -180,6 +180,32 @@ public class GetTranscriptTests
     }
 
     [Fact]
+    public async Task StaffCredentialWithStaleGrant_ReadsViaStaff_NeverConsultsTheGrant()
+    {
+        // B1: a request carrying BOTH a valid staff credential AND a stale/wrong grant must read
+        // via the staff path — the path is chosen by credential VALIDITY, not grant presence. A
+        // valid staff role authorizes the read on its own, so the redundant grant is never
+        // enforced and cannot spuriously 403 a legitimate operator read.
+        SetupSession(recordingAllowed: true);
+        SetupTurns((1, "hello"));
+
+        var view = await Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, GrantId: "stale-grant", ActorId: "ops.jane",
+                ActorRole: StaffRole.Operator, ReasonCode: "dispute_review"),
+            CancellationToken.None);
+
+        Assert.Single(view.Turns);
+        // The stale grant is never consulted — staff precedence skips the grant service entirely.
+        _grants.Verify(g => g.RequireGrantAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "allow" && r.ActorType == StaffRole.Operator),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task UnknownSession_WithStaffCredential_Throws404()
     {
         _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))

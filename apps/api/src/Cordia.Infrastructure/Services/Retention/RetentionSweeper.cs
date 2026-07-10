@@ -115,11 +115,29 @@ public sealed class RetentionSweeper(
             // Commit the trail FIRST — only then remove the bytes (L1).
             await db.SaveChangesAsync(ct);
 
+            // Delete each blob in ISOLATION (B5): a single DeleteAsync failure (a locked file,
+            // permission, or transient I/O error) must not skip every remaining expired object.
+            // The audit rows are already committed, so a blob left behind is simply re-identified
+            // and re-deleted next cycle (idempotent) — same per-item fault isolation as the
+            // per-tenant loop above.
+            var deleted = 0;
             foreach (var obj in expired)
-                await objectStore.DeleteAsync(obj.TenantId, obj.Purpose, obj.ObjectId, ct);
+            {
+                try
+                {
+                    await objectStore.DeleteAsync(obj.TenantId, obj.Purpose, obj.ObjectId, ct);
+                    deleted++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError(ex,
+                        "Retention sweep failed to delete pruned object tenant={TenantId} purpose={Purpose} id={ObjectId}; retrying next cycle",
+                        obj.TenantId, obj.Purpose, obj.ObjectId);
+                }
+            }
 
-            logger.LogInformation("Retention sweep pruned {Count} expired objects", expired.Count);
-            return expired.Count;
+            logger.LogInformation("Retention sweep pruned {Count} expired objects", deleted);
+            return deleted;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

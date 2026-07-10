@@ -50,6 +50,18 @@ public class SanitizeJsonTests
     }
 
     [Fact]
+    public void NumericPanScalar_IsMasked_BenignNumberUntouched()
+    {
+        // B6: an UNQUOTED numeric PAN must not slip through — the JsonValue branch now sanitizes
+        // non-string scalars too. A benign small number stays an untouched number.
+        var result = SensitiveDataMask.SanitizeJson("""{"card":4111111111111111,"party":4}""");
+
+        Assert.DoesNotContain(Pan, result);
+        Assert.Contains(SensitiveDataMask.MaskToken, result);
+        Assert.Contains("\"party\":4", result);
+    }
+
+    [Fact]
     public void PanInsideArrayAndNestedObject_IsMasked()
     {
         var json = $$$"""{"items":[{"comment":"{{{Pan}}}"},"plain {{{Pan}}} text"],"nested":{"free":"{{{Pan}}}"}}""";
