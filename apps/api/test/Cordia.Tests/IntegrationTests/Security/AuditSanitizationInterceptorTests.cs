@@ -31,8 +31,8 @@ public class AuditSanitizationInterceptorTests(PostgresFixture fixture)
                 Actor = "system",
                 SubjectRef = "subject-1",
                 // A PAN leaked into free-text metadata by a hypothetical writer,
-                // alongside a legit non-Luhn reference that must survive.
-                Metadata = """{"note":"customer said 4111 1111 1111 1111","reference":"4111111111111112"}""",
+                // alongside a legit reference (no embedded Luhn window) that must survive.
+                Metadata = """{"note":"customer said 4111 1111 1111 1111","reference":"5260181590830166"}""",
                 OccurredAt = DateTimeOffset.UtcNow,
             });
             await ctx.SaveChangesAsync();
@@ -44,6 +44,6 @@ public class AuditSanitizationInterceptorTests(PostgresFixture fixture)
 
         Assert.DoesNotContain("4111 1111 1111 1111", row.Metadata);
         Assert.Contains("[REDACTED]", row.Metadata);
-        Assert.Contains("4111111111111112", row.Metadata); // non-Luhn reference intact
+        Assert.Contains("5260181590830166", row.Metadata); // reference with no Luhn window intact
     }
 }
