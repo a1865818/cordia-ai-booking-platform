@@ -14,7 +14,9 @@ namespace Cordia.Application.Behaviours;
 /// For operator requests it (a) fails closed with a typed
 /// <see cref="AuthorizationFailedException"/> (403) when the actor identity,
 /// role, or reason code is missing (structural backstop behind the
-/// FluentValidation rules), (a2) enforces the <see cref="StaffRole"/> matrix
+/// FluentValidation rules) — writing a DENY audit (through a fresh scope, missing
+/// fields recorded as "unknown") so the trail is complete, (a2) enforces the
+/// <see cref="StaffRole"/> matrix
 /// (GD-1: owner-required actions demand owner; operator-required actions accept
 /// operator or owner) BEFORE the handler — a mismatch writes a DENY audit
 /// through a fresh DI scope and throws the same 403 — and
@@ -47,6 +49,30 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
         {
             // Typed 403 (not a 400 validation error): the request is well-formed but the caller
             // has not established WHO is acting, AS WHAT, or WHY — an authorization failure (§24.5).
+            // Audit the denial for completeness parity with the role-mismatch and DomainException
+            // branches (L6) — even an incomplete identity leaves a tenant + action + reason trail;
+            // missing fields are recorded as "unknown". Fresh scope, same rollback-safety rationale.
+            using var scope = scopeFactory.CreateScope();
+            var denyAudit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
+            await denyAudit.WriteAsync(
+                new AuditRecord(
+                    TenantId: op.TenantId,
+                    ActorType: StaffRole.IsKnown(op.ActorRole) ? op.ActorRole : "operator",
+                    ActorId: string.IsNullOrWhiteSpace(op.ActorId) ? "unknown" : op.ActorId,
+                    Action: op.ActionName,
+                    TargetType: op.TargetType,
+                    TargetId: op.TargetId,
+                    Decision: "deny",
+                    DataClasses: ["operations"],
+                    ReasonCode: string.IsNullOrWhiteSpace(op.ReasonCode) ? null : op.ReasonCode,
+                    Extra: new
+                    {
+                        error = "identity_incomplete",
+                        has_actor = !string.IsNullOrWhiteSpace(op.ActorId),
+                        has_role = !string.IsNullOrWhiteSpace(op.ActorRole),
+                        has_reason = !string.IsNullOrWhiteSpace(op.ReasonCode),
+                    }),
+                ct);
             throw new AuthorizationFailedException(
                 op.ActionName,
                 "Operator actions require an actor identity (X-Actor), a staff role (X-Actor-Role), and a reason code (X-Reason-Code) (spec 14 §24.5).");

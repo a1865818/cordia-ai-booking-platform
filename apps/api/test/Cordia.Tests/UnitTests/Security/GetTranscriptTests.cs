@@ -180,12 +180,32 @@ public class GetTranscriptTests
     }
 
     [Fact]
-    public async Task UnknownSession_Throws404()
+    public async Task UnknownSession_WithStaffCredential_Throws404()
     {
         _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((ConversationSession?)null);
 
+        // A CREDENTIALED caller (staff role) may learn existence (404), like GetModelTrace.
         await Assert.ThrowsAsync<ConversationSessionNotFoundException>(
             () => Handler().Handle(StaffQuery(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task NoCredentials_MissingSession_Denies403_NotA404_NoExistenceOracle()
+    {
+        // L5: a caller with only tenant scope must not distinguish an absent session (would-be
+        // 404) from a present one (403) — authorization runs BEFORE the session is even loaded.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, null, null, null, null), CancellationToken.None));
+
+        // The session is never loaded for a no-credential caller — the oracle is structurally closed.
+        _sessions.Verify(
+            s => s.GetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "deny"), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

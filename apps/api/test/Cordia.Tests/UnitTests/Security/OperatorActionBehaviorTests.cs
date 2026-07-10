@@ -74,7 +74,12 @@ public class OperatorActionBehaviorTests
             CancellationToken.None));
 
         Assert.False(handlerRan, "the handler must never run without actor + role + reason code");
-        _audit.VerifyNoOtherCalls();
+        // L6: the denial is audited too (completeness parity with the role-mismatch branch),
+        // even when the identity is incomplete — the row still ties to tenant + action.
+        _audit.Verify(a => a.WriteAsync(
+                It.Is<AuditRecord>(r => r.Decision == "deny" && r.Action == "operator.test_action"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     // ── GD-1 role matrix enforcement (spec 14 §24.5, gate decision 2026-07-11) ──

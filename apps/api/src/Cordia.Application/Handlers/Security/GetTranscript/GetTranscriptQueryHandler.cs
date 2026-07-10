@@ -14,8 +14,11 @@ namespace Cordia.Application.Handlers.Security.GetTranscript;
 /// (2/3) grant path — <c>RequireGrantAsync(read_sensitive)</c> against the session's OWN
 /// customer ref (the grant service deny-audits + throws 403 itself); role path — actor +
 /// reason code + <see cref="StaffRole"/> operator (owner ok), failure deny-audited here and
-/// thrown as 403. Authorization runs BEFORE the consent check so an unauthorized caller never
-/// learns the session's consent state. (4) consent — <c>RecordingAllowed != true</c> ⇒
+/// thrown as 403. A caller presenting NEITHER credential is denied BEFORE the session is loaded
+/// (mirrors GetModelTrace) so an unauthorized caller cannot tell an absent session (404) from a
+/// present one (403/409) — no existence oracle. Authorization also runs before the consent check
+/// so an unauthorized caller never learns the session's consent state. (4) consent —
+/// <c>RecordingAllowed != true</c> ⇒
 /// deny audit + <see cref="ConsentRequiredException"/> (409, the first thrower). (5) assemble
 /// from the object store and append the ALLOW audit (<c>read_sensitive_transcript</c>,
 /// data_classes [pii, transcript]) per §5.1.
@@ -32,13 +35,31 @@ public sealed class GetTranscriptQueryHandler(
 
     public async Task<TranscriptView> Handle(GetTranscriptQuery query, CancellationToken ct)
     {
+        // Auth-first (mirror GetModelTrace): decide the auth path from the QUERY and reject a
+        // caller presenting neither a grant nor a staff role BEFORE loading the session, so a
+        // caller with only tenant scope cannot distinguish a real session (403/409) from an absent
+        // one (404) — no existence oracle (L5). A caller who DID present a credential may still
+        // learn existence (404), exactly as GetModelTrace surfaces found:true/false to staff.
+        var hasGrant = !string.IsNullOrWhiteSpace(query.GrantId);
+        var hasStaffRole = !string.IsNullOrWhiteSpace(query.ActorId)
+            && !string.IsNullOrWhiteSpace(query.ReasonCode)
+            && StaffRole.Satisfies(query.ActorRole, StaffRole.Operator);
+        if (!hasGrant && !hasStaffRole)
+        {
+            // Inv-11: session/customer identity alone never authorizes a sensitive read.
+            await WriteDenyAsync(query, customerRef: null, reason: "no_grant_or_staff_role", ct);
+            throw new AuthorizationFailedException(
+                Action,
+                "Reading a transcript requires a read_sensitive verification grant or a staff role with a reason code (spec 14 §3.1).");
+        }
+
         var session = await sessions.GetAsync(query.TenantId, query.SessionId, ct)
             ?? throw new ConversationSessionNotFoundException(query.TenantId, query.SessionId);
 
         string actorType;
         string actorId;
 
-        if (!string.IsNullOrWhiteSpace(query.GrantId))
+        if (hasGrant)
         {
             // Grant path (§3.1 step 3, spec 08 consumed as-is): the grant must belong to the
             // session's OWN customer — a session without a customer ref cannot be grant-read.
@@ -49,20 +70,10 @@ public sealed class GetTranscriptQueryHandler(
             actorType = "customer";
             actorId = session.CustomerRef ?? "customer";
         }
-        else if (!string.IsNullOrWhiteSpace(query.ActorId)
-            && !string.IsNullOrWhiteSpace(query.ReasonCode)
-            && StaffRole.Satisfies(query.ActorRole, StaffRole.Operator))
-        {
-            actorType = query.ActorRole!;
-            actorId = query.ActorId;
-        }
         else
         {
-            // Inv-11: session/customer identity alone never authorizes a sensitive read.
-            await WriteDenyAsync(query, session.CustomerRef, reason: "no_grant_or_staff_role", ct);
-            throw new AuthorizationFailedException(
-                Action,
-                "Reading a transcript requires a read_sensitive verification grant or a staff role with a reason code (spec 14 §3.1).");
+            actorType = query.ActorRole!;
+            actorId = query.ActorId!;
         }
 
         // (4) Consent AFTER authorization: recording was never permitted ⇒ there is no lawful
