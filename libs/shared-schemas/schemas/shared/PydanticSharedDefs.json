@@ -2122,6 +2122,73 @@
       "title": "MaskedDtmfSignal",
       "type": "object"
     },
+    "ModelTraceInput": {
+      "additionalProperties": false,
+      "description": "Input for record_model_trace \u2014 one REDACTED model prompt/output (spec 13 \u00a725.3).\n\nModel traces are telemetry, not recordings: no consent gate applies, but the content\nMUST pass ``redact_text`` before entering this contract (Inv-12), is stored encrypted\nunder the strictly-shorter model-trace TTL, and is NEVER written to app logs.",
+      "properties": {
+        "trace_id": {
+          "description": "Stable opaque trace identifier (idempotent per id).",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Session the trace belongs to, when applicable.",
+          "title": "Session Id"
+        },
+        "kind": {
+          "description": "Which side of the model call this is.",
+          "enum": [
+            "prompt",
+            "output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "content": {
+          "description": "REDACTED prompt/output text (post redact_text; never raw).",
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id",
+        "kind",
+        "content"
+      ],
+      "title": "ModelTraceInput",
+      "type": "object"
+    },
+    "ModelTraceRecorded": {
+      "additionalProperties": false,
+      "description": "Output payload for record_model_trace (spec 13 \u00a725.3).",
+      "properties": {
+        "trace_id": {
+          "description": "Echo of the stored trace id.",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "stored": {
+          "description": "True when the trace was persisted.",
+          "title": "Stored",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trace_id",
+        "stored"
+      ],
+      "title": "ModelTraceRecorded",
+      "type": "object"
+    },
     "Money": {
       "additionalProperties": false,
       "description": "A monetary amount in ISO-4217 minor units (spec 11 \u00a74.2).",
@@ -2576,6 +2643,15 @@
       "enum": [
         "recorded",
         "session_not_found"
+      ]
+    },
+    "RecordModelTraceStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RecordModelTraceStatus",
+      "description": "Status codes for record_model_trace (spec 13 \u00a725.3).",
+      "type": "string",
+      "enum": [
+        "ok"
       ]
     },
     "RedactionPolicy": {

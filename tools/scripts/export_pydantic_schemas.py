@@ -78,6 +78,8 @@ from cordia_agent.tools.contracts import (
     SubmitCancellationInput,
     SubmitConfirmedIntentInput,
     SubmitModificationInput,
+    ModelTraceInput,
+    ModelTraceRecorded,
     ToolResultEnvelope,
     TranscriptTurnInput,
     TranscriptTurnPersisted,
@@ -110,6 +112,7 @@ from cordia_agent.tools.status_codes import (
     GetTenantContextStatus,
     AppendTranscriptTurnStatus,
     RecordConsentStatus,
+    RecordModelTraceStatus,
     RequestHumanHandoffStatus,
     RequestVerificationStatus,
     ResolveConsentPolicyStatus,
@@ -183,6 +186,8 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         SubmitConfirmedIntentInput,
         SubmitConfirmedIntentRequest,
         SubmitModificationInput,
+        ModelTraceInput,
+        ModelTraceRecorded,
         ToolResultEnvelope,
         TranscriptTurnInput,
         TranscriptTurnPersisted,
@@ -221,6 +226,7 @@ ENUM_REGISTRY: list[type[Enum]] = [
     ResolveConsentPolicyStatus,
     RecordConsentStatus,
     AppendTranscriptTurnStatus,
+    RecordModelTraceStatus,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.

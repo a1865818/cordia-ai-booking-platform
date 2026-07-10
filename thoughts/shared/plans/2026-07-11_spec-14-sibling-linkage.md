@@ -261,10 +261,22 @@ default; NOTHING calls it in production yet (no LLM nodes) — port + tests only
 registries + named count updates (20→21, 14→15). Regen all.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api` · `bun nx test langgraph` · `bun nx lint langgraph` · regen schemas/types + api-contract
+- [x] `bun nx test api` (872 passed) · `bun nx lint api` · `bun nx test-integration api` (354 passed, 2 skipped) · `bun nx test langgraph` (810 passed) · `bun nx lint langgraph` · regen schemas/types + api-contract
 
 Discoveries and notable information:
-- _(implementer)_
+- Trace WRITES are deliberately un-audited (high-volume telemetry data plane); every VIEW is
+  audited (`model_trace.viewed`) **including views of traces that don't exist** — spec 13
+  §4.3's "who viewed model traces" wants the attempt, not just the hit (pinned by a test
+  asserting the allow audit with `found=false` in Extra).
+- The GET has NO grant analog (telemetry has no customer subject) — staff-role-only, the one
+  §3.1-spine surface where step 3's grant alternative is intentionally absent.
+- `ApiModelTraceSink` is triple-redundant on Inv-12 (agent redact → sink redact → API
+  sanitize) and swallows its own failures — telemetry never breaks the model call it
+  observes (spec 13 fail-open for the business path). `NullModelTraceSink` is the default;
+  nothing invokes the sink in production (no LLM nodes yet) — stub-backed as scoped.
+- Cross-tenant trace read proven 404 via the store's tenant path isolation (Inv-13) — no
+  DB row exists to filter, the FILESYSTEM path is the isolation boundary.
+- Final tool counts: `ALL_TOOLS` 21, `FOREGROUND_TOOLS` 15.
 
 ### Phase 6 — Stage-6 validation + explicit regression diff
 Full lanes + item-by-item re-check of the regression contract: baseline items 1–24 and 25–33;

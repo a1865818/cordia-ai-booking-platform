@@ -673,6 +673,39 @@ class TranscriptTurnInput(BaseModel):
     text: str = Field(description="REDACTED turn text (post redact_text; never raw).")
 
 
+class ModelTraceInput(BaseModel):
+    """Input for record_model_trace — one REDACTED model prompt/output (spec 13 §25.3).
+
+    Model traces are telemetry, not recordings: no consent gate applies, but the content
+    MUST pass ``redact_text`` before entering this contract (Inv-12), is stored encrypted
+    under the strictly-shorter model-trace TTL, and is NEVER written to app logs.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    trace_id: str = Field(
+        description="Stable opaque trace identifier (idempotent per id)."
+    )
+    session_id: str | None = Field(
+        default=None, description="Session the trace belongs to, when applicable."
+    )
+    kind: Literal["prompt", "output"] = Field(
+        description="Which side of the model call this is."
+    )
+    content: str = Field(
+        description="REDACTED prompt/output text (post redact_text; never raw)."
+    )
+
+
+class ModelTraceRecorded(BaseModel):
+    """Output payload for record_model_trace (spec 13 §25.3)."""
+
+    model_config = {"extra": "forbid"}
+
+    trace_id: str = Field(description="Echo of the stored trace id.")
+    stored: bool = Field(description="True when the trace was persisted.")
+
+
 class TranscriptTurnPersisted(BaseModel):
     """Output payload for append_transcript_turn (spec 14 §5.2)."""
 

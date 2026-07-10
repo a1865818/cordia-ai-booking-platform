@@ -18,6 +18,7 @@ from cordia_agent.tools.client import get_tool_client
 from cordia_agent.tools.contracts import (
     AvailabilityRequest,
     HandoffRequest,
+    ModelTraceInput,
     RecordConsentInput,
     SubmitConfirmedIntentInput,
     ToolResultEnvelope,
@@ -302,7 +303,24 @@ async def append_transcript_turn(**kwargs: object) -> ToolResultEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# Registry — exactly 14 tools; each .name equals the spec name above.
+# 15. record_model_trace — BOUNDED_SIDE_EFFECT (spec 13 §25.3)
+# ---------------------------------------------------------------------------
+
+
+@tool(args_schema=ModelTraceInput)
+async def record_model_trace(**kwargs: object) -> ToolResultEnvelope:
+    """Persist one REDACTED model prompt/output into the stricter telemetry retention tier through the Booking API (spec 13 §25.3). Content must already be scrubbed (redact_text); traces are stored encrypted with a short TTL and are never written to app logs."""
+    inp = ModelTraceInput(**kwargs)
+    return await get_tool_client().call_tool(
+        "record_model_trace",
+        "POST",
+        "/api/model-traces",
+        json=inp.model_dump(mode="json"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registry — exactly 15 tools; each .name equals the spec name above.
 # ---------------------------------------------------------------------------
 
 FOREGROUND_TOOLS: list = [
@@ -320,4 +338,5 @@ FOREGROUND_TOOLS: list = [
     resolve_consent_policy,
     record_consent,
     append_transcript_turn,
+    record_model_trace,
 ]

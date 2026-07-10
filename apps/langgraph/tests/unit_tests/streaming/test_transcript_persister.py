@@ -50,7 +50,10 @@ def _agent() -> FakeAgent:
     return FakeAgent(
         [
             AgentTextFinalFrame(
-                type=StreamFrameType.AGENT_TEXT_FINAL, **AGENT_ENVELOPE, seq=100, text="Hello."
+                type=StreamFrameType.AGENT_TEXT_FINAL,
+                **AGENT_ENVELOPE,
+                seq=100,
+                text="Hello.",
             )
         ]
     )
@@ -133,7 +136,9 @@ def _final_frame(text: str = "table for two") -> TranscriptFinalFrame:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("recording_allowed", [None, False])
-async def test_tool_persister_consent_fail_closed(monkeypatch, recording_allowed) -> None:
+async def test_tool_persister_consent_fail_closed(
+    monkeypatch, recording_allowed
+) -> None:
     calls: list[TranscriptTurnInput] = []
 
     async def fake_call(inp: TranscriptTurnInput):

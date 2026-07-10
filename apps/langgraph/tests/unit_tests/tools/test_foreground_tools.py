@@ -75,6 +75,7 @@ EXPECTED_TOOL_NAMES = {
     "resolve_consent_policy",
     "record_consent",
     "append_transcript_turn",
+    "record_model_trace",
 }
 
 
@@ -195,7 +196,7 @@ def fake_client_submitted() -> FakeClient:
 @pytest.mark.unit
 def test_foreground_tools_count() -> None:
     """FOREGROUND_TOOLS has exactly 13 entries (11 spec-03 + 2 spec-14 consent)."""
-    assert len(FOREGROUND_TOOLS) == 14
+    assert len(FOREGROUND_TOOLS) == 15
 
 
 @pytest.mark.unit

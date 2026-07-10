@@ -31,6 +31,7 @@ from cordia_agent.tools.contracts import (
     CustomerContextView,
     HandoffRequest,
     HandoffResult,
+    ModelTraceInput,
     OperationStatusView,
     PolicyValidationResult,
     RecordConsentInput,
@@ -49,6 +50,7 @@ from cordia_agent.tools.foreground import (
     get_operation_status,
     get_tenant_context,
     record_consent,
+    record_model_trace,
     request_human_handoff,
     resolve_consent_policy,
     submit_confirmed_intent,
@@ -532,6 +534,21 @@ def parse_consent_recorded(env: ToolResultEnvelope) -> ConsentRecordedResult | N
     except Exception:
         _log.exception("Failed to parse ConsentRecordedResult from envelope data")
         return None
+
+
+async def record_model_trace_call(inp: ModelTraceInput) -> ToolResultEnvelope:
+    """Invoke the record_model_trace tool and return the raw envelope.
+
+    ``inp.content`` MUST already be redacted (Inv-12); traces route to the
+    stricter telemetry retention tier, never to app logs (spec 13 §25.3).
+
+    Args:
+        inp: The redacted model prompt/output to persist.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await record_model_trace.ainvoke(inp.model_dump(mode="json"))
 
 
 async def append_transcript_turn_call(inp: TranscriptTurnInput) -> ToolResultEnvelope:

@@ -152,6 +152,12 @@ class RecordConsentStatus(str, Enum):
     SESSION_NOT_FOUND = "session_not_found"
 
 
+class RecordModelTraceStatus(str, Enum):
+    """Status codes for record_model_trace (spec 13 §25.3)."""
+
+    OK = "ok"
+
+
 class AppendTranscriptTurnStatus(str, Enum):
     """Status codes for append_transcript_turn (spec 14 §4.3/§5.2).
 

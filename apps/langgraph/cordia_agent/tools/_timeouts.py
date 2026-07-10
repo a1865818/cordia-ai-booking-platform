@@ -24,7 +24,7 @@ class SideEffectClass(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# Per-tool deadline table (seconds) — ALL 20 tools (spec 03 §6.6; +2 consent
+# Per-tool deadline table (seconds) — ALL 21 tools (spec 03 §6.6; +2 consent
 # tools from spec 14 §5.1/§7: consent gate budget < 50 ms + record round-trip).
 # ---------------------------------------------------------------------------
 
@@ -49,10 +49,11 @@ TOOL_DEADLINES: dict[str, float] = {
     "resolve_consent_policy": 0.10,
     "record_consent": 0.15,
     "append_transcript_turn": 0.15,
+    "record_model_trace": 0.15,
 }
 
 # ---------------------------------------------------------------------------
-# Per-tool side-effect-class table — ALL 20 tools (spec 03 §7; spec 14 consent + transcript).
+# Per-tool side-effect-class table — ALL 21 tools (spec 03 §7; spec 14 consent + transcript; spec 13 model trace).
 # ---------------------------------------------------------------------------
 
 TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
@@ -69,16 +70,17 @@ TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
     "validate_booking_change": SideEffectClass.PURE_READ,
     "get_booking_operation_status": SideEffectClass.PURE_READ,
     "resolve_consent_policy": SideEffectClass.PURE_READ,
-    # BOUNDED_SIDE_EFFECT (5 tools) — no retry. record_consent is an idempotent
+    # BOUNDED_SIDE_EFFECT (6 tools) — no retry. record_consent is an idempotent
     # version-guarded session update (spec 14 §5.1); server-side it is safe under
     # duplicate delivery, but the client still never retries (Inv-5).
     "check_candidate_availability": SideEffectClass.BOUNDED_SIDE_EFFECT,
     "request_verification": SideEffectClass.BOUNDED_SIDE_EFFECT,
     "request_human_handoff": SideEffectClass.BOUNDED_SIDE_EFFECT,
     "record_consent": SideEffectClass.BOUNDED_SIDE_EFFECT,
-    # append_transcript_turn is idempotent per (session, seq) server-side (a re-post
-    # overwrites the same object), but the client still never retries (Inv-5).
+    # append_transcript_turn / record_model_trace are idempotent per id server-side
+    # (a re-post overwrites the same object), but the client still never retries (Inv-5).
     "append_transcript_turn": SideEffectClass.BOUNDED_SIDE_EFFECT,
+    "record_model_trace": SideEffectClass.BOUNDED_SIDE_EFFECT,
     # DURABLE_MUTATION (3 tools) — no retry.
     "submit_confirmed_intent": SideEffectClass.DURABLE_MUTATION,
     "submit_booking_modification": SideEffectClass.DURABLE_MUTATION,
@@ -86,12 +88,12 @@ TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
 }
 
 # ---------------------------------------------------------------------------
-# Frozen set of all 20 tool names — used for coverage assertions.
+# Frozen set of all 21 tool names — used for coverage assertions.
 # ---------------------------------------------------------------------------
 
 ALL_TOOLS: frozenset[str] = frozenset(TOOL_DEADLINES)
 
-# Internal consistency guard — both tables must cover exactly the same 20 tools.
+# Internal consistency guard — both tables must cover exactly the same 21 tools.
 # A real raise (not assert) so the guard survives `python -O` bytecode stripping.
 if not (set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == set(ALL_TOOLS)):
     raise RuntimeError(
