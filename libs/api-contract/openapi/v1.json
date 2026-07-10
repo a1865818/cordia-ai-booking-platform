@@ -1164,6 +1164,45 @@
         },
         "type": "object"
       },
+      "TranscriptTurnPersistedResult": {
+        "additionalProperties": false,
+        "properties": {
+          "persisted": {
+            "type": "boolean"
+          },
+          "seq": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sessionId": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "TranscriptTurnRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "seq": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "speaker": {
+            "nullable": true,
+            "type": "string"
+          },
+          "text": {
+            "nullable": true,
+            "type": "string"
+          },
+          "turn_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "UploadMenuRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2724,6 +2763,104 @@
               "text/plain": {
                 "schema": {
                   "$ref": "#/components/schemas/ConsentRecordedResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "tags": [
+          "ConversationSessions"
+        ]
+      }
+    },
+    "/api/conversation-sessions/{sessionId}/transcript-turns": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptTurnRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptTurnRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptTurnRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptTurnPersistedResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptTurnPersistedResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptTurnPersistedResult"
                 }
               }
             },

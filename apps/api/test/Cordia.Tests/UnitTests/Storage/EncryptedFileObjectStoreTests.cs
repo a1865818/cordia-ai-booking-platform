@@ -125,13 +125,14 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
         var expiresAt = meta.RootElement.GetProperty("expires_at").GetDateTimeOffset();
         Assert.InRange(expiresAt, before.AddHours(71.9), DateTimeOffset.UtcNow.AddHours(72.1));
 
-        // Non-raw-audio purposes get NO implicit TTL.
-        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1 });
-        var transcriptMeta = JsonDocument.Parse(
+        // Purposes with no configured default (GD-3 covers raw-audio/transcript/model-trace
+        // only) get NO implicit TTL.
+        await store.PutAsync("t-a", "attachment", "obj-1", new byte[] { 1 });
+        var attachmentMeta = JsonDocument.Parse(
             await File.ReadAllTextAsync(
-                Path.Combine(_root, "t-a", "transcript", "obj-1.meta.json"),
+                Path.Combine(_root, "t-a", "attachment", "obj-1.meta.json"),
                 TestContext.Current.CancellationToken));
-        Assert.Equal(JsonValueKind.Null, transcriptMeta.RootElement.GetProperty("expires_at").ValueKind);
+        Assert.Equal(JsonValueKind.Null, attachmentMeta.RootElement.GetProperty("expires_at").ValueKind);
     }
 
     [Fact]
@@ -183,6 +184,58 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
             () => store.GetAsync(hostile, "transcript", "obj-1"));
         await Assert.ThrowsAsync<ArgumentException>(
             () => store.DeleteAsync("t-a", "transcript", hostile));
+    }
+
+    [Fact]
+    public async Task ListIds_ReturnsPrefixMatches_OrdinalSorted_TenantIsolated()
+    {
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "sess-1.000002", new byte[] { 2 });
+        await store.PutAsync("t-a", "transcript", "sess-1.000001", new byte[] { 1 });
+        await store.PutAsync("t-a", "transcript", "sess-2.000001", new byte[] { 3 });
+        await store.PutAsync("t-b", "transcript", "sess-1.000009", new byte[] { 9 });
+
+        var ids = await store.ListIdsAsync("t-a", "transcript", "sess-1.");
+
+        Assert.Equal(["sess-1.000001", "sess-1.000002"], ids);
+        Assert.Empty(await store.ListIdsAsync("t-c", "transcript", "sess-1."));
+        Assert.Equal(3, (await store.ListIdsAsync("t-a", "transcript")).Count); // empty prefix = all
+    }
+
+    [Theory]
+    [InlineData("../x")]
+    [InlineData(@"..\x")]
+    [InlineData("a/b")]
+    public async Task ListIds_RejectsTraversalShapedPrefixes(string hostile)
+    {
+        var store = Store();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => store.ListIdsAsync("t-a", "transcript", hostile));
+    }
+
+    [Fact]
+    public async Task TranscriptAndModelTrace_GetTheirConfigDefaultTtls_TraceStrictlyShorter()
+    {
+        // GD-3 (2026-07-11): transcript 90d, model-trace 14d — and the trace TTL must stay
+        // STRICTLY shorter than the transcript TTL (spec 13 §25.3 "stricter retention").
+        var store = Store();
+        var before = DateTimeOffset.UtcNow;
+        await store.PutAsync("t-a", "transcript", "sess-1.000001", new byte[] { 1 });
+        await store.PutAsync("t-a", "model-trace", "trace-1", new byte[] { 2 });
+
+        static DateTimeOffset ExpiresAt(string root, string purpose, string id)
+        {
+            using var meta = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(root, "t-a", purpose, id + ".meta.json")));
+            return meta.RootElement.GetProperty("expires_at").GetDateTimeOffset();
+        }
+
+        var transcriptExpiry = ExpiresAt(_root, "transcript", "sess-1.000001");
+        var traceExpiry = ExpiresAt(_root, "model-trace", "trace-1");
+        Assert.InRange(transcriptExpiry, before.AddDays(89.9), DateTimeOffset.UtcNow.AddDays(90.1));
+        Assert.InRange(traceExpiry, before.AddDays(13.9), DateTimeOffset.UtcNow.AddDays(14.1));
+        Assert.True(traceExpiry < transcriptExpiry, "model-trace retention must be strictly shorter than transcript retention");
     }
 
     [Fact]

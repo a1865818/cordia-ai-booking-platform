@@ -24,6 +24,8 @@ public sealed partial class EncryptedFileObjectStore(
 {
     public const string EncryptionKeySecretName = "ObjectStoreEncryptionKey";
     private const string RawAudioPurpose = "raw-audio";
+    private const string TranscriptPurpose = "transcript";
+    private const string ModelTracePurpose = "model-trace";
     private const int NonceSize = 12;
     private const int TagSize = 16;
 
@@ -42,6 +44,10 @@ public sealed partial class EncryptedFileObjectStore(
 
     private double RawAudioTtlHours => config.GetValue("ObjectStore:RawAudioTtlHours", 72d);
 
+    private double TranscriptTtlDays => config.GetValue("ObjectStore:TranscriptTtlDays", 90d);
+
+    private double ModelTraceTtlDays => config.GetValue("ObjectStore:ModelTraceTtlDays", 14d);
+
     public async Task PutAsync(
         string tenantId,
         string purpose,
@@ -54,8 +60,16 @@ public sealed partial class EncryptedFileObjectStore(
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         var now = DateTimeOffset.UtcNow;
-        // Fail closed on retention: raw audio never persists without a TTL (gate: 72h default).
-        var effectiveTtl = ttl ?? (purpose == RawAudioPurpose ? TimeSpan.FromHours(RawAudioTtlHours) : null);
+        // Fail closed on retention: sensitive purposes never persist without a TTL when the
+        // caller passes none (gate decisions: raw audio 72h; GD-3 2026-07-11: transcripts 90d,
+        // model traces 14d — strictly shorter, spec 13 §25.3).
+        var effectiveTtl = ttl ?? purpose switch
+        {
+            RawAudioPurpose => TimeSpan.FromHours(RawAudioTtlHours),
+            TranscriptPurpose => TimeSpan.FromDays(TranscriptTtlDays),
+            ModelTracePurpose => TimeSpan.FromDays(ModelTraceTtlDays),
+            _ => (TimeSpan?)null,
+        };
 
         var nonce = RandomNumberGenerator.GetBytes(NonceSize);
         var tag = new byte[TagSize];
@@ -110,6 +124,29 @@ public sealed partial class EncryptedFileObjectStore(
         if (File.Exists(MetaPath(path)))
             File.Delete(MetaPath(path));
         return Task.FromResult(existed);
+    }
+
+    public Task<IReadOnlyList<string>> ListIdsAsync(
+        string tenantId, string purpose, string prefix = "", CancellationToken ct = default)
+    {
+        ValidateSegment(tenantId, nameof(tenantId));
+        ValidateSegment(purpose, nameof(purpose));
+        // The prefix is a LEADING FRAGMENT of a valid segment, not a full segment — validate
+        // with the same allow-list character class (traversal-proof) but permit empty.
+        if (prefix.Length > 0 && !SafeSegment().IsMatch(prefix))
+            throw new ArgumentException(
+                "'prefix' contains characters not allowed in an object-store path segment.", nameof(prefix));
+
+        var dir = Path.Combine(Root, tenantId, purpose);
+        if (!Directory.Exists(dir))
+            return Task.FromResult<IReadOnlyList<string>>([]);
+
+        IReadOnlyList<string> ids = Directory.EnumerateFiles(dir, "*.bin")
+            .Select(f => Path.GetFileName(f)[..^".bin".Length])
+            .Where(id => id.StartsWith(prefix, StringComparison.Ordinal))
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        return Task.FromResult(ids);
     }
 
     public async Task<IReadOnlyList<PrunedObject>> SweepExpiredAsync(

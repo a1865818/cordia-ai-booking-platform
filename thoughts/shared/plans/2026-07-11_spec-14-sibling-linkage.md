@@ -152,10 +152,27 @@ null consent ⇒ no object), happy path round-trip, idempotent overwrite on same
 isolation, PAN-in-text masked at rest.
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api` · `bun nx run api-contract:generate-types`
+- [x] `bun nx test api` (857 passed) · `bun nx lint api` · `bun nx test-integration api` (345 passed, 2 skipped) · `bun nx run api-contract:generate-types`
 
 Discoveries and notable information:
-- _(implementer)_
+- GD-3 TTLs are applied as **purpose defaults inside `EncryptedFileObjectStore.PutAsync`**
+  (extending the existing raw-audio precedent) rather than resolved by the handler — the
+  Application layer never reads config, and every producer of a sensitive purpose inherits
+  the fail-closed default automatically. One pre-existing store test intentionally updated:
+  "transcript gets no implicit TTL" became "purposes WITHOUT a GD-3 default get none"
+  (asserted with a neutral `attachment` purpose) + a new strictly-shorter trace-vs-transcript
+  assertion.
+- The Alba test host needed object-store config: `appsettings.Test.json` gains
+  `ObjectStore:Root=.tmp/objectstore-test` + a clearly-labeled TEST-ONLY base64 AES key under
+  `Secrets:ObjectStoreEncryptionKey` (the store's lazy key resolution otherwise 500s on first
+  producer call in integration).
+- `ListIdsAsync` validates the prefix with the same allow-list char class as full segments
+  but permits empty (list-all); ids only, never content.
+- Producer suppression outcome is HTTP 200 `persisted=false` — kept deliberately non-erroring
+  per §5.2 (the pipeline must not treat consent-suppression as a failure and retry it).
+- Recurring Windows footgun confirmed: EVERY `api-contract:generate-types` run (including the
+  pre-commit hook) leaks a live `Cordia.Api` process that locks bin outputs — kill
+  `Get-Process Cordia.Api` before the next build/test.
 
 ### Phase 3 — WI2b(api): consent-gated transcript reader (§3.1 spine, first ConsentRequired thrower)
 `GetTranscriptQuery(TenantId, SessionId, GrantId?, ActorId?, ActorRole?, ReasonCode?)`. Handler

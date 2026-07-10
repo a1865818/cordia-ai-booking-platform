@@ -27,6 +27,12 @@ public interface IObjectStore
     /// <summary>Deletes the object; true when something was removed.</summary>
     Task<bool> DeleteAsync(string tenantId, string purpose, string objectId, CancellationToken ct = default);
 
+    /// <summary>Lists the object ids under (tenant, purpose) whose id starts with
+    /// <paramref name="prefix"/> (empty ⇒ all), ordinal-sorted — e.g. a session's transcript
+    /// turns <c>{sessionId}.000001…</c> in order. Ids only; content stays encrypted at rest.</summary>
+    Task<IReadOnlyList<string>> ListIdsAsync(
+        string tenantId, string purpose, string prefix = "", CancellationToken ct = default);
+
     /// <summary>Deletes every object whose TTL elapsed before <paramref name="now"/> and
     /// returns what was pruned so the caller can audit each removal
     /// (<c>privacy.retention.object_pruned</c>).</summary>
