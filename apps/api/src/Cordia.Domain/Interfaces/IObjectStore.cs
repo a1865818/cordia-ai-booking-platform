@@ -48,4 +48,4 @@ public sealed record PrunedObject(
     string Purpose,
     string ObjectId,
     DateTimeOffset? ExpiresAt,
-    string Reason = "ttl_elapsed");
+    string Reason);

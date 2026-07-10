@@ -308,6 +308,44 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task EmptyJsonMeta_FailsClosed_GetReturnsNull_AndSweepPrunesIt()
+    {
+        // M3 gap: a meta corrupted to valid-but-empty JSON ("{}") deserializes with a null
+        // Purpose/ExpiresAt. It must be treated as corrupt (fail closed), not as a live no-TTL
+        // object served forever.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "obj-1", new byte[] { 1, 2, 3 });
+        await File.WriteAllTextAsync(
+            Path.Combine(_root, "t-a", "transcript", "obj-1.meta.json"),
+            "{}",
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(await store.GetAsync("t-a", "transcript", "obj-1"));
+
+        var pruned = await store.SweepExpiredAsync(DateTimeOffset.UtcNow);
+        Assert.Contains(pruned, p => p.ObjectId == "obj-1" && p.Reason == "missing_or_corrupt_meta");
+    }
+
+    [Fact]
+    public async Task SweepExpired_ReapsOrphanMetaPastGrace_ButKeepsRecentOne()
+    {
+        // A meta-only orphan (blob gone) — e.g. a crash between PutAsync's meta and blob writes.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "orphan-meta-1", new byte[] { 1, 2, 3 });
+        File.Delete(Path.Combine(_root, "t-a", "transcript", "orphan-meta-1.bin"));
+        var metaPath = Path.Combine(_root, "t-a", "transcript", "orphan-meta-1.meta.json");
+        Assert.True(File.Exists(metaPath));
+
+        // Inside the grace window a fresh orphan meta is left alone (must not race an in-flight Put).
+        await store.SweepExpiredAsync(DateTimeOffset.UtcNow);
+        Assert.True(File.Exists(metaPath), "a fresh orphan meta must not be reaped (grace window)");
+
+        // Well past the grace window it is reaped.
+        await store.SweepExpiredAsync(DateTimeOffset.UtcNow.AddHours(2));
+        Assert.False(File.Exists(metaPath), "an orphan meta older than the grace window is reaped");
+    }
+
+    [Fact]
     public async Task Put_LeavesNoTempFilesBehind()
     {
         var store = Store();

@@ -31,6 +31,15 @@ public sealed partial class EncryptedFileObjectStore(
     private const int NonceSize = 12;
     private const int TagSize = 16;
 
+    // Prune reason codes forwarded verbatim into the privacy.retention.object_pruned audit
+    // (RetentionSweeper) — the single source so producer and audit can never drift on the string.
+    private const string ReasonTtlElapsed = "ttl_elapsed";
+    private const string ReasonMissingOrCorruptMeta = "missing_or_corrupt_meta";
+
+    // A meta sidecar with no blob is only reaped once it is older than this — long enough that a
+    // concurrent in-flight PutAsync (meta renamed, blob not yet; a millisecond window) is safe.
+    private static readonly TimeSpan OrphanMetaGrace = TimeSpan.FromHours(1);
+
     // Conservative allow-list for tenant/purpose/id path segments — the single source is
     // Domain's ObjectStoreSegment so API validators (400) and this fail-closed guard agree.
     private static Regex SafeSegment() => ObjectStoreSegment.Pattern();
@@ -91,8 +100,8 @@ public sealed partial class EncryptedFileObjectStore(
         // Write the meta sidecar FIRST, then the blob — each via a temp file + atomic rename.
         // Because reads and the sweep are fail-closed on a missing/corrupt meta (M3), the
         // decryptable .bin must never become visible without its sidecar; a crash between the
-        // two renames leaves at most an orphan the next sweep prunes, never a live object with
-        // no provable retention state.
+        // two renames leaves at most a meta-only orphan, which SweepExpiredAsync's pass 2 reaps
+        // (never a live object with no provable retention state).
         await WriteAtomicAsync(MetaPath(path), metaBytes, ct);
         await WriteAtomicAsync(path, blob, ct);
     }
@@ -189,10 +198,16 @@ public sealed partial class EncryptedFileObjectStore(
         if (!Directory.Exists(Root))
             return pruned;
 
-        // Enumerate the encrypted blobs (the content-bearing artifacts), not the meta sidecars:
-        // a blob whose meta is missing/unparseable would otherwise be invisible to a meta-driven
-        // sweep and linger forever (dead weight — already unreadable via GetAsync). Prune it
-        // fail-closed here so the store cannot accumulate orphaned ciphertext (M3).
+        // Pass 1 — enumerate the encrypted blobs (the content-bearing artifacts), not the meta
+        // sidecars: a blob whose meta is missing/unparseable would otherwise be invisible to a
+        // meta-driven sweep and linger forever (dead weight — already unreadable via GetAsync).
+        // Prune it fail-closed here so the store cannot accumulate orphaned ciphertext (M3).
+        //
+        // Single-node assumption: read-decide-delete is not atomic against a concurrent PutAsync
+        // renewing the SAME id at the instant of the sweep (a lock-free filesystem TOCTOU). The
+        // current callers write each object id exactly once (transcript {sessionId}.{seq}, unique
+        // trace/audio ids), so no renewal races in practice; a multi-writer deployment would need
+        // per-object locking.
         foreach (var binPath in Directory.EnumerateFiles(Root, "*.bin", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
@@ -203,12 +218,12 @@ public sealed partial class EncryptedFileObjectStore(
             DateTimeOffset? expiresAt;
             if (meta is null)
             {
-                reason = "missing_or_corrupt_meta";
+                reason = ReasonMissingOrCorruptMeta;
                 expiresAt = null;
             }
             else if (meta.ExpiresAt is { } exp && exp <= now)
             {
-                reason = "ttl_elapsed";
+                reason = ReasonTtlElapsed;
                 expiresAt = exp;
             }
             else
@@ -228,6 +243,23 @@ public sealed partial class EncryptedFileObjectStore(
 
             pruned.Add(new PrunedObject(
                 Path.GetFileName(tenantDir), Path.GetFileName(purposeDir), objectId, expiresAt, reason));
+        }
+
+        // Pass 2 — reap meta sidecars with no blob: crash orphans from a PutAsync that wrote the
+        // meta but died before the blob rename (or from an interrupted delete above). These hold
+        // only control-plane fields (no ciphertext), but would accumulate forever since pass 1
+        // never sees them. Guarded by OrphanMetaGrace so an in-flight Put's not-yet-renamed blob
+        // is never mistaken for an orphan; an unparseable orphan (no blob) is removed at once.
+        foreach (var metaPath in Directory.EnumerateFiles(Root, "*.meta.json", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            var binPath = metaPath[..^".meta.json".Length] + ".bin";
+            if (File.Exists(binPath))
+                continue;
+
+            var meta = await ReadMetaAsync(metaPath, ct);
+            if (meta is null || meta.CreatedAt <= now - OrphanMetaGrace)
+                File.Delete(metaPath);
         }
 
         return pruned;
@@ -278,7 +310,11 @@ public sealed partial class EncryptedFileObjectStore(
             return null;
         try
         {
-            return JsonSerializer.Deserialize<ObjectMeta>(await File.ReadAllTextAsync(metaPath, ct));
+            var meta = JsonSerializer.Deserialize<ObjectMeta>(await File.ReadAllTextAsync(metaPath, ct));
+            // Fail closed on a semantically-empty sidecar too (JSON "null", "{}", or a shape with
+            // no purpose): a meta we never wrote is corrupt, not a legitimate no-TTL object, so it
+            // must not be served or treated as live (M3).
+            return string.IsNullOrEmpty(meta?.Purpose) ? null : meta;
         }
         catch (JsonException)
         {

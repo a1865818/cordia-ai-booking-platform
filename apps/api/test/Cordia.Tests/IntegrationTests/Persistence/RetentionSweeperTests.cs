@@ -51,7 +51,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             return new FixtureScope(fixture.CreateContext("retention-sweeper-driver"));
         }
 
-        private sealed class FixtureScope(ApplicationDbContext ctx) : IServiceScope, IServiceProvider
+        private sealed class FixtureScope(ApplicationDbContext ctx)
+            : IServiceScope, IServiceProvider, IAsyncDisposable
         {
             public IServiceProvider ServiceProvider => this;
 
@@ -65,6 +66,10 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             }
 
             public void Dispose() => ctx.Dispose();
+
+            // CreateAsyncScope() prefers IAsyncDisposable — implement it so the test disposes the
+            // context via the same async path the real DI container uses in production.
+            public ValueTask DisposeAsync() => ctx.DisposeAsync();
         }
     }
 

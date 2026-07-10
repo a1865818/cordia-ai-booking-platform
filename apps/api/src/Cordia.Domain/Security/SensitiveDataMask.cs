@@ -45,12 +45,15 @@ public static partial class SensitiveDataMask
     // by 3-4 digits — no word boundary required before the digits. The middle
     // group is one separator run plus an optional (filler-word + separator run):
     // collapsing the former S*(word)?S* — two adjacent stars over the same class
-    // — to a single leading star removes the O(n^2) backtracking (ReDoS). A 100ms
-    // match timeout is a defence-in-depth cap since [GeneratedRegex] is backtracking.
+    // — to a single leading star makes the match LINEAR, removing the O(n^2)
+    // backtracking (ReDoS). This structural bound IS the fix and is parity-equal
+    // to the Python lane. Deliberately NO matchTimeout: a wall-clock timeout can
+    // spuriously fire under GC/CPU pressure, and RegexMatchTimeoutException would
+    // fail OPEN in the Serilog scrubber (enricher exceptions are swallowed and the
+    // event emits with the raw value) and hard-fail the SaveChanges/handler lanes.
     [GeneratedRegex(
         @"\b(cvv2?|cvc|security code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)([0-9]{3,4})\b",
-        RegexOptions.IgnoreCase,
-        matchTimeoutMilliseconds: 100)]
+        RegexOptions.IgnoreCase)]
     private static partial Regex CvvInContext();
 
     // US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).
