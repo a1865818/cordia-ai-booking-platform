@@ -5,10 +5,12 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Services.Retention;
 using Cordia.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cordia.Tests.IntegrationTests.Persistence;
@@ -34,6 +36,36 @@ public class RetentionSweeperTests(PostgresFixture fixture)
 
         public string GetRequiredSecret(string name)
             => value ?? throw new SecretNotFoundException(name);
+    }
+
+    /// <summary>Hands the sweeper a fresh fixture-backed <see cref="ApplicationDbContext"/>
+    /// (and a handler over it) per scope, mirroring production's scoped registrations — and
+    /// counts scopes so the test can assert a FRESH one per tenant (the M4 isolation fix).</summary>
+    private sealed class FixtureScopeFactory(PostgresFixture fixture) : IServiceScopeFactory
+    {
+        public int ScopesCreated { get; private set; }
+
+        public IServiceScope CreateScope()
+        {
+            ScopesCreated++;
+            return new FixtureScope(fixture.CreateContext("retention-sweeper-driver"));
+        }
+
+        private sealed class FixtureScope(ApplicationDbContext ctx) : IServiceScope, IServiceProvider
+        {
+            public IServiceProvider ServiceProvider => this;
+
+            public object? GetService(Type serviceType)
+            {
+                if (serviceType == typeof(ApplicationDbContext))
+                    return ctx;
+                if (serviceType == typeof(RetentionSweepHandler))
+                    return new RetentionSweepHandler(ctx);
+                return null;
+            }
+
+            public void Dispose() => ctx.Dispose();
+        }
     }
 
     private static EncryptedFileObjectStore BuildObjectStore(string root)
@@ -93,16 +125,19 @@ public class RetentionSweeperTests(PostgresFixture fixture)
 
         try
         {
-            await using (var sweepCtx = fixture.CreateContext("retention-sweeper-driver"))
-            {
-                var sweeper = new RetentionSweeper(
-                    sweepCtx,
-                    new RetentionSweepHandler(sweepCtx),
-                    objectStore,
-                    NullLogger<RetentionSweeper>.Instance);
-                var pruned = await sweeper.SweepAllTenantsAsync(Now);
-                Assert.True(pruned >= 3, $"expected at least 3 pruned/anonymized rows+objects, got {pruned}");
-            }
+            var scopeFactory = new FixtureScopeFactory(fixture);
+            var sweeper = new RetentionSweeper(
+                scopeFactory,
+                objectStore,
+                NullLogger<RetentionSweeper>.Instance);
+            var pruned = await sweeper.SweepAllTenantsAsync(Now);
+            Assert.True(pruned >= 3, $"expected at least 3 pruned/anonymized rows+objects, got {pruned}");
+
+            // M4: a fresh scope (DbContext) is created for enumeration, for EACH of the >=2
+            // discovered tenants, and for the object-audit write — never one shared context.
+            Assert.True(
+                scopeFactory.ScopesCreated >= 4,
+                $"expected a fresh scope per tenant (+ enumerate + object audit), got {scopeFactory.ScopesCreated}");
 
             // The expired object is gone and its removal is audited (privacy.retention.object_pruned).
             Assert.Null(await objectStore.GetAsync(tenantA, "raw-audio", "sweepall-audio"));

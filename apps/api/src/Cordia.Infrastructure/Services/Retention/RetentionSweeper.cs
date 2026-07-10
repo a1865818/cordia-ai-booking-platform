@@ -3,6 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Cordia.Infrastructure.Services.Retention;
@@ -16,10 +17,17 @@ namespace Cordia.Infrastructure.Services.Retention;
 /// table sweeps it prunes expired encrypted objects (<see cref="IObjectStore"/>,
 /// e.g. 72h raw audio) and audits each removal
 /// (<c>privacy.retention.object_pruned</c>).
+///
+/// Each tenant is swept in its OWN DI scope — a fresh <see cref="RetentionSweepHandler"/>
+/// over a fresh <see cref="ApplicationDbContext"/> (M4). A tenant whose SaveChanges throws
+/// (e.g. a <c>DbUpdateConcurrencyException</c> on a session's version token touched
+/// mid-sweep) has its dirty change tracker disposed with the scope, so its aborted entities
+/// can never be re-attempted inside a LATER tenant's SaveChanges and silently halt retention
+/// for every tenant after it. The "one tenant's failure never blocks another" guarantee is
+/// therefore structural, not just a catch-and-continue.
 /// </summary>
 public sealed class RetentionSweeper(
-    ApplicationDbContext db,
-    RetentionSweepHandler handler,
+    IServiceScopeFactory scopeFactory,
     IObjectStore objectStore,
     ILogger<RetentionSweeper> logger) : IRetentionSweeper
 {
@@ -33,6 +41,12 @@ public sealed class RetentionSweeper(
             ct.ThrowIfCancellationRequested();
             try
             {
+                // Fresh scope ⇒ fresh DbContext + handler per tenant (M4): a failed tenant's
+                // aborted change tracker is disposed with the scope and cannot carry dirty
+                // entities into the next tenant's SaveChanges.
+                await using var scope = scopeFactory.CreateAsyncScope();
+                var handler = scope.ServiceProvider.GetRequiredService<RetentionSweepHandler>();
+
                 var idempotency = await handler.SweepIdempotencyRecordsAsync(tenantId, now, ct: ct);
                 var sessions = await handler.SweepConversationSessionsAsync(tenantId, now, ct: ct);
                 var grants = await handler.SweepVerificationGrantsAsync(tenantId, now, ct: ct);
@@ -71,6 +85,10 @@ public sealed class RetentionSweeper(
             if (pruned.Count == 0)
                 return 0;
 
+            // Own scope for the audit writes — same isolation posture as the per-tenant sweeps.
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
             foreach (var obj in pruned)
             {
                 db.AuditEvents.Add(new AuditEvent
@@ -104,6 +122,9 @@ public sealed class RetentionSweeper(
 
     private async Task<IReadOnlyList<string>> EnumerateTenantsAsync(CancellationToken ct)
     {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
         var idempotencyTenants = await db.IdempotencyRecords
             .IgnoreQueryFilters().Select(r => r.TenantId).Distinct().ToListAsync(ct);
         var sessionTenants = await db.ConversationSessions
