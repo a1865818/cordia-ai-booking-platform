@@ -228,10 +228,24 @@ frames when allowed, (b) never called when consent absent/declined, (c) a raisin
 doesn't break the turn. Named count-test updates (19→20, 13→14). Regen schemas + types.
 
 Automated verification:
-- [ ] `bun nx test langgraph` · `bun nx lint langgraph` · `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` · `bun nx build api` · `bun nx test api`
+- [x] `bun nx test langgraph` (807 passed) · `bun nx lint langgraph` · `bun nx run langgraph:generate-schemas` + `bun nx run shared-schemas:generate-types` · `bun nx build api` · `bun nx test api` (866)
 
 Discoveries and notable information:
-- _(implementer)_
+- **Latent scrub-vs-agent split surfaced**: `pipeline.run` yields the SCRUBBED frame but hands
+  the RAW final to `_run_agent` (in-boundary, intentional). The persister hook therefore
+  captures the scrubbed copy explicitly and never sees the raw frame — pinned by a test that
+  feeds a PAN through fake STT and asserts `[REDACTED]` at the persister.
+- Two distinct fail postures documented on the port: fail-CLOSED for persistence (consent
+  unknown/false ⇒ no call; server re-enforces authoritatively) and fail-OPEN for the pipe
+  (a raising persister is swallowed + logged; the caller's turn always completes).
+- `transcript_persister=None` default keeps the pipeline byte-identical (regression item 29
+  upheld; pinned by test).
+- Named count updates landed exactly as enumerated: `ALL_TOOLS` 19→20,
+  `FOREGROUND_TOOLS`/`EXPECTED_TOOL_NAMES` 13→14, stale "19" comments refreshed. The
+  tool-gate no-op loop iterates `ALL_TOOLS` so it extends automatically.
+- Exporter registry gotcha: blanket text replace duplicated `TranscriptTurn*` into
+  `MODEL_REGISTRY` (import block AND registry share the `ToolResultEnvelope,` anchor) —
+  `validate_no_duplicates` would have caught it at regen; fixed pre-regen.
 
 ### Phase 5 — WI3: model-trace sink (api + langgraph, stub-backed)
 API: `RecordModelTraceCommand(TenantId, TraceId, SessionId?, Kind[prompt|output], Content)` →

@@ -274,6 +274,16 @@
       "title": "AgentTextFinalFrame",
       "type": "object"
     },
+    "AppendTranscriptTurnStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AppendTranscriptTurnStatus",
+      "description": "Status codes for append_transcript_turn (spec 14 \u00a74.3/\u00a75.2).\n\n    Consent suppression is NOT a status \u2014 the envelope is ok with\n    ``persisted=false`` in the payload (\u00a75.2: a suppressed turn is a normal\n    outcome the pipeline must not retry).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "not_found"
+      ]
+    },
     "AudioStartedFrame": {
       "additionalProperties": false,
       "description": "Audio capture started; no payload beyond the envelope.",
@@ -3331,6 +3341,79 @@
         "stability"
       ],
       "title": "TranscriptPartialFrame",
+      "type": "object"
+    },
+    "TranscriptTurnInput": {
+      "additionalProperties": false,
+      "description": "Input for append_transcript_turn \u2014 one REDACTED transcript turn (spec 14 \u00a74.3/\u00a75.2).\n\nThe text MUST already have passed ``redact_text`` before entering this contract (Inv-12);\nthe API re-sanitizes at the boundary regardless. The server enforces the consent gate\nauthoritatively \u2014 a non-consented session suppresses the turn (``persisted=false``).",
+      "properties": {
+        "session_id": {
+          "description": "Conversation session the turn belongs to (D12 row).",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic turn sequence within the session (orders the transcript).",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "turn_id": {
+          "description": "The turn identifier from the streaming envelope.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "speaker": {
+          "description": "Who spoke this turn.",
+          "enum": [
+            "customer",
+            "agent"
+          ],
+          "title": "Speaker",
+          "type": "string"
+        },
+        "text": {
+          "description": "REDACTED turn text (post redact_text; never raw).",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "turn_id",
+        "speaker",
+        "text"
+      ],
+      "title": "TranscriptTurnInput",
+      "type": "object"
+    },
+    "TranscriptTurnPersisted": {
+      "additionalProperties": false,
+      "description": "Output payload for append_transcript_turn (spec 14 \u00a75.2).",
+      "properties": {
+        "session_id": {
+          "description": "Session the turn was posted against.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Echo of the turn sequence.",
+          "title": "Seq",
+          "type": "integer"
+        },
+        "persisted": {
+          "description": "False \u21d2 consent-suppressed (\u00a75.2 'transcript suppressed') \u2014 a normal outcome, not an error.",
+          "title": "Persisted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "persisted"
+      ],
+      "title": "TranscriptTurnPersisted",
       "type": "object"
     },
     "TriState": {

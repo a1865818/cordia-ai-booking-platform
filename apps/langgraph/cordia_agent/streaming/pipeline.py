@@ -28,7 +28,14 @@ if TYPE_CHECKING:
 
     from cordia_agent.streaming.agent_port import AgentOutputFrame, AgentPort
     from cordia_agent.streaming.providers import STTProvider, TTSProvider
+    from cordia_agent.streaming.transcript_persister import TranscriptPersister
     from cordia_agent.streaming.turn_manager import StreamFrame
+
+
+import logging
+
+
+_log = logging.getLogger(__name__)
 
 
 def _scrub_transcript_frame(frame: StreamFrame) -> StreamFrame:
@@ -61,6 +68,7 @@ class Pipeline:
         tts_provider: TTSProvider,
         agent: AgentPort,
         turn_manager: TurnManager | None = None,
+        transcript_persister: TranscriptPersister | None = None,
     ) -> None:
         self._turn_manager = turn_manager or TurnManager()
         self._stt = STTAdapter(provider=stt_provider, turn_manager=self._turn_manager)
@@ -70,6 +78,9 @@ class Pipeline:
         )
         self._filler = ProgressFiller(turn_manager=self._turn_manager)
         self._agent = agent
+        # Spec 14 §4.3: optional side port persisting committed SCRUBBED finals; None ⇒
+        # today's behavior byte-for-byte (no persistence from the pipe).
+        self._transcript_persister = transcript_persister
 
     async def run(
         self, pcm_chunks: AsyncIterable[bytes], *, session: PipelineSession
@@ -88,13 +99,31 @@ class Pipeline:
             # Spec 14 pre-emit redaction (Inv-12): PAN/CVV/gov-id shapes never
             # leave the model boundary inside a transcript frame — downstream
             # consumers (UI, logs, traces) only ever see the scrubbed text.
-            yield _scrub_transcript_frame(transcript)
+            scrubbed = _scrub_transcript_frame(transcript)
+            yield scrubbed
             if isinstance(transcript, TranscriptPartialFrame):
                 for frame in self._barge_in.caller_speech_started(transcript).frames:
                     yield frame
             elif isinstance(transcript, TranscriptFinalFrame):
+                # §4.3: the persister only ever sees the SCRUBBED committed final; the
+                # agent keeps receiving the in-boundary frame exactly as before.
+                if self._transcript_persister is not None and isinstance(
+                    scrubbed, TranscriptFinalFrame
+                ):
+                    await self._persist_final(scrubbed)
                 async for frame in self._run_agent(transcript):
                     yield frame
+
+    async def _persist_final(self, scrubbed: TranscriptFinalFrame) -> None:
+        """Best-effort persist — a failure must never break the caller's turn (§8)."""
+        try:
+            await self._transcript_persister.persist(scrubbed)  # type: ignore[union-attr]
+        except Exception:
+            _log.exception(
+                "transcript persist failed for session=%s turn=%s; continuing the turn",
+                scrubbed.session_id,
+                scrubbed.turn_id,
+            )
 
     async def _run_agent(
         self, final: TranscriptFinalFrame

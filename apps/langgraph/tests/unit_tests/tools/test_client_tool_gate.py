@@ -88,7 +88,7 @@ async def test_allowlist_permits_tool_on_it(client_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# No allowlist installed → all 19 canonical tools pass the gate unchanged.
+# No allowlist installed → all canonical tools (20) pass the gate unchanged.
 # ---------------------------------------------------------------------------
 
 

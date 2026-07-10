@@ -21,6 +21,7 @@ from cordia_agent.tools.contracts import (
     RecordConsentInput,
     SubmitConfirmedIntentInput,
     ToolResultEnvelope,
+    TranscriptTurnInput,
     VerificationRequest,
 )
 
@@ -284,7 +285,24 @@ async def record_consent(**kwargs: object) -> ToolResultEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# Registry — exactly 13 tools; each .name equals the spec name above.
+# 14. append_transcript_turn — BOUNDED_SIDE_EFFECT (spec 14 §4.3/§5.2)
+# ---------------------------------------------------------------------------
+
+
+@tool(args_schema=TranscriptTurnInput)
+async def append_transcript_turn(**kwargs: object) -> ToolResultEnvelope:
+    """Persist one REDACTED transcript turn onto the conversation session through the Booking API (spec 14 §4.3). The text must already be scrubbed (redact_text); the server enforces the consent gate authoritatively and suppresses the turn (persisted=false) when recording is not allowed — a normal outcome, never an error."""
+    inp = TranscriptTurnInput(**kwargs)
+    return await get_tool_client().call_tool(
+        "append_transcript_turn",
+        "POST",
+        f"/api/conversation-sessions/{inp.session_id}/transcript-turns",
+        json=inp.model_dump(mode="json", exclude={"session_id"}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registry — exactly 14 tools; each .name equals the spec name above.
 # ---------------------------------------------------------------------------
 
 FOREGROUND_TOOLS: list = [
@@ -301,4 +319,5 @@ FOREGROUND_TOOLS: list = [
     request_human_handoff,
     resolve_consent_policy,
     record_consent,
+    append_transcript_turn,
 ]

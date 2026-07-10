@@ -37,9 +37,12 @@ from cordia_agent.tools.contracts import (
     SubmitConfirmedIntentInput,
     TenantContextView,
     ToolResultEnvelope,
+    TranscriptTurnInput,
+    TranscriptTurnPersisted,
     VerificationGrantView,
 )
 from cordia_agent.tools.foreground import (
+    append_transcript_turn,
     check_candidate_availability,
     check_verification,
     find_customer_context,
@@ -528,4 +531,46 @@ def parse_consent_recorded(env: ToolResultEnvelope) -> ConsentRecordedResult | N
         )
     except Exception:
         _log.exception("Failed to parse ConsentRecordedResult from envelope data")
+        return None
+
+
+async def append_transcript_turn_call(inp: TranscriptTurnInput) -> ToolResultEnvelope:
+    """Invoke the append_transcript_turn tool and return the raw envelope.
+
+    ``inp.text`` MUST already be redacted (Inv-12); the API re-sanitizes and
+    enforces the consent gate authoritatively (spec 14 §5.2).
+
+    Args:
+        inp: The redacted transcript turn to persist.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await append_transcript_turn.ainvoke(inp.model_dump(mode="json"))
+
+
+def parse_transcript_turn_persisted(
+    env: ToolResultEnvelope,
+) -> TranscriptTurnPersisted | None:
+    """Parse a ``TranscriptTurnPersisted`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`append_transcript_turn_call`.
+
+    Returns:
+        A validated ``TranscriptTurnPersisted`` when ``env.ok`` and ``env.data``
+        is present, otherwise ``None`` (the persister treats it as best-effort —
+        a failed persist never blocks the turn).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "append_transcript_turn_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return TranscriptTurnPersisted.model_validate(
+            _payload(env.data, TranscriptTurnPersisted)
+        )
+    except Exception:
+        _log.exception("Failed to parse TranscriptTurnPersisted from envelope data")
         return None

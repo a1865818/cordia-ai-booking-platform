@@ -79,6 +79,8 @@ from cordia_agent.tools.contracts import (
     SubmitConfirmedIntentInput,
     SubmitModificationInput,
     ToolResultEnvelope,
+    TranscriptTurnInput,
+    TranscriptTurnPersisted,
     VerificationGrantView,
     VerificationRequest,
     VerificationSentResult,
@@ -106,6 +108,7 @@ from cordia_agent.tools.status_codes import (
     FindManageableBookingsStatus,
     GetBookingDetailsStatus,
     GetTenantContextStatus,
+    AppendTranscriptTurnStatus,
     RecordConsentStatus,
     RequestHumanHandoffStatus,
     RequestVerificationStatus,
@@ -181,6 +184,8 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         SubmitConfirmedIntentRequest,
         SubmitModificationInput,
         ToolResultEnvelope,
+        TranscriptTurnInput,
+        TranscriptTurnPersisted,
         VerificationGrantView,
         VerificationRequest,
         VerificationSentResult,
@@ -215,6 +220,7 @@ ENUM_REGISTRY: list[type[Enum]] = [
     VerificationAction,
     ResolveConsentPolicyStatus,
     RecordConsentStatus,
+    AppendTranscriptTurnStatus,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.

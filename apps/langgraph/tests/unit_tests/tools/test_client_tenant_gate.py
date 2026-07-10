@@ -9,7 +9,7 @@ Tested invariants:
 - get_tenant_context is EXEMPT from the gate — it DOES hit the transport
   even when no context has been set.
 - Table coverage: ``set(TOOL_DEADLINES) == set(TOOL_SIDE_EFFECT_CLASS) == ALL_TOOLS``
-  and ``len(ALL_TOOLS) == 19``.
+  and ``len(ALL_TOOLS) == 20``.
 """
 
 from __future__ import annotations
@@ -126,14 +126,14 @@ async def test_get_tenant_context_exempt_from_gate(client_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Table coverage: 19 tools (17 spec-03 + 2 spec-14 consent), identical key sets.
+# Table coverage: 20 tools (17 spec-03 + 2 spec-14 consent + 1 spec-14 transcript), identical key sets.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_all_tools_count_is_19() -> None:
+def test_all_tools_count_is_20() -> None:
     """ALL_TOOLS must contain exactly 19 tools (spec 03 §6.6 + spec 14 §5.1)."""
-    assert len(ALL_TOOLS) == 19, (
+    assert len(ALL_TOOLS) == 20, (
         f"Expected 19 tools in ALL_TOOLS, found {len(ALL_TOOLS)}: {sorted(ALL_TOOLS)}"
     )
 

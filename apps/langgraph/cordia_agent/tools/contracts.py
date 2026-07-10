@@ -649,3 +649,37 @@ class ConsentRecordedResult(BaseModel):
     recording_allowed: bool = Field(
         description="Authoritative persisted recording gate after the update."
     )
+
+
+class TranscriptTurnInput(BaseModel):
+    """Input for append_transcript_turn — one REDACTED transcript turn (spec 14 §4.3/§5.2).
+
+    The text MUST already have passed ``redact_text`` before entering this contract (Inv-12);
+    the API re-sanitizes at the boundary regardless. The server enforces the consent gate
+    authoritatively — a non-consented session suppresses the turn (``persisted=false``).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(
+        description="Conversation session the turn belongs to (D12 row)."
+    )
+    seq: int = Field(
+        ge=0,
+        description="Monotonic turn sequence within the session (orders the transcript).",
+    )
+    turn_id: str = Field(description="The turn identifier from the streaming envelope.")
+    speaker: Literal["customer", "agent"] = Field(description="Who spoke this turn.")
+    text: str = Field(description="REDACTED turn text (post redact_text; never raw).")
+
+
+class TranscriptTurnPersisted(BaseModel):
+    """Output payload for append_transcript_turn (spec 14 §5.2)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(description="Session the turn was posted against.")
+    seq: int = Field(description="Echo of the turn sequence.")
+    persisted: bool = Field(
+        description="False ⇒ consent-suppressed (§5.2 'transcript suppressed') — a normal outcome, not an error."
+    )
