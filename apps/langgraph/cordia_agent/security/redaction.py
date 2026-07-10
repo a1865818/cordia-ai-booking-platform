@@ -169,8 +169,33 @@ def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
 # durable copy and breaks the Inv-2 pre-submit durability comparison (a ~0.4%
 # per-key collision, observed empirically). Keys named in
 # ``configured_sensitive_fields`` still mask wholesale regardless.
-_CONTROL_PLANE_KEY_SUFFIXES = ("_id", "_key", "_hash", "_ref", "_version")
-_CONTROL_PLANE_KEYS = frozenset({"id", "seq", "ts"})
+#
+# "_ref" is deliberately NOT a suffix exemption: customer_ref is CLIENT-supplied
+# free text (waitlist enrollment body) that lands in queue payloads, so a PAN
+# placed there must mask (Inv-12). A typical channel-identity ref (phone/handle)
+# is under 13 digits and never a PAN candidate; the rare 13-15 digit E.164
+# number that Luhn-coincidentally embeds a card window masks fail-closed —
+# accepted, because no consumer parses customer_ref/identity_ref back OUT of a
+# sanitized payload. Only the enumerated system-minted ref keys below are
+# exempt; identity_ref is deliberately excluded too (it defaults to the
+# customer-supplied customer_ref at waitlist enrollment). Kept identical to
+# SensitiveDataMask.cs for parity — pinned by the shared payload-key vectors in
+# tools/config/redaction-test-vectors.json.
+_CONTROL_PLANE_KEY_SUFFIXES = ("_id", "_key", "_hash", "_version")
+_CONTROL_PLANE_KEYS = frozenset(
+    {
+        "id",
+        "seq",
+        "ts",
+        "provider_ref",
+        "source_artifact_ref",
+        "image_ref",
+        "chunk_ref",
+        "audio_chunk_ref",
+        "channel_ref",
+        "audio_ref",
+    }
+)
 
 
 def _is_control_plane_key(key: str) -> bool:
@@ -183,9 +208,9 @@ def redact_payload(value: Any, policy: RedactionPolicy | None = None) -> Any:
     Values under keys named in ``policy.configured_sensitive_fields`` are
     replaced wholesale with the mask token; every OTHER string value passes
     through :func:`redact_text`, except values under control-plane identifier
-    keys (``*_id``/``*_key``/``*_hash``/``*_ref``/``*_version``), which are
-    system-minted and must round-trip byte-for-byte. The input is never
-    mutated.
+    keys (``*_id``/``*_key``/``*_hash``/``*_version``, plus an exact-name
+    allowlist of system-minted ``*_ref`` keys), which are system-minted and
+    must round-trip byte-for-byte. The input is never mutated.
     """
     effective = policy or get_redaction_policy()
     sensitive = set(effective.configured_sensitive_fields)

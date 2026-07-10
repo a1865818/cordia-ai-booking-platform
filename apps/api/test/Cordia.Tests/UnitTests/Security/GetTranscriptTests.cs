@@ -133,6 +133,47 @@ public class GetTranscriptTests
     }
 
     [Fact]
+    public async Task SevenDigitSeqTurns_AreRead_AndSiblingSessionIds_AreStillSkipped()
+    {
+        // Bug 3: the writer's Seq.ToString("D6") pads to a MINIMUM of six digits, so
+        // seq >= 1,000,000 legally yields a 7-digit suffix ("{sessionId}.1000000").
+        // Requiring exactly six digits silently dropped those turns forever. Shorter
+        // or non-numeric suffixes are sibling session ids extending this session's
+        // prefix and must still be skipped, never parsed or fetched.
+        SetupSession(recordingAllowed: true);
+        _store.Setup(s => s.ListIdsAsync(Tenant, "transcript", $"{SessionId}.", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+            [
+                $"{SessionId}.1000000",      // seq 1,000,000 — 7 digits, MUST be read
+                $"{SessionId}.000001",       // ordinary 6-digit turn
+                $"{SessionId}.retry.000001", // sibling session "sess-1.retry" — skip
+                $"{SessionId}.42",           // short numeric suffix — sibling shape, skip
+            ]);
+        foreach (var (id, seq) in new[] { ($"{SessionId}.1000000", 1_000_000), ($"{SessionId}.000001", 1) })
+        {
+            _store.Setup(s => s.GetAsync(Tenant, "transcript", id, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    turn_id = $"turn_{seq}",
+                    speaker = "customer",
+                    text = $"turn {seq}",
+                    ts = DateTimeOffset.UtcNow,
+                }));
+        }
+
+        var view = await Handler().Handle(StaffQuery(), CancellationToken.None);
+
+        Assert.Equal([1, 1_000_000], view.Turns.Select(t => t.Seq));
+        // Sibling ids are skipped BEFORE the store fetch — never parsed, never read.
+        _store.Verify(
+            s => s.GetAsync(Tenant, "transcript", $"{SessionId}.retry.000001", It.IsAny<CancellationToken>()),
+            Times.Never);
+        _store.Verify(
+            s => s.GetAsync(Tenant, "transcript", $"{SessionId}.42", It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task OwnerRole_AlsoReads_Gd1Matrix()
     {
         SetupSession(recordingAllowed: true);

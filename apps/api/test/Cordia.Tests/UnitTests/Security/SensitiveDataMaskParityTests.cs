@@ -41,6 +41,36 @@ public class SensitiveDataMaskParityTests
             $"{vectorClass}: expected expect_masked={expectMasked} for '{input}'");
     }
 
+    public static TheoryData<string, bool, string> PayloadKeyVectors()
+    {
+        var root = FindRepoRoot();
+        var path = Path.Combine(root, "tools", "config", "redaction-test-vectors.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var data = new TheoryData<string, bool, string>();
+        foreach (var v in doc.RootElement.GetProperty("payload_key_vectors").EnumerateArray())
+        {
+            data.Add(
+                v.GetProperty("key").GetString()!,
+                v.GetProperty("expect_exempt").GetBoolean(),
+                v.GetProperty("class").GetString()!);
+        }
+        return data;
+    }
+
+    // Pins the structured-payload control-plane exemption (including the exact-name
+    // system-minted *_ref allowlist) to the shared corpus: an exemption added or
+    // removed in only ONE lane fails that lane's suite, so the lists cannot drift.
+    [Theory]
+    [MemberData(nameof(PayloadKeyVectors))]
+    public void SharedPayloadKeyVector(string key, bool expectExempt, string vectorClass)
+    {
+        const string pan = "4111111111111111";
+        var result = SensitiveDataMask.SanitizeJson($$"""{"{{key}}":"{{pan}}"}""");
+        Assert.True(
+            expectExempt == result.Contains(pan),
+            $"{vectorClass}: expected expect_exempt={expectExempt} for key '{key}'");
+    }
+
     private static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

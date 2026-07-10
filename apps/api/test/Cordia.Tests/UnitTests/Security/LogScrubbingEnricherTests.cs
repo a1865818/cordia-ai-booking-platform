@@ -77,6 +77,38 @@ public class LogScrubbingEnricherTests
     }
 
     [Fact]
+    public void NestedScalarsUnderCredentialNamedProperty_AreMasked()
+    {
+        // Bug 2: logger.Information("{@Password}", new { Value = "hunter2" }) left "hunter2"
+        // in the log — the recursion re-derived sensitivity from the CHILD's name ("Value"),
+        // which is innocuous. A credential-like name must poison the whole subtree.
+        var structure = new StructureValue(
+        [
+            new LogEventProperty("Value", new ScalarValue("hunter2")),
+            new LogEventProperty("Pin", new ScalarValue(123456L)), // numeric leaves must mask too
+            new LogEventProperty(
+                "Aliases",
+                new SequenceValue([new ScalarValue("also-sensitive")])),
+        ]);
+        var logEvent = new LogEvent(
+            DateTimeOffset.UtcNow,
+            LogEventLevel.Information,
+            exception: null,
+            new MessageTemplateParser().Parse("test"),
+            [new LogEventProperty("Password", structure)]);
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        var scrubbed = (StructureValue)logEvent.Properties["Password"];
+        var byName = scrubbed.Properties.ToDictionary(p => p.Name, p => p.Value);
+        Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)byName["Value"]).Value);
+        Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)byName["Pin"]).Value);
+        Assert.Equal(
+            LogScrubbingEnricher.MaskToken,
+            ((ScalarValue)((SequenceValue)byName["Aliases"]).Elements[0]).Value);
+    }
+
+    [Fact]
     public void BenignProperties_AreLeftUntouched()
     {
         var logEvent = MakeEvent(

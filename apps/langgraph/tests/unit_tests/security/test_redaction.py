@@ -235,6 +235,31 @@ def test_control_plane_keys_are_exempt_but_free_text_is_not() -> None:
 
 
 @pytest.mark.unit
+def test_customer_ref_is_not_exempt_but_system_minted_refs_are() -> None:
+    """customer_ref is CLIENT-supplied (waitlist enrollment body) and
+    identity_ref defaults to it — the former blanket "_ref" suffix exemption
+    let a PAN placed there escape redaction verbatim (Inv-12). Only the
+    exact-name allowlist of system-minted refs round-trips (parity with C#
+    SensitiveDataMask). A phone-shaped customer_ref (< 13 digits, no TFN
+    shape) is never a PAN candidate and survives untouched."""
+    out = redact_payload(
+        {
+            "customer_ref": VISA_PAN,
+            "identity_ref": VISA_PAN,
+            "provider_ref": VISA_PAN,
+            "image_ref": VISA_PAN,
+        }
+    )
+    assert out["customer_ref"] == MASK
+    assert out["identity_ref"] == MASK
+    assert out["provider_ref"] == VISA_PAN
+    assert out["image_ref"] == VISA_PAN
+
+    benign = redact_payload({"customer_ref": "0412345678"})
+    assert benign["customer_ref"] == "0412345678"
+
+
+@pytest.mark.unit
 def test_active_policy_registry_drives_default_redaction() -> None:
     """The tenant policy installed via set_redaction_policy applies wherever
     no explicit policy argument is passed (spec 14 §4.1 loading seam)."""

@@ -31,11 +31,40 @@ public class SanitizeJsonTests
     public void ControlPlaneKeys_PreserveDigitRunValues()
     {
         // A digit-run under an id/hash key that WOULD mask as free text must round-trip.
-        var json = $$"""{"operation_id":"{{Pan}}","payload_hash":"{{Pan}}","booking_ref":"{{Pan}}","schema_version":"{{Pan}}","idempotency_key":"{{Pan}}","id":"{{Pan}}","seq":"{{Pan}}","ts":"{{Pan}}"}""";
+        // provider_ref is on the exact-name system-minted ref allowlist (masking a
+        // Luhn-coincidental provider reference would break §16 reconciliation joins).
+        var json = $$"""{"operation_id":"{{Pan}}","payload_hash":"{{Pan}}","provider_ref":"{{Pan}}","schema_version":"{{Pan}}","idempotency_key":"{{Pan}}","id":"{{Pan}}","seq":"{{Pan}}","ts":"{{Pan}}"}""";
 
         var result = SensitiveDataMask.SanitizeJson(json);
 
         Assert.Equal(json, result);
+    }
+
+    [Fact]
+    public void UserSuppliedRefKeys_WithEmbeddedPan_AreMasked()
+    {
+        // customer_ref is CLIENT-supplied (waitlist enrollment body) and identity_ref
+        // defaults to it — the former blanket "_ref" suffix exemption let a PAN placed
+        // there escape verbatim into the persisted queue payload (Inv-12). Only the
+        // exact-name allowlist of system-minted refs round-trips.
+        var json = $$"""{"customer_ref":"{{Pan}}","identity_ref":"{{Pan}}","provider_ref":"{{Pan}}"}""";
+
+        var result = SensitiveDataMask.SanitizeJson(json);
+
+        Assert.Contains($"\"customer_ref\":\"{SensitiveDataMask.MaskToken}\"", result);
+        Assert.Contains($"\"identity_ref\":\"{SensitiveDataMask.MaskToken}\"", result);
+        Assert.Contains($"\"provider_ref\":\"{Pan}\"", result);
+    }
+
+    [Fact]
+    public void PhoneShapedCustomerRef_RoundTripsUntouched()
+    {
+        // A normal channel-identity customer_ref (phone/handle, < 13 digits, no
+        // SSN/TFN shape) is never a PAN candidate — dropping the suffix exemption
+        // must not corrupt the ordinary waitlist-match payload.
+        var json = """{"customer_ref":"0412345678","offer_id":"off-1"}""";
+
+        Assert.Equal(json, SensitiveDataMask.SanitizeJson(json));
     }
 
     [Fact]

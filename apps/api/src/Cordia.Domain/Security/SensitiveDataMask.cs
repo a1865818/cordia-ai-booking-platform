@@ -71,17 +71,40 @@ public static partial class SensitiveDataMask
     // byte-for-byte (mirrors _CONTROL_PLANE_* in cordia_agent/security/redaction.py):
     // masking a digit-run inside e.g. operation_id/payload_hash would break
     // idempotency joins and the Inv-2 durability comparison.
+    //
+    // "_ref" is deliberately NOT a suffix exemption: customer_ref is CLIENT-supplied
+    // free text (waitlist enrollment body) that lands in outbox payloads, so a PAN
+    // placed there must mask (Inv-12). A typical channel-identity ref (phone/handle)
+    // is under 13 digits and never a PAN candidate; the rare 13-15 digit E.164 number
+    // that Luhn-coincidentally embeds a card window masks fail-closed - accepted,
+    // because no consumer parses customer_ref/identity_ref back OUT of a sanitized
+    // payload (waitlist handlers rebuild from the enrollment entity, and recipient
+    // resolution must never read identity from a sanitized queue payload).
+    // Only the enumerated system-minted ref keys below are exempt; identity_ref is
+    // deliberately excluded too (it defaults to the customer-supplied customer_ref
+    // at waitlist enrollment).
     private static readonly string[] _controlPlaneKeySuffixes =
-        ["_id", "_key", "_hash", "_ref", "_version"];
+        ["_id", "_key", "_hash", "_version"];
 
-    private static readonly HashSet<string> _controlPlaneKeys = ["id", "seq", "ts"];
+    // Bare envelope keys plus the system/provider-minted *_ref keys production emits:
+    // provider_ref (provider message/booking references - masking a Luhn-coincidental
+    // one would break the sec-16 reconciliation joins), object-store refs, and the
+    // streaming chunk/channel refs. Kept identical to redaction.py for parity - pinned
+    // by the payload_key_vectors in tools/config/redaction-test-vectors.json.
+    private static readonly HashSet<string> _controlPlaneKeys =
+    [
+        "id", "seq", "ts",
+        "provider_ref", "source_artifact_ref", "image_ref",
+        "chunk_ref", "audio_chunk_ref", "channel_ref", "audio_ref",
+    ];
 
     /// <summary>
     /// Structure-aware sanitizer for queue/outbox payload JSON (Inv-12), mirroring
     /// Python <c>redact_payload</c>: every string VALUE passes through
     /// <see cref="Sanitize(string)"/> except values under control-plane identifier
-    /// keys (<c>*_id</c>/<c>*_key</c>/<c>*_hash</c>/<c>*_ref</c>/<c>*_version</c>,
-    /// plus bare <c>id</c>/<c>seq</c>/<c>ts</c>), which are preserved verbatim.
+    /// keys (<c>*_id</c>/<c>*_key</c>/<c>*_hash</c>/<c>*_version</c>, plus bare
+    /// <c>id</c>/<c>seq</c>/<c>ts</c> and an exact-name allowlist of system-minted
+    /// <c>*_ref</c> keys), which are preserved verbatim.
     /// Object/array shape and key names are untouched. Non-string scalars pass through
     /// unchanged UNLESS one encodes a maskable value — an unquoted numeric PAN/SSN is masked
     /// to the token string (a JSON number cannot hold the token), fail-closed per Inv-12. When

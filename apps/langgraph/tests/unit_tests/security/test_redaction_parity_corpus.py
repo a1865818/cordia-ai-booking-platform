@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from cordia_agent.security.redaction import redact_text
+from cordia_agent.security.redaction import redact_payload, redact_text
 
 
 def _repo_root() -> Path:
@@ -24,11 +24,13 @@ def _repo_root() -> Path:
     raise AssertionError("repo root (nx.json) not found")
 
 
-_VECTORS = json.loads(
+_CORPUS = json.loads(
     (_repo_root() / "tools" / "config" / "redaction-test-vectors.json").read_text(
         encoding="utf-8"
     )
-)["vectors"]
+)
+_VECTORS = _CORPUS["vectors"]
+_PAYLOAD_KEY_VECTORS = _CORPUS["payload_key_vectors"]
 
 
 @pytest.mark.unit
@@ -38,4 +40,24 @@ def test_shared_corpus_vector(vector: dict) -> None:
     assert masked == vector["expect_masked"], (
         f"{vector['class']}: expected expect_masked={vector['expect_masked']} "
         f"for {vector['input']!r}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "vector",
+    _PAYLOAD_KEY_VECTORS,
+    ids=[v["class"] for v in _PAYLOAD_KEY_VECTORS],
+)
+def test_shared_payload_key_vector(vector: dict) -> None:
+    """Pins the structured-payload control-plane exemption (including the
+    exact-name system-minted ``*_ref`` allowlist) to the shared corpus: an
+    exemption added or removed in only ONE lane fails that lane's suite, so
+    the C# and Python lists cannot silently drift."""
+    pan = "4111111111111111"
+    out = redact_payload({vector["key"]: pan})
+    exempt = out[vector["key"]] == pan
+    assert exempt == vector["expect_exempt"], (
+        f"{vector['class']}: expected expect_exempt={vector['expect_exempt']} "
+        f"for key {vector['key']!r}"
     )

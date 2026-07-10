@@ -121,13 +121,15 @@ public sealed class GetTranscriptQueryHandler(
         {
             ct.ThrowIfCancellationRequested();
 
-            // Turn objects for THIS session are exactly "{sessionId}.{6 digits}". Because
-            // session ids may legally contain dots, a sibling session id that extends this
-            // one (e.g. "sess-1.retry" while reading "sess-1") also matches the prefix — its
-            // ids carry a non-6-digit suffix and MUST be skipped, never parsed (a FormatException
-            // 500) or spliced into this transcript as a phantom turn.
+            // Turn objects for THIS session are "{sessionId}.{>= 6 digits}" — the writer's
+            // Seq.ToString("D6") pads to a MINIMUM of six digits, so seq >= 1,000,000 legally
+            // produces seven or more; requiring exactly six would silently drop those turns
+            // forever. Because session ids may legally contain dots, a sibling session id that
+            // extends this one (e.g. "sess-1.retry" while reading "sess-1") also matches the
+            // prefix — its ids carry a shorter or non-numeric suffix and MUST be skipped, never
+            // parsed (a FormatException 500) or spliced into this transcript as a phantom turn.
             var suffix = id[(query.SessionId.Length + 1)..];
-            if (suffix.Length != 6
+            if (suffix.Length < 6
                 || !int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out var seq))
                 continue;
 

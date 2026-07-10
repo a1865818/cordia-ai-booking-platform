@@ -23,5 +23,26 @@
     { "input": "call 0412345678 0298765432 anytime", "expect_masked": false, "class": "adjacent-phones" },
     { "input": "2026-07-09 18 55 30", "expect_masked": false, "class": "spaced-datetime" },
     { "input": "blob 999999999999999999999999999999999999999999999999999999999999 end", "expect_masked": true, "class": "long-run-cap" }
+  ],
+  "payload_key_vectors_description": "Structured-payload key exemptions (SanitizeJson / redact_payload). Each key holds a Luhn-valid PAN string; expect_exempt=true means the value must round-trip byte-for-byte (system-minted control-plane identifier), false means it must mask. Pins the exact-name *_ref allowlist so the C# and Python lanes cannot silently diverge.",
+  "payload_key_vectors": [
+    { "key": "operation_id", "expect_exempt": true, "class": "suffix-id" },
+    { "key": "idempotency_key", "expect_exempt": true, "class": "suffix-key" },
+    { "key": "payload_hash", "expect_exempt": true, "class": "suffix-hash" },
+    { "key": "schema_version", "expect_exempt": true, "class": "suffix-version" },
+    { "key": "id", "expect_exempt": true, "class": "bare-id" },
+    { "key": "seq", "expect_exempt": true, "class": "bare-seq" },
+    { "key": "ts", "expect_exempt": true, "class": "bare-ts" },
+    { "key": "provider_ref", "expect_exempt": true, "class": "system-ref-provider" },
+    { "key": "source_artifact_ref", "expect_exempt": true, "class": "system-ref-artifact" },
+    { "key": "image_ref", "expect_exempt": true, "class": "system-ref-image" },
+    { "key": "chunk_ref", "expect_exempt": true, "class": "system-ref-chunk" },
+    { "key": "audio_chunk_ref", "expect_exempt": true, "class": "system-ref-audio-chunk" },
+    { "key": "channel_ref", "expect_exempt": true, "class": "system-ref-channel" },
+    { "key": "audio_ref", "expect_exempt": true, "class": "system-ref-audio" },
+    { "key": "customer_ref", "expect_exempt": false, "class": "user-ref-customer" },
+    { "key": "identity_ref", "expect_exempt": false, "class": "user-ref-identity" },
+    { "key": "booking_ref", "expect_exempt": false, "class": "unknown-ref-masks" },
+    { "key": "notes", "expect_exempt": false, "class": "free-text" }
   ]
 }

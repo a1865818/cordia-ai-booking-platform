@@ -66,16 +66,28 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
     /// Recursively scrubs a property value — destructured objects
     /// (<see cref="StructureValue"/>), arrays (<see cref="SequenceValue"/>),
     /// and dictionaries are walked so a PAN or credential nested inside a
-    /// <c>{@Object}</c> log call cannot bypass the mask (Inv-12). Returns the
-    /// SAME instance when nothing changed (cheap no-op path).
+    /// <c>{@Object}</c> log call cannot bypass the mask (Inv-12). A
+    /// credential-like name poisons the WHOLE subtree (<paramref name="sensitiveContext"/>):
+    /// <c>logger.Information("{@Password}", new { Value = "hunter2" })</c> must mask
+    /// the nested string even though the child's own name ("Value") is innocuous.
+    /// Returns the SAME instance when nothing changed (cheap no-op path).
     /// </summary>
-    private LogEventPropertyValue ScrubValue(string name, LogEventPropertyValue value)
+    private LogEventPropertyValue ScrubValue(string name, LogEventPropertyValue value, bool sensitiveContext = false)
     {
+        var sensitive = sensitiveContext || IsSensitiveName(name);
         switch (value)
         {
-            case ScalarValue { Value: string text }:
-                if (IsSensitiveName(name))
-                    return new ScalarValue(MaskToken);
+            case ScalarValue scalar:
+                // A sensitive name/subtree masks EVERY non-null scalar, not just strings —
+                // {@Secret} destructured to new { Value = 4111111111111111L } must not leak
+                // the numeric form (Inv-12 fail-closed; null stays null: the mask token there
+                // would fabricate a value that never existed). Non-sensitive non-string
+                // scalars pass through — only string values can carry a PAN/SSN shape worth
+                // the value-level sweep here (numeric log properties are counts/ids).
+                if (sensitive)
+                    return scalar.Value is null ? value : new ScalarValue(MaskToken);
+                if (scalar.Value is not string text)
+                    return value;
                 var scrubbed = SensitiveDataMask.Sanitize(text);
                 return scrubbed == text ? value : new ScalarValue(scrubbed);
 
@@ -85,7 +97,7 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
                     var properties = new List<LogEventProperty>(structure.Properties.Count);
                     foreach (var property in structure.Properties)
                     {
-                        var inner = ScrubValue(property.Name, property.Value);
+                        var inner = ScrubValue(property.Name, property.Value, sensitive);
                         changed |= !ReferenceEquals(inner, property.Value);
                         properties.Add(new LogEventProperty(property.Name, inner));
                     }
@@ -98,7 +110,7 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
                     var elements = new List<LogEventPropertyValue>(sequence.Elements.Count);
                     foreach (var element in sequence.Elements)
                     {
-                        var inner = ScrubValue(name, element);
+                        var inner = ScrubValue(name, element, sensitive);
                         changed |= !ReferenceEquals(inner, element);
                         elements.Add(inner);
                     }
@@ -113,7 +125,7 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
                     foreach (var (key, element) in dictionary.Elements)
                     {
                         var keyName = key.Value as string ?? name;
-                        var inner = ScrubValue(keyName, element);
+                        var inner = ScrubValue(keyName, element, sensitive);
                         changed |= !ReferenceEquals(inner, element);
                         elements.Add(new KeyValuePair<ScalarValue, LogEventPropertyValue>(key, inner));
                     }

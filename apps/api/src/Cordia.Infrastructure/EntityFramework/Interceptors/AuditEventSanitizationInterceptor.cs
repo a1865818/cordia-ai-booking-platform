@@ -51,7 +51,8 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
             var metadata = entry.Entity.Metadata;
             if (!string.IsNullOrEmpty(metadata))
                 // Structure-aware (SanitizeJson, not free-text Sanitize): the metadata column holds a
-                // JSON object, so this keeps the control-plane id exemption (target_id/*_id/*_ref/...)
+                // JSON object, so this keeps the control-plane id exemption (target_id/*_id and the
+                // allowlisted system-minted refs — user-influenced keys like customer_ref are NOT exempt)
                 // intact while masking PANs in free-text fields. Free-text Sanitize would corrupt a
                 // Luhn-coincidental id to [REDACTED]. Non-JSON metadata falls back to a wholesale mask.
                 entry.Entity.Metadata = SensitiveDataMask.SanitizeJson(metadata);
