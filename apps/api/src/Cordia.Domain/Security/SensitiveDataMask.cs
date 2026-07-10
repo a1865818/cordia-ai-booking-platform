@@ -36,13 +36,17 @@ public static partial class SensitiveDataMask
     // a longer space-separated group signals independent adjacent numbers.
     private const int MaxPanGroupDigits = 6;
 
-    // Any contiguous run of >= 13 ASCII digits allowing single space/dash
-    // separators. Longer-than-19 runs stay candidates (fail closed).
-    [GeneratedRegex(@"[0-9](?:[ -]?[0-9]){12,}")]
+    // Any contiguous run of >= 13 ASCII digits allowing up to 3 space/dash
+    // separators between digits — {0,3} (not the former single {0,1}) so a PAN
+    // spoken/typed with a doubled space or dash still forms one candidate run and
+    // cannot escape masking; bounded to stay linear (no ReDoS). Longer-than-19
+    // runs stay candidates (fail closed).
+    [GeneratedRegex(@"[0-9](?:[ -]{0,3}[0-9]){12,}")]
     private static partial Regex PanCandidate();
 
-    // CVV/CVC/security code followed (optionally compactly, e.g. "cvv123")
-    // by 3-4 digits — no word boundary required before the digits. The middle
+    // CVV/CVC/security(-)code followed (optionally compactly, e.g. "cvv123") by
+    // 3-4 digits — no word boundary required before the digits. "security[ -]?code"
+    // matches "security code", "security-code", and "securitycode". The middle
     // group is one separator run plus an optional (filler-word + separator run):
     // collapsing the former S*(word)?S* — two adjacent stars over the same class
     // — to a single leading star makes the match LINEAR, removing the O(n^2)
@@ -52,7 +56,7 @@ public static partial class SensitiveDataMask
     // fail OPEN in the Serilog scrubber (enricher exceptions are swallowed and the
     // event emits with the raw value) and hard-fail the SaveChanges/handler lanes.
     [GeneratedRegex(
-        @"\b(cvv2?|cvc|security code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)([0-9]{3,4})\b",
+        @"\b(cvv2?|cvc|security[ -]?code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)([0-9]{3,4})\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex CvvInContext();
 

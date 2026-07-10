@@ -32,19 +32,22 @@ if TYPE_CHECKING:
     from cordia_agent.contracts.security import RedactionPolicy
 
 
-# Any contiguous run of >= 13 digits allowing single space/dash separators.
-# Every such run is window-scanned (see _contains_pan): a PAN concatenated with
-# adjacent digits must not escape masking (fail closed, Inv-12).
-_PAN_CANDIDATE = re.compile(r"\d(?:[ -]?\d){12,}")
+# Any contiguous run of >= 13 digits allowing up to 3 space/dash separators
+# between digits — {0,3} (not the former single {0,1}) so a PAN with a doubled
+# space or dash still forms one candidate run and cannot escape masking; bounded
+# to stay linear. Every such run is window-scanned (see _contains_pan): a PAN
+# concatenated with adjacent digits must not escape masking (fail closed, Inv-12).
+_PAN_CANDIDATE = re.compile(r"\d(?:[ -]{0,3}\d){12,}")
 
-# CVV/CVC/security code followed (optionally compactly, e.g. "cvv123") by 3-4
-# digits — no word boundary required between the keyword and the digits. The
-# middle group is one separator run plus an optional (filler-word + separator
+# CVV/CVC/security(-)code followed (optionally compactly, e.g. "cvv123") by 3-4
+# digits — no word boundary required between the keyword and the digits.
+# "security[ -]?code" matches "security code", "security-code", "securitycode".
+# The middle group is one separator run plus an optional (filler-word + separator
 # run): collapsing the former S*(word)?S* — two adjacent stars over the same
 # class — to a single leading star removes the O(n^2) backtracking (ReDoS).
 # Python `re` has no match timeout, so bounding the shape structurally IS the fix.
 _CVV_IN_CONTEXT = re.compile(
-    r"(?i)\b(cvv2?|cvc|security code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)(\d{3,4})\b"
+    r"(?i)\b(cvv2?|cvc|security[ -]?code)([\s:=-]*(?:(?:is|was|number|no\.?)[\s:=-]*)?)(\d{3,4})\b"
 )
 
 # US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).

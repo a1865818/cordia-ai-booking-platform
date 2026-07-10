@@ -38,6 +38,16 @@ def test_pan_masked_with_spaces_and_dashes() -> None:
 
 
 @pytest.mark.unit
+def test_pan_masked_with_doubled_separators() -> None:
+    """A PAN spoken/typed with a doubled space or dash still forms one candidate
+    run and must not escape masking (Inv-12)."""
+    assert "4111" not in redact_text("card 4111  1111  1111  1111 ok")
+    assert MASK in redact_text("card 4111  1111  1111  1111 ok")
+    assert "4111" not in redact_text("card 4111--1111--1111--1111 ok")
+    assert MASK in redact_text("card 4111--1111--1111--1111 ok")
+
+
+@pytest.mark.unit
 def test_amex_15_digit_pan_masked() -> None:
     assert redact_text(f"amex {AMEX_PAN}") == f"amex {MASK}"
 
@@ -79,6 +89,16 @@ def test_cvv_compact_form_masked() -> None:
     """'cvv123' with no separator must not escape masking (Inv-12)."""
     assert redact_text("cvv123") == f"cvv{MASK}"
     assert redact_text("CVC456 ok") == f"CVC{MASK} ok"
+
+
+@pytest.mark.unit
+def test_security_code_hyphenated_context_masked() -> None:
+    """'security-code' (hyphenated) is a CVV context word too — the docstring
+    lists 'security-code' as scrubbed, so it must not pass through unmasked."""
+    assert redact_text("security-code: 123") == f"security-code: {MASK}"
+    assert redact_text("security-code456") == f"security-code{MASK}"
+    # The original spaced form still works.
+    assert redact_text("security code: 4321") == f"security code: {MASK}"
 
 
 @pytest.mark.unit
