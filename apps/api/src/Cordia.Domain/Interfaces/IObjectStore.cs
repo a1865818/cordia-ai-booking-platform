@@ -11,8 +11,10 @@
 /// </summary>
 public interface IObjectStore
 {
-    /// <summary>Stores (or overwrites) an object, encrypting at rest. <paramref name="ttl"/>
-    /// bounds its lifetime; when null, purpose-specific defaults may apply (raw-audio → 72h).</summary>
+    /// <summary>Stores an object, encrypting at rest. <paramref name="ttl"/> bounds its lifetime;
+    /// when null, purpose-specific defaults may apply (raw-audio → 72h). Contract: each object id
+    /// is written ONCE, or re-PUT idempotently on a retry with equivalent content — a substantive
+    /// overwrite of a live id is not supported (a crash mid-write may briefly serve prior content).</summary>
     Task PutAsync(
         string tenantId,
         string purpose,

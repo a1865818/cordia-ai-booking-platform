@@ -202,6 +202,20 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
         Assert.Equal(3, (await store.ListIdsAsync("t-a", "transcript")).Count); // empty prefix = all
     }
 
+    [Fact]
+    public async Task ListIds_OverLongPrefix_ReturnsEmpty_NotThrows()
+    {
+        // L4: a 129-char prefix (e.g. a max-length 128-char session id + '.') exceeds the segment
+        // length cap but is character-valid — it can match no storable (<=128-char) id, so it must
+        // yield an empty list rather than throw ArgumentException (→ 500 in the transcript reader).
+        var store = Store();
+        var overLong = new string('a', 128) + ".";
+
+        var ids = await store.ListIdsAsync("t-a", "transcript", overLong);
+
+        Assert.Empty(ids);
+    }
+
     [Theory]
     [InlineData("../x")]
     [InlineData(@"..\x")]

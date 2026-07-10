@@ -97,11 +97,17 @@ public sealed partial class EncryptedFileObjectStore(
         var metaBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
             new ObjectMeta(now, effectiveTtl is null ? null : now + effectiveTtl, purpose)));
 
-        // Write the meta sidecar FIRST, then the blob — each via a temp file + atomic rename.
-        // Because reads and the sweep are fail-closed on a missing/corrupt meta (M3), the
-        // decryptable .bin must never become visible without its sidecar; a crash between the
-        // two renames leaves at most a meta-only orphan, which SweepExpiredAsync's pass 2 reaps
-        // (never a live object with no provable retention state).
+        // Write-once (or idempotent-overwrite) contract (L3): each object id is written once, or
+        // re-PUT on a retry with EQUIVALENT content (e.g. a transcript turn {sessionId}.{seq}).
+        // Meta is written FIRST, then the blob — each via a temp file + atomic rename. Meta-first
+        // is chosen deliberately over blob-first: with reads/sweep fail-closed on a missing meta
+        // (M3), a blob-first ordering would let SweepExpiredAsync's pass 1 see an in-flight blob
+        // with no sidecar and prune a just-written NEW object mid-PUT — meta-first has no such
+        // race (pass 1 enumerates .bin, and the blob appears last). The only residual crash
+        // window is a SUBSTANTIVE re-PUT of an existing id (new meta + old blob → briefly serves
+        // prior content); that is not a supported update pattern here (ids are write-once, and a
+        // retry's content is equivalent). A crash between the two renames on a FIRST PUT leaves at
+        // most a meta-only orphan, which SweepExpiredAsync's pass 2 reaps.
         await WriteAtomicAsync(MetaPath(path), metaBytes, ct);
         await WriteAtomicAsync(path, blob, ct);
     }
@@ -173,9 +179,11 @@ public sealed partial class EncryptedFileObjectStore(
     {
         ValidateSegment(tenantId, nameof(tenantId));
         ValidateSegment(purpose, nameof(purpose));
-        // The prefix is a LEADING FRAGMENT of a valid segment, not a full segment — validate
-        // with the same allow-list character class (traversal-proof) but permit empty.
-        if (prefix.Length > 0 && !SafeSegment().IsMatch(prefix))
+        // The prefix is a LEADING FRAGMENT of a valid segment, not a full segment — validate the
+        // characters (traversal-proof) WITHOUT the segment length cap (L4): a caller may pass a
+        // fragment longer than any storable id (e.g. a 128-char session id + '.'), which simply
+        // matches nothing and returns an empty list rather than throwing → 500.
+        if (prefix.Length > 0 && !ObjectStoreSegment.IsValidPrefix(prefix))
             throw new ArgumentException(
                 "'prefix' contains characters not allowed in an object-store path segment.", nameof(prefix));
 
