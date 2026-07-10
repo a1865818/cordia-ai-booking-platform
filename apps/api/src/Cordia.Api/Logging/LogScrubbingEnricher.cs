@@ -10,7 +10,10 @@ namespace Cordia.Api.Logging;
 /// values are masked when (a) the property NAME matches a credential-like
 /// selector (password/secret/token/…) or (b) the VALUE contains a Luhn-valid
 /// PAN shape (delegating to <see cref="SensitiveDataMask"/> so both write
-/// paths mask identically). Applied globally in Program.cs.
+/// paths mask identically). Destructured trees are walked — including numeric
+/// scalars and dictionary KEYS, which mask by content shape (and wholesale
+/// inside a credential-named subtree) with "#n"-deduplication so masked keys
+/// never collide. Applied globally in Program.cs.
 ///
 /// Scope note: enrichers cannot rewrite an attached Exception object — the
 /// complementary controls are the <c>ISecretStore</c> contract (secret values
@@ -150,6 +153,7 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
             case DictionaryValue dictionary:
                 {
                     var changed = false;
+                    HashSet<string>? finalKeys = null;
                     var elements = new List<KeyValuePair<ScalarValue, LogEventPropertyValue>>(
                         dictionary.Elements.Count);
                     foreach (var (key, element) in dictionary.Elements)
@@ -157,7 +161,34 @@ public sealed class LogScrubbingEnricher : ILogEventEnricher
                         var keyName = key.Value as string ?? name;
                         var inner = ScrubValue(keyName, element, sensitive);
                         changed |= !ReferenceEquals(inner, element);
-                        elements.Add(new KeyValuePair<ScalarValue, LogEventPropertyValue>(key, inner));
+
+                        // Keys render into the log output too — a PAN used AS a dictionary
+                        // key must mask like a value (Inv-12), whether it arrived as a
+                        // string or a numeric scalar. The EMPTY name means key text is
+                        // never masked by its own NAME (a key like "password" is a label —
+                        // it drives the value masking above — not secret content), but the
+                        // ambient sensitive-subtree flag DOES propagate: under {@Credentials}
+                        // the keys are part of the secret payload (e.g. token -> label maps)
+                        // and must mask wholesale like the values.
+                        var newKey = key;
+                        if (ScrubValue(string.Empty, key, sensitive) is ScalarValue { Value: string maskedKeyText }
+                            && !Equals(key.Value, maskedKeyText))
+                        {
+                            // DictionaryValue backs Elements with a real dictionary keyed
+                            // by ScalarValue equality — two distinct PANs masking to the
+                            // same token would throw on construction, and Serilog swallows
+                            // enricher exceptions, so the event would emit UNMASKED (fail
+                            // open). Deduplicate masked keys against every other final key.
+                            finalKeys ??=
+                                [.. dictionary.Elements.Keys.Select(k => k.Value).OfType<string>()];
+                            var candidate = maskedKeyText;
+                            for (var n = 2; !finalKeys.Add(candidate); n++)
+                                candidate = string.Create(
+                                    CultureInfo.InvariantCulture, $"{maskedKeyText} #{n}");
+                            newKey = new ScalarValue(candidate);
+                            changed = true;
+                        }
+                        elements.Add(new KeyValuePair<ScalarValue, LogEventPropertyValue>(newKey, inner));
                     }
                     return changed ? new DictionaryValue(elements) : value;
                 }

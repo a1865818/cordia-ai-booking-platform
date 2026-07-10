@@ -102,6 +102,32 @@ public class AuditWriterTests
         Assert.Equal(SensitiveDataMask.MaskToken, written!.Actor);
     }
 
+    [Fact]
+    public async Task WriteAsync_MasksPanShapedTargetAndCorrelation_EverywhereInTheRow()
+    {
+        // A PAN-shaped TargetId/CorrelationId (a session id is a client-supplied route
+        // param) must mask CONSISTENTLY: subject_ref, correlation_id, AND the
+        // metadata.target_id copy — target_id is a control-plane-EXEMPT key in
+        // SanitizeJson, so if Build packed the raw value, the PAN would survive there
+        // even though the column masked (a half-closed Inv-12 leak).
+        AuditEvent? written = null;
+        _repo.Setup(r => r.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEvent, CancellationToken>((e, _) => written = e)
+            .Returns(Task.CompletedTask);
+
+        await new AuditWriter(_repo.Object).WriteAsync(
+            MakeRecord() with { TargetId = "4111111111111111", CorrelationId = "4111111111111111" },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(SensitiveDataMask.MaskToken, written!.SubjectRef);
+        Assert.Equal(SensitiveDataMask.MaskToken, written.CorrelationId);
+        Assert.DoesNotContain("4111111111111111", written.Metadata);
+        using var metadata = JsonDocument.Parse(written.Metadata);
+        Assert.Equal(
+            SensitiveDataMask.MaskToken,
+            metadata.RootElement.GetProperty("target_id").GetString());
+    }
+
     [Theory]
     [InlineData("4111 1111 1111 1111", true)]   // Luhn-valid, spaced → masked
     [InlineData("4111-1111-1111-1111", true)]   // Luhn-valid, dashed → masked

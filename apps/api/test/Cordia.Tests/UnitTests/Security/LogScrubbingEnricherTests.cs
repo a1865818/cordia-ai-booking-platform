@@ -130,6 +130,106 @@ public class LogScrubbingEnricherTests
     }
 
     [Fact]
+    public void DictionaryKeys_WithPanText_AreMaskedAndDeduplicated()
+    {
+        // Dictionary KEYS render into log output too — a PAN used as a key must mask
+        // like a value (Inv-12), whether the key is a string OR a numeric scalar. Three
+        // DISTINCT PAN keys all mask toward the same token; without dedupe,
+        // DictionaryValue's dictionary-backed ctor throws, Serilog swallows the
+        // enricher exception, and the event emits UNMASKED (fail open).
+        var dict = new DictionaryValue(
+        [
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("4111111111111111"), new ScalarValue("visa")),
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("378282246310005"), new ScalarValue("amex")),
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue(4111111111111112L), new ScalarValue("visa-long")),
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("channel"), new ScalarValue("voice")),
+        ]);
+        var logEvent = new LogEvent(
+            DateTimeOffset.UtcNow,
+            LogEventLevel.Information,
+            exception: null,
+            new MessageTemplateParser().Parse("test"),
+            [new LogEventProperty("Cards", dict)]);
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        var scrubbed = (DictionaryValue)logEvent.Properties["Cards"];
+        var keys = scrubbed.Elements.Keys.Select(k => k.Value?.ToString()).ToArray();
+        Assert.Equal(4, keys.Length);
+        Assert.DoesNotContain("4111111111111111", keys);
+        Assert.DoesNotContain("378282246310005", keys);
+        Assert.DoesNotContain("4111111111111112", keys); // the NUMERIC key masks too
+        Assert.Contains(LogScrubbingEnricher.MaskToken, keys);
+        Assert.Contains($"{LogScrubbingEnricher.MaskToken} #2", keys);
+        Assert.Contains($"{LogScrubbingEnricher.MaskToken} #3", keys);
+        Assert.Contains("channel", keys);
+    }
+
+    [Fact]
+    public void DictionaryKeysUnderCredentialNamedProperty_AreMaskedWholesale()
+    {
+        // Under a credential-named property the dictionary KEYS are part of the
+        // secret payload (e.g. a token -> label map), so the sensitive-subtree flag
+        // masks them wholesale — content-shape detection alone would let a digitless
+        // secret key print verbatim. Dedupe keeps the two masked keys distinct.
+        var dict = new DictionaryValue(
+        [
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("sk-live-abc"), new ScalarValue("primary")),
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("sk-live-def"), new ScalarValue("backup")),
+        ]);
+        var logEvent = new LogEvent(
+            DateTimeOffset.UtcNow,
+            LogEventLevel.Information,
+            exception: null,
+            new MessageTemplateParser().Parse("test"),
+            [new LogEventProperty("ProviderCredentials", dict)]);
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        var scrubbed = (DictionaryValue)logEvent.Properties["ProviderCredentials"];
+        var keys = scrubbed.Elements.Keys.Select(k => (string?)k.Value).ToArray();
+        Assert.DoesNotContain("sk-live-abc", keys);
+        Assert.DoesNotContain("sk-live-def", keys);
+        Assert.Contains(LogScrubbingEnricher.MaskToken, keys);
+        Assert.Contains($"{LogScrubbingEnricher.MaskToken} #2", keys);
+        Assert.All(
+            scrubbed.Elements.Values,
+            v => Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)v).Value));
+    }
+
+    [Fact]
+    public void CredentialNamedDictionaryKey_MasksTheValue_KeyTextSurvives()
+    {
+        // A key like "password" is a NAME, not secret content: it drives wholesale
+        // masking of its VALUE, but the key text itself must survive so the log still
+        // shows WHAT was masked.
+        var dict = new DictionaryValue(
+        [
+            new KeyValuePair<ScalarValue, LogEventPropertyValue>(
+                new ScalarValue("password"), new ScalarValue("hunter2")),
+        ]);
+        var logEvent = new LogEvent(
+            DateTimeOffset.UtcNow,
+            LogEventLevel.Information,
+            exception: null,
+            new MessageTemplateParser().Parse("test"),
+            [new LogEventProperty("Settings", dict)]);
+
+        new LogScrubbingEnricher().Enrich(logEvent, null!);
+
+        var scrubbed = (DictionaryValue)logEvent.Properties["Settings"];
+        var (key, element) = scrubbed.Elements.Single();
+        Assert.Equal("password", key.Value);
+        Assert.Equal(LogScrubbingEnricher.MaskToken, ((ScalarValue)element).Value);
+    }
+
+    [Fact]
     public void BenignProperties_AreLeftUntouched()
     {
         var logEvent = MakeEvent(

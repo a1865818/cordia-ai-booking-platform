@@ -15,12 +15,24 @@ public static class AuditEnvelope
 {
     public static AuditEvent Build(AuditRecord record)
     {
+        // Free-text sanitize the CLIENT-influenceable identifiers ONCE, before they fan
+        // out into both the metadata jsonb (where "target_id" is a control-plane-EXEMPT
+        // key in SanitizeJson, so a raw PAN under it would survive every later sweep)
+        // and the subject_ref/correlation_id columns — keeping all copies in one row
+        // consistent. System-minted ids (op_/sess-/evt_ prefixed) carry no maskable
+        // shape and pass byte-identical; a PAN-shaped route/body value (a session id is
+        // a client-supplied route param) masks everywhere at once (Inv-12).
+        var targetId = SensitiveDataMask.Sanitize(record.TargetId);
+        var correlationId = record.CorrelationId is { Length: > 0 } corr
+            ? SensitiveDataMask.Sanitize(corr)
+            : record.CorrelationId;
+
         var metadata = new JsonObject
         {
             ["actor_type"] = record.ActorType,
             ["action"] = record.Action,
             ["target_type"] = record.TargetType,
-            ["target_id"] = record.TargetId,
+            ["target_id"] = targetId,
             ["decision"] = record.Decision,
             ["data_classes"] = new JsonArray(
                 record.DataClasses.Select(dc => (JsonNode?)dc).ToArray()),
@@ -28,7 +40,11 @@ public static class AuditEnvelope
         if (record.ReasonCode is not null)
             metadata["reason_code"] = record.ReasonCode;
         if (record.CausationId is not null)
-            metadata["causation_id"] = record.CausationId;
+            // Same reasoning as target_id above: "causation_id" is a control-plane-exempt
+            // key in SanitizeJson, so a maskable value must be sanitized BEFORE packing
+            // (today every writer passes a system-minted replay/message id — this is the
+            // fail-closed parallel of the target_id fix, not a live leak).
+            metadata["causation_id"] = SensitiveDataMask.Sanitize(record.CausationId);
 
         if (record.Extra is not null)
         {
@@ -61,14 +77,22 @@ public static class AuditEnvelope
             // re-sanitizes actor at save time — keep BOTH; the interceptor alone covers the
             // ~45 direct `new AuditEvent` sites that never pass through this envelope.
             Actor = SensitiveDataMask.Sanitize(record.ActorId),
-            SubjectRef = record.TargetId,
-            CorrelationId = record.CorrelationId,
+            // Sanitized once above so subject_ref, correlation_id, AND metadata.target_id
+            // stay consistent — masking only the column would leave the same PAN raw one
+            // field over (metadata's target_id key is control-plane-exempt by design).
+            // Defense-in-depth, mirroring Actor: the interceptor re-masks these columns at
+            // save time — keep BOTH; the interceptor alone covers the ~45 direct
+            // `new AuditEvent` sites that never pass through this envelope.
+            SubjectRef = targetId,
+            CorrelationId = correlationId,
             OperationId = record.OperationId,
             // Structure-aware sanitize (not free-text Sanitize): the metadata IS a JSON object, so
-            // SanitizeJson preserves the control-plane id exemption (target_id/operation_id/grant_id/
-            // and the allowlisted system-minted refs) while still masking a PAN in any free-text
-            // field — user-influenced keys like customer_ref are NOT exempt. Free-text Sanitize would
-            // corrupt a Luhn-coincidental numeric/string target_id to [REDACTED], breaking audit joins.
+            // SanitizeJson preserves the control-plane id exemption (operation_id/grant_id/ and the
+            // allowlisted system-minted refs — typically Extra-supplied system ids) while still
+            // masking a PAN in any free-text field; user-influenced keys like customer_ref are NOT
+            // exempt. The exempt target_id/causation_id slots are safe here because their VALUES
+            // were free-text sanitized above before packing — the exemption preserves system-minted
+            // ids byte-for-byte, and a client-influenceable value never reaches an exempt key raw.
             // Defense-in-depth: the DbContext-level AuditEventSanitizationInterceptor re-sanitizes
             // every row at save time (also via SanitizeJson) regardless of write path.
             Metadata = SensitiveDataMask.SanitizeJson(metadata.ToJsonString()),

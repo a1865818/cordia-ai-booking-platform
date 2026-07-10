@@ -8,8 +8,9 @@ namespace Cordia.Tests.IntegrationTests.Security;
 /// <summary>
 /// Spec 14 / Inv-12 — the DbContext-level sanitization choke point: an audit
 /// row written through ANY path (here the rawest one, db.AuditEvents.Add)
-/// has PAN-shaped metadata AND actor masked at save time, while system-minted
-/// digit-run identifiers survive byte-for-byte (control-plane precision).
+/// has PAN-shaped metadata, actor, subject_ref, and correlation_id masked at
+/// save time, while system-minted digit-run identifiers survive byte-for-byte
+/// (control-plane precision).
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Postgres")]
@@ -46,6 +47,43 @@ public class AuditSanitizationInterceptorTests(PostgresFixture fixture)
         Assert.Contains("[REDACTED]", row.Metadata);
         Assert.Contains("5260181590830166", row.Metadata); // reference with no Luhn window intact
         Assert.Equal("system", row.Actor); // benign actor passes through byte-identical
+        Assert.Equal("subject-1", row.SubjectRef); // benign system-minted subject too
+    }
+
+    [Fact]
+    public async Task DirectAdd_WithPanShapedSubjectRef_IsMaskedAtSaveTime()
+    {
+        // subject_ref can carry CLIENT-supplied identity on at least one direct write
+        // path (grant_issued stores challenge.CustomerId straight from the session-scoped
+        // POST /api/verifications body), and correlation_id often carries the same
+        // client-influenced session id — the choke point must mask BOTH like
+        // actor/metadata (Inv-12), or the value it just deemed a PAN persists one
+        // column over.
+        var tenantId = $"t14-auditsan-{Guid.NewGuid():N}";
+        var eventId = $"evt_{Guid.NewGuid():N}";
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.AuditEvents.Add(new AuditEvent
+            {
+                TenantId = tenantId,
+                EventId = eventId,
+                EventType = "test.sanitize",
+                Actor = "system",
+                SubjectRef = "4111111111111111",
+                CorrelationId = "4111111111111111",
+                Metadata = "{}",
+                OccurredAt = DateTimeOffset.UtcNow,
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var readCtx = fixture.CreateContext(tenantId);
+        var row = await readCtx.AuditEvents.AsNoTracking()
+            .SingleAsync(e => e.TenantId == tenantId && e.EventId == eventId);
+
+        Assert.Equal("[REDACTED]", row.SubjectRef);
+        Assert.Equal("[REDACTED]", row.CorrelationId);
     }
 
     [Fact]
