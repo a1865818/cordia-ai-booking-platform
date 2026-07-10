@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Microsoft.Extensions.Configuration;
 
 namespace Cordia.Infrastructure.Storage;
@@ -29,10 +30,9 @@ public sealed partial class EncryptedFileObjectStore(
     private const int NonceSize = 12;
     private const int TagSize = 16;
 
-    // Conservative allow-list for tenant/purpose/id path segments: no separators, no dots
-    // except inside the id body (never leading), so ".." and absolute paths cannot form.
-    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
-    private static partial Regex SafeSegment();
+    // Conservative allow-list for tenant/purpose/id path segments — the single source is
+    // Domain's ObjectStoreSegment so API validators (400) and this fail-closed guard agree.
+    private static Regex SafeSegment() => ObjectStoreSegment.Pattern();
 
     private sealed record ObjectMeta(
         [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
@@ -141,7 +141,7 @@ public sealed partial class EncryptedFileObjectStore(
         if (!Directory.Exists(dir))
             return Task.FromResult<IReadOnlyList<string>>([]);
 
-        IReadOnlyList<string> ids = Directory.EnumerateFiles(dir, "*.bin")
+        IReadOnlyList<string> ids = Directory.EnumerateFiles(dir, prefix + "*.bin")
             .Select(f => Path.GetFileName(f)[..^".bin".Length])
             .Where(id => id.StartsWith(prefix, StringComparison.Ordinal))
             .OrderBy(id => id, StringComparer.Ordinal)

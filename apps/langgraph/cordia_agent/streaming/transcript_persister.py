@@ -15,7 +15,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Protocol
 
-from cordia_agent.tools.client_binding import append_transcript_turn_call
+from cordia_agent.tools.client_binding import (
+    append_transcript_turn_call,
+    parse_transcript_turn_persisted,
+)
 from cordia_agent.tools.contracts import TranscriptTurnInput
 
 
@@ -51,7 +54,7 @@ class ToolTranscriptPersister:
             return
         # frame.text is already scrubbed by the pipeline's pre-emit redaction; the
         # contract documents (and the API re-enforces) that no raw text rides here.
-        await append_transcript_turn_call(
+        env = await append_transcript_turn_call(
             TranscriptTurnInput(
                 session_id=frame.session_id,
                 seq=frame.seq,
@@ -60,3 +63,21 @@ class ToolTranscriptPersister:
                 text=frame.text,
             )
         )
+        # A non-ok envelope (tenant_not_resolved, not_found, unavailable, ...) is a
+        # NORMAL return, not an exception — surface it or the drop is invisible.
+        if not env.ok:
+            _log.warning(
+                "transcript turn persist rejected: status=%s session=%s seq=%s",
+                env.status,
+                frame.session_id,
+                frame.seq,
+            )
+            return
+        result = parse_transcript_turn_persisted(env)
+        if result is not None and not result.persisted:
+            # §5.2 consent suppression — expected while consent is pending/declined.
+            _log.debug(
+                "transcript turn suppressed by consent gate: session=%s seq=%s",
+                frame.session_id,
+                frame.seq,
+            )

@@ -620,7 +620,7 @@
           "stored": {
             "type": "boolean"
           },
-          "traceId": {
+          "trace_id": {
             "nullable": true,
             "type": "string"
           }
@@ -660,11 +660,11 @@
             "nullable": true,
             "type": "string"
           },
-          "sessionId": {
+          "session_id": {
             "nullable": true,
             "type": "string"
           },
-          "traceId": {
+          "trace_id": {
             "nullable": true,
             "type": "string"
           },
@@ -1235,7 +1235,7 @@
             "format": "int32",
             "type": "integer"
           },
-          "sessionId": {
+          "session_id": {
             "nullable": true,
             "type": "string"
           }
@@ -1283,7 +1283,7 @@
             "format": "date-time",
             "type": "string"
           },
-          "turnId": {
+          "turn_id": {
             "nullable": true,
             "type": "string"
           }
@@ -1293,7 +1293,7 @@
       "TranscriptView": {
         "additionalProperties": false,
         "properties": {
-          "sessionId": {
+          "session_id": {
             "nullable": true,
             "type": "string"
           },

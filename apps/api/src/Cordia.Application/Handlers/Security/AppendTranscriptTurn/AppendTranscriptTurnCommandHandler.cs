@@ -14,10 +14,13 @@ namespace Cordia.Application.Handlers.Security.AppendTranscriptTurn;
 /// text (Inv-12 defense-in-depth: the agent runs <c>redact_text</c> pre-emit; this lane runs
 /// <c>SensitiveDataMask.Sanitize</c> pre-persist), and stores one encrypted object per turn —
 /// <c>{sessionId}.{seq:D6}</c>, purpose <c>"transcript"</c>, 90d TTL applied by the store
-/// (GD-3) and swept by the retention service. The session's FIRST persisted turn appends one
-/// <c>transcript.recording_started</c> audit event; per-turn audit rows are deliberately not
-/// written (the turn objects themselves are the consented data plane — the trail is
-/// consent.recorded + recording_started + the reader's read_sensitive_transcript audits).
+/// (GD-3) and swept by the retention service. The session's first persisted turn appends a
+/// <c>transcript.recording_started</c> audit event (AT-LEAST-ONCE: the emptiness check and the
+/// put are not atomic, so concurrent first turns may rarely duplicate the marker — consistent
+/// with the platform's at-least-once audit posture; consumers must not assume exactly one).
+/// Per-turn audit rows are deliberately not written (the turn objects themselves are the
+/// consented data plane — the trail is consent.recorded + recording_started + the reader's
+/// read_sensitive_transcript audits).
 /// </summary>
 public sealed class AppendTranscriptTurnCommandHandler(
     IConversationSessionRepository sessions,
@@ -51,7 +54,8 @@ public sealed class AppendTranscriptTurnCommandHandler(
         var isFirstTurn = (await store.ListIdsAsync(command.TenantId, Purpose, prefix, ct)).Count == 0;
 
         await store.PutAsync(
-            command.TenantId, Purpose, $"{command.SessionId}.{command.Seq:D6}",
+            command.TenantId, Purpose,
+            $"{command.SessionId}.{command.Seq.ToString("D6", System.Globalization.CultureInfo.InvariantCulture)}",
             content, ttl: null /* store applies the GD-3 transcript default */, ct);
 
         if (isFirstTurn)

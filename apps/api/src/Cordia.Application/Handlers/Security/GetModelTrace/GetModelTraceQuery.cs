@@ -1,4 +1,6 @@
-﻿using FluentValidation;
+﻿using System.Text.Json.Serialization;
+using Cordia.Domain.Security;
+using FluentValidation;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Security.GetModelTrace;
@@ -17,9 +19,14 @@ public sealed record GetModelTraceQuery(
     string? ActorRole,
     string? ReasonCode) : IRequest<ModelTraceView?>;
 
-/// <summary>The stored trace; null result ⇒ unknown/expired (404 at the controller).</summary>
+/// <summary>The stored trace; null result ⇒ unknown/expired (404 at the controller).
+/// snake_case wire shape for cross-service consistency.</summary>
 public sealed record ModelTraceView(
-    string TraceId, string Kind, string? SessionId, string Content, DateTimeOffset Ts);
+    [property: JsonPropertyName("trace_id")] string TraceId,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("ts")] DateTimeOffset Ts);
 
 /// <summary>Structural rules; authorization is the handler's spine.</summary>
 public sealed class GetModelTraceValidator : AbstractValidator<GetModelTraceQuery>
@@ -27,6 +34,9 @@ public sealed class GetModelTraceValidator : AbstractValidator<GetModelTraceQuer
     public GetModelTraceValidator()
     {
         RuleFor(x => x.TenantId).NotEmpty();
-        RuleFor(x => x.TraceId).NotEmpty();
+        // Path-segment shape rejected as 400, not the store's fail-closed 500.
+        RuleFor(x => x.TraceId).NotEmpty()
+            .Must(ObjectStoreSegment.IsValid)
+            .WithMessage("TraceId contains characters not allowed in a storage path segment.");
     }
 }

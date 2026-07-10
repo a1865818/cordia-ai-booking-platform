@@ -20,8 +20,17 @@ from cordia_agent.streaming.providers import (
 )
 from cordia_agent.streaming.transcript_persister import ToolTranscriptPersister
 from cordia_agent.streaming_models import AgentTextFinalFrame, TranscriptFinalFrame
-from cordia_agent.tools.contracts import TranscriptTurnInput
+from cordia_agent.tools.contracts import ToolResultEnvelope, TranscriptTurnInput
 from tests.unit_tests.streaming.fakes.fake_agent import FakeAgent
+
+
+def _ok_envelope(inp: TranscriptTurnInput) -> ToolResultEnvelope:
+    return ToolResultEnvelope(
+        ok=True,
+        status="ok",
+        data={"session_id": inp.session_id, "seq": inp.seq, "persisted": True},
+        correlation_id="corr-test",
+    )
 
 
 SESSION = PipelineSession(
@@ -143,6 +152,7 @@ async def test_tool_persister_consent_fail_closed(
 
     async def fake_call(inp: TranscriptTurnInput):
         calls.append(inp)
+        return _ok_envelope(inp)
 
     monkeypatch.setattr(
         "cordia_agent.streaming.transcript_persister.append_transcript_turn_call",
@@ -161,6 +171,7 @@ async def test_tool_persister_posts_the_turn_when_allowed(monkeypatch) -> None:
 
     async def fake_call(inp: TranscriptTurnInput):
         calls.append(inp)
+        return _ok_envelope(inp)
 
     monkeypatch.setattr(
         "cordia_agent.streaming.transcript_persister.append_transcript_turn_call",

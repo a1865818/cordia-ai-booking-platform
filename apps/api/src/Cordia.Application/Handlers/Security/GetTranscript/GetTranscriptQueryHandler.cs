@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
@@ -76,13 +77,24 @@ public sealed class GetTranscriptQueryHandler(
         foreach (var id in await store.ListIdsAsync(query.TenantId, Purpose, $"{query.SessionId}.", ct))
         {
             ct.ThrowIfCancellationRequested();
+
+            // Turn objects for THIS session are exactly "{sessionId}.{6 digits}". Because
+            // session ids may legally contain dots, a sibling session id that extends this
+            // one (e.g. "sess-1.retry" while reading "sess-1") also matches the prefix — its
+            // ids carry a non-6-digit suffix and MUST be skipped, never parsed (a FormatException
+            // 500) or spliced into this transcript as a phantom turn.
+            var suffix = id[(query.SessionId.Length + 1)..];
+            if (suffix.Length != 6
+                || !int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out var seq))
+                continue;
+
             var bytes = await store.GetAsync(query.TenantId, Purpose, id, ct);
             if (bytes is null)
                 continue; // expired-but-unswept objects are unreadable by design
 
             using var doc = JsonDocument.Parse(bytes);
             turns.Add(new TranscriptTurnView(
-                Seq: int.Parse(id[(query.SessionId.Length + 1)..]),
+                Seq: seq,
                 TurnId: doc.RootElement.GetProperty("turn_id").GetString() ?? string.Empty,
                 Speaker: doc.RootElement.GetProperty("speaker").GetString() ?? string.Empty,
                 Text: doc.RootElement.GetProperty("text").GetString() ?? string.Empty,
@@ -118,7 +130,12 @@ public sealed class GetTranscriptQueryHandler(
         GetTranscriptQuery query, string? customerRef, string reason, CancellationToken ct)
         => audit.WriteAsync(new AuditRecord(
             TenantId: query.TenantId,
-            ActorType: StaffRole.IsKnown(query.ActorRole) ? query.ActorRole! : "customer",
+            // Fallback convention (matches OperatorActionBehavior/GetModelTrace): an ASSERTED
+            // but unknown role is recorded as "operator" with the raw value in context; only a
+            // caller asserting NO role at all is presumed to be the customer/session subject.
+            ActorType: StaffRole.IsKnown(query.ActorRole)
+                ? query.ActorRole!
+                : string.IsNullOrWhiteSpace(query.ActorRole) ? "customer" : "operator",
             ActorId: string.IsNullOrWhiteSpace(query.ActorId)
                 ? customerRef ?? "unknown"
                 : query.ActorId,

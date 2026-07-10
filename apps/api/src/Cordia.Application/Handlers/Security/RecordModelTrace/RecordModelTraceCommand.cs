@@ -1,4 +1,6 @@
-﻿using FluentValidation;
+﻿using System.Text.Json.Serialization;
+using Cordia.Domain.Security;
+using FluentValidation;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Security.RecordModelTrace;
@@ -18,8 +20,11 @@ public sealed record RecordModelTraceCommand(
     string Kind,
     string Content) : IRequest<ModelTraceRecordedResult>;
 
-/// <summary>Write acknowledgement.</summary>
-public sealed record ModelTraceRecordedResult(string TraceId, bool Stored);
+/// <summary>Write acknowledgement (snake_case wire shape — the Python ModelTraceRecorded
+/// contract parses these keys).</summary>
+public sealed record ModelTraceRecordedResult(
+    [property: JsonPropertyName("trace_id")] string TraceId,
+    [property: JsonPropertyName("stored")] bool Stored);
 
 /// <summary>Structural rules for the trace write.</summary>
 public sealed class RecordModelTraceValidator : AbstractValidator<RecordModelTraceCommand>
@@ -27,7 +32,11 @@ public sealed class RecordModelTraceValidator : AbstractValidator<RecordModelTra
     public RecordModelTraceValidator()
     {
         RuleFor(x => x.TenantId).NotEmpty();
-        RuleFor(x => x.TraceId).NotEmpty();
+        // The trace id becomes an object-store path segment — reject hostile shapes as 400,
+        // not the store's fail-closed ArgumentException 500.
+        RuleFor(x => x.TraceId).NotEmpty()
+            .Must(ObjectStoreSegment.IsValid)
+            .WithMessage("TraceId contains characters not allowed in a storage path segment.");
         RuleFor(x => x.Kind).NotEmpty()
             .Must(k => k is "prompt" or "output")
             .WithMessage("Kind must be 'prompt' or 'output'.");

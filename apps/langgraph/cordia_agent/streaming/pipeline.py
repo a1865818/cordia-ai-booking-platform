@@ -105,14 +105,18 @@ class Pipeline:
                 for frame in self._barge_in.caller_speech_started(transcript).frames:
                     yield frame
             elif isinstance(transcript, TranscriptFinalFrame):
-                # §4.3: the persister only ever sees the SCRUBBED committed final; the
-                # agent keeps receiving the in-boundary frame exactly as before.
+                async for frame in self._run_agent(transcript):
+                    yield frame
+                # §4.3: persist AFTER the agent's frames for this final have been yielded —
+                # (a) the round-trip never adds dead air in front of the response, and
+                # (b) resolve_tenant has run inside _run_agent by now, so the tool client's
+                # Inv-13 tenant gate is satisfied even on the session's first turn.
+                # The persister only ever sees the SCRUBBED committed final; the agent keeps
+                # receiving the in-boundary frame exactly as before.
                 if self._transcript_persister is not None and isinstance(
                     scrubbed, TranscriptFinalFrame
                 ):
                     await self._persist_final(scrubbed)
-                async for frame in self._run_agent(transcript):
-                    yield frame
 
     async def _persist_final(self, scrubbed: TranscriptFinalFrame) -> None:
         """Best-effort persist — a failure must never break the caller's turn (§8)."""

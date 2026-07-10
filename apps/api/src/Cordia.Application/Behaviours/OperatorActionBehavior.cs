@@ -90,7 +90,9 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: op.TenantId,
-                    ActorType: "operator",
+                    // GD-1: audit the ASSERTED role here too — an owner's failed operator
+                    // action must reconcile with that owner's allow rows, not read "operator".
+                    ActorType: StaffRole.IsKnown(op.ActorRole) ? op.ActorRole : "operator",
                     ActorId: op.ActorId,
                     Action: op.ActionName,
                     TargetType: op.TargetType,

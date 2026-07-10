@@ -1,4 +1,5 @@
-﻿using FluentValidation;
+﻿using Cordia.Domain.Security;
+using FluentValidation;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Security.AppendTranscriptTurn;
@@ -21,8 +22,12 @@ public sealed record AppendTranscriptTurnCommand(
     string Speaker,
     string Text) : IRequest<TranscriptTurnPersistedResult>;
 
-/// <summary>Producer outcome: whether the turn was persisted (false ⇒ consent suppressed it).</summary>
-public sealed record TranscriptTurnPersistedResult(string SessionId, int Seq, bool Persisted);
+/// <summary>Producer outcome: whether the turn was persisted (false ⇒ consent suppressed it).
+/// snake_case wire shape — the Python TranscriptTurnPersisted contract parses these keys.</summary>
+public sealed record TranscriptTurnPersistedResult(
+    [property: System.Text.Json.Serialization.JsonPropertyName("session_id")] string SessionId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("seq")] int Seq,
+    [property: System.Text.Json.Serialization.JsonPropertyName("persisted")] bool Persisted);
 
 /// <summary>Structural rules; the consent gate itself lives in the handler (data state, not shape).</summary>
 public sealed class AppendTranscriptTurnValidator : AbstractValidator<AppendTranscriptTurnCommand>
@@ -30,7 +35,11 @@ public sealed class AppendTranscriptTurnValidator : AbstractValidator<AppendTran
     public AppendTranscriptTurnValidator()
     {
         RuleFor(x => x.TenantId).NotEmpty();
-        RuleFor(x => x.SessionId).NotEmpty();
+        // The session id becomes an object-store path segment — reject hostile shapes here
+        // (400) instead of letting the store's fail-closed ArgumentException surface as a 500.
+        RuleFor(x => x.SessionId).NotEmpty()
+            .Must(ObjectStoreSegment.IsValid)
+            .WithMessage("SessionId contains characters not allowed in a storage path segment.");
         RuleFor(x => x.Seq).GreaterThanOrEqualTo(0);
         RuleFor(x => x.TurnId).NotEmpty();
         RuleFor(x => x.Speaker).NotEmpty()
