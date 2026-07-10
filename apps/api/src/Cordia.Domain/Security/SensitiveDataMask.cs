@@ -162,6 +162,16 @@ public static partial class SensitiveDataMask
                 // (B6). Sanitize its textual form; when masking changes it, replace with the masked
                 // STRING (a JSON number cannot hold the mask token). Byte-identical when unmasked —
                 // bools and ordinary numbers have no 13+ digit run / CVV context, so they pass through.
+                //
+                // DELIBERATE TYPE-CHANGE TRADEOFF: a 13-19 digit number that merely COINCIDES with a
+                // Luhn-valid window (a rare long numeric field — an epoch-millis timestamp, a large
+                // minor-unit total) is masked too, and masking turns that JSON number into the
+                // "[REDACTED]" string. This is the fail-closed posture (Inv-12) — over-masking a
+                // number is preferred to leaking a card — and it is symmetric with the string lane's
+                // over-masking. A downstream consumer that reads such a field as a typed number (e.g.
+                // JobPayload.GetInt32OrNull) will see the type change as "absent"; the accepted
+                // mitigation is that control-plane/numeric envelope fields are small and are exempt
+                // under *_id/*_key/... keys, so a real 13+ digit maskable field is not a normal shape.
                 var raw = value.ToString();
                 var maskedRaw = Sanitize(raw);
                 if (maskedRaw == raw)

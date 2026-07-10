@@ -112,7 +112,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
             // is missing/expired/for a different customer, action, or booking.
             await grants.ConsumeGrantAsync(
                 command.TenantId, command.GrantId, booking.CustomerId,
-                VerificationActionEnum.Modify, booking.BookingId, ct2);
+                VerificationActionEnum.Modify, booking.BookingId, ct: ct2);
 
             await outboxRepo.AddAsync(new OutboxMessage
             {

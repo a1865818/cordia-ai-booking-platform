@@ -51,7 +51,7 @@ public class GrantAuthorizationServiceTests
             "cust-1",
             VerificationActionEnum.Modify,
             "booking-1",
-            TestContext.Current.CancellationToken);
+            ct: TestContext.Current.CancellationToken);
 
         Assert.Same(grant, result);
         repo.VerifyAll();
@@ -80,13 +80,47 @@ public class GrantAuthorizationServiceTests
                 "cust-1",
                 VerificationActionEnum.Cancel,
                 "booking-1",
-                TestContext.Current.CancellationToken));
+                ct: TestContext.Current.CancellationToken));
 
         Assert.Equal("tenant-1", ex.TenantId);
         Assert.Equal("cust-1", ex.CustomerRef);
         Assert.Equal(VerificationActionEnum.Cancel, ex.Action);
         Assert.Equal("booking-1", ex.TargetBookingId);
         repo.VerifyAll();
+    }
+
+    [Fact]
+    public async Task RequireGrantAsync_DenyAudit_ReflectsPassedTargetType_NotAlwaysBooking()
+    {
+        // A denied transcript grant (targetBookingId null, from GetTranscript) must be audited as a
+        // conversation_session, not a booking — the deny audit's TargetType is now parameterized so it
+        // reflects the actual resource being authorized, not a hard-coded "booking".
+        var audit = new Mock<IAuditWriter>();
+        var scopeFactory = new ServiceCollection()
+            .AddScoped(_ => audit.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        var repo = new Mock<IVerificationGrantRepository>();
+        repo.Setup(r => r.FindValidGrantByIdAsync(
+                "tenant-1", "grant-x", "cust-1", VerificationActionEnum.ReadSensitive,
+                null, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationGrant?)null);
+
+        var service = new GrantAuthorizationService(repo.Object, scopeFactory);
+
+        await Assert.ThrowsAsync<VerificationRequiredException>(() =>
+            service.RequireGrantAsync(
+                "tenant-1", "grant-x", "cust-1", VerificationActionEnum.ReadSensitive,
+                targetBookingId: null, targetType: "conversation_session",
+                ct: TestContext.Current.CancellationToken));
+
+        audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r =>
+                r.Action == "verification.grant_denied"
+                && r.Decision == "deny"
+                && r.TargetType == "conversation_session"
+                && r.TargetId == "grant-x"), // no booking id exists for a transcript read
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -112,7 +146,7 @@ public class GrantAuthorizationServiceTests
                 "cust-1",
                 VerificationActionEnum.Modify,
                 "booking-1",
-                TestContext.Current.CancellationToken));
+                ct: TestContext.Current.CancellationToken));
 
         repo.VerifyAll();
     }

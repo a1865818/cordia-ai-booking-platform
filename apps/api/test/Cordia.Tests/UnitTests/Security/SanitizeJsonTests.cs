@@ -62,6 +62,23 @@ public class SanitizeJsonTests
     }
 
     [Fact]
+    public void EpochMillisNumber_BenignStaysNumber_LuhnCoincidentalBecomesMaskString()
+    {
+        // B6 type-change tradeoff (documented on WalkNode's numeric branch): a 13-digit epoch-millis
+        // that is NOT Luhn-valid stays an unquoted number — benign long timestamps survive intact.
+        // (occurred_at_ms is NOT a control-plane key, so it is not exempt from the numeric walk.)
+        var benign = SensitiveDataMask.SanitizeJson("""{"occurred_at_ms":1719878400000}""");
+        Assert.Contains("\"occurred_at_ms\":1719878400000", benign);
+
+        // ...but one that COINCIDENTALLY forms a Luhn-valid 13-digit window is masked fail-closed
+        // (Inv-12: over-mask a number rather than risk leaking a card), and masking turns the JSON
+        // NUMBER into the "[REDACTED]" STRING. This pins that accepted, deliberate type change.
+        var coincidental = SensitiveDataMask.SanitizeJson("""{"occurred_at_ms":1719878400005}""");
+        Assert.Contains($"\"occurred_at_ms\":\"{SensitiveDataMask.MaskToken}\"", coincidental);
+        Assert.DoesNotContain("1719878400005", coincidental);
+    }
+
+    [Fact]
     public void PanInsideArrayAndNestedObject_IsMasked()
     {
         var json = $$$"""{"items":[{"comment":"{{{Pan}}}"},"plain {{{Pan}}} text"],"nested":{"free":"{{{Pan}}}"}}""";

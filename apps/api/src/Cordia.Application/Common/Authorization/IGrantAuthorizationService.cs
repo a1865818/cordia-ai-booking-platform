@@ -12,6 +12,7 @@ public interface IGrantAuthorizationService
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
+        string targetType = "booking",
         CancellationToken ct = default);
 
     Task ConsumeGrantAsync(
@@ -20,5 +21,6 @@ public interface IGrantAuthorizationService
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
+        string targetType = "booking",
         CancellationToken ct = default);
 }

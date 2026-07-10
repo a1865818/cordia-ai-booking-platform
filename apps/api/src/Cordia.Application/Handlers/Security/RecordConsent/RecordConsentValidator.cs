@@ -7,12 +7,12 @@ namespace Cordia.Application.Handlers.Security.RecordConsent;
 /// notice-channel value sets are closed (no free-form strings — avoids the
 /// spec-11 C9 defect family of silently-coerced enum inputs).
 ///
-/// Known wire-binding limitation (tracked with the Program.cs quicktype
-/// nullability gap): value-typed members OMITTED from the JSON body bind to
-/// their defaults before this validator runs — an omitted `outcome` becomes
-/// `alternative_offered` with `recording_allowed=false`, i.e. the MOST
-/// RESTRICTIVE consent (fail-safe, never fail-open). Omitted string members
-/// are caught by the NotEmpty rules below.
+/// <c>Outcome</c> is a string validated by <c>NotEmpty()</c> plus a closed-set
+/// <c>Must</c> (granted / declined / not_required / alternative_offered), so an
+/// OMITTED or unknown outcome now 400s rather than silently binding to a default
+/// — there is no default-binding fail-safe to rely on. <c>RecordingAllowed</c> is
+/// independently constrained to granted/not_required outcomes below. Omitted
+/// string members are likewise caught by the NotEmpty rules.
 /// </summary>
 public sealed class RecordConsentValidator : AbstractValidator<RecordConsentCommand>
 {

@@ -110,7 +110,7 @@ public class PreorderManualResolutionHandlerTests
         // Customer half (§21.4): consumes the single-use grant scoped to the committed booking (Modify).
         _grants.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId,
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == PreorderSagaMessages.BookingConfirmedNotification),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -128,7 +128,7 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.Completed, 1);
         // A missing/expired/mismatched grant fails the consume → VerificationRequiredException (403).
         _grants.Setup(g => g.ConsumeGrantAsync(
-                TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId, It.IsAny<CancellationToken>()))
+                TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VerificationRequiredException(TenantId, CustomerRef, VerificationActionEnum.Modify, BookingId));
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
@@ -136,7 +136,7 @@ public class PreorderManualResolutionHandlerTests
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId,
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public class PreorderManualResolutionHandlerTests
             It.IsAny<CancellationToken>()), Times.Never);
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         // Regression guard (review): this VerificationRequiredException is thrown DIRECTLY, outside the
         // self-auditing grant service, so the operator-action behavior's catch (narrowed to
         // AuthorizationFailedException) does not record it — the handler must self-audit the denial, or
@@ -187,7 +187,7 @@ public class PreorderManualResolutionHandlerTests
         // An idempotent replay must NOT burn a fresh single-use grant.
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public class PreorderManualResolutionHandlerTests
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

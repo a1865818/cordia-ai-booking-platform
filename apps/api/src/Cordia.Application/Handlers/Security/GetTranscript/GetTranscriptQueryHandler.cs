@@ -76,7 +76,10 @@ public sealed class GetTranscriptQueryHandler(
             // The service deny-audits through a fresh scope and throws 403 on any mismatch.
             await grants.RequireGrantAsync(
                 query.TenantId, query.GrantId!, session.CustomerRef ?? string.Empty,
-                VerificationActionEnum.ReadSensitive, targetBookingId: null, ct);
+                VerificationActionEnum.ReadSensitive, targetBookingId: null,
+                // A transcript read is a conversation_session resource, not a booking — so the
+                // service's deny audit attributes the refusal to the right resource type.
+                targetType: "conversation_session", ct: ct);
             actorType = "customer";
             actorId = session.CustomerRef ?? "customer";
         }

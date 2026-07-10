@@ -52,7 +52,7 @@ public sealed class GetBookingDetailsQueryHandler(
                 authoritative.CustomerId,
                 VerificationActionEnum.ReadSensitive,
                 projection.BookingId,
-                ct);
+                ct: ct);
         }
         catch (VerificationRequiredException)
         {

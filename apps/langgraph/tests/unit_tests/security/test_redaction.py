@@ -191,6 +191,30 @@ def test_redact_payload_handles_scalars_and_none() -> None:
 
 
 @pytest.mark.unit
+def test_redact_payload_masks_numeric_pan_scalar_for_csharp_parity() -> None:
+    """An UNQUOTED numeric PAN/SSN must not slip through just because it was a
+    JSON number rather than a string (parity with C# SanitizeJson, Inv-12). The
+    number is replaced with the mask STRING (a number cannot hold the token);
+    benign numbers and booleans pass through untouched."""
+    # A bare numeric PAN scalar is masked (type changes number -> mask string).
+    assert redact_payload(int(VISA_PAN)) == MASK
+    # Inside a payload, a numeric PAN under an ordinary key is masked...
+    out = redact_payload({"card": int(VISA_PAN), "party_size": 4, "vip": True})
+    assert out["card"] == MASK
+    # ...while a benign small number and a bool are byte-identical (bool is an
+    # int subclass — it must NOT be coerced through the numeric path).
+    assert out["party_size"] == 4
+    assert out["vip"] is True
+
+    # A numeric value under a control-plane identifier key round-trips (parity
+    # with the C# JsonValue exemption) — a system-minted numeric id/seq/ts must
+    # never be masked, even if it coincidentally embeds a Luhn-valid window.
+    exempt = redact_payload({"seq": int(VISA_PAN), "ts": 1719878400000})
+    assert exempt["seq"] == int(VISA_PAN)
+    assert exempt["ts"] == 1719878400000
+
+
+@pytest.mark.unit
 def test_control_plane_keys_are_exempt_but_free_text_is_not() -> None:
     """*_id/*_key/*_hash values are system-minted and must round-trip even
     when they contain a chance Luhn-valid digit run; free-text siblings are

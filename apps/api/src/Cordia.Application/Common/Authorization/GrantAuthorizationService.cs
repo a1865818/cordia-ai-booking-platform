@@ -27,6 +27,7 @@ public sealed class GrantAuthorizationService(
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
+        string targetType = "booking",
         CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
@@ -41,7 +42,7 @@ public sealed class GrantAuthorizationService(
 
         if (grant is null)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId);
+            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
 
@@ -54,6 +55,7 @@ public sealed class GrantAuthorizationService(
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
+        string targetType = "booking",
         CancellationToken ct = default)
     {
         var rows = await grants.ConsumeAsync(
@@ -66,7 +68,7 @@ public sealed class GrantAuthorizationService(
             ct);
         if (rows == 0)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId);
+            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
     }
@@ -76,7 +78,8 @@ public sealed class GrantAuthorizationService(
         string grantId,
         string customerRef,
         VerificationActionEnum action,
-        string? targetBookingId)
+        string? targetBookingId,
+        string targetType)
     {
         using var scope = scopeFactory.CreateScope();
         var audit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
@@ -86,7 +89,11 @@ public sealed class GrantAuthorizationService(
                 ActorType: "customer",
                 ActorId: customerRef,
                 Action: "verification.grant_denied",
-                TargetType: "booking",
+                // The resource type the grant authorizes — "booking" by default, but a transcript
+                // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
+                // booking. Hard-coding "booking" misattributed transcript denials to a booking
+                // resource and broke audit-trail integrity for sensitive-read refusals.
+                TargetType: targetType,
                 TargetId: targetBookingId ?? grantId,
                 Decision: "deny",
                 DataClasses: ["booking", "pii"],

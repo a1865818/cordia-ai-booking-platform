@@ -201,12 +201,35 @@ def redact_payload(value: Any, policy: RedactionPolicy | None = None) -> Any:
             return tuple(_walk(item) for item in node)
         if isinstance(node, str):
             return redact_text(node, effective)
+        # bool is an int subclass in Python — it is never a maskable scalar and
+        # must be checked BEFORE int/float so True/False pass through untouched.
+        if isinstance(node, bool):
+            return node
+        if isinstance(node, int | float):
+            # Parity with C# SanitizeJson (WalkNode numeric-scalar branch): an
+            # unquoted numeric PAN/SSN must not escape this choke point just
+            # because it was written as a JSON number (e.g. {"card": 4111111111111111})
+            # rather than a string (Inv-12, fail closed). Mask via the textual
+            # form; when masking changes it, replace with the masked STRING (a
+            # number cannot hold the mask token — the type deliberately changes,
+            # same tradeoff as the C# lane). Benign numbers (party sizes, epoch
+            # timestamps) have no maskable run and pass through byte-identical.
+            raw = str(node)
+            masked = redact_text(raw, effective)
+            return masked if masked != raw else node
         return node
 
     def _walk_entry(key: str, item: Any) -> Any:
         if key in sensitive:
             return effective.mask_token
-        if _is_control_plane_key(key) and isinstance(item, str):
+        # Control-plane identifier keys round-trip their SCALAR value byte-for-byte
+        # — a string id/hash OR a numeric one (e.g. a numeric seq/ts), matching the
+        # C# exemption (childExempt when the child is a JsonValue). Nested structures
+        # under such a key are still walked. This keeps the new numeric masking above
+        # from corrupting a system-minted numeric identifier.
+        if _is_control_plane_key(key) and not isinstance(
+            item, BaseModel | dict | list | tuple
+        ):
             return item
         return _walk(item)
 
