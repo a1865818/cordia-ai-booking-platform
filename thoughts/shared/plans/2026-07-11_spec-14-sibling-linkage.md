@@ -287,10 +287,65 @@ vectors; zero migrations (`Migrations/` diff empty); BOM check on new `.cs`. Val
 appended here; invariant re-check (Inv-1/5/11/12/13/14).
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx test-integration api` · `bun nx test langgraph` · `bun nx lint api` · `bun nx lint langgraph` · `bun nx test web`
+- [x] `bun nx test api` (872 passed) · `bun nx test-integration api` (354 passed, 2 skipped) · `bun nx test langgraph` (810 passed) · `bun nx lint api` (0) · `bun nx lint langgraph` (0) · `bun nx test web` (2 passed)
 
 Discoveries and notable information:
-- _(implementer)_
+
+#### Validation report — 2026-07-11 (sibling-linkage phases 1–6 complete)
+
+Commits: `c0de332` (P1 role taxonomy), `99ddd4a` (P2 transcript producer), `56bf47d`
+(P3 consent-gated reader), `567278c` (P4 langgraph producer tool + persister port),
+`d6c5ef6` (P5 model-trace sink). All-lane suites green at HEAD.
+
+**Explicit regression-contract check** (item-by-item, per the goal's mandate — verified
+against `git diff --name-only 460f9e4..HEAD`, which matches the Blast radius EXACTLY,
+zero stray files):
+- **Zero migrations** ✔ — no `EntityFramework/Migrations/` path in the diff (D17 intact).
+- **Envelope/outbox shape** ✔ — `OutboxMessage`, `Messaging/`, publisher/inbox untouched;
+  the 4 recovery/preorder handlers' diffs touch ONLY the audit `ActorType` line + docs.
+- **Inbox semantics** ✔ — no `IInboxConsumerRequest` implementer or
+  `InboxDeduplicationBehavior` in the diff; pipeline order unchanged (Validation →
+  OperatorAction → InboxDedup → Handler).
+- **Hosted services** ✔ — none touched. **Waitlist customer endpoints** ✔ — untouched.
+- **ToolClient behavior** ✔ — `tools/client.py` untouched this run; the no-allowlist no-op
+  loop (now spanning 21 tools) is green; original 19 tools' deadlines/classes byte-stable
+  in `_timeouts.py` (additions only).
+- **EventType/Actor pairs** ✔ — all stable; the ONE change (operator-family allow audits
+  stamp the asserted role in `ActorType`) is inside the pre-named WI1 exception and remains
+  assertion-compatible (`Actor` column untouched; no existing test asserted `actor_type` for
+  those events).
+- **Sanitizer byte-identity no-op** ✔ — `SensitiveDataMask`/`SanitizeJson` untouched;
+  vector tests green. **BOM** ✔ — lint clean. **Fail-closed defaults** ✔ — every new
+  surface rejects/suppresses on missing role/actor/reason/consent/grant.
+- **Baseline items 25–33** ✔ — behavior contract (25) changed exactly as planned (role
+  check added, deny-audited); implementer set (26) matched the pre-named lists;
+  `GrantAuthorizationService` (27) consumed, not modified; RecordConsent vertical (28)
+  additive-only (existing consent endpoint byte-stable); pipeline scrub-before-yield (29)
+  preserved (persister receives the scrubbed copy; None-port = byte-identical, pinned);
+  checkpointer (30) untouched; store semantics (31) additive `ListIdsAsync` + GD-3 purpose
+  defaults (one intentionally-updated TTL test, named in P2); tool tables (32) additive;
+  api-contract (33) additive endpoints only.
+
+**Invariant re-check**: Inv-1 ✔ producer/trace writes persist only (no outbox, no state
+mutation); Inv-5 ✔ no consumer touched, new tools BOUNDED_SIDE_EFFECT never retried;
+Inv-11 ✔ reader/trace-view demand grant-or-role — session identity alone 403s (pinned);
+Inv-12 ✔ redact→sanitize→encrypt at every new surface, PAN-at-rest tests on both
+verticals; Inv-13 ✔ TenantGuard on all new endpoints + filesystem tenant isolation proven
+cross-tenant; Inv-14 ✔ allow AND deny audited on every sensitive read/view, append-only.
+
+**Work-item closure**: WI1 ✔ (§12 "Owner and internal operations roles" DECIDED per GD-1/
+GD-2 and enforced across all 10 implementers + 2 new read surfaces; spec 08's "owner role"
+alternative of §3.1 step 3 realized via `StaffRole` in the transcript reader); WI2 ✔
+(§4.3 object-store row live end-to-end producer→store→reader; §5.1 diagram implemented;
+§5.2 suppression fail-closed; FIRST `ConsentRequiredException` thrower shipping 409s);
+WI2c ✔ (GD-3 transcript 90d / trace 14d config defaults swept by the live retention
+service; GD-4 ratifies audit=never-pruned + idempotency 90d, zero code churn); WI3 ✔
+(spec 13 §25.3 tier + §4.3 view audits; stub-backed sink port, no LLM/OTel build-out).
+
+Residual (unchanged, tracked): real staff authentication (X-Actor-Role stays a shim);
+spec-12 artifact metadata table; real media providers; `from_tenant_context` removal;
+apps/web surfaces. The README "Known deferred items" role-taxonomy entry is now CLOSED by
+GD-1 — a docs/specs README update is spec-registry maintenance for the PR.
 
 ## Cross-cutting requirements
 - **Inv-13**: every new endpoint behind `TenantGuard`; store paths tenant-isolated (existing);
