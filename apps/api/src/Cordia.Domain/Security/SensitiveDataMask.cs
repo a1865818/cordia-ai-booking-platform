@@ -157,27 +157,24 @@ public static partial class SensitiveDataMask
                     changed = true;
                     return JsonValue.Create(masked);
                 }
-                // Non-string scalar (number / bool): a numeric PAN/SSN must not slip through this
-                // choke point just because it was written unquoted, e.g. {"card":4111111111111111}
-                // (B6). Sanitize its textual form; when masking changes it, replace with the masked
-                // STRING (a JSON number cannot hold the mask token). Byte-identical when unmasked —
-                // bools and ordinary numbers have no 13+ digit run / CVV context, so they pass through.
-                //
-                // DELIBERATE TYPE-CHANGE TRADEOFF: a 13-19 digit number that merely COINCIDES with a
-                // Luhn-valid window (a rare long numeric field — an epoch-millis timestamp, a large
-                // minor-unit total) is masked too, and masking turns that JSON number into the
-                // "[REDACTED]" string. This is the fail-closed posture (Inv-12) — over-masking a
-                // number is preferred to leaking a card — and it is symmetric with the string lane's
-                // over-masking. A downstream consumer that reads such a field as a typed number (e.g.
-                // JobPayload.GetInt32OrNull) will see the type change as "absent"; the accepted
-                // mitigation is that control-plane/numeric envelope fields are small and are exempt
-                // under *_id/*_key/... keys, so a real 13+ digit maskable field is not a normal shape.
+
+                // Non-string scalar (number/bool): a numeric PAN/SSN must not slip through unquoted,
+                // e.g. {"card":4111111111111111} (B6). When its textual form contains ANYTHING
+                // maskable, replace the WHOLE scalar with the token (a JSON number cannot hold it;
+                // never a partial "[REDACTED].45" that leaks the fractional digits beside it). Bools
+                // and ordinary numbers have no 13+ digit run / CVV context, so they pass through.
+                // DELIBERATE TYPE-CHANGE TRADEOFF: a 13-19 digit number that coincides with a
+                // Luhn-valid window (a rare epoch-millis timestamp or a large minor-unit total) is
+                // masked too, turning the JSON number into the "[REDACTED]" string. Fail-closed
+                // (Inv-12): over-masking a number beats leaking a card, symmetric with the string
+                // lane. A typed-numeric consumer (e.g. JobPayload.GetInt32OrNull) reads the type
+                // change as "absent"; numeric envelope fields are small and control-plane ids are
+                // exempt, so a 13+ digit maskable numeric field is not a normal shape.
                 var raw = value.ToString();
-                var maskedRaw = Sanitize(raw);
-                if (maskedRaw == raw)
+                if (Sanitize(raw) == raw)
                     return node;
                 changed = true;
-                return JsonValue.Create(maskedRaw);
+                return JsonValue.Create(MaskToken);
             default:
                 return node;
         }

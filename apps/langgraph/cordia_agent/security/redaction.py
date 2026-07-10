@@ -209,14 +209,19 @@ def redact_payload(value: Any, policy: RedactionPolicy | None = None) -> Any:
             # Parity with C# SanitizeJson (WalkNode numeric-scalar branch): an
             # unquoted numeric PAN/SSN must not escape this choke point just
             # because it was written as a JSON number (e.g. {"card": 4111111111111111})
-            # rather than a string (Inv-12, fail closed). Mask via the textual
-            # form; when masking changes it, replace with the masked STRING (a
-            # number cannot hold the mask token — the type deliberately changes,
-            # same tradeoff as the C# lane). Benign numbers (party sizes, epoch
-            # timestamps) have no maskable run and pass through byte-identical.
-            raw = str(node)
-            masked = redact_text(raw, effective)
-            return masked if masked != raw else node
+            # rather than a string (Inv-12, fail closed). Detect via the textual
+            # form — fixed-point for float so a large value never stringifies to
+            # scientific notation (str(1e16) == "1e+16") and slip past the digit
+            # detector — and when ANYTHING is maskable replace the WHOLE scalar
+            # with the token, never a partial "[REDACTED].45" that leaks the
+            # fractional digits sitting next to it. The type deliberately changes
+            # number -> string, same as the C# lane. Benign numbers (party sizes,
+            # epoch timestamps) have no maskable run and pass through byte-identical.
+            # (A float above 2**53 has already lost integer precision before it
+            # reaches here, so exact byte-parity with the C# raw-JSON-text lane is
+            # not possible for such values; masking stays fail-closed regardless.)
+            raw = f"{node:f}" if isinstance(node, float) else str(node)
+            return effective.mask_token if redact_text(raw, effective) != raw else node
         return node
 
     def _walk_entry(key: str, item: Any) -> Any:

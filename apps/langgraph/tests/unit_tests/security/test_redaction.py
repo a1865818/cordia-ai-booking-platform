@@ -198,6 +198,10 @@ def test_redact_payload_masks_numeric_pan_scalar_for_csharp_parity() -> None:
     benign numbers and booleans pass through untouched."""
     # A bare numeric PAN scalar is masked (type changes number -> mask string).
     assert redact_payload(int(VISA_PAN)) == MASK
+    # A float PAN is masked to the FULL token too — no scientific-notation escape
+    # (str(float) would give "4.11e+15") and no partial "[REDACTED].0" leaking the
+    # fractional part beside the token.
+    assert redact_payload(float(VISA_PAN)) == MASK
     # Inside a payload, a numeric PAN under an ordinary key is masked...
     out = redact_payload({"card": int(VISA_PAN), "party_size": 4, "vip": True})
     assert out["card"] == MASK

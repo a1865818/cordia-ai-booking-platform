@@ -27,7 +27,7 @@ public sealed class GrantAuthorizationService(
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
-        string targetType = "booking",
+        string targetType,
         CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
@@ -55,7 +55,7 @@ public sealed class GrantAuthorizationService(
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
-        string targetType = "booking",
+        string targetType,
         CancellationToken ct = default)
     {
         var rows = await grants.ConsumeAsync(
@@ -96,7 +96,12 @@ public sealed class GrantAuthorizationService(
                 TargetType: targetType,
                 TargetId: targetBookingId ?? grantId,
                 Decision: "deny",
-                DataClasses: ["booking", "pii"],
+                // Keep DataClasses in lockstep with TargetType (was hard-coded ["booking","pii"],
+                // which mislabeled a transcript denial's data classes just as the target type was
+                // mislabeled). A conversation_session read exposes [pii, transcript], not booking data.
+                DataClasses: targetType == "conversation_session"
+                    ? ["pii", "transcript"]
+                    : ["booking", "pii"],
                 Extra: new
                 {
                     requested_action = action.ToString(),

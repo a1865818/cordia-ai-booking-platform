@@ -51,6 +51,7 @@ public class GrantAuthorizationServiceTests
             "cust-1",
             VerificationActionEnum.Modify,
             "booking-1",
+            targetType: "booking",
             ct: TestContext.Current.CancellationToken);
 
         Assert.Same(grant, result);
@@ -80,6 +81,7 @@ public class GrantAuthorizationServiceTests
                 "cust-1",
                 VerificationActionEnum.Cancel,
                 "booking-1",
+                targetType: "booking",
                 ct: TestContext.Current.CancellationToken));
 
         Assert.Equal("tenant-1", ex.TenantId);
@@ -114,12 +116,53 @@ public class GrantAuthorizationServiceTests
                 targetBookingId: null, targetType: "conversation_session",
                 ct: TestContext.Current.CancellationToken));
 
+        // TargetId is the grant id (no booking id exists for a transcript read); DataClasses stay
+        // in lockstep with the resource — a transcript denial is [pii, transcript], never booking.
         audit.Verify(a => a.WriteAsync(
             It.Is<AuditRecord>(r =>
                 r.Action == "verification.grant_denied"
                 && r.Decision == "deny"
                 && r.TargetType == "conversation_session"
-                && r.TargetId == "grant-x"), // no booking id exists for a transcript read
+                && r.TargetId == "grant-x"
+                && r.DataClasses.Contains("transcript")
+                && r.DataClasses.Contains("pii")
+                && !r.DataClasses.Contains("booking")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RequireGrantAsync_DenyAudit_BookingResource_TargetsBookingAndBookingDataClasses()
+    {
+        // The booking path (the common case) must still audit as a booking with the booking id and
+        // the booking data classes — pins the resource mapping so it can't silently regress.
+        var audit = new Mock<IAuditWriter>();
+        var scopeFactory = new ServiceCollection()
+            .AddScoped(_ => audit.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        var repo = new Mock<IVerificationGrantRepository>();
+        repo.Setup(r => r.FindValidGrantByIdAsync(
+                "tenant-1", "grant-y", "cust-1", VerificationActionEnum.Modify,
+                "booking-9", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationGrant?)null);
+
+        var service = new GrantAuthorizationService(repo.Object, scopeFactory);
+
+        await Assert.ThrowsAsync<VerificationRequiredException>(() =>
+            service.RequireGrantAsync(
+                "tenant-1", "grant-y", "cust-1", VerificationActionEnum.Modify,
+                targetBookingId: "booking-9", targetType: "booking",
+                ct: TestContext.Current.CancellationToken));
+
+        audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r =>
+                r.Action == "verification.grant_denied"
+                && r.Decision == "deny"
+                && r.TargetType == "booking"
+                && r.TargetId == "booking-9"
+                && r.DataClasses.Contains("booking")
+                && r.DataClasses.Contains("pii")
+                && !r.DataClasses.Contains("transcript")),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -146,6 +189,7 @@ public class GrantAuthorizationServiceTests
                 "cust-1",
                 VerificationActionEnum.Modify,
                 "booking-1",
+                targetType: "booking",
                 ct: TestContext.Current.CancellationToken));
 
         repo.VerifyAll();

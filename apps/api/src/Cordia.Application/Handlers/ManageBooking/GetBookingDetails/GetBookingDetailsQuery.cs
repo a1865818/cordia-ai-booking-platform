@@ -52,6 +52,7 @@ public sealed class GetBookingDetailsQueryHandler(
                 authoritative.CustomerId,
                 VerificationActionEnum.ReadSensitive,
                 projection.BookingId,
+                targetType: "booking",
                 ct: ct);
         }
         catch (VerificationRequiredException)

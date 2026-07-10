@@ -28,6 +28,7 @@ public sealed class ValidateBookingChangeQueryHandler(
             booking.CustomerId,
             VerificationActionEnum.Modify,
             request.TargetBookingId,
+            targetType: "booking",
             ct: ct);
 
         if (booking.Version != request.ExpectedBookingVersion)
