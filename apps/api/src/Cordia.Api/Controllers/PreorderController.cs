@@ -40,13 +40,14 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] ConvertStandaloneRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new ConvertPreorderToStandaloneCommand(
             tenant.TenantId, sagaId, ResolveOperator(actor), body.GrantId ?? string.Empty,
-            reasonCode ?? string.Empty), ct);
+            reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { saga_id = sagaId, status = "converted_to_standalone" });
     }
@@ -63,13 +64,14 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] CancelPreorderRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new CancelPreorderManualReviewCommand(
             tenant.TenantId, sagaId, ResolveOperator(actor), body?.Reason,
-            reasonCode ?? string.Empty), ct);
+            reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { saga_id = sagaId, status = "cancelled" });
     }

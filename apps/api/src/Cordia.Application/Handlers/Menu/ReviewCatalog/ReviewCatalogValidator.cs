@@ -11,6 +11,7 @@ public sealed class ReviewCatalogValidator : AbstractValidator<ReviewCatalogComm
         RuleFor(x => x.CatalogId).NotEmpty();
         RuleFor(x => x.Actor).NotEmpty();
         RuleFor(x => x.ReasonCode).NotEmpty();
+        RuleFor(x => x.ActorRole).NotEmpty();
         // Edits may be EMPTY (review can just transition draft_ready → in_review), but not null — the
         // handler dereferences command.Edits.Count. (Sibling EditCatalogItems requires NotEmpty because
         // an edit with no edits is meaningless; a review with none is valid.)

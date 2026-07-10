@@ -115,7 +115,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
             // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
             await audit.WriteAsync(new AuditRecord(
                 TenantId: command.TenantId,
-                ActorType: "operator",
+                ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
                 ActorId: command.OperatorActor,
                 Action: "preorder.standalone_converted",
                 TargetType: "preorder_saga",

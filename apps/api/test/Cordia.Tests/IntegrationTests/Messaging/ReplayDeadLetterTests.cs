@@ -124,7 +124,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         // §6.1 row 1: original message_id preserved
@@ -171,7 +171,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         // §6.1 row 2: new control-message-id
@@ -211,7 +211,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         // §6.1 row 3: ack without re-admit
@@ -250,7 +250,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         await Assert.ThrowsAsync<DeadLetterNotFoundException>(
             () => handler.Handle(
-                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
                 CancellationToken.None));
     }
 
@@ -284,7 +284,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         var result = await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         // Idempotent no-op: no re-publish, decision is ack-without-readmit.
@@ -326,7 +326,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
                 new AuditWriter(throwingAudit.Object), new UnitOfWork(ctx1));
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                handler1.Handle(new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"), CancellationToken.None));
+                handler1.Handle(new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"), CancellationToken.None));
         }
 
         // Row must still be Quarantined (the mark rolled back).
@@ -344,7 +344,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
                 new DeadLetterRepository(ctx2), new InboxRepository(ctx2), transport,
                 new AuditWriter(new AuditEventRepository(ctx2)), new UnitOfWork(ctx2));
             var result = await handler2.Handle(
-                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"), CancellationToken.None);
+                new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"), CancellationToken.None);
             Assert.Equal(ReplayDecision.NewControlMessageId, result.Decision);
         }
 
@@ -398,7 +398,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         Assert.Single(transport.Published);
@@ -450,7 +450,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
 
         var handler = BuildHandler(tenantId, out var transport);
         await handler.Handle(
-            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay"),
+            new ReplayDeadLetterCommand(tenantId, messageId, consumer, "ops.test", "test_replay", "operator"),
             CancellationToken.None);
 
         Assert.Single(transport.Published);

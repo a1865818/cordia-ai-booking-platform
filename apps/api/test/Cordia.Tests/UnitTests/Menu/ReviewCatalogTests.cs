@@ -41,7 +41,7 @@ public class ReviewCatalogTests
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version });
 
     private static ReviewCatalogCommand Command(IReadOnlyList<CatalogItemEdit>? edits = null)
-        => new(Tenant, CatalogId, "owner", edits ?? [], "rc_test");
+        => new(Tenant, CatalogId, "owner", edits ?? [], "rc_test", "owner");
 
     [Fact]
     public async Task DraftReady_TransitionsToInReview_AndAudits()

@@ -80,7 +80,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         var handler = CreateHandler();
         await handler.Handle(
-            new ResumeWorkflowStepCommand(tenantId, operationId, replayId, actor, "rc_test"),
+            new ResumeWorkflowStepCommand(tenantId, operationId, replayId, actor, "rc_test", "operator"),
             CancellationToken.None);
 
         // Assert outbox: booking.command.requested.v1 continuation.
@@ -110,7 +110,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand("t1", "op-x", "rpl_1", "ops", "rc_test"),
+                new ResumeWorkflowStepCommand("t1", "op-x", "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -133,7 +133,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test"),
+                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -157,7 +157,7 @@ public class ResumeWorkflowStepCommandHandlerTests
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
-                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test"),
+                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 }

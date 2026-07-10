@@ -154,7 +154,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         var handler = new ReviewCatalogCommandHandler(
             new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
         await handler.Handle(
-            new ReviewCatalogCommand(tenantId, catalogId, "owner", edits ?? [], "rc_test"), CancellationToken.None);
+            new ReviewCatalogCommand(tenantId, catalogId, "owner", edits ?? [], "rc_test", "owner"), CancellationToken.None);
     }
 
     private async Task RunApproveAsync(string tenantId, string catalogId)
@@ -162,7 +162,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new ApproveCatalogCommandHandler(
             new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
-        await handler.Handle(new ApproveCatalogCommand(tenantId, catalogId, "owner", "rc_test"), CancellationToken.None);
+        await handler.Handle(new ApproveCatalogCommand(tenantId, catalogId, "owner", "rc_test", "owner"), CancellationToken.None);
     }
 
     private async Task RunPublishAsync(string tenantId, string catalogId)
@@ -170,6 +170,6 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new PublishCatalogCommandHandler(
             new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
-        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test"), CancellationToken.None);
+        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test", "owner"), CancellationToken.None);
     }
 }

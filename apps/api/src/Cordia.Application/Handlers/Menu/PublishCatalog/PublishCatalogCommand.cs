@@ -12,9 +12,12 @@ public sealed record PublishCatalogCommand(
     string TenantId,
     string CatalogId,
     string Actor,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Owner;
 
     public string ActionName => "catalog.published";
 

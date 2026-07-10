@@ -99,7 +99,7 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.Completed, 1);
 
         await Convert().Handle(
-            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None);
+            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None);
 
         // Advances ManualReview → Completed, marking the saga standalone (§21.4).
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
@@ -132,7 +132,7 @@ public class PreorderManualResolutionHandlerTests
             .ThrowsAsync(new VerificationRequiredException(TenantId, CustomerRef, VerificationActionEnum.Modify, BookingId));
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId,
@@ -148,7 +148,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync((BookingProjection?)null);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -168,7 +168,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: true));
 
         await Convert().Handle(
-            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None);
+            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -190,7 +190,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: false));
 
         await Assert.ThrowsAsync<InvalidPreorderSagaTransitionException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
@@ -204,7 +204,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.CommittingBooking));
 
         await Assert.ThrowsAsync<InvalidPreorderSagaTransitionException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
     }
 
     [Fact]
@@ -214,7 +214,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync((PreorderSaga?)null);
 
         await Assert.ThrowsAsync<PreorderSagaNotFoundException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test"), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
     }
 
     // ── Cancel ───────────────────────────────────────────────────────────────────────────────────
@@ -227,7 +227,7 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal, 1);
 
         await Cancel().Handle(
-            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: "customer_declined", ReasonCode: "rc_test"), CancellationToken.None);
+            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: "customer_declined", ReasonCode: "rc_test", ActorRole: "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             TenantId, SagaId, It.IsAny<long>(),
@@ -257,7 +257,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.FailedFinal));
 
         await Cancel().Handle(
-            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: null, ReasonCode: "rc_test"), CancellationToken.None);
+            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: null, ReasonCode: "rc_test", ActorRole: "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),

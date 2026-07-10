@@ -14,9 +14,12 @@ public sealed record CancelPreorderManualReviewCommand(
     string SagaId,
     string OperatorActor,
     string? Reason,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => OperatorActor;
+
+    public string RequiredRole => StaffRole.Operator;
 
     public string ActionName => "preorder.manual_review_cancelled";
 
@@ -36,5 +39,7 @@ public sealed class CancelPreorderManualReviewValidator : AbstractValidator<Canc
             .WithMessage("An operator actor is required to cancel a parked pre-order (§21.4).");
         RuleFor(x => x.ReasonCode).NotEmpty()
             .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }

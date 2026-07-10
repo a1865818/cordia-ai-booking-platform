@@ -11,5 +11,6 @@ public sealed class ApproveCatalogValidator : AbstractValidator<ApproveCatalogCo
         RuleFor(x => x.CatalogId).NotEmpty();
         RuleFor(x => x.Actor).NotEmpty();
         RuleFor(x => x.ReasonCode).NotEmpty();
+        RuleFor(x => x.ActorRole).NotEmpty();
     }
 }

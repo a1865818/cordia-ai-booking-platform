@@ -109,6 +109,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromBody] ResumeRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -128,7 +129,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         await mediator.Send(
             new ResumeWorkflowStepCommand(
                 tenant.TenantId, operationId, replayCommandId, resolvedActor,
-                reasonCode ?? string.Empty), ct);
+                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(new { operation_id = operationId, replay_command_id = replayCommandId });
     }
@@ -153,6 +154,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromBody] ResolveRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -191,7 +193,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
             new ResolveManualReviewCommand(
                 tenant.TenantId, operationId, resolution,
                 body.ProviderRef, replayCommandId, resolvedActor,
-                reasonCode ?? string.Empty), ct);
+                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(new { operation_id = operationId, status = body.Resolution.ToLowerInvariant() });
     }

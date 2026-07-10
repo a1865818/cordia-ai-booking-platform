@@ -24,9 +24,12 @@ public sealed record ResolveManualReviewCommand(
     string? ProviderRef,
     string ReplayCommandId,
     string Actor,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Operator;
 
     public string ActionName => "operation.manual_resolved";
 
@@ -47,6 +50,8 @@ public sealed class ResolveManualReviewValidator : AbstractValidator<ResolveManu
             .WithMessage("An operator actor is required to resolve a ManualReview operation (Inv-15).");
         RuleFor(x => x.ReasonCode).NotEmpty()
             .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }
 

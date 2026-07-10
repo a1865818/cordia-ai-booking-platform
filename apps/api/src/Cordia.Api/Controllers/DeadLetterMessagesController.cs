@@ -26,6 +26,7 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
     public async Task<ActionResult<ReplayDeadLetterResult>> Replay(
         [FromBody] ReplayRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         // With SuppressImplicitRequiredAttributeForNonNullableReferenceTypes on, a missing/null JSON
@@ -35,12 +36,14 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
 
         TenantGuard.RequireTenant(tenant);
 
-        // Spec 14 §24.5 — operator identity (X-Actor shim) + reason code are
-        // mandatory for replay; the validator/behavior reject empty values.
+        // Spec 14 §24.5 — operator identity (X-Actor shim), staff role
+        // (X-Actor-Role, GD-1), and reason code are mandatory for replay; the
+        // validator/behavior reject empty values, the behavior denies role mismatch.
         var result = await mediator.Send(
             new ReplayDeadLetterCommand(
                 tenant.TenantId, body.MessageId, body.ConsumerName,
-                actor ?? string.Empty, body.ReasonCode ?? string.Empty),
+                actor ?? string.Empty, body.ReasonCode ?? string.Empty,
+                actorRole ?? string.Empty),
             ct);
 
         return Ok(result);

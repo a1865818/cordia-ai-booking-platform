@@ -20,9 +20,12 @@ public sealed record ResumeWorkflowStepCommand(
     string OperationId,
     string ReplayCommandId,
     string Actor,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Operator;
 
     public string ActionName => "operation.replay";
 
@@ -43,5 +46,7 @@ public sealed class ResumeWorkflowStepValidator : AbstractValidator<ResumeWorkfl
             .WithMessage("An operator actor is required to resume a parked operation (Inv-15).");
         RuleFor(x => x.ReasonCode).NotEmpty()
             .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }

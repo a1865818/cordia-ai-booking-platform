@@ -41,6 +41,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromBody] UploadMenuRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -53,7 +54,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         var resolvedActor = ResolveActor(actor);
 
         var catalogId = await mediator.Send(
-            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel, reasonCode ?? string.Empty), ct);
+            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(
             $"/api/menu/catalogs/{catalogId}",
@@ -72,6 +73,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromBody] ReviewCatalogRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -82,7 +84,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .ToList();
 
         await mediator.Send(
-            new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty), ct);
+            new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review" });
     }
@@ -99,6 +101,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         [FromBody] EditCatalogItemsRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -109,7 +112,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .ToList();
 
         await mediator.Send(
-            new EditCatalogItemsCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty), ct);
+            new EditCatalogItemsCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review", edited = edits.Count });
     }
@@ -125,11 +128,12 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         string catalogId,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty), ct);
+        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "approved" });
     }
@@ -145,11 +149,12 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         string catalogId,
         [FromHeader(Name = "X-Actor")] string? actor,
         [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty), ct);
+        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "published" });
     }

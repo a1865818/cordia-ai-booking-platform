@@ -15,9 +15,12 @@ public sealed record ReplayDeadLetterCommand(
     string MessageId,
     string ConsumerName,
     string ActorId,
-    string ReasonCode)
+    string ReasonCode,
+    string ActorRole)
     : IRequest<ReplayDeadLetterResult>, IOperatorActionRequest
 {
+    public string RequiredRole => StaffRole.Operator;
+
     public string ActionName => "dead_letter.replayed";
 
     public string TargetType => "dead_letter_message";

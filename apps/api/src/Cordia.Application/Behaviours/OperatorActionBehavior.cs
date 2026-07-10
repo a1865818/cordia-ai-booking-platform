@@ -12,8 +12,12 @@ namespace Cordia.Application.Behaviours;
 /// customer-facing commands are untouched (Inv-5).
 ///
 /// For operator requests it (a) fails closed with a typed
-/// <see cref="AuthorizationFailedException"/> (403) when the actor identity or
-/// reason code is missing (structural backstop behind the FluentValidation rules) and
+/// <see cref="AuthorizationFailedException"/> (403) when the actor identity,
+/// role, or reason code is missing (structural backstop behind the
+/// FluentValidation rules), (a2) enforces the <see cref="StaffRole"/> matrix
+/// (GD-1: owner-required actions demand owner; operator-required actions accept
+/// operator or owner) BEFORE the handler — a mismatch writes a DENY audit
+/// through a fresh DI scope and throws the same 403 — and
 /// (b) appends a DENY audit event when a typed <see cref="DomainException"/>
 /// escapes the handler — the effect's transaction rolled back, so the denial
 /// is recorded in its own transaction. The deny write resolves a FRESH DI
@@ -37,13 +41,42 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
         if (request is not IOperatorActionRequest op)
             return await next(ct);
 
-        if (string.IsNullOrWhiteSpace(op.ActorId) || string.IsNullOrWhiteSpace(op.ReasonCode))
+        if (string.IsNullOrWhiteSpace(op.ActorId)
+            || string.IsNullOrWhiteSpace(op.ActorRole)
+            || string.IsNullOrWhiteSpace(op.ReasonCode))
         {
             // Typed 403 (not a 400 validation error): the request is well-formed but the caller
-            // has not established WHO is acting or WHY — an authorization failure (§24.5).
+            // has not established WHO is acting, AS WHAT, or WHY — an authorization failure (§24.5).
             throw new AuthorizationFailedException(
                 op.ActionName,
-                "Operator actions require an actor identity (X-Actor) and a reason code (X-Reason-Code) (spec 14 §24.5).");
+                "Operator actions require an actor identity (X-Actor), a staff role (X-Actor-Role), and a reason code (X-Reason-Code) (spec 14 §24.5).");
+        }
+
+        if (!StaffRole.Satisfies(op.ActorRole, op.RequiredRole))
+        {
+            // Role mismatch is a first-class authorization DECISION (§3.1 step 2/5): audit the
+            // denial before refusing. Fresh scope for the same reason as the DomainException
+            // deny below — never flush through a request context whose work may roll back.
+            using var scope = scopeFactory.CreateScope();
+            var denyAudit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
+            await denyAudit.WriteAsync(
+                new AuditRecord(
+                    TenantId: op.TenantId,
+                    // actor_type must stay within the ratified set; an unrecognized asserted
+                    // role is recorded as "operator" with the raw value in Extra.
+                    ActorType: StaffRole.IsKnown(op.ActorRole) ? op.ActorRole : "operator",
+                    ActorId: op.ActorId,
+                    Action: op.ActionName,
+                    TargetType: op.TargetType,
+                    TargetId: op.TargetId,
+                    Decision: "deny",
+                    DataClasses: ["operations"],
+                    ReasonCode: op.ReasonCode,
+                    Extra: new { provided_role = op.ActorRole, required_role = op.RequiredRole, error = "role_not_satisfied" }),
+                ct);
+            throw new AuthorizationFailedException(
+                op.ActionName,
+                $"This action requires the '{op.RequiredRole}' role (spec 14 §24.5, GD-1 role matrix).");
         }
 
         try

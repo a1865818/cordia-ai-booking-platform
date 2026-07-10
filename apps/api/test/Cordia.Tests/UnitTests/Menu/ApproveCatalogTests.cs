@@ -37,7 +37,7 @@ public class ApproveCatalogTests
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version });
 
-    private static ApproveCatalogCommand Command() => new(Tenant, CatalogId, "alice", "rc_test");
+    private static ApproveCatalogCommand Command() => new(Tenant, CatalogId, "alice", "rc_test", "owner");
 
     [Fact]
     public async Task InReview_Approves_RecordingApprover_AndAudits()

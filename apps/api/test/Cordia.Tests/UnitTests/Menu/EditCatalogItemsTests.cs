@@ -38,7 +38,7 @@ public class EditCatalogItemsTests
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status });
 
     private static EditCatalogItemsCommand Command()
-        => new(Tenant, CatalogId, "owner", new[] { new CatalogItemEdit("d1", "New name", null, 999) }, "rc_test");
+        => new(Tenant, CatalogId, "owner", new[] { new CatalogItemEdit("d1", "New name", null, 999) }, "rc_test", "owner");
 
     [Fact]
     public async Task InReview_AppliesEdits_AndAudits_NoStatusChange()

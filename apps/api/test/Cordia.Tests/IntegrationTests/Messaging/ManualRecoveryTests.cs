@@ -228,7 +228,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
 
         // Send ResumeWorkflowStepCommand → ManualReview → Reconciling + continuation outbox.
         await mediator.Send(
-            new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test"));
+            new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test", "operator"));
 
         // Assert: op is now Reconciling.
         await using (var assertCtx = fixture.CreateContext(tenantId))
@@ -334,7 +334,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
                 extRef,
                 replayCommandId,
                 "ops-agent",
-                "rc_test"));
+                "rc_test", "operator"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -419,7 +419,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
                 ProviderRef: null,
                 replayCommandId,
                 "ops-agent",
-                "rc_test"));
+                "rc_test", "operator"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -481,7 +481,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
 
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             mediator.Send(new ResumeWorkflowStepCommand(
-                tenantId, operationId, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test")));
+                tenantId, operationId, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test", "operator")));
     }
 
     [Fact]
@@ -508,7 +508,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             mediator.Send(new ResolveManualReviewCommand(
                 tenantId, operationId, ManualReviewResolution.FailedFinal,
-                ProviderRef: null, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test")));
+                ProviderRef: null, $"rpl_{Guid.NewGuid():N}", "ops", "rc_test", "operator")));
     }
 
     // ── Scenario 5 (C10): Resume closes the open work item ───────────────────────────────────
@@ -553,7 +553,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         tenantCtx5.TenantId = tenantId;
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
-        await mediator.Send(new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test"));
+        await mediator.Send(new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test", "operator"));
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -754,6 +754,7 @@ public class ManualRecoveryEndpointTests(AcceptanceApiFixture fixture)
             // Spec 14 §24.5 fail-closed: operator actions require actor + reason code.
             x.WithRequestHeader("X-Actor", "ops-agent");
             x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "operator");
             x.StatusCodeShouldBe(HttpStatusCode.Accepted);
         });
 
@@ -796,6 +797,7 @@ public class ManualRecoveryEndpointTests(AcceptanceApiFixture fixture)
             // Spec 14 §24.5: headers present so the 409 state guard (not the 400 validator) fires.
             x.WithRequestHeader("X-Actor", "ops-agent");
             x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "operator");
             x.StatusCodeShouldBe(HttpStatusCode.Conflict); // 409
         });
     }

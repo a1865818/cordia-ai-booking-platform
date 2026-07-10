@@ -1629,6 +1629,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1761,6 +1768,13 @@
           {
             "in": "header",
             "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
             "schema": {
               "type": "string"
             }
@@ -2770,6 +2784,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2886,6 +2907,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2978,6 +3006,13 @@
           {
             "in": "header",
             "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
             "schema": {
               "type": "string"
             }
@@ -3094,6 +3129,13 @@
           {
             "in": "header",
             "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
             "schema": {
               "type": "string"
             }
@@ -3232,6 +3274,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3345,6 +3394,13 @@
           {
             "in": "header",
             "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
             "schema": {
               "type": "string"
             }
@@ -3613,6 +3669,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3745,6 +3808,13 @@
           {
             "in": "header",
             "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
             "schema": {
               "type": "string"
             }

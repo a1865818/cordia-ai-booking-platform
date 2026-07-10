@@ -18,9 +18,12 @@ public sealed record ConvertPreorderToStandaloneCommand(
     string SagaId,
     string OperatorActor,
     string GrantId,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => OperatorActor;
+
+    public string RequiredRole => StaffRole.Operator;
 
     public string ActionName => "preorder.standalone_converted";
 
@@ -42,5 +45,7 @@ public sealed class ConvertPreorderToStandaloneValidator : AbstractValidator<Con
             .WithMessage("A customer verification grant is required to convert a pre-order to a standalone order (§21.4, spec 08).");
         RuleFor(x => x.ReasonCode).NotEmpty()
             .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }

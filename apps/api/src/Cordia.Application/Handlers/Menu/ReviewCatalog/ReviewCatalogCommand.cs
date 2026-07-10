@@ -13,9 +13,12 @@ public sealed record ReviewCatalogCommand(
     string CatalogId,
     string Actor,
     IReadOnlyList<CatalogItemEdit> Edits,
-    string ReasonCode) : IRequest<Unit>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Owner;
 
     public string ActionName => "catalog.in_review";
 

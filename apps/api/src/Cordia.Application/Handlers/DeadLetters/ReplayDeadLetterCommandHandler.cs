@@ -129,7 +129,7 @@ public sealed class ReplayDeadLetterCommandHandler(
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: command.TenantId,
-                    ActorType: "operator",
+                    ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
                     ActorId: command.ActorId,
                     Action: "dead_letter.replayed",
                     TargetType: "dead_letter_message",

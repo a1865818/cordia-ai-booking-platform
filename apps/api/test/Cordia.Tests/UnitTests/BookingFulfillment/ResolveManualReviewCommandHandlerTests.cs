@@ -80,7 +80,7 @@ public class ResolveManualReviewCommandHandlerTests
 
         var handler = CreateHandler();
         await handler.Handle(
-            new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.Booked, providerRef, replayId, actor, "rc_test"),
+            new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.Booked, providerRef, replayId, actor, "rc_test", "operator"),
             CancellationToken.None);
 
         // notification.booking_confirmed.v1
@@ -109,7 +109,7 @@ public class ResolveManualReviewCommandHandlerTests
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
                 new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.Booked,
-                    ProviderRef: null, "rpl_1", "ops", "rc_test"),
+                    ProviderRef: null, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -127,7 +127,7 @@ public class ResolveManualReviewCommandHandlerTests
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
                 new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.Booked,
-                    ProviderRef: "   ", "rpl_1", "ops", "rc_test"),
+                    ProviderRef: "   ", "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -176,7 +176,7 @@ public class ResolveManualReviewCommandHandlerTests
         var handler = CreateHandler();
         await handler.Handle(
             new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.FailedFinal,
-                ProviderRef: null, replayId, actor, "rc_test"),
+                ProviderRef: null, replayId, actor, "rc_test", "operator"),
             CancellationToken.None);
 
         // notification.booking_failed.v1
@@ -207,7 +207,7 @@ public class ResolveManualReviewCommandHandlerTests
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
                 new ResolveManualReviewCommand("t1", "op-x", ManualReviewResolution.FailedFinal,
-                    null, "rpl_1", "ops", "rc_test"),
+                    null, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -231,7 +231,7 @@ public class ResolveManualReviewCommandHandlerTests
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
                 new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.FailedFinal,
-                    null, "rpl_1", "ops", "rc_test"),
+                    null, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 
@@ -256,7 +256,7 @@ public class ResolveManualReviewCommandHandlerTests
         await Assert.ThrowsAsync<OperationConflictException>(() =>
             handler.Handle(
                 new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.FailedFinal,
-                    null, "rpl_1", "ops", "rc_test"),
+                    null, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
     }
 }

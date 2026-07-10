@@ -11,6 +11,7 @@ public sealed class EditCatalogItemsValidator : AbstractValidator<EditCatalogIte
         RuleFor(x => x.CatalogId).NotEmpty();
         RuleFor(x => x.Actor).NotEmpty();
         RuleFor(x => x.ReasonCode).NotEmpty();
+        RuleFor(x => x.ActorRole).NotEmpty();
         RuleFor(x => x.Edits).NotEmpty();
         RuleForEach(x => x.Edits).ChildRules(e =>
         {

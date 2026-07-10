@@ -17,8 +17,9 @@ public class ReplayDeadLetterValidatorTests
         string messageId = "msg-123",
         string consumerName = "booking.finalizer",
         string actorId = "ops.jane",
-        string reasonCode = "provider_outage_recovered")
-        => new(tenantId, messageId, consumerName, actorId, reasonCode);
+        string reasonCode = "provider_outage_recovered",
+        string actorRole = "operator")
+        => new(tenantId, messageId, consumerName, actorId, reasonCode, actorRole);
 
     // ── Happy path ────────────────────────────────────────────────────────────────
 
@@ -82,5 +83,15 @@ public class ReplayDeadLetterValidatorTests
             MakeCommand(reasonCode: ""), cancellationToken: TestContext.Current.CancellationToken);
 
         result.ShouldHaveValidationErrorFor(x => x.ReasonCode);
+    }
+
+    [Fact]
+    public async Task Empty_actor_role_fails()
+    {
+        // GD-1/GD-2 (spec 14 §24.5): the staff role (X-Actor-Role) is mandatory.
+        var result = await _validator.TestValidateAsync(
+            MakeCommand(actorRole: ""), cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldHaveValidationErrorFor(x => x.ActorRole);
     }
 }

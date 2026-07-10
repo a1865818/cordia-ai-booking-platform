@@ -44,7 +44,7 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new PublishCatalogCommandHandler(
             new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
-        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test"), CancellationToken.None);
+        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test", "owner"), CancellationToken.None);
     }
 
     [Fact]

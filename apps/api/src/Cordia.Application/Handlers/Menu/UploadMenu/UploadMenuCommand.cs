@@ -17,9 +17,12 @@ public sealed record UploadMenuCommand(
     string Actor,
     string SourceArtifactRef,
     string VersionLabel,
-    string ReasonCode) : IRequest<string>, IOperatorActionRequest
+    string ReasonCode,
+    string ActorRole) : IRequest<string>, IOperatorActionRequest
 {
     string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Owner;
 
     public string ActionName => "catalog.uploaded";
 

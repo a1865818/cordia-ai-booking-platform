@@ -9,7 +9,9 @@
 /// an audit must not claim an effect that did not commit).
 ///
 /// Operator identity is the documented <c>X-Actor</c> shim (Stage-3 gate
-/// decision 2026-07-09); the role taxonomy is a tracked open decision (08/14).
+/// decision 2026-07-09); the role assertion is the <c>X-Actor-Role</c> shim and
+/// the taxonomy is <see cref="StaffRole"/> (gate decision GD-1/GD-2 2026-07-11 —
+/// the formerly open 08/14 role decision is now closed).
 /// </summary>
 public interface IOperatorActionRequest
 {
@@ -17,6 +19,13 @@ public interface IOperatorActionRequest
 
     /// <summary>Operator identity from the X-Actor header.</summary>
     string ActorId { get; }
+
+    /// <summary>Asserted staff role from the X-Actor-Role header (owner|operator).</summary>
+    string ActorRole { get; }
+
+    /// <summary>The <see cref="StaffRole"/> this action requires; checked by
+    /// <c>OperatorActionBehavior</c> BEFORE the handler (owner satisfies operator).</summary>
+    string RequiredRole { get; }
 
     /// <summary>Mandatory reason code for the action (§24.5).</summary>
     string ReasonCode { get; }
