@@ -1,5 +1,6 @@
 ﻿using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.Security.AppendTranscriptTurn;
+using Cordia.Application.Handlers.Security.GetTranscript;
 using Cordia.Application.Handlers.Security.RecordConsent;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
@@ -81,6 +82,39 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
             ct);
 
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Consent-gated sensitive read of the session's persisted transcript (spec 14 §3.1/§5.1).
+    /// Authorization (Inv-11 — session identity alone never reads): EITHER a spec-08
+    /// read_sensitive verification grant (X-Grant-Id header or grant_id query, scoped to the
+    /// session's customer) OR a staff role (X-Actor + X-Actor-Role satisfying operator +
+    /// X-Reason-Code). Consent absent/declined → 409 Consent required. Allow AND deny audited.
+    /// </summary>
+    [HttpGet("{sessionId}/transcript")]
+    [ProducesResponseType(typeof(TranscriptView), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<TranscriptView>> GetTranscript(
+        string sessionId,
+        [FromHeader(Name = "X-Grant-Id")] string? grantHeader,
+        [FromQuery(Name = "grant_id")] string? grantQuery,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        // Header wins over query (same precedence as BookingsController.GetDetails).
+        var grantId = string.IsNullOrWhiteSpace(grantHeader) ? grantQuery : grantHeader;
+
+        var view = await mediator.Send(
+            new GetTranscriptQuery(tenant.TenantId, sessionId, grantId, actor, actorRole, reasonCode), ct);
+
+        return Ok(view);
     }
 }
 

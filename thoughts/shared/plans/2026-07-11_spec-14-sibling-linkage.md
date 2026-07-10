@@ -195,10 +195,23 @@ path (operator + owner); wrong role 403 + deny audit; no-credentials 403; consen
 GlobalExceptionHandler already maps ConsentRequired → 409 (prior run).
 
 Automated verification:
-- [ ] `bun nx test api` · `bun nx lint api` · `bun nx test-integration api` · `bun nx run api-contract:generate-types`
+- [x] `bun nx test api` (866 passed) · `bun nx lint api` · `bun nx test-integration api` (350 passed, 2 skipped) · `bun nx run api-contract:generate-types`
 
 Discoveries and notable information:
-- _(implementer)_
+- Authorization deliberately runs BEFORE the consent check so an unauthorized caller never
+  learns the session's consent state (403 first, 409 only for authorized readers).
+- The grant path audits `ActorType: "customer"` / `ActorId: session.CustomerRef` (the grant
+  proves the customer is acting); a session without a `CustomerRef` simply cannot be
+  grant-read — `RequireGrantAsync` denies against the empty ref and 403s, spec-08 machinery
+  untouched.
+- The reader sorts turns by seq ITSELF rather than trusting the store's id sort — a mock
+  returning unsorted ids exposed the implicit dependency; transcript meaning depends on
+  order, so the reader owns the guarantee.
+- jsonb-normalization pitfall re-confirmed: audit `Metadata` must be parsed, never
+  substring-matched (`"decision": "allow"` carries a space in Postgres).
+- The `transcript.recording_started` + `read_sensitive_transcript` (allow AND deny) audit
+  population all flow through `IAuditWriter`; the §5.1 diagram is now implemented end-to-end
+  (consent → producer → grant-or-role read → minimized redacted projection → audit).
 
 ### Phase 4 — WI2a(langgraph): producer tool + pipeline hook (stub-proven)
 `TranscriptTurnInput(session_id, seq, turn_id, speaker, text)` /
