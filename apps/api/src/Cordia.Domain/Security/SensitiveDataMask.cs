@@ -82,7 +82,9 @@ public static partial class SensitiveDataMask
     /// <see cref="Sanitize(string)"/> except values under control-plane identifier
     /// keys (<c>*_id</c>/<c>*_key</c>/<c>*_hash</c>/<c>*_ref</c>/<c>*_version</c>,
     /// plus bare <c>id</c>/<c>seq</c>/<c>ts</c>), which are preserved verbatim.
-    /// Object/array shape, key names, and non-string scalars are untouched. When
+    /// Object/array shape and key names are untouched. Non-string scalars pass through
+    /// unchanged UNLESS one encodes a maskable value — an unquoted numeric PAN/SSN is masked
+    /// to the token string (a JSON number cannot hold the token), fail-closed per Inv-12. When
     /// nothing needed masking the ORIGINAL string is returned byte-identical.
     /// Text that fails to parse as JSON is masked wholesale via
     /// <see cref="Sanitize(string)"/> (fail closed — never store unscreened text).

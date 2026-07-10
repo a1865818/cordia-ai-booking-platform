@@ -74,6 +74,25 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
         if (booking is null)
         {
             // No committed booking to establish customer agreement against — cannot authorize (§21.4).
+            // Self-audit the denial (spec 14 §24.5): this VerificationRequiredException is thrown
+            // DIRECTLY — not via the self-auditing GrantAuthorizationService — so the operator-action
+            // behavior's catch (narrowed to AuthorizationFailedException) does not record it; the
+            // thrower owns its deny trail, matching every other direct denial site. No transaction is
+            // open yet, so this write persists immediately; CancellationToken.None keeps the record
+            // durable even if the client disconnects (B2).
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: command.ActorRole,
+                ActorId: command.OperatorActor,
+                Action: "preorder.standalone_converted",
+                TargetType: "preorder_saga",
+                TargetId: command.SagaId,
+                Decision: "deny",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.SagaId,
+                OperationId: saga.OperationId,
+                Extra: new { error = "no_committed_booking" }), CancellationToken.None);
             throw new VerificationRequiredException(
                 command.TenantId, customerRef: string.Empty, VerificationActionEnum.Modify, targetBookingId: null);
         }

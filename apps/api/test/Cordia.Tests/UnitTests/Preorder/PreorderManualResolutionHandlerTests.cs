@@ -158,6 +158,15 @@ public class PreorderManualResolutionHandlerTests
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        // Regression guard (review): this VerificationRequiredException is thrown DIRECTLY, outside the
+        // self-auditing grant service, so the operator-action behavior's catch (narrowed to
+        // AuthorizationFailedException) does not record it — the handler must self-audit the denial, or
+        // the §24.5 trail silently loses it.
+        _audit.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "preorder.standalone_converted"
+                && e.Actor == Operator
+                && e.Metadata.Contains("\"decision\":\"deny\"")),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

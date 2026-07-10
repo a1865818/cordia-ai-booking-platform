@@ -6,6 +6,7 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Storage;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cordia.Tests.UnitTests.Storage;
 
@@ -38,7 +39,8 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
         if (rawAudioTtlHours is not null)
             settings["ObjectStore:RawAudioTtlHours"] = rawAudioTtlHours.Value.ToString();
         var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
-        return new EncryptedFileObjectStore(new FixedSecretStore(key ?? KeyA), config);
+        return new EncryptedFileObjectStore(
+            new FixedSecretStore(key ?? KeyA), config, NullLogger<EncryptedFileObjectStore>.Instance);
     }
 
     public void Dispose()
@@ -73,6 +75,25 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanExpired_TransientMetaReadFailure_DoesNotPruneLiveObject()
+    {
+        // Data-loss guard (review A2/B2): a live, future-TTL object whose meta sidecar cannot be read
+        // THIS instant — here an exclusive lock forces a sharing-violation IOException, standing in for
+        // an AV/backup lock — must NOT be classified missing_or_corrupt_meta and swept. A transient
+        // blip can never cause a valid object to be permanently deleted; ReadMetaAsync nulls only on a
+        // genuinely absent/corrupt sidecar, and the scan isolates a transient failure per-object.
+        var store = Store();
+        await store.PutAsync("t-a", "transcript", "live-obj", new byte[] { 9 }, ttl: TimeSpan.FromDays(30));
+        var metaPath = Path.Combine(_root, "t-a", "transcript", "live-obj.meta.json");
+
+        using (File.Open(metaPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var expired = await store.ScanExpiredAsync(DateTimeOffset.UtcNow);
+            Assert.DoesNotContain(expired, o => o.ObjectId == "live-obj");
+        }
+    }
+
+    [Fact]
     public async Task Get_OtherTenant_ReturnsNull_AndPathsAreIsolated()
     {
         var store = Store();
@@ -90,7 +111,8 @@ public sealed class EncryptedFileObjectStoreTests : IDisposable
         var noKeyStore = new EncryptedFileObjectStore(
             new FixedSecretStore(null),
             new ConfigurationBuilder().AddInMemoryCollection(
-                new Dictionary<string, string?> { ["ObjectStore:Root"] = _root }).Build());
+                new Dictionary<string, string?> { ["ObjectStore:Root"] = _root }).Build(),
+            NullLogger<EncryptedFileObjectStore>.Instance);
 
         // Construction succeeded (lazy key); USE throws the typed secret error.
         await Assert.ThrowsAsync<SecretNotFoundException>(

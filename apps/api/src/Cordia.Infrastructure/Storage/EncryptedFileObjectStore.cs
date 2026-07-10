@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Infrastructure.Storage;
 
@@ -22,7 +23,8 @@ namespace Cordia.Infrastructure.Storage;
 /// </summary>
 public sealed partial class EncryptedFileObjectStore(
     ISecretStore secrets,
-    IConfiguration config) : IObjectStore
+    IConfiguration config,
+    ILogger<EncryptedFileObjectStore> logger) : IObjectStore
 {
     public const string EncryptionKeySecretName = "ObjectStoreEncryptionKey";
     private const string RawAudioPurpose = "raw-audio";
@@ -166,7 +168,12 @@ public sealed partial class EncryptedFileObjectStore(
         {
             // Tampered/truncated-but-valid-length ciphertext, or a wrong key ⇒ the GCM tag fails.
             // Fail closed like every other corrupt-object path here (return null) rather than let
-            // a CryptographicException bubble into the caller as a 500 (B3).
+            // a CryptographicException bubble into the caller as a 500 (B3). Unlike a benign miss,
+            // a tag failure signals tampering or a key mismatch — LOG it (control-plane ids only,
+            // never the content) so ops has a signal instead of a silent null.
+            logger.LogWarning(
+                "Object decryption failed (tampered, truncated, or wrong key) tenant={TenantId} purpose={Purpose} id={ObjectId}; failing closed",
+                tenantId, purpose, objectId);
             return null;
         }
         return plaintext;
@@ -231,7 +238,23 @@ public sealed partial class EncryptedFileObjectStore(
         foreach (var binPath in Directory.EnumerateFiles(Root, "*.bin", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
-            var meta = await ReadMetaAsync(MetaPath(binPath), ct);
+
+            ObjectMeta? meta;
+            try
+            {
+                meta = await ReadMetaAsync(MetaPath(binPath), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A TRANSIENT meta read failure (a sharing lock, a permission blip) must neither
+                // abort the whole sweep nor let this object be classified missing_or_corrupt_meta and
+                // deleted — the sidecar exists and is not corrupt, so pruning a live object here would
+                // be permanent data loss. Skip it; it is re-scanned next cycle once the condition
+                // clears. (ReadMetaAsync only returns null for a genuinely absent/corrupt sidecar.)
+                logger.LogWarning(ex,
+                    "Retention scan could not read object meta at {MetaPath}; skipping this cycle", MetaPath(binPath));
+                continue;
+            }
 
             string reason;
             DateTimeOffset? expiresAt;
@@ -272,7 +295,18 @@ public sealed partial class EncryptedFileObjectStore(
             if (File.Exists(binPath))
                 continue;
 
-            var meta = await ReadMetaAsync(metaPath, ct);
+            ObjectMeta? meta;
+            try
+            {
+                meta = await ReadMetaAsync(metaPath, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Can't read this orphan sidecar right now (transient) — leave it; reaped next cycle.
+                logger.LogWarning(ex,
+                    "Retention scan could not read orphan meta at {MetaPath}; skipping this cycle", metaPath);
+                continue;
+            }
             if (meta is null || meta.CreatedAt <= now - OrphanMetaGrace)
                 File.Delete(metaPath);
         }
@@ -343,12 +377,18 @@ public sealed partial class EncryptedFileObjectStore(
             // must not be served or treated as live (M3).
             return string.IsNullOrEmpty(meta?.Purpose) ? null : meta;
         }
-        catch (Exception ex) when (ex is JsonException or IOException)
+        catch (Exception ex) when (ex is JsonException or FileNotFoundException or DirectoryNotFoundException)
         {
-            // Unparseable JSON, OR the sidecar vanished between File.Exists and the read (a
-            // concurrent DeleteAsync / sweep → FileNotFoundException, an IOException) ⇒ treat as
-            // missing metadata (null), so GetAsync returns null and ScanExpiredAsync keeps going
-            // instead of aborting the whole sweep with a 500 (B7).
+            // null means the sidecar is GENUINELY ABSENT OR CORRUPT — and only that. Unparseable
+            // JSON is corrupt (M3); a FileNotFoundException/DirectoryNotFoundException means it
+            // vanished between File.Exists and the read (a concurrent DeleteAsync/sweep — the object
+            // is already gone), so GetAsync returns null and the sweep keeps going instead of a 500
+            // (B7). A TRANSIENT failure (a sharing lock → a non-not-found IOException, or a
+            // permission error → UnauthorizedAccessException) is deliberately NOT caught here: the
+            // file exists and is not corrupt, we simply can't read it this instant, so it must
+            // propagate — treating it as null would let ScanExpiredAsync classify a LIVE object as
+            // missing_or_corrupt_meta and permanently delete it (data loss). The scan isolates such
+            // an object per-item so one lock can't abort the whole sweep.
             return null;
         }
     }

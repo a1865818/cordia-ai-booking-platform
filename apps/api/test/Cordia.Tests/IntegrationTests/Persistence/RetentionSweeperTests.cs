@@ -108,7 +108,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             })
             .Build();
         var key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        return new EncryptedFileObjectStore(new FixedSecretStore(key), config);
+        return new EncryptedFileObjectStore(
+            new FixedSecretStore(key), config, NullLogger<EncryptedFileObjectStore>.Instance);
     }
 
     [Fact]
