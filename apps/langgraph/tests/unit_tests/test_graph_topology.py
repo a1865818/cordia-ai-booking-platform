@@ -33,7 +33,11 @@ def _edges() -> set[tuple[str, str]]:
 # the test breaks if the sentinel strings ever change).
 ALLOWED: set[tuple[str, str]] = {
     (START, "resolve_tenant"),
-    ("resolve_tenant", "load_context"),
+    # Consent gate (spec 14 §5.1) sits between tenant resolution and any
+    # transcript-bearing node; END while awaiting the customer's consent reply.
+    ("resolve_tenant", "consent_gate"),
+    ("consent_gate", "load_context"),
+    ("consent_gate", END),
     ("load_context", "identify_intent"),
     ("identify_intent", "capture_fields"),
     ("capture_fields", "clarify"),

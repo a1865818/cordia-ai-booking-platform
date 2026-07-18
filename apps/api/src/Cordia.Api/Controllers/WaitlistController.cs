@@ -4,6 +4,7 @@ using Cordia.Application.Handlers.Waitlist.Cancel;
 using Cordia.Application.Handlers.Waitlist.Decline;
 using Cordia.Application.Handlers.Waitlist.Enroll;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Cordia.Domain.Waitlist;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
@@ -35,8 +36,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Actor")] string? actor,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var deposit = body.DepositTerms is { } d ? new DepositTerms(d.AmountMinor, d.Currency) : null;
         var autoBook = body.AutoBook is { } a
@@ -67,8 +67,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Actor")] string? actor,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new CancelWaitlistEnrollmentCommand(tenant.TenantId, enrollmentId, ResolveActor(actor)), ct);
         return Ok(new { enrollment_id = enrollmentId, status = "cancelled" });
@@ -85,8 +84,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Actor")] string? actor,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new AcceptWaitlistOfferCommand(tenant.TenantId, offerId, ResolveActor(actor)), ct);
         return Ok(new { offer_id = offerId, status = "accepted" });
@@ -103,8 +101,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         [FromHeader(Name = "X-Actor")] string? actor,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         await mediator.Send(new DeclineWaitlistOfferCommand(tenant.TenantId, offerId, ResolveActor(actor)), ct);
         return Ok(new { offer_id = offerId, status = "declined" });

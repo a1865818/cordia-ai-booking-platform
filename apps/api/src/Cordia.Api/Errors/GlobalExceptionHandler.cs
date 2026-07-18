@@ -86,6 +86,26 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case TenantScopeMissingException ex:
+                // Same wire shape as the controllers' historical hand-rolled 400 (spec 14 §24.1).
+                logger.LogInformation(ex, "Tenant scope missing");
+                await WriteProblemAsync(httpContext, StatusCodes.Status400BadRequest,
+                    "Missing tenant", ex.Message, cancellationToken);
+                return true;
+
+            case ConsentRequiredException ex:
+                logger.LogWarning(ex, "Consent required: scope={RequiredScope} subject={SubjectRef}",
+                    ex.RequiredScope, ex.SubjectRef);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Consent required", ex.Message, cancellationToken);
+                return true;
+
+            case AuthorizationFailedException ex:
+                logger.LogWarning(ex, "Authorization failed: action={ActionName}", ex.ActionName);
+                await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
+                    "Authorization failed", ex.Message, cancellationToken);
+                return true;
+
             case VerificationRequiredException ex:
                 logger.LogWarning(ex, "Verification required: tenant={TenantId} customer={CustomerRef} action={Action} booking={TargetBookingId}",
                     ex.TenantId, ex.CustomerRef, ex.Action, ex.TargetBookingId);
@@ -116,6 +136,13 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 logger.LogWarning(ex, "Invalid catalog state transition: {From} -> {To}", ex.From, ex.To);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
                     "Invalid catalog state transition", ex.Message, cancellationToken);
+                return true;
+
+            case ConversationSessionNotFoundException ex:
+                logger.LogWarning(ex, "Conversation session not found: tenant={TenantId} session={SessionId}",
+                    ex.TenantId, ex.SessionId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Conversation session not found", ex.Message, cancellationToken);
                 return true;
 
             case CatalogNotFoundException ex:

@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Preorder;
 using Cordia.Application.Handlers.Preorder.ManualResolution;
 using Cordia.Domain.Bookings;
@@ -63,11 +64,11 @@ public class PreorderManualResolutionHandlerTests
 
     private ConvertPreorderToStandaloneCommandHandler Convert() => new(
         _sagaRepo.Object, _bookingRead.Object, _bookings.Object, _grants.Object,
-        _outbox.Object, _audit.Object, _uow.Object,
+        _outbox.Object, new AuditWriter(_audit.Object), _uow.Object,
         NullLogger<ConvertPreorderToStandaloneCommandHandler>.Instance);
 
     private CancelPreorderManualReviewCommandHandler Cancel() => new(
-        _sagaRepo.Object, _items.Object, _outbox.Object, _audit.Object, _uow.Object,
+        _sagaRepo.Object, _items.Object, _outbox.Object, new AuditWriter(_audit.Object), _uow.Object,
         NullLogger<CancelPreorderManualReviewCommandHandler>.Instance);
 
     private void SetupAdvance(PreorderSagaState from, PreorderSagaState to, int rows) =>
@@ -98,7 +99,7 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.Completed, 1);
 
         await Convert().Handle(
-            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None);
+            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None);
 
         // Advances ManualReview → Completed, marking the saga standalone (§21.4).
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
@@ -109,7 +110,7 @@ public class PreorderManualResolutionHandlerTests
         // Customer half (§21.4): consumes the single-use grant scoped to the committed booking (Modify).
         _grants.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId,
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == PreorderSagaMessages.BookingConfirmedNotification),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -127,15 +128,15 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.Completed, 1);
         // A missing/expired/mismatched grant fails the consume → VerificationRequiredException (403).
         _grants.Setup(g => g.ConsumeGrantAsync(
-                TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId, It.IsAny<CancellationToken>()))
+                TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VerificationRequiredException(TenantId, CustomerRef, VerificationActionEnum.Modify, BookingId));
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerRef, VerificationActionEnum.Modify, BookingId,
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -147,7 +148,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync((BookingProjection?)null);
 
         await Assert.ThrowsAsync<VerificationRequiredException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -156,7 +157,16 @@ public class PreorderManualResolutionHandlerTests
             It.IsAny<CancellationToken>()), Times.Never);
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        // Regression guard (review): this VerificationRequiredException is thrown DIRECTLY, outside the
+        // self-auditing grant service, so the operator-action behavior's catch (narrowed to
+        // AuthorizationFailedException) does not record it — the handler must self-audit the denial, or
+        // the §24.5 trail silently loses it.
+        _audit.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "preorder.standalone_converted"
+                && e.Actor == Operator
+                && e.Metadata.Contains("\"decision\":\"deny\"")),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -167,7 +177,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: true));
 
         await Convert().Handle(
-            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None);
+            new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -177,7 +187,7 @@ public class PreorderManualResolutionHandlerTests
         // An idempotent replay must NOT burn a fresh single-use grant.
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -189,11 +199,11 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.Completed, isStandalone: false));
 
         await Assert.ThrowsAsync<InvalidPreorderSagaTransitionException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
 
         _grants.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -203,7 +213,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.CommittingBooking));
 
         await Assert.ThrowsAsync<InvalidPreorderSagaTransitionException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
     }
 
     [Fact]
@@ -213,7 +223,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync((PreorderSaga?)null);
 
         await Assert.ThrowsAsync<PreorderSagaNotFoundException>(() =>
-            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId), CancellationToken.None));
+            Convert().Handle(new ConvertPreorderToStandaloneCommand(TenantId, SagaId, Operator, GrantId, "rc_test", "operator"), CancellationToken.None));
     }
 
     // ── Cancel ───────────────────────────────────────────────────────────────────────────────────
@@ -226,7 +236,7 @@ public class PreorderManualResolutionHandlerTests
         SetupAdvance(PreorderSagaState.ManualReview, PreorderSagaState.FailedFinal, 1);
 
         await Cancel().Handle(
-            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: "customer_declined"), CancellationToken.None);
+            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: "customer_declined", ReasonCode: "rc_test", ActorRole: "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             TenantId, SagaId, It.IsAny<long>(),
@@ -256,7 +266,7 @@ public class PreorderManualResolutionHandlerTests
             .ReturnsAsync(Saga(PreorderSagaState.FailedFinal));
 
         await Cancel().Handle(
-            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: null), CancellationToken.None);
+            new CancelPreorderManualReviewCommand(TenantId, SagaId, Operator, Reason: null, ReasonCode: "rc_test", ActorRole: "operator"), CancellationToken.None);
 
         _sagaRepo.Verify(r => r.TryAdvanceStateAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),

@@ -1,4 +1,5 @@
-﻿using FluentValidation;
+﻿using Cordia.Application.Common.Authorization;
+using FluentValidation;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Preorder.ManualResolution;
@@ -16,7 +17,20 @@ public sealed record ConvertPreorderToStandaloneCommand(
     string TenantId,
     string SagaId,
     string OperatorActor,
-    string GrantId) : IRequest<Unit>;
+    string GrantId,
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => OperatorActor;
+
+    public string RequiredRole => StaffRole.Operator;
+
+    public string ActionName => "preorder.standalone_converted";
+
+    public string TargetType => "preorder_saga";
+
+    public string TargetId => SagaId;
+}
 
 /// <summary>Requires the operator actor + a customer verification grant (§21.4, spec 08) before conversion.</summary>
 public sealed class ConvertPreorderToStandaloneValidator : AbstractValidator<ConvertPreorderToStandaloneCommand>
@@ -29,5 +43,9 @@ public sealed class ConvertPreorderToStandaloneValidator : AbstractValidator<Con
             .WithMessage("An operator actor is required to convert a pre-order to a standalone order (§21.4).");
         RuleFor(x => x.GrantId).NotEmpty()
             .WithMessage("A customer verification grant is required to convert a pre-order to a standalone order (§21.4, spec 08).");
+        RuleFor(x => x.ReasonCode).NotEmpty()
+            .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }

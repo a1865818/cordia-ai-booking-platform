@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.contracts.security import RedactionPolicy, SessionConsentState
 from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -586,4 +587,132 @@ class BookingChangeValidation(BaseModel):
     )
     capacity_mode: AvailabilityMode = Field(
         description="Availability mode at the time the change validation was run."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Consent-gate tool I/O models (spec 14 §5.1/§5.2, D12)
+# ---------------------------------------------------------------------------
+
+
+class ConsentPolicyView(BaseModel):
+    """Output payload for resolve_consent_policy (spec 14 §5.1).
+
+    Resolved from tenant + channel jurisdiction config by the API; the agent
+    never decides jurisdiction policy locally.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    jurisdiction_policy_id: str = Field(
+        description="Resolved jurisdiction policy identifier, e.g. 'jp_au_default'."
+    )
+    consent_policy_version: str = Field(
+        description="Version of the notice/policy to present, e.g. 'au-default:2026-01'."
+    )
+    notice_required: bool = Field(
+        description="True iff a recording notice + explicit outcome capture is required."
+    )
+    notice_text: str | None = Field(
+        default=None,
+        description="Notice wording to play/display when notice_required; None ⇒ agent default.",
+    )
+    redaction: RedactionPolicy | None = Field(
+        default=None,
+        description=(
+            "Tenant redaction policy resolved by the API (spec 14 §4.1); the "
+            "consent gate installs it via set_redaction_policy. None ⇒ the "
+            "always-on baseline stays active (additive, older servers omit it)."
+        ),
+    )
+
+
+class RecordConsentInput(BaseModel):
+    """Input for record_consent — updates consent_* on the session row via the API (D12)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(
+        description="Conversation session whose consent_* fields are updated."
+    )
+    consent: SessionConsentState = Field(
+        description="The captured consent outcome to persist (spec 14 §4.1)."
+    )
+
+
+class ConsentRecordedResult(BaseModel):
+    """Output payload for record_consent (spec 14 §5.1)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(description="Session the consent was recorded on.")
+    recording_allowed: bool = Field(
+        description="Authoritative persisted recording gate after the update."
+    )
+
+
+class TranscriptTurnInput(BaseModel):
+    """Input for append_transcript_turn — one REDACTED transcript turn (spec 14 §4.3/§5.2).
+
+    The text MUST already have passed ``redact_text`` before entering this contract (Inv-12);
+    the API re-sanitizes at the boundary regardless. The server enforces the consent gate
+    authoritatively — a non-consented session suppresses the turn (``persisted=false``).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(
+        description="Conversation session the turn belongs to (D12 row)."
+    )
+    seq: int = Field(
+        ge=0,
+        description="Monotonic turn sequence within the session (orders the transcript).",
+    )
+    turn_id: str = Field(description="The turn identifier from the streaming envelope.")
+    speaker: Literal["customer", "agent"] = Field(description="Who spoke this turn.")
+    text: str = Field(description="REDACTED turn text (post redact_text; never raw).")
+
+
+class ModelTraceInput(BaseModel):
+    """Input for record_model_trace — one REDACTED model prompt/output (spec 13 §25.3).
+
+    Model traces are telemetry, not recordings: no consent gate applies, but the content
+    MUST pass ``redact_text`` before entering this contract (Inv-12), is stored encrypted
+    under the strictly-shorter model-trace TTL, and is NEVER written to app logs.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    trace_id: str = Field(
+        description="Stable opaque trace identifier (idempotent per id)."
+    )
+    session_id: str | None = Field(
+        default=None, description="Session the trace belongs to, when applicable."
+    )
+    kind: Literal["prompt", "output"] = Field(
+        description="Which side of the model call this is."
+    )
+    content: str = Field(
+        description="REDACTED prompt/output text (post redact_text; never raw)."
+    )
+
+
+class ModelTraceRecorded(BaseModel):
+    """Output payload for record_model_trace (spec 13 §25.3)."""
+
+    model_config = {"extra": "forbid"}
+
+    trace_id: str = Field(description="Echo of the stored trace id.")
+    stored: bool = Field(description="True when the trace was persisted.")
+
+
+class TranscriptTurnPersisted(BaseModel):
+    """Output payload for append_transcript_turn (spec 14 §5.2)."""
+
+    model_config = {"extra": "forbid"}
+
+    session_id: str = Field(description="Session the turn was posted against.")
+    seq: int = Field(description="Echo of the turn sequence.")
+    persisted: bool = Field(
+        description="False ⇒ consent-suppressed (§5.2 'transcript suppressed') — a normal outcome, not an error."
     )

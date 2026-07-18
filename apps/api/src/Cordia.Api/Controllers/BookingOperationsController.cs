@@ -4,6 +4,7 @@ using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -34,8 +35,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         string operationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var status = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
         return status is null ? NotFound() : Ok(status);
@@ -61,8 +61,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         string operationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Existence check (also covers tenant mismatch — GetOperationStatusQuery returns null).
         var op = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
@@ -93,23 +92,27 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
     /// workflow_step row — attempt count is never reset (Inv-15).
     ///
     /// A server-side ReplayCommandId (<c>rpl_{guid}</c>) is generated if not provided.
-    /// Actor defaults to <c>"ops"</c> if the <c>X-Actor</c> header is absent.
+    /// Spec 14 §24.5 fail-closed (gate decision 2026-07-10): <c>X-Actor</c> and
+    /// <c>X-Reason-Code</c> are MANDATORY — missing values are rejected by the command
+    /// validator / operator behavior (400), never defaulted.
     ///
     /// 202 Accepted on success; 404 if the operation is not found; 409 if the operation is not
     /// in ManualReview (OperationConflictException → GlobalExceptionHandler).
     /// </summary>
     [HttpPost("{operationId}/resume")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> ResumeWorkflowStep(
         string operationId,
         [FromBody] ResumeRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Existence check: 404 if not found (also covers tenant mismatch).
         var existing = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
@@ -119,11 +122,14 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         var replayCommandId = body?.ReplayCommandId is { Length: > 0 } supplied
             ? supplied
             : $"rpl_{Guid.NewGuid():N}";
-        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? "ops" : actor;
+        // Spec 14 §24.5 fail-closed: no "ops" default — empty actor is rejected downstream.
+        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
 
         // OperationConflictException (not ManualReview, or concurrent change) → 409 via GlobalExceptionHandler.
         await mediator.Send(
-            new ResumeWorkflowStepCommand(tenant.TenantId, operationId, replayCommandId, resolvedActor), ct);
+            new ResumeWorkflowStepCommand(
+                tenant.TenantId, operationId, replayCommandId, resolvedActor,
+                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(new { operation_id = operationId, replay_command_id = replayCommandId });
     }
@@ -140,16 +146,18 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
     [HttpPost("{operationId}/resolve")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> ResolveManualReview(
         string operationId,
         [FromBody] ResolveRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Map resolution string (case-insensitive) → enum.
         ManualReviewResolution resolution;
@@ -177,13 +185,15 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         var replayCommandId = body.ReplayCommandId is { Length: > 0 } supplied
             ? supplied
             : $"rpl_{Guid.NewGuid():N}";
-        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? "ops" : actor;
+        // Spec 14 §24.5 fail-closed: no "ops" default — empty actor is rejected downstream.
+        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
 
         // OperationConflictException (not ManualReview, or concurrent change) → 409 via GlobalExceptionHandler.
         await mediator.Send(
             new ResolveManualReviewCommand(
                 tenant.TenantId, operationId, resolution,
-                body.ProviderRef, replayCommandId, resolvedActor), ct);
+                body.ProviderRef, replayCommandId, resolvedActor,
+                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(new { operation_id = operationId, status = body.Resolution.ToLowerInvariant() });
     }
@@ -207,8 +217,7 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         [FromBody] AlternativesRequest body,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Map response string (case-insensitive) → enum.
         AlternativesResponse response;

@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.Menu.GetCatalogItem;
 using Cordia.Application.Handlers.Menu.SearchVendorCatalog;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -37,8 +38,7 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
         [FromQuery(Name = "max_results")] int? maxResults,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Pass max_results through untouched: SearchVendorCatalogValidator owns the [1, MaxPageSize]
         // bound and an out-of-range value is a 400 — silently clamping here would mask caller bugs
@@ -65,8 +65,7 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetItem(string itemId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var item = await mediator.Send(new GetCatalogItemQuery(itemId), ct);
         if (item is null)

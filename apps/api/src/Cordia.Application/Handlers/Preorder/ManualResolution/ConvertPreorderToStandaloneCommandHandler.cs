@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -35,7 +36,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
     IBookingRepository bookings,
     IGrantAuthorizationService grants,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow,
     ILogger<ConvertPreorderToStandaloneCommandHandler> logger)
     : IRequestHandler<ConvertPreorderToStandaloneCommand, Unit>
@@ -73,6 +74,25 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
         if (booking is null)
         {
             // No committed booking to establish customer agreement against — cannot authorize (§21.4).
+            // Self-audit the denial (spec 14 §24.5): this VerificationRequiredException is thrown
+            // DIRECTLY — not via the self-auditing GrantAuthorizationService — so the operator-action
+            // behavior's catch (narrowed to AuthorizationFailedException) does not record it; the
+            // thrower owns its deny trail, matching every other direct denial site. No transaction is
+            // open yet, so this write persists immediately; CancellationToken.None keeps the record
+            // durable even if the client disconnects (B2).
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: command.ActorRole,
+                ActorId: command.OperatorActor,
+                Action: "preorder.standalone_converted",
+                TargetType: "preorder_saga",
+                TargetId: command.SagaId,
+                Decision: "deny",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.SagaId,
+                OperationId: saga.OperationId,
+                Extra: new { error = "no_committed_booking" }), CancellationToken.None);
             throw new VerificationRequiredException(
                 command.TenantId, customerRef: string.Empty, VerificationActionEnum.Modify, targetBookingId: null);
         }
@@ -92,7 +112,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
             // is missing/expired/for a different customer, action, or booking.
             await grants.ConsumeGrantAsync(
                 command.TenantId, command.GrantId, booking.CustomerId,
-                VerificationActionEnum.Modify, booking.BookingId, ct2);
+                VerificationActionEnum.Modify, booking.BookingId, targetType: "booking", ct: ct2);
 
             await outboxRepo.AddAsync(new OutboxMessage
             {
@@ -111,16 +131,21 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                 OccurredAt = now,
             }, ct2);
 
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "preorder.standalone_converted",
-                Actor = command.OperatorActor,
-                SubjectRef = command.SagaId,
-                CorrelationId = command.SagaId,
-                OperationId = saga.OperationId,
-                Metadata = JsonSerializer.Serialize(new
+            // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
+                ActorId: command.OperatorActor,
+                Action: "preorder.standalone_converted",
+                TargetType: "preorder_saga",
+                TargetId: command.SagaId,
+                Decision: "allow",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.SagaId,
+                OperationId: saga.OperationId,
+                OccurredAt: now,
+                Extra: new
                 {
                     saga_id = command.SagaId,
                     operation_id = saga.OperationId,
@@ -130,9 +155,7 @@ public sealed class ConvertPreorderToStandaloneCommandHandler(
                     customer_grant_id = command.GrantId,
                     customer_ref = booking.CustomerId,
                     booking_id = booking.BookingId,
-                }),
-                OccurredAt = now,
-            }, ct2);
+                }), ct2);
         }, ct);
 
         if (!won)

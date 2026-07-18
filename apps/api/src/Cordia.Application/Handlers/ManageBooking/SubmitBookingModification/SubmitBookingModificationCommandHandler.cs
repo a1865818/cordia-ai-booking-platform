@@ -155,7 +155,8 @@ public sealed class SubmitBookingModificationCommandHandler(
                 booking.CustomerId,
                 VerificationActionEnum.Modify,
                 booking.BookingId,
-                ct2);
+                targetType: "booking",
+                ct: ct2);
 
             if (!await intentRepo.IntentExistsAsync(command.TenantId, intentId, ct2))
             {

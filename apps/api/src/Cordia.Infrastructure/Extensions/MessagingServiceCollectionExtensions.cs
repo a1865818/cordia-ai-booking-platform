@@ -62,6 +62,11 @@ internal static class MessagingServiceCollectionExtensions
         // integration tests are unaffected.
         services.AddHostedService<PreorderRecoverySweeperHostedService>();
 
+        // Spec 14 §24.3: privacy retention sweeper — the production cadence for the
+        // RetentionSweepHandler sweeps (previously dead code outside tests). Disabled via
+        // Messaging:RetentionSweep:Enabled=false in appsettings.Test.json.
+        services.AddHostedService<RetentionSweepHostedService>();
+
         return services;
     }
 }

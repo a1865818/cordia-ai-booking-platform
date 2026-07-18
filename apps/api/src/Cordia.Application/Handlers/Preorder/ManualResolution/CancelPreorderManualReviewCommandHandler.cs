@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Preorder;
@@ -17,7 +18,7 @@ public sealed class CancelPreorderManualReviewCommandHandler(
     IPreorderSagaRepository sagaRepo,
     IPreorderItemReservation items,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow,
     ILogger<CancelPreorderManualReviewCommandHandler> logger)
     : IRequestHandler<CancelPreorderManualReviewCommand, Unit>
@@ -69,10 +70,21 @@ public sealed class CancelPreorderManualReviewCommandHandler(
             await outboxRepo.AddAsync(PreorderSagaSupport.PreorderCancelledOutcome(
                 command.TenantId, command.SagaId, saga.OperationId, failureCode, now), ct2);
             // Attributed to the operator (not "system"); the free-form note lives here only.
-            await auditRepo.AddAsync(PreorderSagaSupport.Audit(
-                command.TenantId, "preorder.manual_review_cancelled", command.SagaId, saga.OperationId, now,
-                new { saga_id = command.SagaId, operator_actor = command.OperatorActor, reason = failureCode, operator_note = operatorNote },
-                actor: command.OperatorActor), ct2);
+            // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
+                ActorId: command.OperatorActor,
+                Action: "preorder.manual_review_cancelled",
+                TargetType: "preorder_saga",
+                TargetId: command.SagaId,
+                Decision: "allow",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.SagaId,
+                OperationId: saga.OperationId,
+                OccurredAt: now,
+                Extra: new { saga_id = command.SagaId, operator_actor = command.OperatorActor, reason = failureCode, operator_note = operatorNote }), ct2);
         }, ct);
 
         if (!won)

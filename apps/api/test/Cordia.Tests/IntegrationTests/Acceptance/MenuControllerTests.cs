@@ -45,6 +45,8 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
                 .ToUrl("/api/menu/catalogs");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.Accepted);
         });
 
@@ -73,6 +75,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         {
             x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/review");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.OK);
         });
 
@@ -112,6 +117,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
                 .RawJson($$"""{"edits":[{"item_id":"{{catalogId}}:d1","name":"New Name","price_minor":2500}]}""")
                 .ToUrl($"/api/menu/catalogs/{catalogId}/edit");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.OK);
         });
 
@@ -142,6 +150,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
                 .RawJson($$"""{"edits":[{"item_id":"{{catalogId}}:missing","name":"New Name"}]}""")
                 .ToUrl($"/api/menu/catalogs/{catalogId}/edit");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.NotFound);
         });
     }
@@ -158,6 +169,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
                 .RawJson("""{"edits":[{"item_id":"d1","name":"New Name"}]}""")
                 .ToUrl($"/api/menu/catalogs/{catalogId}/edit");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.Conflict);
         });
     }
@@ -173,6 +187,8 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
             x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/approve");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.WithRequestHeader("X-Actor", "alice");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.OK);
         });
 
@@ -193,6 +209,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         {
             x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/publish");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.OK);
         });
 
@@ -211,6 +230,9 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         {
             x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/does-not-exist/review");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.NotFound);
         });
     }
@@ -226,8 +248,64 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         {
             x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/approve");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
             x.StatusCodeShouldBe(HttpStatusCode.Conflict);
         });
+    }
+
+    [Fact]
+    public async Task Approve_WithOperatorRole_Returns403_AndDoesNotAdvance()
+    {
+        // GD-1 role matrix: menu lifecycle requires OWNER; an operator assertion is denied
+        // with 403 (AuthorizationFailedException) and a deny audit, and nothing advances.
+        var tenantId = $"acc-menu-role-{Guid.NewGuid():N}";
+        var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/approve");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "ops.jane");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "operator");
+            x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
+        });
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var catalog = await ctx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
+        Assert.Equal(CatalogStatus.InReview, catalog.Status);
+
+        // The denial itself is on the audit trail (spec 14 §3.1 step 5 — deny audited too).
+        var denyAudit = await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .Where(e => e.TenantId == tenantId && e.EventType == "catalog.approved")
+            .ToListAsync();
+        Assert.Contains(denyAudit, e => e.Metadata.Contains("\"decision\":\"deny\"")
+            || e.Metadata.Contains("role_not_satisfied"));
+    }
+
+    [Fact]
+    public async Task Approve_MissingActorAndReasonHeaders_IsRejected()
+    {
+        // Spec 14 §24.5 fail-closed: owner actions without X-Actor / X-Reason-Code are rejected
+        // (400 from the command validator) — never silently attributed to a default "owner".
+        var tenantId = $"acc-menu-fc-{Guid.NewGuid():N}";
+        var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/approve");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.BadRequest);
+        });
+
+        // And the catalog did NOT advance.
+        await using var ctx = fixture.CreateContext(tenantId);
+        var catalog = await ctx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
+        Assert.Equal(CatalogStatus.InReview, catalog.Status);
     }
 
     [Fact]

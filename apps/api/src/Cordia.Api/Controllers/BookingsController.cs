@@ -7,6 +7,7 @@ using Cordia.Application.Handlers.ManageBooking.SubmitBookingModification;
 using Cordia.Application.Handlers.ManageBooking.ValidateBookingChange;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -30,8 +31,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromQuery(Name = "email")] string? email,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(
             new FindManageableBookingsQuery(tenant.TenantId, phoneE164, bookingReference, email),
@@ -51,8 +51,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromQuery(Name = "grant_id")] string? grantQuery,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var grantId = string.IsNullOrWhiteSpace(grantHeader) ? grantQuery : grantHeader;
         var result = await mediator.Send(new GetBookingDetailsQuery(tenant.TenantId, bookingId, grantId), ct);
@@ -76,8 +75,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] ValidateBookingChangeRequest request,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var targetBookingId = string.IsNullOrWhiteSpace(request.TargetBookingId)
             ? bookingId
@@ -108,8 +106,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] SubmitModificationInput request,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new SubmitBookingModificationCommand(tenant.TenantId, bookingId, request), ct);
 
@@ -134,8 +131,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] SubmitCancellationInput request,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new SubmitBookingCancellationCommand(tenant.TenantId, bookingId, request), ct);
 
@@ -162,8 +158,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         [FromBody] SubmitConfirmedIntentRequest request,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new SubmitConfirmedIntentCommand(tenant.TenantId, request), ct);
 

@@ -5,6 +5,7 @@ using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Application.Handlers.Menu.ReviewCatalog;
 using Cordia.Application.Handlers.Menu.UploadMenu;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Cordia.Domain.Menu;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
@@ -19,10 +20,13 @@ namespace Cordia.Api.Controllers;
 /// POST /api/menu/catalogs/{catalogId}/approve   → 200 | 404 | 409
 /// POST /api/menu/catalogs/{catalogId}/publish   → 200 | 404 | 409
 ///
-/// Thin by design: the controller resolves tenant (X-Tenant-Id) + actor (X-Actor), sends a MediatR
-/// command, and maps typed domain exceptions to status codes via the GlobalExceptionHandler
-/// (CatalogNotFound → 404, InvalidCatalogStateTransition → 409). Authorization is a TODO; every
-/// action is audited with the actor.
+/// Thin by design: the controller resolves tenant (X-Tenant-Id) + actor (X-Actor) + reason code
+/// (X-Reason-Code), sends a MediatR command, and maps typed domain exceptions to status codes via
+/// the GlobalExceptionHandler (CatalogNotFound → 404, InvalidCatalogStateTransition → 409).
+/// Spec 14 §24.5 fail-closed (gate decision 2026-07-10): X-Actor and X-Reason-Code are MANDATORY
+/// for these owner actions — missing values are rejected by the validators/operator behavior, and
+/// every action is audited with actor + reason code. Role checks remain the tracked 08/14 open
+/// decision.
 /// </summary>
 [ApiController]
 [Route("api/menu")]
@@ -32,13 +36,15 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     [HttpPost("catalogs")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Upload(
         [FromBody] UploadMenuRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
         // source_artifact_ref is enforced by UploadMenuValidator via the validation pipeline —
         // validators are the sole source of required-field enforcement (docs/dotnet-api-patterns.md).
 
@@ -48,7 +54,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         var resolvedActor = ResolveActor(actor);
 
         var catalogId = await mediator.Send(
-            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel), ct);
+            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Accepted(
             $"/api/menu/catalogs/{catalogId}",
@@ -59,16 +65,18 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     [HttpPost("catalogs/{catalogId}/review")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Review(
         string catalogId,
         [FromBody] ReviewCatalogRequest? body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var edits = (body?.Edits ?? [])
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
@@ -76,7 +84,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .ToList();
 
         await mediator.Send(
-            new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits), ct);
+            new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review" });
     }
@@ -85,16 +93,18 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     [HttpPost("catalogs/{catalogId}/edit")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> EditItems(
         string catalogId,
         [FromBody] EditCatalogItemsRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var edits = (body.Edits ?? [])
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
@@ -102,7 +112,7 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .ToList();
 
         await mediator.Send(
-            new EditCatalogItemsCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits), ct);
+            new EditCatalogItemsCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review", edited = edits.Count });
     }
@@ -111,17 +121,19 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     [HttpPost("catalogs/{catalogId}/approve")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Approve(
         string catalogId,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor)), ct);
+        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "approved" });
     }
@@ -130,23 +142,27 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     [HttpPost("catalogs/{catalogId}/publish")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Publish(
         string catalogId,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor)), ct);
+        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "published" });
     }
 
+    // Spec 14 §24.5 fail-closed: NO silent default — an absent X-Actor flows through as
+    // empty and is rejected by the command validator / OperatorActionBehavior.
     private static string ResolveActor(string? actor)
-        => string.IsNullOrWhiteSpace(actor) ? "owner" : actor;
+        => string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
 }
 
 /// <summary>Body for POST /api/menu/catalogs.</summary>

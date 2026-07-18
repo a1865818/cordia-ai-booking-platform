@@ -1,6 +1,7 @@
 ﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using Cordia.Infrastructure.EntityFramework;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,6 +12,8 @@ public class ScheduledJobRepository(ApplicationDbContext db) : IScheduledJobRepo
 {
     public async Task AddAsync(ScheduledJob job, CancellationToken ct = default)
     {
+        // Inv-12 choke point: scheduled-job payloads are queue envelopes too (see OutboxRepository).
+        job.Payload = SensitiveDataMask.SanitizeJson(job.Payload);
         db.ScheduledJobs.Add(job);
         await db.SaveChangesAsync(ct);
     }

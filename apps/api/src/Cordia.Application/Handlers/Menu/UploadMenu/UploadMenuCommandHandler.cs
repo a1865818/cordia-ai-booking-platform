@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
@@ -14,7 +15,7 @@ namespace Cordia.Application.Handlers.Menu.UploadMenu;
 public sealed class UploadMenuCommandHandler(
     IVendorCatalogRepository repo,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<UploadMenuCommand, string>
 {
@@ -51,18 +52,22 @@ public sealed class UploadMenuCommandHandler(
                 OccurredAt = now,
             }, ct2);
 
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "catalog.uploaded",
-                Actor = command.Actor,
-                SubjectRef = catalogId,
-                CorrelationId = catalogId,
-                OperationId = null,
-                Metadata = JsonSerializer.Serialize(new { version_label = command.VersionLabel }),
-                OccurredAt = now,
-            }, ct2);
+            // Spec 14 §24.5 — owner action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: "owner",
+                    ActorId: command.Actor,
+                    Action: "catalog.uploaded",
+                    TargetType: "vendor_catalog",
+                    TargetId: catalogId,
+                    Decision: "allow",
+                    DataClasses: ["catalog"],
+                    ReasonCode: command.ReasonCode,
+                    CorrelationId: catalogId,
+                    OccurredAt: now,
+                    Extra: new { version_label = command.VersionLabel }),
+                ct2);
         }, ct);
 
         return catalogId;

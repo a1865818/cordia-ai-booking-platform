@@ -1,4 +1,5 @@
-﻿using FluentValidation;
+﻿using Cordia.Application.Common.Authorization;
+using FluentValidation;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Preorder.ManualResolution;
@@ -12,7 +13,20 @@ public sealed record CancelPreorderManualReviewCommand(
     string TenantId,
     string SagaId,
     string OperatorActor,
-    string? Reason) : IRequest<Unit>;
+    string? Reason,
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => OperatorActor;
+
+    public string RequiredRole => StaffRole.Operator;
+
+    public string ActionName => "preorder.manual_review_cancelled";
+
+    public string TargetType => "preorder_saga";
+
+    public string TargetId => SagaId;
+}
 
 /// <summary>Requires the operator actor before cancelling a parked pre-order (§21.4).</summary>
 public sealed class CancelPreorderManualReviewValidator : AbstractValidator<CancelPreorderManualReviewCommand>
@@ -23,5 +37,9 @@ public sealed class CancelPreorderManualReviewValidator : AbstractValidator<Canc
         RuleFor(x => x.SagaId).NotEmpty();
         RuleFor(x => x.OperatorActor).NotEmpty()
             .WithMessage("An operator actor is required to cancel a parked pre-order (§21.4).");
+        RuleFor(x => x.ReasonCode).NotEmpty()
+            .WithMessage("A reason code is required for operator actions (spec 14 §24.5).");
+        RuleFor(x => x.ActorRole).NotEmpty()
+            .WithMessage("A staff role is required for operator actions (X-Actor-Role, spec 14 §24.5).");
     }
 }

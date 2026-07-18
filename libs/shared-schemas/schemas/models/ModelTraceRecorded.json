@@ -1,0 +1,4 @@
+{
+  "title": "ModelTraceRecorded",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/ModelTraceRecorded"
+}

@@ -1,0 +1,4 @@
+{
+  "title": "RedactionPolicy",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/RedactionPolicy"
+}

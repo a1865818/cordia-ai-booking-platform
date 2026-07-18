@@ -1,0 +1,331 @@
+﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
+using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.Security.GetTranscript;
+using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
+using Cordia.Domain.Generated;
+using Cordia.Domain.Interfaces;
+using Moq;
+
+namespace Cordia.Tests.UnitTests.Security;
+
+/// <summary>
+/// The §3.1 spine on the transcript reader: no-credentials and role-mismatch deny (audited,
+/// 403, Inv-11); grant path delegates to spec-08 <c>RequireGrantAsync</c> with the session's
+/// OWN customer ref; consent absent/declined after valid authorization → deny audit +
+/// <c>ConsentRequiredException</c> (409 — the first thrower); happy path assembles turns in
+/// seq order and writes the allow audit with data_classes [pii, transcript].
+/// </summary>
+[Trait("Category", "Unit")]
+public class GetTranscriptTests
+{
+    private const string Tenant = "t-1";
+    private const string SessionId = "sess-1";
+    private const string Customer = "cust-9";
+
+    private readonly Mock<IConversationSessionRepository> _sessions = new();
+    private readonly Mock<IGrantAuthorizationService> _grants = new();
+    private readonly Mock<IObjectStore> _store = new();
+    private readonly Mock<IAuditWriter> _audit = new();
+
+    private GetTranscriptQueryHandler Handler()
+        => new(_sessions.Object, _grants.Object, _store.Object, _audit.Object);
+
+    private void SetupSession(bool? recordingAllowed, string? customerRef = Customer)
+        => _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationSession
+            {
+                TenantId = Tenant,
+                SessionId = SessionId,
+                Channel = TenantChannel.Voice,
+                RecordingAllowed = recordingAllowed,
+                CustomerRef = customerRef,
+                StartedAt = DateTimeOffset.UtcNow,
+            });
+
+    private void SetupTurns(params (int Seq, string Text)[] turns)
+    {
+        _store.Setup(s => s.ListIdsAsync(Tenant, "transcript", $"{SessionId}.", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([.. turns.Select(t => $"{SessionId}.{t.Seq:D6}")]);
+        foreach (var (seq, text) in turns)
+        {
+            _store.Setup(s => s.GetAsync(Tenant, "transcript", $"{SessionId}.{seq:D6}", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    turn_id = $"turn_{seq}",
+                    speaker = "customer",
+                    text,
+                    ts = DateTimeOffset.UtcNow,
+                }));
+        }
+    }
+
+    private static GetTranscriptQuery StaffQuery(string role = StaffRole.Operator)
+        => new(Tenant, SessionId, GrantId: null, ActorId: "ops.jane", ActorRole: role, ReasonCode: "dispute_review");
+
+    [Fact]
+    public async Task NoCredentials_DeniesWithAuditAnd403_NeverTouchesTheStore()
+    {
+        SetupSession(recordingAllowed: true);
+
+        // Inv-11: the session/customer identity alone never authorizes the read.
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, null, null, null, null), CancellationToken.None));
+
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "deny" && r.Action == "read_sensitive_transcript"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData("agent")]
+    [InlineData("")]
+    public async Task NonStaffRole_DeniesWithAuditAnd403(string role)
+    {
+        SetupSession(recordingAllowed: true);
+
+        await Assert.ThrowsAsync<AuthorizationFailedException>(
+            () => Handler().Handle(StaffQuery(role), CancellationToken.None));
+
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "deny"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConsentAbsent_AfterValidRole_Throws409_AndAuditsTheDenial()
+    {
+        SetupSession(recordingAllowed: null);
+
+        // The first ConsentRequiredException call site (spec 14 §5.2 → 409).
+        var ex = await Assert.ThrowsAsync<ConsentRequiredException>(
+            () => Handler().Handle(StaffQuery(), CancellationToken.None));
+
+        Assert.Equal("transcript", ex.RequiredScope);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "deny"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task StaffRole_ConsentGranted_AssemblesTurnsInOrder_AndWritesAllowAudit()
+    {
+        SetupSession(recordingAllowed: true);
+        SetupTurns((2, "seven pm works"), (1, "table for two"));
+
+        var view = await Handler().Handle(StaffQuery(), CancellationToken.None);
+
+        Assert.Equal([1, 2], view.Turns.Select(t => t.Seq));
+        Assert.Equal("table for two", view.Turns[0].Text);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r =>
+                r.Decision == "allow"
+                && r.Action == "read_sensitive_transcript"
+                && r.ActorType == StaffRole.Operator
+                && r.DataClasses.Contains("pii")
+                && r.DataClasses.Contains("transcript")
+                && r.ReasonCode == "dispute_review"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SevenDigitSeqTurns_AreRead_AndSiblingSessionIds_AreStillSkipped()
+    {
+        // Bug 3: the writer's Seq.ToString("D6") pads to a MINIMUM of six digits, so
+        // seq >= 1,000,000 legally yields a 7-digit suffix ("{sessionId}.1000000").
+        // Requiring exactly six digits silently dropped those turns forever. Shorter
+        // or non-numeric suffixes are sibling session ids extending this session's
+        // prefix and must still be skipped, never parsed or fetched.
+        SetupSession(recordingAllowed: true);
+        _store.Setup(s => s.ListIdsAsync(Tenant, "transcript", $"{SessionId}.", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+            [
+                $"{SessionId}.1000000",      // seq 1,000,000 — 7 digits, MUST be read
+                $"{SessionId}.000001",       // ordinary 6-digit turn
+                $"{SessionId}.retry.000001", // sibling session "sess-1.retry" — skip
+                $"{SessionId}.42",           // short numeric suffix — sibling shape, skip
+            ]);
+        foreach (var (id, seq) in new[] { ($"{SessionId}.1000000", 1_000_000), ($"{SessionId}.000001", 1) })
+        {
+            _store.Setup(s => s.GetAsync(Tenant, "transcript", id, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    turn_id = $"turn_{seq}",
+                    speaker = "customer",
+                    text = $"turn {seq}",
+                    ts = DateTimeOffset.UtcNow,
+                }));
+        }
+
+        var view = await Handler().Handle(StaffQuery(), CancellationToken.None);
+
+        Assert.Equal([1, 1_000_000], view.Turns.Select(t => t.Seq));
+        // Sibling ids are skipped BEFORE the store fetch — never parsed, never read.
+        _store.Verify(
+            s => s.GetAsync(Tenant, "transcript", $"{SessionId}.retry.000001", It.IsAny<CancellationToken>()),
+            Times.Never);
+        _store.Verify(
+            s => s.GetAsync(Tenant, "transcript", $"{SessionId}.42", It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task OwnerRole_AlsoReads_Gd1Matrix()
+    {
+        SetupSession(recordingAllowed: true);
+        SetupTurns((1, "hello"));
+
+        var view = await Handler().Handle(StaffQuery(StaffRole.Owner), CancellationToken.None);
+
+        Assert.Single(view.Turns);
+    }
+
+    [Fact]
+    public async Task GrantPath_RequiresTheSessionsOwnCustomer_AndPropagates403FromSpec08()
+    {
+        SetupSession(recordingAllowed: true);
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new VerificationRequiredException(Tenant, Customer, VerificationActionEnum.ReadSensitive, null));
+
+        // The spec-08 service already deny-audited; the 403 propagates untouched.
+        await Assert.ThrowsAsync<VerificationRequiredException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "grant-1", null, null, null), CancellationToken.None));
+
+        _grants.Verify(g => g.RequireGrantAsync(
+            Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GrantPath_Valid_Reads_AndAuditsAsCustomer()
+    {
+        SetupSession(recordingAllowed: true);
+        SetupTurns((1, "hello"));
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VerificationGrant { TenantId = Tenant, GrantId = "grant-1", CustomerRef = Customer });
+
+        var view = await Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "grant-1", null, null, null), CancellationToken.None);
+
+        Assert.Single(view.Turns);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r =>
+                r.Decision == "allow" && r.ActorType == "customer" && r.ActorId == Customer),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StaffCredentialWithStaleGrant_ReadsViaStaff_NeverConsultsTheGrant()
+    {
+        // B1: a request carrying BOTH a valid staff credential AND a stale/wrong grant must read
+        // via the staff path — the path is chosen by credential VALIDITY, not grant presence. A
+        // valid staff role authorizes the read on its own, so the redundant grant is never
+        // enforced and cannot spuriously 403 a legitimate operator read.
+        SetupSession(recordingAllowed: true);
+        SetupTurns((1, "hello"));
+
+        var view = await Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, GrantId: "stale-grant", ActorId: "ops.jane",
+                ActorRole: StaffRole.Operator, ReasonCode: "dispute_review"),
+            CancellationToken.None);
+
+        Assert.Single(view.Turns);
+        // The stale grant is never consulted — staff precedence skips the grant service entirely.
+        _grants.Verify(g => g.RequireGrantAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "allow" && r.ActorType == StaffRole.Operator),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task UnknownSession_WithStaffCredential_Throws404()
+    {
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+
+        // A CREDENTIALED caller (staff role) may learn existence (404), like GetModelTrace.
+        await Assert.ThrowsAsync<ConversationSessionNotFoundException>(
+            () => Handler().Handle(StaffQuery(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task BogusGrant_MissingSession_Denies403_NotA404_NoExistenceOracle()
+    {
+        // L5 / Bug 3: a caller presenting only a non-empty but BOGUS grant_id must not be able to
+        // tell an absent session (would-be 404) from a present one (403). The handler loads the
+        // session nullable and authorizes against its OWN customer ref — a missing session yields an
+        // EMPTY ref that matches no real grant, so RequireGrantAsync 403s exactly as it would for a
+        // bogus grant on a real session. A ConversationSessionNotFoundException here would re-open
+        // the oracle.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+        // The real repo returns no grant for an empty customer ref → the service 403s. Model that:
+        // the empty-ref authorization attempt throws VerificationRequiredException.
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new VerificationRequiredException(
+                Tenant, string.Empty, VerificationActionEnum.ReadSensitive, null));
+
+        // 403 (VerificationRequired), NOT 404 (ConversationSessionNotFound) — the oracle stays closed.
+        await Assert.ThrowsAsync<VerificationRequiredException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "bogus-grant", null, null, null), CancellationToken.None));
+
+        // The grant was authorized against the EMPTY owner ref of the missing session (not skipped),
+        // proving the handler never revealed absence via a pre-auth 404.
+        _grants.Verify(g => g.RequireGrantAsync(
+            Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+            null, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GrantPath_AnomalousEmptyRefGrant_MissingSession_FailsClosed403_NotNre500()
+    {
+        // Defense-in-depth for Bug 3: the handler must not NRE (→ 500) if RequireGrantAsync ever
+        // authorizes against the empty owner ref a missing session yields (a malformed empty-ref
+        // grant slipping past validation). It must fail CLOSED with the same 403 and keep the
+        // existence oracle shut — never dereference the null session.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+        // Simulate the anomaly: the grant service RETURNS a grant for the empty ref instead of 403ing.
+        _grants.Setup(g => g.RequireGrantAsync(
+                Tenant, "empty-ref-grant", string.Empty, VerificationActionEnum.ReadSensitive,
+                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VerificationGrant { TenantId = Tenant, GrantId = "empty-ref-grant", CustomerRef = string.Empty });
+
+        // 403 (VerificationRequired), never a NullReferenceException / 500.
+        await Assert.ThrowsAsync<VerificationRequiredException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, "empty-ref-grant", null, null, null), CancellationToken.None));
+
+        // The store is never read for a session that does not exist.
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task NoCredentials_MissingSession_Denies403_NotA404_NoExistenceOracle()
+    {
+        // L5: a caller with only tenant scope must not distinguish an absent session (would-be
+        // 404) from a present one (403) — authorization runs BEFORE the session is even loaded.
+        _sessions.Setup(s => s.GetAsync(Tenant, SessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationSession?)null);
+
+        await Assert.ThrowsAsync<AuthorizationFailedException>(() => Handler().Handle(
+            new GetTranscriptQuery(Tenant, SessionId, null, null, null, null), CancellationToken.None));
+
+        // The session is never loaded for a no-credential caller — the oracle is structurally closed.
+        _sessions.Verify(
+            s => s.GetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _audit.Verify(a => a.WriteAsync(
+            It.Is<AuditRecord>(r => r.Decision == "deny"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+}

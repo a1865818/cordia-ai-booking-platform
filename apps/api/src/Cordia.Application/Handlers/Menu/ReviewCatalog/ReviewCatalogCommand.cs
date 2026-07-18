@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Menu;
+﻿using Cordia.Application.Common.Authorization;
+using Cordia.Domain.Menu;
 using MediatR;
 
 namespace Cordia.Application.Handlers.Menu.ReviewCatalog;
@@ -11,4 +12,17 @@ public sealed record ReviewCatalogCommand(
     string TenantId,
     string CatalogId,
     string Actor,
-    IReadOnlyList<CatalogItemEdit> Edits) : IRequest<Unit>;
+    IReadOnlyList<CatalogItemEdit> Edits,
+    string ReasonCode,
+    string ActorRole) : IRequest<Unit>, IOperatorActionRequest
+{
+    string IOperatorActionRequest.ActorId => Actor;
+
+    public string RequiredRole => StaffRole.Owner;
+
+    public string ActionName => "catalog.in_review";
+
+    public string TargetType => "vendor_catalog";
+
+    public string TargetId => CatalogId;
+}

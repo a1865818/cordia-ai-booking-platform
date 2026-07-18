@@ -145,10 +145,15 @@ def test_draft_rejects_extra_fields() -> None:
 @pytest.mark.unit
 def test_draft_freezes_to_reference_capturing_prices() -> None:
     """to_reference captures per-unit price + currency from the lookup and mirrors the draft."""
-    prices = {"item_1": Money(amount_minor=3200, currency="AUD"), "item_2": Money(amount_minor=750, currency="AUD")}
+    prices = {
+        "item_1": Money(amount_minor=3200, currency="AUD"),
+        "item_2": Money(amount_minor=750, currency="AUD"),
+    }
     draft = _draft(
         lines=[
-            PreorderDraftLine(item_id="item_1", modifier_ids=["mod_1"], quantity=2, notes="no peanuts"),
+            PreorderDraftLine(
+                item_id="item_1", modifier_ids=["mod_1"], quantity=2, notes="no peanuts"
+            ),
             PreorderDraftLine(item_id="item_2", quantity=1),
         ]
     )
@@ -170,4 +175,6 @@ def test_draft_freezes_to_reference_capturing_prices() -> None:
 @pytest.mark.unit
 def test_empty_draft_cannot_be_frozen() -> None:
     with pytest.raises(ValueError):
-        _draft(lines=[]).to_reference("conf_1", price_lookup=lambda _: Money(amount_minor=1, currency="AUD"))
+        _draft(lines=[]).to_reference(
+            "conf_1", price_lookup=lambda _: Money(amount_minor=1, currency="AUD")
+        )

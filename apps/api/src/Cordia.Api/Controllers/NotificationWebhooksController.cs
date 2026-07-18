@@ -2,6 +2,7 @@
 using System.Text;
 using Cordia.Application.Handlers.Notifications.RecordDeliveryReceipt;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,7 +15,9 @@ namespace Cordia.Api.Controllers;
 ///
 /// Auth:
 ///   - X-Tenant-Id header is required (resolved by TenantResolutionMiddleware, validated here).
-///   - X-Webhook-Secret header must match Notifications:WebhookSecret config value.
+///   - X-Webhook-Secret header must match the shared secret resolved from the spec-14 secret
+///     custody seam (<c>ISecretStore</c>, key <c>NotificationsWebhookSecret</c>), falling back to
+///     the legacy <c>Notifications:WebhookSecret</c> config key during migration.
 ///     Production HMAC signature verification is deferred (§31 open decisions).
 ///
 /// Outcome mapping:
@@ -29,6 +32,7 @@ namespace Cordia.Api.Controllers;
 public class NotificationWebhooksController(
     IMediator mediator,
     ITenantContext tenant,
+    ISecretStore secrets,
     IConfiguration config) : ControllerBase
 {
     /// <summary>
@@ -46,12 +50,15 @@ public class NotificationWebhooksController(
         CancellationToken ct)
     {
         // Auth: tenant header required.
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         // Auth: webhook secret — constant-time comparison to prevent timing-based secret oracle.
+        // Spec 14 §24.4: the secret comes from the ISecretStore custody seam
+        // (Secrets:NotificationsWebhookSecret); the legacy Notifications:WebhookSecret config key
+        // is the migration fallback. The value is compared here only — never logged or serialized.
         // TODO (§31): replace shared-secret check with full HMAC signature verification before production.
-        var configuredSecret = config["Notifications:WebhookSecret"];
+        var configuredSecret = secrets.GetSecret("NotificationsWebhookSecret")
+            ?? config["Notifications:WebhookSecret"];
         if (string.IsNullOrEmpty(configuredSecret))
             return Unauthorized();
 

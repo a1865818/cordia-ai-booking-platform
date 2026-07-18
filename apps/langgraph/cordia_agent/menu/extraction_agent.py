@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from cordia_agent.contracts.catalog import CatalogItem
 from cordia_agent.safety.injection_harness import ToolAllowlist, label_untrusted
+from cordia_agent.security.channels import PromptChannels
 
 
 if TYPE_CHECKING:
@@ -97,9 +98,12 @@ class IsolatedExtractionAgent:
     async def extract(self, menu_text: str) -> ExtractionResult:
         """Extract draft catalog items from untrusted *menu_text*.
 
-        The text is wrapped as ``UNTRUSTED`` before it reaches the model; low-
-        confidence items and injection-like content are flagged for owner review.
-        No tool is ever invoked and nothing is published.
+        The text is wrapped as ``UNTRUSTED`` and assembled through
+        ``PromptChannels`` (spec 14 §8.11) before it reaches the model — this
+        agent's system channel is EMPTY today, and the channel constructor
+        guarantees the untrusted span can never masquerade as system content.
+        Low-confidence items and injection-like content are flagged for owner
+        review. No tool is ever invoked and nothing is published.
 
         Args:
             menu_text: Raw artifact text. Treated strictly as untrusted data.
@@ -107,8 +111,10 @@ class IsolatedExtractionAgent:
         Returns:
             An :class:`ExtractionResult` of draft items + owner-review flags.
         """
-        labeled = label_untrusted(menu_text)
-        items = await self._model.extract(labeled)
+        # Channel-separated prompt assembly (§8.11): the menu text rides in the
+        # untrusted channel ONLY; construction validates trust-homogeneity.
+        channels = PromptChannels(untrusted=[label_untrusted(menu_text)])
+        items = await self._model.extract(channels.untrusted[0])
 
         flags: list[ExtractionFlag] = []
 

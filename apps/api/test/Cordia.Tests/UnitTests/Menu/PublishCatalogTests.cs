@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Menu.PublishCatalog;
+﻿using Cordia.Application.Common.Audit;
+using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -33,13 +34,13 @@ public class PublishCatalogTests
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
 
-    private PublishCatalogCommandHandler BuildHandler() => new(_repo.Object, _audit.Object, _uow.Object);
+    private PublishCatalogCommandHandler BuildHandler() => new(_repo.Object, new AuditWriter(_audit.Object), _uow.Object);
 
     private void SetupCatalog(CatalogStatus status, long version = 0)
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version, VersionLabel = "menu_v2" });
 
-    private static PublishCatalogCommand Command() => new(Tenant, CatalogId, "owner");
+    private static PublishCatalogCommand Command() => new(Tenant, CatalogId, "owner", "rc_test", "owner");
 
     [Fact]
     public async Task Approved_NoPrior_Publishes_AndAudits()

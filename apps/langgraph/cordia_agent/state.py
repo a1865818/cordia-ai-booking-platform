@@ -345,6 +345,50 @@ class AgentState(BaseModel):
     customer_context: CustomerContext | None = Field(
         default=None, description="Minimized customer context (§9.2)."
     )
+    # --- Consent-gate channels (spec 14 §5.1/§5.2) ---
+    # consent_state/recording_allowed are exported concepts (persisted via the
+    # Booking API); pending_consent_notice is an internal channel consumed by
+    # the consent_gate → END await loop and the voice pipeline notice playback.
+    consent_state: dict | None = Field(
+        default=None,
+        description=(
+            "Recorded ConsentState (spec 14 §4.1) as a plain dict once the "
+            "outcome has been durably persisted via record_consent; None until "
+            "then. Stored as dict to keep AgentState channels JSON-merge-safe."
+        ),
+    )
+    recording_allowed: bool | None = Field(
+        default=None,
+        description=(
+            "Transcript/audio persistence gate (Inv-12, §5.2). None = consent "
+            "gate has not resolved yet; the checkpointer suppresses the "
+            "transcript whenever this is False."
+        ),
+    )
+    pending_consent_notice: str | None = Field(
+        default=None,
+        description=(
+            "Internal: notice text awaiting a customer consent response. "
+            "Non-None means the gate emitted the notice and is awaiting the "
+            "customer's granted/declined reply (§5.2 AwaitOutcome)."
+        ),
+    )
+    consent_policy: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: the ConsentPolicyView resolved on the gate's first "
+            "pass, stashed so the reply turn records against the SAME policy "
+            "version the customer was shown (no re-resolution)."
+        ),
+    )
+    consent_reply: str | None = Field(
+        default=None,
+        description=(
+            "Internal: a classified consent reply ('granted'/'declined') "
+            "whose record_consent persist failed — retried next turn without "
+            "re-asking the customer."
+        ),
+    )
     # --- Internal clarification channels (02-G, §8.5) ---
     # These fields are NOT exported to AgentInputState/AgentOutputState and do
     # not appear in the generated JSON schemas.  They are purely internal

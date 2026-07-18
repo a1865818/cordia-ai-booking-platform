@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -23,7 +24,7 @@ public sealed class ResolveManualReviewCommandHandler(
     IBookingOperationRepository opRepo,
     IOperationWorkItemRepository workItemRepo,
     IOutboxRepository outboxRepo,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<ResolveManualReviewCommand, Unit>
 {
@@ -145,23 +146,26 @@ public sealed class ResolveManualReviewCommandHandler(
             }
 
             // Audit with the distinct ReplayCommandId (Inv-15).
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "operation.manual_resolved",
-                Actor = command.Actor,
-                SubjectRef = command.OperationId,
-                CorrelationId = command.OperationId,
-                OperationId = command.OperationId,
-                Metadata = JsonSerializer.Serialize(new
+            // Spec 14 §24.5 — operator action: reason-coded envelope via the audit writer.
+            await audit.WriteAsync(new AuditRecord(
+                TenantId: command.TenantId,
+                ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
+                ActorId: command.Actor,
+                Action: "operation.manual_resolved",
+                TargetType: "booking_operation",
+                TargetId: command.OperationId,
+                Decision: "allow",
+                DataClasses: ["booking"],
+                ReasonCode: command.ReasonCode,
+                CorrelationId: command.OperationId,
+                OperationId: command.OperationId,
+                OccurredAt: now,
+                Extra: new
                 {
                     replay_command_id = command.ReplayCommandId,
                     actor = command.Actor,
                     resolution = command.Resolution.ToString().ToLowerInvariant(),
-                }),
-                OccurredAt = now,
-            }, ct2);
+                }), ct2);
         }, ct);
 
         return Unit.Value;

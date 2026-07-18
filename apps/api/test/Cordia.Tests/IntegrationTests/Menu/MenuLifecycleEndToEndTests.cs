@@ -1,4 +1,5 @@
 ﻿#pragma warning disable xUnit1051
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Extensions;
 using Cordia.Application.Handlers.Menu.ApproveCatalog;
 using Cordia.Application.Handlers.Menu.PublishCatalog;
@@ -151,24 +152,24 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
     {
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new ReviewCatalogCommandHandler(
-            new VendorCatalogRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
+            new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
         await handler.Handle(
-            new ReviewCatalogCommand(tenantId, catalogId, "owner", edits ?? []), CancellationToken.None);
+            new ReviewCatalogCommand(tenantId, catalogId, "owner", edits ?? [], "rc_test", "owner"), CancellationToken.None);
     }
 
     private async Task RunApproveAsync(string tenantId, string catalogId)
     {
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new ApproveCatalogCommandHandler(
-            new VendorCatalogRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
-        await handler.Handle(new ApproveCatalogCommand(tenantId, catalogId, "owner"), CancellationToken.None);
+            new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
+        await handler.Handle(new ApproveCatalogCommand(tenantId, catalogId, "owner", "rc_test", "owner"), CancellationToken.None);
     }
 
     private async Task RunPublishAsync(string tenantId, string catalogId)
     {
         await using var ctx = fixture.CreateContext(tenantId);
         var handler = new PublishCatalogCommandHandler(
-            new VendorCatalogRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
-        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner"), CancellationToken.None);
+            new VendorCatalogRepository(ctx), new AuditWriter(new AuditEventRepository(ctx)), new UnitOfWork(ctx));
+        await handler.Handle(new PublishCatalogCommand(tenantId, catalogId, "owner", "rc_test", "owner"), CancellationToken.None);
     }
 }

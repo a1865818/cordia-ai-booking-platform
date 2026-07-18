@@ -1,0 +1,4 @@
+{
+  "title": "AuditEventEnvelope",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/AuditEventEnvelope"
+}
