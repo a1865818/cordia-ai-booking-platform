@@ -19,8 +19,10 @@ Invariants enforced here:
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
+from cordia_agent.security.redaction import redact_payload
 from cordia_agent.state import AgentState
 
 
@@ -96,8 +98,28 @@ class SessionCheckpointer:
             )
 
         key = self.tenant_scoped_key(state.tenant_id, state.session_id)
-        self._store[key] = state.model_dump_json()
+        self._store[key] = json.dumps(self._scrub_for_persistence(state))
         return key
+
+    @staticmethod
+    def _scrub_for_persistence(state: AgentState) -> dict:
+        """Apply the spec-14 pre-persist redaction rules (Inv-12, §5.2).
+
+        - ``recording_allowed is False`` ⇒ the transcript is suppressed entirely
+          (consent declined / non-recorded session; structured intent is still
+          captured).
+        - EVERY string in the durable copy passes through the always-on
+          redaction filter — not just ``transcript_text``: customer speech also
+          lands in captured free-text fields (notes and similar), and a PAN
+          must never be durably stored through any of them.
+
+        The in-memory ``state`` is never mutated — nodes keep the live turn
+        text; only the durable copy is scrubbed.
+        """
+        data = state.model_dump(mode="json")
+        if state.recording_allowed is False:
+            data["transcript_text"] = None
+        return redact_payload(data)
 
     def load(self, tenant_id: str, session_id: str) -> AgentState | None:
         """Reload the ``AgentState`` for *(tenant_id, session_id)*.

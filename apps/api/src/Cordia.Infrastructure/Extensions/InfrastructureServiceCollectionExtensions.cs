@@ -8,8 +8,10 @@ using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Retry;
+using Cordia.Infrastructure.Security;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
+using Cordia.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -90,7 +92,10 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IAuditEventRepository, AuditEventRepository>();
         services.AddScoped<IDepositSessionRepository, DepositSessionRepository>();
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
+        services.AddScoped<IWaitlistEnrollmentRepository, WaitlistEnrollmentRepository>();
+        services.AddScoped<IVendorCatalogRepository, VendorCatalogRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
+        services.AddScoped<IPreorderSagaRepository, PreorderSagaRepository>();
 
         // Spec 13 T6 — product-reporting projector (read-only funnel, Inv-16).
         services.AddScoped<IBookingFunnelReadModel, BookingFunnelReadModel>();
@@ -110,6 +115,19 @@ public static class InfrastructureServiceCollectionExtensions
             .BindConfiguration(CapacityOptions.SectionName);
 
         services.AddScoped<RetentionSweepHandler>();
+        // Spec 14 §24.3 — cross-tenant retention driver consumed by RetentionSweepHostedService.
+        services.AddScoped<IRetentionSweeper, RetentionSweeper>();
+
+        // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
+        services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();
+        services.AddSingleton<IJurisdictionPolicyProvider, JurisdictionPolicyProvider>();
+
+        // Spec 14 §24.4 — server-side secret custody; values never serialized or logged.
+        services.AddSingleton<ISecretStore, ConfigurationSecretStore>();
+
+        // Spec 14 §24.3/§24.4 — tenant-scoped encrypted blob custody (AES-256-GCM at rest,
+        // key resolved lazily from the secret store; expired objects swept by RetentionSweeper).
+        services.AddSingleton<IObjectStore, EncryptedFileObjectStore>();
 
         // Pure, stateless, thread-safe → Singleton (spec 04 §5).
         services.AddSingleton<ICanonicalRequestHasher, CanonicalRequestHasher>();
@@ -123,6 +141,16 @@ public static class InfrastructureServiceCollectionExtensions
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).
         services.AddSingleton<IDepositPolicy, NoDepositPolicy>();
         services.AddSingleton<IVerificationService, NoUserActionRequiredService>();
+
+        // Spec 11 — menu ingestion ports (deterministic stubs; real ClamAV / LangGraph extractor
+        // swap in later behind these ports). Stateless → singletons.
+        services.AddSingleton<IArtifactScanner, StubArtifactScanner>();
+        services.AddSingleton<IIsolatedMenuExtractor, StubIsolatedMenuExtractor>();
+
+        // Spec 11 — pre-order item-reservation port (deterministic stub; real POS adapter swaps in
+        // later behind this port). Stateless → singleton. Payment is no longer a saga concern: the
+        // whole booking (incl. spec-09 payment) is delegated to the spec-06 engine (§5.3, divergence #2).
+        services.AddSingleton<IPreorderItemReservation, StubPreorderItemReservation>();
 
         // Spec 06 T11 validation policy seam — singleton (always-pass stub; spec 04 real engine replaces).
         services.AddSingleton<IValidationPolicy, AlwaysValidPolicy>();

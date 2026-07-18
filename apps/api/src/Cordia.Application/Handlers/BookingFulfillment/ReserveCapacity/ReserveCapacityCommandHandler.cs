@@ -144,17 +144,26 @@ public sealed class ReserveCapacityCommandHandler(
                         {
                             var now = DateTimeOffset.UtcNow;
 
+                            // Spec 11 §5.3 / Inv-8: a pre-order operation must NOT send the customer a raw
+                            // alternatives notification and hang in this 06 wait state — no saga signal would
+                            // reach it and the reserved items would dangle. Instead signal the saga
+                            // (booking_failed, reason no_capacity) so it compensates the reserved items and
+                            // emits the ONE combined outcome. A normal operation keeps the customer-facing
+                            // alternatives_required notification.
                             await outboxRepo.AddAsync(new OutboxMessage
                             {
                                 TenantId = tenantId,
                                 MessageId = $"obx_{Guid.NewGuid():N}",
                                 OperationId = operationId,
-                                MessageType = "notification.alternatives_required.v1",
+                                MessageType = current.IsPreorder
+                                    ? Cordia.Application.Handlers.Preorder.PreorderSagaMessages.BookingFailed
+                                    : "notification.alternatives_required.v1",
                                 CorrelationId = operationId,
                                 Payload = JsonSerializer.Serialize(new
                                 {
                                     operation_id = operationId,
                                     tenant_id = tenantId,
+                                    reason = "no_capacity",
                                 }),
                                 OccurredAt = now,
                             }, ct2);

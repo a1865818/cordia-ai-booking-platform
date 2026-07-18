@@ -86,6 +86,26 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 await WriteIdempotencyConflictAsync(httpContext, ex, cancellationToken);
                 return true;
 
+            case TenantScopeMissingException ex:
+                // Same wire shape as the controllers' historical hand-rolled 400 (spec 14 §24.1).
+                logger.LogInformation(ex, "Tenant scope missing");
+                await WriteProblemAsync(httpContext, StatusCodes.Status400BadRequest,
+                    "Missing tenant", ex.Message, cancellationToken);
+                return true;
+
+            case ConsentRequiredException ex:
+                logger.LogWarning(ex, "Consent required: scope={RequiredScope} subject={SubjectRef}",
+                    ex.RequiredScope, ex.SubjectRef);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Consent required", ex.Message, cancellationToken);
+                return true;
+
+            case AuthorizationFailedException ex:
+                logger.LogWarning(ex, "Authorization failed: action={ActionName}", ex.ActionName);
+                await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
+                    "Authorization failed", ex.Message, cancellationToken);
+                return true;
+
             case VerificationRequiredException ex:
                 logger.LogWarning(ex, "Verification required: tenant={TenantId} customer={CustomerRef} action={Action} booking={TargetBookingId}",
                     ex.TenantId, ex.CustomerRef, ex.Action, ex.TargetBookingId);
@@ -110,6 +130,67 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 logger.LogWarning(ex, "Invalid notification state transition: {From} -> {To}", ex.From, ex.To);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
                     "Invalid notification state transition", ex.Message, cancellationToken);
+                return true;
+
+            case InvalidCatalogStateTransitionException ex:
+                logger.LogWarning(ex, "Invalid catalog state transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid catalog state transition", ex.Message, cancellationToken);
+                return true;
+
+            case ConversationSessionNotFoundException ex:
+                logger.LogWarning(ex, "Conversation session not found: tenant={TenantId} session={SessionId}",
+                    ex.TenantId, ex.SessionId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Conversation session not found", ex.Message, cancellationToken);
+                return true;
+
+            case CatalogNotFoundException ex:
+                logger.LogWarning(ex, "Vendor catalog not found: {CatalogId}", ex.CatalogId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Vendor catalog not found", ex.Message, cancellationToken);
+                return true;
+
+            case CatalogItemNotFoundException ex:
+                logger.LogWarning(ex, "Catalog item not found: {ItemId}", ex.ItemId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Catalog item not found", ex.Message, cancellationToken);
+                return true;
+
+            case InvalidWaitlistOfferTransitionException ex:
+                logger.LogWarning(ex, "Invalid waitlist offer transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid waitlist offer transition", ex.Message, cancellationToken);
+                return true;
+
+            case WaitlistEnrollmentNotFoundException ex:
+                logger.LogWarning(ex, "Waitlist enrollment not found: {EnrollmentId}", ex.EnrollmentId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Waitlist enrollment not found", ex.Message, cancellationToken);
+                return true;
+
+            case WaitlistOfferNotFoundException ex:
+                logger.LogWarning(ex, "Waitlist offer not found: {OfferId}", ex.OfferId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Waitlist offer not found", ex.Message, cancellationToken);
+                return true;
+
+            case InvalidPreorderSagaTransitionException ex:
+                logger.LogWarning(ex, "Invalid pre-order saga transition: {From} -> {To}", ex.From, ex.To);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Invalid pre-order saga transition", ex.Message, cancellationToken);
+                return true;
+
+            case PreorderSagaNotFoundException ex:
+                logger.LogWarning(ex, "Pre-order saga not found: {SagaId}", ex.SagaId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status404NotFound,
+                    "Pre-order saga not found", ex.Message, cancellationToken);
+                return true;
+
+            case CatalogNotEditableException ex:
+                logger.LogWarning(ex, "Vendor catalog not editable: {CatalogId} ({Status})", ex.CatalogId, ex.Status);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Vendor catalog not editable", ex.Message, cancellationToken);
                 return true;
 
             case OperationConflictException ex:

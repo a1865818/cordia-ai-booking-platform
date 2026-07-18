@@ -138,6 +138,38 @@ class SubmitBookingCancellationStatus(str, Enum):
     VERIFICATION_REQUIRED = "verification_required"
 
 
+class ResolveConsentPolicyStatus(str, Enum):
+    """Status codes for resolve_consent_policy (spec 14 §5.1)."""
+
+    RESOLVED = "resolved"
+    POLICY_UNAVAILABLE = "policy_unavailable"
+
+
+class RecordConsentStatus(str, Enum):
+    """Status codes for record_consent (spec 14 §5.1, D12)."""
+
+    RECORDED = "recorded"
+    SESSION_NOT_FOUND = "session_not_found"
+
+
+class RecordModelTraceStatus(str, Enum):
+    """Status codes for record_model_trace (spec 13 §25.3)."""
+
+    OK = "ok"
+
+
+class AppendTranscriptTurnStatus(str, Enum):
+    """Status codes for append_transcript_turn (spec 14 §4.3/§5.2).
+
+    Consent suppression is NOT a status — the envelope is ok with
+    ``persisted=false`` in the payload (§5.2: a suppressed turn is a normal
+    outcome the pipeline must not retry).
+    """
+
+    OK = "ok"
+    SESSION_NOT_FOUND = "not_found"
+
+
 # AvailabilityMode is OWNED by spec 07 (07-capacity-and-holds.md). It is bound
 # here as a frozen value set so the tool contracts can type against it now.
 # DO NOT redefine elsewhere: spec 07 must IMPORT this symbol, not re-declare it

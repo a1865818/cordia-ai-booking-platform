@@ -2,23 +2,32 @@
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Observability;
+using Cordia.Api.Logging;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Logging ---
-// §25.1/§25.3: correlation enrichment on every line, default-deny redaction before any sink, and a
-// fenced-off model-trace lane. The app (console) sink EXCLUDES events tagged ModelTrace; a separate
-// sink INCLUDES ONLY them so model prompts/outputs are never co-mingled with app logs (Inv-12).
-// MinimumLevel + per-source overrides flow in via ReadFrom.Configuration (appsettings "Serilog").
-// PROD swap point: the model-trace sub-logger writes to Console here for local visibility; point it
-// at the stricter-access, shorter-retention store (§25.3) per environment by replacing its WriteTo.
+// §25.1/§25.3 + spec 14 §24.4 (Inv-12): correlation enrichment on every line, two independent
+// default-deny redaction passes before any sink, and a fenced-off model-trace lane.
+//   • SerilogCorrelationEnricher tags every event with the ambient correlation ids (§25.1).
+//   • LogScrubbingEnricher runs on EVERY event — credential-named properties and Luhn-valid PAN
+//     shapes are masked in message-template scalars and destructured trees alike (spec 14 §24.4).
+//     Redaction:SensitiveFields adds deployment/tenant-configured selectors (spec 14 §4.1).
+//   • RedactingDestructuringPolicy is the structured-object backstop for the @-destructured path.
+// The app (console) sink EXCLUDES events tagged ModelTrace; a separate sink INCLUDES ONLY them so
+// model prompts/outputs are never co-mingled with app logs (Inv-12). MinimumLevel + per-source
+// overrides flow in via ReadFrom.Configuration (appsettings "Serilog"). PROD swap point: the
+// model-trace sub-logger writes to Console here for local visibility; point it at the
+// stricter-access, shorter-retention store (§25.3) per environment by replacing its WriteTo.
 builder.Host.UseSerilog((context, loggerConfig) =>
     loggerConfig
         .ReadFrom.Configuration(context.Configuration)
         .Enrich.FromLogContext()
         .Enrich.With(new SerilogCorrelationEnricher())
+        .Enrich.With(new LogScrubbingEnricher(
+            context.Configuration.GetSection("Redaction:SensitiveFields").Get<string[]>()))
         .Destructure.With(new RedactingDestructuringPolicy())
         .WriteTo.Logger(l => l
             .Filter.ByExcluding(e => e.Properties.ContainsKey(ModelTraceSink.MarkerProperty))
@@ -101,6 +110,35 @@ builder.Services.AddSwaggerGen(c =>
             new Microsoft.OpenApi.OpenApiSchema { Type = Microsoft.OpenApi.JsonSchemaType.Null },
         },
     });
+
+    // Dev-only: expose the X-Tenant-Id / X-Actor header shims (resolved by TenantResolutionMiddleware)
+    // as Swagger "Authorize" fields so the Swagger UI can exercise the tenant-scoped endpoints. Type the
+    // tenant once via the Authorize button and it is attached to every "Try it out" request. Not
+    // registered outside Development, where a signed-context resolver (spec 08/15) replaces the shim.
+    if (builder.Environment.IsDevelopment())
+    {
+        c.AddSecurityDefinition("TenantId", new Microsoft.OpenApi.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
+            In = Microsoft.OpenApi.ParameterLocation.Header,
+            Name = "X-Tenant-Id",
+            Description = "Dev tenant id (e.g. 'demo'). Sent on every request after you click Authorize.",
+        });
+        c.AddSecurityDefinition("Actor", new Microsoft.OpenApi.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
+            In = Microsoft.OpenApi.ParameterLocation.Header,
+            Name = "X-Actor",
+            Description = "Optional actor id recorded in audit events (e.g. 'owner1').",
+        });
+        // Microsoft.OpenApi 2.0 API: reference a defined scheme via OpenApiSecuritySchemeReference,
+        // supplied through the AddSecurityRequirement(document => ...) overload (empty scope list).
+        c.AddSecurityRequirement(document => new Microsoft.OpenApi.OpenApiSecurityRequirement
+        {
+            [new Microsoft.OpenApi.OpenApiSecuritySchemeReference("TenantId", document)] = [],
+            [new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Actor", document)] = [],
+        });
+    }
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<Cordia.Api.Errors.GlobalExceptionHandler>();

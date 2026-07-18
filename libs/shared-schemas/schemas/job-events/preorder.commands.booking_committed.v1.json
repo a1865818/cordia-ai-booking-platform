@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/preorder.commands.booking_committed.v1.json",
+  "title": "PreorderCommandsBookingCommittedV1",
+  "description": "06 → saga signal (spec 11 §5.3, Inv-8): the spec-06 operation engine — which owns capacity (07), payment (09), and provider-create (06) for a pre-order operation — reached a terminal Booked outcome and, because the operation is marked IsPreorder, signals the saga instead of notifying the customer directly. On receipt the saga advances CommittingBooking → CommittingPreorder and binds the pre-order, then emits the single combined customer outcome. Routed to the 'preorder.processor' consumer; inbox-deduplicated and idempotent under duplicate delivery (Inv-5/Inv-9). Carries only opaque ids (Inv-12) — the saga is resolved by operation_id, so no saga_id is required.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_type", "tenant_id", "operation_id", "booking_id"],
+  "properties": {
+    "message_type": { "type": "string", "const": "preorder.commands.booking_committed.v1", "description": "Explicit schema discriminator." },
+    "tenant_id": { "type": "string", "description": "Tenant scope (Inv-13)." },
+    "operation_id": { "type": "string", "description": "Owning booking operation id; the saga is looked up by this." },
+    "booking_id": { "type": "string", "description": "Provider booking reference minted by the committed 06 operation." },
+    "correlation_id": { "type": ["string", "null"], "description": "Correlation id propagated across the saga chain." },
+    "causation_id": { "type": ["string", "null"], "description": "message_id of the direct cause (nullable)." }
+  }
+}

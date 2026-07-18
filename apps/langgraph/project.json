@@ -136,7 +136,10 @@
       ],
       "options": {
         "cwd": "apps/langgraph",
-        "command": "BUILDING=true uv run python ../../tools/scripts/export_pydantic_schemas.py"
+        "command": "uv run python ../../tools/scripts/export_pydantic_schemas.py",
+        "env": {
+          "BUILDING": "true"
+        }
       },
       "outputs": [
         "{workspaceRoot}/libs/shared-schemas/schemas/enums",

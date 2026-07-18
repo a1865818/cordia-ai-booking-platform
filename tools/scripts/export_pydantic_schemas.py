@@ -67,21 +67,40 @@ from cordia_agent.tools.contracts import (
     AvailabilityResult,
     BookingChangeValidation,
     BookingProjectionRef,
+    ConsentPolicyView,
+    ConsentRecordedResult,
     HandoffRequest,
     HandoffResult,
     HoldResult,
     ManageableBooking,
     OperationStatusView,
     PolicyValidationResult,
+    RecordConsentInput,
     SubmitCancellationInput,
     SubmitConfirmedIntentInput,
     SubmitModificationInput,
+    ModelTraceInput,
+    ModelTraceRecorded,
     ToolResultEnvelope,
+    TranscriptTurnInput,
+    TranscriptTurnPersisted,
     VerificationGrantView,
     VerificationRequest,
     VerificationSentResult,
 )
+from cordia_agent.contracts.catalog import CatalogItem, Money, PublishedCatalog
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.contracts.preorder import (
+    PreorderDraft,
+    PreorderDraftLine,
+    PreorderLineReference,
+    PreorderReference,
+)
+from cordia_agent.contracts.security import (
+    AuditEventEnvelope,
+    SessionConsentState,
+    RedactionPolicy,
+)
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -92,8 +111,12 @@ from cordia_agent.tools.status_codes import (
     FindManageableBookingsStatus,
     GetBookingDetailsStatus,
     GetTenantContextStatus,
+    AppendTranscriptTurnStatus,
+    RecordConsentStatus,
+    RecordModelTraceStatus,
     RequestHumanHandoffStatus,
     RequestVerificationStatus,
+    ResolveConsentPolicyStatus,
     SubmitBookingCancellationStatus,
     SubmitBookingModificationStatus,
     SubmitConfirmedIntentStatus,
@@ -127,6 +150,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
     ],
     "models": [
         AcceptanceResult,
+        AuditEventEnvelope,
         AvailabilityCandidate,
         AvailabilityRequest,
         AvailabilityResult,
@@ -135,8 +159,12 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         BookingProjectionRef,
         BookingRequest,
         CanonicalBookingDraft,
+        CatalogItem,
         Confirmation,
+        ConsentPolicyView,
+        ConsentRecordedResult,
         CorrelationContext,
+        SessionConsentState,
         HandoffPackage,
         HandoffRequest,
         HandoffResult,
@@ -145,14 +173,26 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         IntentRevision,
         ManageableBooking,
         MaskedDtmfSignal,
+        Money,
         OperationAcceptedResponse,
         OperationStatusView,
         PolicyValidationResult,
+        PreorderDraft,
+        PreorderDraftLine,
+        PreorderLineReference,
+        PreorderReference,
+        PublishedCatalog,
+        RecordConsentInput,
+        RedactionPolicy,
         SubmitCancellationInput,
         SubmitConfirmedIntentInput,
         SubmitConfirmedIntentRequest,
         SubmitModificationInput,
+        ModelTraceInput,
+        ModelTraceRecorded,
         ToolResultEnvelope,
+        TranscriptTurnInput,
+        TranscriptTurnPersisted,
         VerificationGrantView,
         VerificationRequest,
         VerificationSentResult,
@@ -185,6 +225,10 @@ ENUM_REGISTRY: list[type[Enum]] = [
     NormalizedOperationStatus,
     ReconnectOutcome,
     VerificationAction,
+    ResolveConsentPolicyStatus,
+    RecordConsentStatus,
+    AppendTranscriptTurnStatus,
+    RecordModelTraceStatus,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.
@@ -253,7 +297,7 @@ def write_shared_defs(shared_defs: dict[str, Any]) -> None:
         "title": "Pydantic Shared Definitions",
         "$defs": shared_defs,
     }
-    SHARED_DEFS_FILE.write_text(json.dumps(document, indent=2) + "\n")
+    SHARED_DEFS_FILE.write_text(json.dumps(document, indent=2) + "\n", newline="\n")
 
 
 def write_wrappers() -> list[str]:
@@ -268,7 +312,9 @@ def write_wrappers() -> list[str]:
                 "title": title,
                 "$ref": f"../shared/PydanticSharedDefs.json#/$defs/{title}",
             }
-            (out_dir / f"{title}.json").write_text(json.dumps(wrapper, indent=2) + "\n")
+            (out_dir / f"{title}.json").write_text(
+                json.dumps(wrapper, indent=2) + "\n", newline="\n"
+            )
             written.append(title)
     return written
 
@@ -280,7 +326,7 @@ def write_enums() -> list[str]:
     written: list[str] = []
     for enum_cls in ENUM_REGISTRY:
         (out_dir / f"{enum_cls.__name__}.json").write_text(
-            json.dumps(enum_schema(enum_cls), indent=2) + "\n"
+            json.dumps(enum_schema(enum_cls), indent=2) + "\n", newline="\n"
         )
         written.append(enum_cls.__name__)
     return written

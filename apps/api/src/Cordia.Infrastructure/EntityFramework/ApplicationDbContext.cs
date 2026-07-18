@@ -1,6 +1,7 @@
 ﻿using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.EntityFramework.Interceptors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 
@@ -17,6 +18,15 @@ public class ApplicationDbContext : DbContext
         : base(options)
     {
         _tenantContext = tenantContext;
+    }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // Spec 14 / Inv-12 — every audit row's metadata is sanitized at save
+        // time regardless of which write path produced it. Registered here
+        // (not in DI) so test fixtures and design-time contexts get it too.
+        optionsBuilder.AddInterceptors(AuditEventSanitizationInterceptor.Instance);
+        base.OnConfiguring(optionsBuilder);
     }
 
     public DbSet<CapacitySlot> CapacitySlots => Set<CapacitySlot>();

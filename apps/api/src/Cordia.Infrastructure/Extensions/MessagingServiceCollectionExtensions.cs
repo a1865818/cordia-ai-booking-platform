@@ -61,6 +61,16 @@ internal static class MessagingServiceCollectionExtensions
         // in appsettings.Test.json so existing Alba integration tests are unaffected.
         services.AddHostedService<MetricsGaugeHostedService>();
 
+        // Spec 11 §5.3 (divergence #3): pre-order saga recovery sweeper backstop; disabled via
+        // Messaging:PreorderRecovery:Enabled=false in appsettings.Test.json so existing Alba
+        // integration tests are unaffected.
+        services.AddHostedService<PreorderRecoverySweeperHostedService>();
+
+        // Spec 14 §24.3: privacy retention sweeper — the production cadence for the
+        // RetentionSweepHandler sweeps (previously dead code outside tests). Disabled via
+        // Messaging:RetentionSweep:Enabled=false in appsettings.Test.json.
+        services.AddHostedService<RetentionSweepHostedService>();
+
         return services;
     }
 }

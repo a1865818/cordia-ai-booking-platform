@@ -1,0 +1,4 @@
+{
+  "title": "SessionConsentState",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/SessionConsentState"
+}

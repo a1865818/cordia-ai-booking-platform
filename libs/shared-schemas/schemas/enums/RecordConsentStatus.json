@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RecordConsentStatus",
+  "description": "Status codes for record_consent (spec 14 \u00a75.1, D12).",
+  "type": "string",
+  "enum": [
+    "recorded",
+    "session_not_found"
+  ]
+}

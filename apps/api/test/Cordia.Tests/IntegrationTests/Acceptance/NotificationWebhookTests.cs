@@ -268,4 +268,83 @@ public class NotificationWebhookTests(AcceptanceApiFixture fixture)
             x.StatusCodeShouldBe(HttpStatusCode.Unauthorized);
         });
     }
+
+    // ── T8 (spec 14 §24.4): secret resolved via the ISecretStore custody seam ─────────────────────
+
+    /// <summary>
+    /// Spec 14 §24.4: the endpoint authenticates against the ISecretStore secret
+    /// (Secrets:NotificationsWebhookSecret) when only that source is configured.
+    /// </summary>
+    [Fact]
+    public async Task Post_SecretFromSecretStore_Authenticates()
+    {
+        var tenantId = $"wh-t8-{Guid.NewGuid():N}";
+        var notificationId = $"notif-{Guid.NewGuid():N}";
+        const string storeSecret = "store-webhook-secret-t8";
+
+        await SeedNotificationAsync(fixture, tenantId, notificationId,
+            state: NotificationState.Accepted, providerRef: "pmsg_test");
+
+        // Host configured with ONLY the secret-store key (no legacy Notifications:WebhookSecret).
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Test");
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            builder.UseSetting("Secrets:NotificationsWebhookSecret", storeSecret);
+        });
+
+        await host.Scenario(x =>
+        {
+            x.Post.RawJson(BuildBody(notificationId, "pmsg_test", "delivered"))
+                .ToUrl("/api/notification-webhooks/delivery-receipts");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Webhook-Secret", storeSecret);
+            x.StatusCodeShouldBe(HttpStatusCode.Accepted);
+        });
+    }
+
+    /// <summary>
+    /// Spec 14 §24.4 precedence: when BOTH sources are configured, the ISecretStore value wins —
+    /// the legacy config value no longer authenticates.
+    /// </summary>
+    [Fact]
+    public async Task Post_SecretStoreTakesPrecedenceOverLegacyConfig()
+    {
+        var tenantId = $"wh-t9-{Guid.NewGuid():N}";
+        var notificationId = $"notif-{Guid.NewGuid():N}";
+        const string storeSecret = "store-webhook-secret-t9";
+
+        await SeedNotificationAsync(fixture, tenantId, notificationId,
+            state: NotificationState.Accepted, providerRef: "pmsg_test");
+
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Test");
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            builder.UseSetting("Secrets:NotificationsWebhookSecret", storeSecret);
+            builder.UseSetting("Notifications:WebhookSecret", WebhookSecret);
+        });
+
+        // The legacy value is rejected...
+        await host.Scenario(x =>
+        {
+            x.Post.RawJson(BuildBody(notificationId, "pmsg_test", "delivered"))
+                .ToUrl("/api/notification-webhooks/delivery-receipts");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Webhook-Secret", WebhookSecret);
+            x.StatusCodeShouldBe(HttpStatusCode.Unauthorized);
+        });
+
+        // ...and the secret-store value authenticates.
+        await host.Scenario(x =>
+        {
+            x.Post.RawJson(BuildBody(notificationId, "pmsg_test", "delivered"))
+                .ToUrl("/api/notification-webhooks/delivery-receipts");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Webhook-Secret", storeSecret);
+            x.StatusCodeShouldBe(HttpStatusCode.Accepted);
+        });
+    }
 }

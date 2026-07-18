@@ -26,6 +26,21 @@ public class NotificationIdentityTests
         Assert.Equal(id1, id2);
     }
 
+    // (1b) EXHAUSTIVE label coverage: Derive indexes EventLabels directly, so a NotificationEvent
+    // member without an entry crashes the send inside the inbox transaction (poison loop → DLQ).
+    // WaitlistOfferExpired shipped without one and every offer-expired notification died on
+    // KeyNotFoundException — this test makes the next enum addition fail here instead.
+    [Fact]
+    public void Derive_SupportsEveryNotificationEventMember()
+    {
+        foreach (var eventType in Enum.GetValues<NotificationEvent>())
+        {
+            var id = NotificationIdentity.Derive(
+                TenantId, OperationId, eventType, RecipientRef, TemplateVersion, MaterialRevision);
+            Assert.StartsWith("ntf_", id);
+        }
+    }
+
     // (2) Changing materialRevision yields a different id
     [Fact]
     public void Derive_DifferentMaterialRevision_ReturnsDifferentId()

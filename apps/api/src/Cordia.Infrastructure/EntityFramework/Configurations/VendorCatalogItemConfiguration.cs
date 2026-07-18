@@ -18,6 +18,8 @@ public class VendorCatalogItemConfiguration : IEntityTypeConfiguration<VendorCat
         builder.Property(e => e.Description).IsRequired();
         builder.Property(e => e.Currency).IsRequired();
 
+        builder.Property(e => e.Modifiers).HasColumnType("jsonb");
+        builder.Property(e => e.AvailabilityWindow).HasColumnType("jsonb");
         builder.Property(e => e.MenuMetadata).HasColumnType("jsonb");
         builder.Property(e => e.AllergenInfo).HasColumnType("jsonb");
 

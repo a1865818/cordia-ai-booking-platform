@@ -17,5 +17,17 @@ public class VendorCatalogConfiguration : IEntityTypeConfiguration<VendorCatalog
         builder.Property(e => e.SourceHash).IsRequired();
 
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+
+        builder.Property(e => e.Version)
+            .IsConcurrencyToken()
+            .HasDefaultValue(0L);
+
+        // M4 / Inv-16: at most one published catalog per tenant. The publish transition is the only
+        // writer of status='published'; this partial unique index makes a concurrent double-publish
+        // fail at the database instead of leaving two live menus — the second publish loses.
+        builder.HasIndex(e => e.TenantId)
+            .HasDatabaseName("uq_published_catalog_per_tenant")
+            .IsUnique()
+            .HasFilter("status = 'published'");
     }
 }

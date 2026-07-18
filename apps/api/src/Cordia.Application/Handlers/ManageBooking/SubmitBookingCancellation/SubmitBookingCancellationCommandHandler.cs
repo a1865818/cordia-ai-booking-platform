@@ -172,7 +172,8 @@ public sealed class SubmitBookingCancellationCommandHandler(
                 booking.CustomerId,
                 VerificationActionEnum.Cancel,
                 booking.BookingId,
-                ct2);
+                targetType: "booking",
+                ct: ct2);
 
             if (!await intentRepo.IntentExistsAsync(command.TenantId, intentId, ct2))
             {

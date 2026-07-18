@@ -188,6 +188,32 @@ def test_redacted_logs_json_serializes_pydantic_datetime_fields() -> None:
 
 
 @pytest.mark.unit
+def test_redacted_logs_mask_pan_shaped_mapping_keys() -> None:
+    """Mapping KEYS render into the log line just like values — a PAN used as
+    a key must mask (Inv-12, parity with the C# LogScrubbingEnricher dictionary
+    lane), and two distinct PAN keys deduplicate (" #2") instead of collapsing
+    into one dict slot and silently dropping an entry. Ordinary key names
+    survive as the labels that show WHAT was masked."""
+    payload = {
+        "4111111111111111": "visa",
+        "378282246310005": "amex",
+        "channel": "voice",
+    }
+
+    redacted = redact_for_logging(payload)
+    serialized = redact_for_logging_json(payload)
+
+    assert "4111111111111111" not in serialized
+    assert "378282246310005" not in serialized
+    assert redacted["[REDACTED]"] == "visa"
+    assert redacted["[REDACTED] #2"] == "amex"
+    assert redacted["channel"] == "voice"
+    assert len(redacted) == 3
+    # Input is not mutated.
+    assert payload["4111111111111111"] == "visa"
+
+
+@pytest.mark.unit
 def test_redacted_logs_preserve_safe_context() -> None:
     payload = {
         "tenant_id": IDENTITY["tenant_id"],

@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Handlers.DeadLetters;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -24,23 +25,30 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ReplayDeadLetterResult>> Replay(
         [FromBody] ReplayRequest? body,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         // With SuppressImplicitRequiredAttributeForNonNullableReferenceTypes on, a missing/null JSON
         // body binds to null rather than auto-400; guard it so we return 400 instead of NRE-ing.
         if (body is null)
-            return Problem(statusCode: 400, title: "Missing body", detail: "A JSON body with messageId and consumerName is required.");
+            return Problem(statusCode: 400, title: "Missing body", detail: "A JSON body with messageId, consumerName, and reasonCode is required.");
 
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
+        // Spec 14 §24.5 — operator identity (X-Actor shim), staff role
+        // (X-Actor-Role, GD-1), and reason code are mandatory for replay; the
+        // validator/behavior reject empty values, the behavior denies role mismatch.
         var result = await mediator.Send(
-            new ReplayDeadLetterCommand(tenant.TenantId, body.MessageId, body.ConsumerName),
+            new ReplayDeadLetterCommand(
+                tenant.TenantId, body.MessageId, body.ConsumerName,
+                actor ?? string.Empty, body.ReasonCode ?? string.Empty,
+                actorRole ?? string.Empty),
             ct);
 
         return Ok(result);
     }
 }
 
-/// <summary>Request body for the replay endpoint.</summary>
-public sealed record ReplayRequest(string MessageId, string ConsumerName);
+/// <summary>Request body for the replay endpoint. reasonCode is mandatory (spec 14 §24.5).</summary>
+public sealed record ReplayRequest(string MessageId, string ConsumerName, string? ReasonCode = null);

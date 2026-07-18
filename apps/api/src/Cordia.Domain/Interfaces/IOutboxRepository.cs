@@ -8,6 +8,12 @@ public interface IOutboxRepository
     Task AddAsync(OutboxMessage message, CancellationToken ct = default);
 
     /// <summary>
+    /// Inserts multiple outbox messages in a single round-trip/commit. Used by batch producers (e.g.
+    /// the recovery sweep) to avoid one commit per message.
+    /// </summary>
+    Task AddRangeAsync(IEnumerable<OutboxMessage> messages, CancellationToken ct = default);
+
+    /// <summary>
     /// Selects up to <paramref name="limit"/> unpublished messages for <paramref name="tenantId"/>
     /// using FOR UPDATE SKIP LOCKED, so concurrent publishers do not double-claim.
     /// Must run inside the caller's ambient transaction.

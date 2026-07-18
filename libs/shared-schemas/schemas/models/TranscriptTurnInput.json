@@ -1,0 +1,4 @@
+{
+  "title": "TranscriptTurnInput",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TranscriptTurnInput"
+}

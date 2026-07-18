@@ -3,6 +3,7 @@ using Cordia.Application.Handlers.Verification.CheckVerification;
 using Cordia.Application.Handlers.Verification.RequestVerification;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -19,8 +20,7 @@ public class VerificationsController(IMediator mediator, ITenantContext tenant) 
         [FromBody] VerificationRequest request,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new RequestVerificationCommand(tenant.TenantId, request), ct);
         return Ok(new RequestVerificationResponse(result.Status, result.Verification));
@@ -32,8 +32,7 @@ public class VerificationsController(IMediator mediator, ITenantContext tenant) 
         string verificationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new CheckVerificationQuery(tenant.TenantId, verificationId), ct);
         return Ok(new CheckVerificationResponse(result.Status, result.Grant));
@@ -48,8 +47,7 @@ public class VerificationsController(IMediator mediator, ITenantContext tenant) 
         [FromHeader(Name = "X-Correlation-Id")] string? correlationId,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(
             new VerifyCodeCommand(

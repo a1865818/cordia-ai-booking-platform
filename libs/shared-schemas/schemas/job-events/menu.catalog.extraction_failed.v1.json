@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/menu.catalog.extraction_failed.v1.json",
+  "title": "MenuCatalogExtractionFailedV1",
+  "description": "Owner-facing alert (spec 11 §8, Inv-14) emitted on the menu.commands lane when the isolated extractor fails for a clean (scanned) catalog artifact. There is no 'extract_failed' status in the frozen catalog_status enum (decision D4), so the catalog is left stuck in 'extracting' and this event — together with the audit row — is how a failed extraction is surfaced to the owner, never silently dropped. Carries NO secrets, artifact bytes, or transcript text (Inv-12) — only the catalog id and a coarse reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_type",
+    "tenant_id",
+    "correlation_id",
+    "catalog_id",
+    "reason"
+  ],
+  "properties": {
+    "message_type": {
+      "type": "string",
+      "const": "menu.catalog.extraction_failed.v1",
+      "description": "Explicit schema discriminator; always 'menu.catalog.extraction_failed.v1' for this contract."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant scope (Inv-13)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Correlation identifier propagated across the ingestion chain (the catalog id)."
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "description": "message_id of the ingestion message that caused this alert (nullable)."
+    },
+    "catalog_id": {
+      "type": "string",
+      "description": "Stable id of the vendor_catalogs row left stuck in 'extracting'."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Coarse machine reason for the failure, e.g. 'extraction_failed'. Never raw extractor output or stack trace."
+    }
+  }
+}

@@ -28,6 +28,7 @@ from cordia_agent.nodes import (
     verify_identity,
 )
 from cordia_agent.observability.metrics import init_metrics
+from cordia_agent.security.consent import consent_gate, route_after_consent_gate
 from cordia_agent.state import AgentInputState, AgentOutputState, AgentState
 
 
@@ -47,6 +48,7 @@ def build_agent_graph() -> StateGraph:
 
     # ------------------------------------------------------------------ nodes
     builder.add_node("resolve_tenant", resolve_tenant)
+    builder.add_node("consent_gate", consent_gate)
     builder.add_node("load_context", load_context)
     builder.add_node("identify_intent", identify_intent)
     builder.add_node("capture_fields", capture_fields)
@@ -60,7 +62,8 @@ def build_agent_graph() -> StateGraph:
 
     # -------------------------------------------------------- unconditional edges
     builder.add_edge(START, "resolve_tenant")
-    builder.add_edge("resolve_tenant", "load_context")
+    # Consent gate (spec 14 §5.1) runs before any transcript-bearing node.
+    builder.add_edge("resolve_tenant", "consent_gate")
     builder.add_edge("load_context", "identify_intent")
     builder.add_edge("identify_intent", "capture_fields")
     builder.add_edge("clarify", "capture_fields")
@@ -70,6 +73,14 @@ def build_agent_graph() -> StateGraph:
     # --------------------------------------------------------- conditional edges
     # Each path_map must enumerate ALL allowed targets so get_graph().edges
     # statically records every transition (required for topology tests).
+    builder.add_conditional_edges(
+        "consent_gate",
+        route_after_consent_gate,
+        {
+            "load_context": "load_context",
+            END: END,
+        },
+    )
     builder.add_conditional_edges(
         "capture_fields",
         route_after_capture_fields,

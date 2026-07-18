@@ -113,4 +113,120 @@ public class RetentionSweepHandler(ApplicationDbContext db)
 
         return new RetentionSweepResult(pruned, skipped);
     }
+
+    /// <summary>
+    /// Anonymizes ended conversation sessions past the retention window
+    /// (spec 14 §24.3): <c>customer_ref</c> is tombstoned (nulled) — the row
+    /// and its consent evidence are PRESERVED for security audit; nothing is
+    /// hard-deleted. Idempotent: already-anonymized rows are not candidates.
+    /// One <c>privacy.retention.session_anonymized</c> audit row per session.
+    /// Authoritative on <paramref name="tenantId"/> (IgnoreQueryFilters +
+    /// explicit predicate), same as the idempotency sweep.
+    /// </summary>
+    public async Task<RetentionSweepResult> SweepConversationSessionsAsync(
+        string tenantId,
+        DateTimeOffset now,
+        TimeSpan? window = null,
+        CancellationToken ct = default)
+    {
+        var effectiveWindow = window ?? RetentionPolicy.DefaultSessionAnonymizationWindow;
+        var cutoff = now - effectiveWindow;
+
+        var candidates = await db.ConversationSessions
+            .IgnoreQueryFilters()
+            .Where(s => s.TenantId == tenantId
+                && s.EndedAt != null && s.EndedAt < cutoff
+                && s.CustomerRef != null)
+            .ToListAsync(ct);
+
+        var anonymized = 0;
+        foreach (var session in candidates)
+        {
+            if (!RetentionPolicy.ShouldAnonymizeSession(session.EndedAt, now, effectiveWindow))
+                continue;
+
+            session.CustomerRef = null;
+            session.Version++;
+
+            db.AuditEvents.Add(new AuditEvent
+            {
+                TenantId = tenantId,
+                EventId = $"audit-{Guid.NewGuid():N}",
+                EventType = "privacy.retention.session_anonymized",
+                Actor = "system",
+                SubjectRef = session.SessionId,
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    reason = "retention_window_elapsed",
+                    ended_at = session.EndedAt,
+                    window_days = effectiveWindow.TotalDays,
+                }),
+                OccurredAt = now,
+            });
+
+            anonymized++;
+        }
+
+        if (anonymized > 0)
+            await db.SaveChangesAsync(ct);
+
+        return new RetentionSweepResult(anonymized, candidates.Count - anonymized);
+    }
+
+    /// <summary>
+    /// Physically prunes verification grants past the retention window
+    /// (spec 14 §24.3; grant lifecycle owned by spec 08): only CONSUMED or
+    /// EXPIRED grants are eligible — an active grant is never touched. One
+    /// <c>privacy.retention.grant_pruned</c> audit row per pruned grant.
+    /// This is the only sanctioned physical-deletion path for
+    /// <c>verification_grants</c>.
+    /// </summary>
+    public async Task<RetentionSweepResult> SweepVerificationGrantsAsync(
+        string tenantId,
+        DateTimeOffset now,
+        TimeSpan? window = null,
+        CancellationToken ct = default)
+    {
+        var effectiveWindow = window ?? RetentionPolicy.DefaultGrantPruneWindow;
+        var cutoff = now - effectiveWindow;
+
+        var candidates = await db.VerificationGrants
+            .IgnoreQueryFilters()
+            .Where(g => g.TenantId == tenantId
+                && ((g.ConsumedAt != null && g.ConsumedAt < cutoff) || g.ExpiresAt < cutoff))
+            .ToListAsync(ct);
+
+        var pruned = 0;
+        foreach (var grant in candidates)
+        {
+            if (!RetentionPolicy.ShouldPruneGrant(grant.ExpiresAt, grant.ConsumedAt, now, effectiveWindow))
+                continue;
+
+            db.VerificationGrants.Remove(grant);
+
+            db.AuditEvents.Add(new AuditEvent
+            {
+                TenantId = tenantId,
+                EventId = $"audit-{Guid.NewGuid():N}",
+                EventType = "privacy.retention.grant_pruned",
+                Actor = "system",
+                SubjectRef = grant.GrantId,
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    reason = "retention_window_elapsed",
+                    expires_at = grant.ExpiresAt,
+                    consumed = grant.ConsumedAt != null,
+                    window_days = effectiveWindow.TotalDays,
+                }),
+                OccurredAt = now,
+            });
+
+            pruned++;
+        }
+
+        if (pruned > 0)
+            await db.SaveChangesAsync(ct);
+
+        return new RetentionSweepResult(pruned, candidates.Count - pruned);
+    }
 }

@@ -126,6 +126,13 @@ repos:
 # ============================================
 - repo: local
   hooks:
+  - id: check-migrations-immutable
+    name: Applied EF migrations are immutable
+    entry: bash tools/scripts/check_migrations_immutable.sh
+    language: system
+    files: ^apps/api/src/Cordia\.Infrastructure/EntityFramework/Migrations/
+    pass_filenames: false
+    stages: [pre-commit]
   - id: dotnet-format
     name: .NET format check
     entry: bun nx run api:lint

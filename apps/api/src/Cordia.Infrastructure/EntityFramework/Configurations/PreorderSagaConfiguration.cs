@@ -26,6 +26,16 @@ public class PreorderSagaConfiguration : IEntityTypeConfiguration<PreorderSaga>
             .IsRequired()
             .HasColumnType("jsonb");
 
+        builder.Property(e => e.IsStandalone)
+            .HasDefaultValue(false);
+
+        // One saga per operation (§5.3): the start is idempotent on the operation (GetByOperationAsync
+        // pre-check), and this unique index is the DB backstop so two concurrent start deliveries can
+        // never insert two sagas for the same operation (keeps operation-scoped lookups deterministic).
+        builder.HasIndex(e => new { e.TenantId, e.OperationId })
+            .HasDatabaseName("uq_preorder_saga_per_operation")
+            .IsUnique();
+
         // FK (tenant_id, operation_id) → booking_operations ON DELETE RESTRICT
         builder.HasOne<BookingOperation>()
             .WithMany()

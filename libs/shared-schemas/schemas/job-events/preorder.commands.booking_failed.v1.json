@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/preorder.commands.booking_failed.v1.json",
+  "title": "PreorderCommandsBookingFailedV1",
+  "description": "06 → saga signal (spec 11 §5.3, Inv-8): the spec-06 operation engine reached a terminal failure (compensated / failed_final / declined-alternatives) for a pre-order operation and, because the operation is marked IsPreorder, signals the saga instead of emitting the customer failure notification directly. On receipt the saga releases the reserved items (CommittingBooking → CompensatingItems → FailedFinal) and emits the one combined failure outcome. Routed to the 'preorder.processor' consumer; inbox-deduplicated and idempotent under duplicate delivery (Inv-5/Inv-9). Carries only opaque ids + a coarse reason (Inv-12) — the saga is resolved by operation_id, so no saga_id is required.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_type", "tenant_id", "operation_id"],
+  "properties": {
+    "message_type": { "type": "string", "const": "preorder.commands.booking_failed.v1", "description": "Explicit schema discriminator." },
+    "tenant_id": { "type": "string", "description": "Tenant scope (Inv-13)." },
+    "operation_id": { "type": "string", "description": "Owning booking operation id; the saga is looked up by this." },
+    "reason": { "type": ["string", "null"], "description": "Coarse failure reason, e.g. 'compensated' | 'failed_final' | 'alternatives_declined' (never card data, Inv-12)." },
+    "correlation_id": { "type": ["string", "null"], "description": "Correlation id propagated across the saga chain." },
+    "causation_id": { "type": ["string", "null"], "description": "message_id of the direct cause (nullable)." }
+  }
+}

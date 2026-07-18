@@ -446,4 +446,51 @@ public class SendNotificationTests
             NotificationState.Sending, nextTime, It.IsAny<string?>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    // ── 10. Spec 11: operation-less events (waitlist offer — op row minted only at accept) ─────────
+
+    [Fact]
+    public async Task MissingOperation_RequiresOperationTrue_AcksAndDrops()
+    {
+        // Arrange: no booking_operations row for the operation id.
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BookingOperation?)null);
+
+        // Act — default command (RequiresOperation = true).
+        var result = await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        // Assert: ack-and-drop — nothing inserted, nothing sent.
+        Assert.Equal(Unit.Value, result);
+        _repo.Verify(r => r.TryInsertAsync(It.IsAny<Notification>(), It.IsAny<CancellationToken>()), Times.Never);
+        _smsAdapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MissingOperation_RequiresOperationFalse_SendsAtMaterialRevisionZero()
+    {
+        // Arrange: happy path EXCEPT the operation row does not exist (waitlist offer: the op_wl_*
+        // operation is only minted at accept — spec 11 §5.1).
+        SetupHappyPath();
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BookingOperation?)null);
+        _smsAdapter.Setup(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_wl", null));
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, It.IsAny<string>(), 1L, NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var command = new SendNotificationCommand(
+            TenantId, OperationId, MessageId,
+            NotificationEvent.WaitlistOffer, MessagePriority.Critical, null,
+            RequiresOperation: false);
+
+        // Act
+        var result = await BuildHandler().Handle(command, CancellationToken.None);
+
+        // Assert: the notification row is inserted at material revision 0 and the send proceeds.
+        Assert.Equal(Unit.Value, result);
+        _repo.Verify(r => r.TryInsertAsync(
+            It.Is<Notification>(n => n.MaterialRevision == 0 && n.EventType == NotificationEvent.WaitlistOffer),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _smsAdapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cordia.app/schemas/job-events/preorder.commands.start.v1.json",
+  "title": "PreorderCommandsStartV1",
+  "description": "Queue-only trigger (spec 11 §5.3) starting the pre-order saga on the preorder.commands lane (consumer 'preorder.processor'). Enqueued for a confirmed intent that carries a PreorderReference; the reference is copied verbatim from the confirmed, immutable revision (part of the canonical hash, Inv-1/Inv-2). Carries opaque ids + the immutable reference only — never card data, PAN, or transcript text (Inv-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_type", "tenant_id", "operation_id", "preorder_reference"],
+  "properties": {
+    "message_type": { "type": "string", "const": "preorder.commands.start.v1", "description": "Explicit schema discriminator." },
+    "tenant_id": { "type": "string", "description": "Tenant scope (Inv-13)." },
+    "operation_id": { "type": "string", "description": "Owning booking operation id (the saga runs under it; Inv-2/3)." },
+    "correlation_id": { "type": ["string", "null"], "description": "Correlation id propagated across the saga chain." },
+    "causation_id": { "type": ["string", "null"], "description": "message_id of the direct cause (nullable)." },
+    "preorder_reference": {
+      "type": "object",
+      "description": "The immutable PreorderReference (catalog_version, lines, confirmation_id) copied from the confirmed revision; revalidated before commit.",
+      "additionalProperties": true
+    },
+    "standalone": { "type": ["boolean", "null"], "description": "True for a standalone order (§21.4): skips the capacity-hold + booking-commit steps." },
+    "slot_id": { "type": ["string", "null"], "description": "Booking slot the capacity hold is taken against (null for standalone)." },
+    "requested_capacity": { "type": ["integer", "null"], "description": "Seats/covers to hold for the booking (0/absent for standalone)." }
+  }
+}

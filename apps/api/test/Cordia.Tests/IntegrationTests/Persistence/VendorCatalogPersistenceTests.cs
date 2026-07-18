@@ -72,4 +72,34 @@ public class VendorCatalogPersistenceTests(PostgresFixture fixture)
         Assert.Contains("fish", contains);
         Assert.Contains("dairy", contains);
     }
+
+    // (2) Version concurrency token defaults to 0 on insert and round-trips (§22.1).
+    [Fact]
+    public async Task Insert_Catalog_VersionTokenDefaultsToZero()
+    {
+        var tenantId = $"t5-vcv-{Guid.NewGuid():N}";
+        var catalogId = $"cat-{Guid.NewGuid():N}";
+
+        var catalog = new VendorCatalog
+        {
+            TenantId = tenantId,
+            CatalogId = catalogId,
+            VersionLabel = "menu-2026-v1",
+            Status = CatalogStatus.Uploaded,
+            SourceHash = "sha256-abc123",
+        };
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VendorCatalogs.Add(catalog);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var readCtx = fixture.CreateContext(tenantId);
+
+        var loaded = await readCtx.VendorCatalogs.AsNoTracking()
+            .SingleAsync(c => c.CatalogId == catalogId);
+
+        Assert.Equal(0L, loaded.Version);
+    }
 }

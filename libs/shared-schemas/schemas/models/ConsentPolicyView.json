@@ -1,0 +1,4 @@
+{
+  "title": "ConsentPolicyView",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/ConsentPolicyView"
+}

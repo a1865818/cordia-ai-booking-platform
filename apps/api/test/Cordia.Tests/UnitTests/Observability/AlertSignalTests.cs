@@ -81,7 +81,8 @@ public class AlertSignalTests : IDisposable
             Mock.Of<IBookingOperationRepository>(),
             Mock.Of<IOutboxRepository>(),
             Mock.Of<IAuditEventRepository>(),
-            _metrics);
+            _metrics,
+            Mock.Of<IConversationSessionRepository>());
 
         var command = BuildCommand(tenantId, idemKey, confirmationHash: "HASH_NEW");
 
@@ -123,7 +124,8 @@ public class AlertSignalTests : IDisposable
             Mock.Of<IBookingOperationRepository>(),
             Mock.Of<IOutboxRepository>(),
             Mock.Of<IAuditEventRepository>(),
-            _metrics);
+            _metrics,
+            Mock.Of<IConversationSessionRepository>());
 
         var command = BuildCommand(tenantId, idemKey, confirmationHash: "HASH_SAME");
 

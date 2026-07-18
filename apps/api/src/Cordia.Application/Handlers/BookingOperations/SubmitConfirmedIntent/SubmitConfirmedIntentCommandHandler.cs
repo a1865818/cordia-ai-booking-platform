@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Cordia.Application.Common;
+using Cordia.Application.Handlers.Preorder;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -33,7 +34,8 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     IBookingOperationRepository operationRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
-    Metrics metrics)
+    Metrics metrics,
+    IConversationSessionRepository sessions)
     : IRequestHandler<SubmitConfirmedIntentCommand, AcceptanceResult>
 {
     // §13.3: retain idempotency records for booking life + dispute/audit window.
@@ -231,6 +233,13 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 ConfirmedAt = confirmation.ConfirmedAt,
             }, ct2);
 
+            // Spec 11 §5.3 — a confirmed revision carrying a non-empty PreorderReference is a
+            // pre-order: mark the operation and route it to the pre-order saga (which reserves items,
+            // then delegates the whole booking — capacity/payment/create — to the 06 engine) instead
+            // of straight to 06. This wires the saga's missing producer. Non-pre-order path unchanged.
+            var preorder = revision.CanonicalPayload.Preorder;
+            bool isPreorder = preorder is { Lines.Count: > 0 };
+
             await operationRepo.AddAsync(new BookingOperation
             {
                 TenantId = command.TenantId,
@@ -240,30 +249,65 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 OperationType = operationType,
                 Status = OperationStatus.Accepted,
                 SupersededOperationId = request.ReplacesOperationId,
+                IsPreorder = isPreorder,
                 Version = 0,
                 CreatedAt = now,
                 UpdatedAt = now,
             }, ct2);
 
-            await outboxRepo.AddAsync(new OutboxMessage
-            {
-                TenantId = command.TenantId,
-                MessageId = $"obx_{Guid.NewGuid():N}",
-                OperationId = request.OperationId,
-                MessageType = "booking.command.requested.v1",
-                CorrelationId = request.OperationId,
-                CausationId = null,
-                // Payload carries only non-sensitive identity/routing fields (Inv-12 — no PAN/CVV).
-                Payload = JsonSerializer.Serialize(new
+            // Payloads carry only non-sensitive identity/routing fields (Inv-12 — no PAN/CVV).
+            var outbox = isPreorder
+                ? new OutboxMessage
                 {
-                    operation_id = request.OperationId,
-                    intent_id = revision.IntentId,
-                    intent_revision = revision.Revision,
-                    tenant_id = command.TenantId,
-                    operation_type = operationType.ToString().ToLowerInvariant(),
-                }),
-                OccurredAt = now,
-            }, ct2);
+                    TenantId = command.TenantId,
+                    MessageId = $"obx_{Guid.NewGuid():N}",
+                    OperationId = request.OperationId,
+                    MessageType = PreorderSagaMessages.Start, // preorder.commands.start.v1
+                    CorrelationId = request.OperationId,
+                    CausationId = null,
+                    Payload = JsonSerializer.Serialize(new
+                    {
+                        operation_id = request.OperationId,
+                        tenant_id = command.TenantId,
+                        // The immutable reference copied verbatim from the confirmed revision (part of
+                        // the canonical hash, Inv-1/Inv-2). Serialised with the generated converter so
+                        // the saga round-trips it against the same property names.
+                        preorder_reference = JsonSerializer.SerializeToNode(
+                            preorder, Cordia.Domain.Generated.Converter.Settings),
+                        // Booking is delegated to the 06 engine (07 capacity derived from the operation's
+                        // revision). Standalone conversion (§21.4) is a separate operator path — the saga
+                        // never starts standalone, so no start-time flags are carried.
+                    }),
+                    OccurredAt = now,
+                }
+                : new OutboxMessage
+                {
+                    TenantId = command.TenantId,
+                    MessageId = $"obx_{Guid.NewGuid():N}",
+                    OperationId = request.OperationId,
+                    MessageType = "booking.command.requested.v1",
+                    CorrelationId = request.OperationId,
+                    CausationId = null,
+                    Payload = JsonSerializer.Serialize(new
+                    {
+                        operation_id = request.OperationId,
+                        intent_id = revision.IntentId,
+                        intent_revision = revision.Revision,
+                        tenant_id = command.TenantId,
+                        operation_type = operationType.ToString().ToLowerInvariant(),
+                    }),
+                    OccurredAt = now,
+                };
+            await outboxRepo.AddAsync(outbox, ct2);
+
+            // Spec 14 §4.2 — stamp the consent state in force at acceptance onto
+            // the durable acceptance audit, so the workflow can later prove
+            // recording/processing was permitted for THIS submission even if the
+            // session's consent row is subsequently re-recorded. One PK read
+            // inside the acceptance transaction (§7 budget: negligible).
+            var session = string.IsNullOrWhiteSpace(revision.SourceSessionId)
+                ? null
+                : await sessions.GetAsync(command.TenantId, revision.SourceSessionId, ct2);
 
             await auditRepo.AddAsync(new AuditEvent
             {
@@ -278,6 +322,14 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 {
                     intent_id = revision.IntentId,
                     intent_revision = revision.Revision,
+                    consent = session is null ? null : new
+                    {
+                        state = session.ConsentState?.ToString(),
+                        policy_version = session.ConsentPolicyVersion,
+                        jurisdiction_policy_id = session.JurisdictionPolicyId,
+                        recording_allowed = session.RecordingAllowed,
+                        recorded_at = session.ConsentRecordedAt,
+                    },
                 }),
                 OccurredAt = now,
             }, ct2);

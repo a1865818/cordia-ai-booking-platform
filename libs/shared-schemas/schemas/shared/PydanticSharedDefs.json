@@ -274,6 +274,16 @@
       "title": "AgentTextFinalFrame",
       "type": "object"
     },
+    "AppendTranscriptTurnStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AppendTranscriptTurnStatus",
+      "description": "Status codes for append_transcript_turn (spec 14 \u00a74.3/\u00a75.2).\n\n    Consent suppression is NOT a status \u2014 the envelope is ok with\n    ``persisted=false`` in the payload (\u00a75.2: a suppressed turn is a normal\n    outcome the pipeline must not retry).",
+      "type": "string",
+      "enum": [
+        "ok",
+        "not_found"
+      ]
+    },
     "AudioStartedFrame": {
       "additionalProperties": false,
       "description": "Audio capture started; no payload beyond the envelope.",
@@ -340,6 +350,123 @@
         "ts"
       ],
       "title": "AudioStartedFrame",
+      "type": "object"
+    },
+    "AuditEventEnvelope": {
+      "additionalProperties": false,
+      "description": "Cross-service audit record emitted by either lane (spec 14 \u00a74.1, D13).",
+      "properties": {
+        "audit_event_id": {
+          "description": "Stable opaque id for the audit record.",
+          "title": "Audit Event Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Owning tenant (Inv-13).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Request/session correlation id (\u00a725.1).",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Id of the message/command that caused this event.",
+          "title": "Causation Id"
+        },
+        "actor_type": {
+          "description": "Class of actor that performed the action.",
+          "enum": [
+            "customer",
+            "owner",
+            "operator",
+            "agent",
+            "system"
+          ],
+          "title": "Actor Type",
+          "type": "string"
+        },
+        "actor_id": {
+          "description": "Actor identity, e.g. operator handle or 'system'.",
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "action": {
+          "description": "Action performed, e.g. 'read_sensitive_booking', 'operator_replay'.",
+          "title": "Action",
+          "type": "string"
+        },
+        "target_type": {
+          "description": "Kind of target, e.g. 'booking', 'transcript'.",
+          "title": "Target Type",
+          "type": "string"
+        },
+        "target_id": {
+          "description": "Target identifier.",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required for owner/operator actions (\u00a724.5); None for others.",
+          "title": "Reason Code"
+        },
+        "decision": {
+          "description": "Whether the action was allowed or denied (both are audited, \u00a73.1).",
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "data_classes": {
+          "description": "Data classes touched, e.g. ['pii', 'booking', 'payment_token'].",
+          "items": {
+            "type": "string"
+          },
+          "title": "Data Classes",
+          "type": "array"
+        },
+        "occurred_at": {
+          "description": "When the audited action occurred (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "audit_event_id",
+        "tenant_id",
+        "correlation_id",
+        "actor_type",
+        "actor_id",
+        "action",
+        "target_type",
+        "target_id",
+        "decision",
+        "data_classes",
+        "occurred_at"
+      ],
+      "title": "AuditEventEnvelope",
       "type": "object"
     },
     "AvailabilityCandidate": {
@@ -477,6 +604,56 @@
         "mode"
       ],
       "title": "AvailabilityResult",
+      "type": "object"
+    },
+    "AvailabilityWindow": {
+      "additionalProperties": false,
+      "description": "When an item is orderable (spec 11 \u00a74.2).\n\nAll fields optional; ``None`` everywhere \u21d2 always available. Times are local\ntime-of-day (the tenant timezone, resolved from tenant context), 24-hour ``HH:MM``.\nThis is descriptive metadata only \u2014 fulfillment-time availability is never guaranteed\nby the foreground agent (\u00a721.2); the pre-order saga revalidates before commit.",
+      "properties": {
+        "days_of_week": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lowercase day abbreviations, e.g. ['mon','tue']; None \u21d2 all days.",
+          "title": "Days Of Week"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Local time-of-day 'HH:MM' (24h); None \u21d2 open.",
+          "title": "Start Time"
+        },
+        "end_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Local time-of-day 'HH:MM' (24h); None \u21d2 open.",
+          "title": "End Time"
+        }
+      },
+      "title": "AvailabilityWindow",
       "type": "object"
     },
     "BargeInFrame": {
@@ -664,6 +841,18 @@
         "request": {
           "$ref": "#/$defs/BookingRequest",
           "description": "The booking request."
+        },
+        "preorder_draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreorderDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mutable in-dialog pre-order draft, or None when none in progress."
         },
         "source": {
           "$ref": "#/$defs/SourceInfo",
@@ -857,6 +1046,18 @@
           "title": "Special Requests",
           "type": "array"
         },
+        "preorder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreorderReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Immutable pre-order reference, or None when no pre-order."
+        },
         "target_booking_id": {
           "anyOf": [
             {
@@ -957,6 +1158,151 @@
       "title": "CaptureMethod",
       "type": "string"
     },
+    "CatalogItem": {
+      "additionalProperties": false,
+      "description": "A single catalog item (spec 11 \u00a74.2).\n\nOnly ``name``, ``description``, and ``price`` are needed for common\ndiscovery; the remaining fields are optional. ``extraction_confidence`` and\n``source_location`` are set ONLY by the isolated extraction agent and are\nexcluded from foreground tool results (never customer-facing as fact).",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque item id, e.g. 'item_01...'.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Item display name.",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "Item description.",
+          "title": "Description",
+          "type": "string"
+        },
+        "price": {
+          "$ref": "#/$defs/Money",
+          "description": "Item price."
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional menu category.",
+          "title": "Category"
+        },
+        "modifiers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CatalogModifier"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional selectable modifiers (\u00a721.3).",
+          "title": "Modifiers"
+        },
+        "allergens": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen labels.",
+          "title": "Allergens"
+        },
+        "dietary_labels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional dietary labels (e.g. 'vegan').",
+          "title": "Dietary Labels"
+        },
+        "availability_window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AvailabilityWindow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional orderable window; None \u21d2 always available."
+        },
+        "image_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional opaque image reference (e.g. object-store key).",
+          "title": "Image Ref"
+        },
+        "extraction_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Draft-only: extraction-agent confidence; never customer-facing.",
+          "title": "Extraction Confidence"
+        },
+        "source_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Draft-only: artifact source location; never customer-facing.",
+          "title": "Source Location"
+        }
+      },
+      "required": [
+        "item_id",
+        "name",
+        "description",
+        "price"
+      ],
+      "title": "CatalogItem",
+      "type": "object"
+    },
     "CatalogItemStatus": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "CatalogItemStatus",
@@ -967,6 +1313,40 @@
         "not_found",
         "catalog_unavailable"
       ]
+    },
+    "CatalogModifier": {
+      "additionalProperties": false,
+      "description": "A selectable item modifier (spec 11 \u00a74.2, \u00a721.3).\n\nCarries a stable ``modifier_id`` referenced by ``PreorderDraftLine.modifier_ids`` and\ncaptured into the immutable ``PreorderReference``. ``price_delta`` is added to the base\nitem price when selected; ``None`` means a free modifier.",
+      "properties": {
+        "modifier_id": {
+          "description": "Stable opaque modifier id, e.g. 'mod_01...'.",
+          "title": "Modifier Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Modifier display name, e.g. 'Extra cheese'.",
+          "title": "Name",
+          "type": "string"
+        },
+        "price_delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Price added when selected; None \u21d2 free."
+        }
+      },
+      "required": [
+        "modifier_id",
+        "name"
+      ],
+      "title": "CatalogModifier",
+      "type": "object"
     },
     "Channel": {
       "description": "Origin channel a draft was captured on.",
@@ -1087,6 +1467,81 @@
         "verification_level"
       ],
       "title": "Confirmation",
+      "type": "object"
+    },
+    "ConsentPolicyView": {
+      "additionalProperties": false,
+      "description": "Output payload for resolve_consent_policy (spec 14 \u00a75.1).\n\nResolved from tenant + channel jurisdiction config by the API; the agent\nnever decides jurisdiction policy locally.",
+      "properties": {
+        "jurisdiction_policy_id": {
+          "description": "Resolved jurisdiction policy identifier, e.g. 'jp_au_default'.",
+          "title": "Jurisdiction Policy Id",
+          "type": "string"
+        },
+        "consent_policy_version": {
+          "description": "Version of the notice/policy to present, e.g. 'au-default:2026-01'.",
+          "title": "Consent Policy Version",
+          "type": "string"
+        },
+        "notice_required": {
+          "description": "True iff a recording notice + explicit outcome capture is required.",
+          "title": "Notice Required",
+          "type": "boolean"
+        },
+        "notice_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Notice wording to play/display when notice_required; None \u21d2 agent default.",
+          "title": "Notice Text"
+        },
+        "redaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RedactionPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tenant redaction policy resolved by the API (spec 14 \u00a74.1); the consent gate installs it via set_redaction_policy. None \u21d2 the always-on baseline stays active (additive, older servers omit it)."
+        }
+      },
+      "required": [
+        "jurisdiction_policy_id",
+        "consent_policy_version",
+        "notice_required"
+      ],
+      "title": "ConsentPolicyView",
+      "type": "object"
+    },
+    "ConsentRecordedResult": {
+      "additionalProperties": false,
+      "description": "Output payload for record_consent (spec 14 \u00a75.1).",
+      "properties": {
+        "session_id": {
+          "description": "Session the consent was recorded on.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "recording_allowed": {
+          "description": "Authoritative persisted recording gate after the update.",
+          "title": "Recording Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "recording_allowed"
+      ],
+      "title": "ConsentRecordedResult",
       "type": "object"
     },
     "CorrelationContext": {
@@ -1741,6 +2196,95 @@
       "title": "MaskedDtmfSignal",
       "type": "object"
     },
+    "ModelTraceInput": {
+      "additionalProperties": false,
+      "description": "Input for record_model_trace \u2014 one REDACTED model prompt/output (spec 13 \u00a725.3).\n\nModel traces are telemetry, not recordings: no consent gate applies, but the content\nMUST pass ``redact_text`` before entering this contract (Inv-12), is stored encrypted\nunder the strictly-shorter model-trace TTL, and is NEVER written to app logs.",
+      "properties": {
+        "trace_id": {
+          "description": "Stable opaque trace identifier (idempotent per id).",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Session the trace belongs to, when applicable.",
+          "title": "Session Id"
+        },
+        "kind": {
+          "description": "Which side of the model call this is.",
+          "enum": [
+            "prompt",
+            "output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "content": {
+          "description": "REDACTED prompt/output text (post redact_text; never raw).",
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id",
+        "kind",
+        "content"
+      ],
+      "title": "ModelTraceInput",
+      "type": "object"
+    },
+    "ModelTraceRecorded": {
+      "additionalProperties": false,
+      "description": "Output payload for record_model_trace (spec 13 \u00a725.3).",
+      "properties": {
+        "trace_id": {
+          "description": "Echo of the stored trace id.",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "stored": {
+          "description": "True when the trace was persisted.",
+          "title": "Stored",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trace_id",
+        "stored"
+      ],
+      "title": "ModelTraceRecorded",
+      "type": "object"
+    },
+    "Money": {
+      "additionalProperties": false,
+      "description": "A monetary amount in ISO-4217 minor units (spec 11 \u00a74.2).",
+      "properties": {
+        "amount_minor": {
+          "description": "Minor units, e.g. 2200 = $22.00.",
+          "title": "Amount Minor",
+          "type": "integer"
+        },
+        "currency": {
+          "description": "ISO 4217 code, e.g. 'AUD'.",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount_minor",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
     "NormalizedOperationStatus": {
       "description": "Customer/agent-facing operation status from get_operation_status (spec 06).",
       "enum": [
@@ -1953,6 +2497,186 @@
       "title": "PolicyValidationResult",
       "type": "object"
     },
+    "PreorderDraft": {
+      "additionalProperties": false,
+      "description": "The MUTABLE, in-dialog pre-order draft assembled inside the foreground ``BookingDraft``\n(spec 11 \u00a74.3, \u00a72 \u2014 the agent only *drafts*).\n\nThe agent builds this up turn by turn from the published-catalog read tools; it holds no prices\nand is never itself the booking side effect. At confirmation it is frozen into the immutable\n:class:`PreorderReference` (via :meth:`to_reference`), which is what gets embedded in the confirmed\nintent revision and folded into the canonical request hash (Inv-1/Inv-2). The draft is foreground\nstate only \u2014 it never crosses into a durable side effect on its own.",
+      "properties": {
+        "catalog_version": {
+          "description": "Published menu version the draft is being built against.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "lines": {
+          "description": "In-progress pre-order lines (mutable during the dialog).",
+          "items": {
+            "$ref": "#/$defs/PreorderDraftLine"
+          },
+          "title": "Lines",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalog_version"
+      ],
+      "title": "PreorderDraft",
+      "type": "object"
+    },
+    "PreorderDraftLine": {
+      "additionalProperties": false,
+      "description": "One MUTABLE, in-dialog pre-order line (spec 11 \u00a74.3).\n\nUnlike :class:`PreorderLineReference` this carries NO captured price \u2014 a draft line is assembled\nwhile the customer is still choosing, and the price is only captured (from the live published\ncatalog) when the draft is frozen into an immutable :class:`PreorderReference` at confirmation.",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque catalog item id.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "modifier_ids": {
+          "description": "Stable modifier ids selected on this line; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifier Ids",
+          "type": "array"
+        },
+        "quantity": {
+          "description": "Number of this item ordered (\u2265 1).",
+          "minimum": 1,
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen / preparation notes.",
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "item_id",
+        "quantity"
+      ],
+      "title": "PreorderDraftLine",
+      "type": "object"
+    },
+    "PreorderLineReference": {
+      "additionalProperties": false,
+      "description": "One immutable pre-order line (spec 11 \u00a74.3, \u00a721.3).",
+      "properties": {
+        "item_id": {
+          "description": "Stable opaque catalog item id.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "modifier_ids": {
+          "description": "Stable modifier ids selected on this line; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifier Ids",
+          "type": "array"
+        },
+        "quantity": {
+          "description": "Number of this item ordered (\u2265 1).",
+          "minimum": 1,
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "captured_price_amount_minor": {
+          "description": "Per-unit price quoted at confirmation, in ISO-4217 minor units.",
+          "title": "Captured Price Amount Minor",
+          "type": "integer"
+        },
+        "captured_price_currency": {
+          "description": "ISO 4217 code, e.g. 'AUD'.",
+          "title": "Captured Price Currency",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allergen / preparation notes.",
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "item_id",
+        "quantity",
+        "captured_price_amount_minor",
+        "captured_price_currency"
+      ],
+      "title": "PreorderLineReference",
+      "type": "object"
+    },
+    "PreorderReference": {
+      "additionalProperties": false,
+      "description": "Immutable pre-order reference captured at confirmation (spec 11 \u00a74.3).\n\nCarries the immutable menu version, the ordered lines, and the customer confirmation\nevidence id. Embedded in the confirmed intent revision (part of the canonical hash).",
+      "properties": {
+        "catalog_version": {
+          "description": "IMMUTABLE published menu version label.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "lines": {
+          "description": "Ordered pre-order lines.",
+          "items": {
+            "$ref": "#/$defs/PreorderLineReference"
+          },
+          "title": "Lines",
+          "type": "array"
+        },
+        "confirmation_id": {
+          "description": "Customer confirmation evidence id (\u00a721.3).",
+          "title": "Confirmation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_version",
+        "lines",
+        "confirmation_id"
+      ],
+      "title": "PreorderReference",
+      "type": "object"
+    },
+    "PublishedCatalog": {
+      "additionalProperties": false,
+      "description": "An immutable published catalog version (spec 11 \u00a74.2).",
+      "properties": {
+        "catalog_version": {
+          "description": "Immutable version label, e.g. 'menu_2026_06_16'.",
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "items": {
+          "description": "Items contained in this published version.",
+          "items": {
+            "$ref": "#/$defs/CatalogItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalog_version",
+        "items"
+      ],
+      "title": "PublishedCatalog",
+      "type": "object"
+    },
     "ReconnectOutcome": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ReconnectOutcome",
@@ -1963,6 +2687,86 @@
         "failed",
         "handoff_signalled"
       ]
+    },
+    "RecordConsentInput": {
+      "additionalProperties": false,
+      "description": "Input for record_consent \u2014 updates consent_* on the session row via the API (D12).",
+      "properties": {
+        "session_id": {
+          "description": "Conversation session whose consent_* fields are updated.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "consent": {
+          "$ref": "#/$defs/SessionConsentState",
+          "description": "The captured consent outcome to persist (spec 14 \u00a74.1)."
+        }
+      },
+      "required": [
+        "session_id",
+        "consent"
+      ],
+      "title": "RecordConsentInput",
+      "type": "object"
+    },
+    "RecordConsentStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RecordConsentStatus",
+      "description": "Status codes for record_consent (spec 14 \u00a75.1, D12).",
+      "type": "string",
+      "enum": [
+        "recorded",
+        "session_not_found"
+      ]
+    },
+    "RecordModelTraceStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RecordModelTraceStatus",
+      "description": "Status codes for record_model_trace (spec 13 \u00a725.3).",
+      "type": "string",
+      "enum": [
+        "ok"
+      ]
+    },
+    "RedactionPolicy": {
+      "additionalProperties": false,
+      "description": "Sensitive-data masking policy (spec 14 \u00a74.1, Inv-12).\n\nPAN/CVV masking is always-on by contract default; ``configured_sensitive_fields``\nstarts empty and is tenant-overridable (Stage-3 gate decision, 2026-07-09).",
+      "properties": {
+        "mask_pan": {
+          "default": true,
+          "description": "Always-on card-number masking (Inv-12).",
+          "title": "Mask Pan",
+          "type": "boolean"
+        },
+        "mask_cvv": {
+          "default": true,
+          "description": "Always-on CVV/CVC masking (Inv-12).",
+          "title": "Mask Cvv",
+          "type": "boolean"
+        },
+        "mask_government_id": {
+          "default": true,
+          "description": "Government-identifier masking (SSN/TFN-style patterns).",
+          "title": "Mask Government Id",
+          "type": "boolean"
+        },
+        "configured_sensitive_fields": {
+          "description": "Tenant-defined field-name selectors masked in payloads/logs; empty \u21d2 none.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Configured Sensitive Fields",
+          "type": "array"
+        },
+        "mask_token": {
+          "default": "[REDACTED]",
+          "description": "Replacement token for masked spans.",
+          "title": "Mask Token",
+          "type": "string"
+        }
+      },
+      "title": "RedactionPolicy",
+      "type": "object"
     },
     "RequestHumanHandoffStatus": {
       "description": "Status codes for request_human_handoff (spec 03 \u00a74.3).",
@@ -1985,6 +2789,75 @@
         "rate_limited",
         "no_verified_destination"
       ]
+    },
+    "ResolveConsentPolicyStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ResolveConsentPolicyStatus",
+      "description": "Status codes for resolve_consent_policy (spec 14 \u00a75.1).",
+      "type": "string",
+      "enum": [
+        "resolved",
+        "policy_unavailable"
+      ]
+    },
+    "SessionConsentState": {
+      "additionalProperties": false,
+      "description": "Recording/transcription consent captured at session start (spec 14 \u00a74.1).",
+      "properties": {
+        "consent_policy_version": {
+          "description": "Version of the notice/policy presented, e.g. 'us-ca-two-party:2026-01'.",
+          "title": "Consent Policy Version",
+          "type": "string"
+        },
+        "jurisdiction_policy_id": {
+          "description": "Policy resolved from tenant + caller jurisdiction.",
+          "title": "Jurisdiction Policy Id",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "Consent outcome; values match the ratified consent_state pg-enum (spec 12).",
+          "enum": [
+            "granted",
+            "declined",
+            "not_required",
+            "alternative_offered"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "recording_allowed": {
+          "description": "Gate for transcript/audio capture; False \u21d2 no transcript persisted (\u00a75.2).",
+          "title": "Recording Allowed",
+          "type": "boolean"
+        },
+        "captured_at": {
+          "description": "When the outcome was captured (offset-aware ISO-8601).",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "notice_channel": {
+          "description": "Channel the required notice was played/displayed on.",
+          "enum": [
+            "voice",
+            "web",
+            "messaging",
+            "email"
+          ],
+          "title": "Notice Channel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consent_policy_version",
+        "jurisdiction_policy_id",
+        "outcome",
+        "recording_allowed",
+        "captured_at",
+        "notice_channel"
+      ],
+      "title": "SessionConsentState",
+      "type": "object"
     },
     "SourceInfo": {
       "additionalProperties": false,
@@ -2618,6 +3491,79 @@
         "stability"
       ],
       "title": "TranscriptPartialFrame",
+      "type": "object"
+    },
+    "TranscriptTurnInput": {
+      "additionalProperties": false,
+      "description": "Input for append_transcript_turn \u2014 one REDACTED transcript turn (spec 14 \u00a74.3/\u00a75.2).\n\nThe text MUST already have passed ``redact_text`` before entering this contract (Inv-12);\nthe API re-sanitizes at the boundary regardless. The server enforces the consent gate\nauthoritatively \u2014 a non-consented session suppresses the turn (``persisted=false``).",
+      "properties": {
+        "session_id": {
+          "description": "Conversation session the turn belongs to (D12 row).",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic turn sequence within the session (orders the transcript).",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "turn_id": {
+          "description": "The turn identifier from the streaming envelope.",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "speaker": {
+          "description": "Who spoke this turn.",
+          "enum": [
+            "customer",
+            "agent"
+          ],
+          "title": "Speaker",
+          "type": "string"
+        },
+        "text": {
+          "description": "REDACTED turn text (post redact_text; never raw).",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "turn_id",
+        "speaker",
+        "text"
+      ],
+      "title": "TranscriptTurnInput",
+      "type": "object"
+    },
+    "TranscriptTurnPersisted": {
+      "additionalProperties": false,
+      "description": "Output payload for append_transcript_turn (spec 14 \u00a75.2).",
+      "properties": {
+        "session_id": {
+          "description": "Session the turn was posted against.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Echo of the turn sequence.",
+          "title": "Seq",
+          "type": "integer"
+        },
+        "persisted": {
+          "description": "False \u21d2 consent-suppressed (\u00a75.2 'transcript suppressed') \u2014 a normal outcome, not an error.",
+          "title": "Persisted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "persisted"
+      ],
+      "title": "TranscriptTurnPersisted",
       "type": "object"
     },
     "TriState": {

@@ -173,6 +173,51 @@ public class GlobalExceptionHandlerTests
         Assert.Equal(StatusCodes.Status403Forbidden, ctx.Response.StatusCode);
     }
 
+    // ------------------------------------------------------------------
+    // Spec 14 typed security exceptions (§24.1, §24.2, §24.5)
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task TenantScopeMissing_Returns400_WithMissingTenantTitle()
+    {
+        var ctx = CreateContext();
+        var ex = new TenantScopeMissingException();
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status400BadRequest, ctx.Response.StatusCode);
+
+        // Wire shape must match the controllers' historical hand-rolled 400.
+        ctx.Response.Body.Seek(0, SeekOrigin.Begin);
+        using var doc = JsonDocument.Parse(ctx.Response.Body);
+        Assert.Equal("Missing tenant", doc.RootElement.GetProperty("title").GetString());
+        Assert.Equal("X-Tenant-Id header is required.", doc.RootElement.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task ConsentRequired_Returns409()
+    {
+        var ctx = CreateContext();
+        var ex = new ConsentRequiredException("recording", "sess-1");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AuthorizationFailed_Returns403()
+    {
+        var ctx = CreateContext();
+        var ex = new AuthorizationFailedException("catalog.published", "Actor and reason code are required.");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status403Forbidden, ctx.Response.StatusCode);
+    }
+
     [Fact]
     public async Task StaleBookingVersion_Returns409()
     {

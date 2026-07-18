@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
 using Microsoft.Extensions.DependencyInjection;
@@ -91,6 +92,19 @@ public sealed class StepSweeperHostedService(
             {
                 await transport.PublishAsync(envelope, queue, ct);
                 published++;
+            }
+            catch (UnconsumedMessageTypeException pex)
+            {
+                // The sweeper only publishes the hardcoded booking.step.continue.v1 — a missing
+                // consumer means the CORE booking-driver registration is gone (a startup/wiring
+                // defect retries can never fix). There is no per-step dead state to mark, so
+                // surface it at Critical and stop this sweep instead of silently retry-looping.
+                logger.LogCritical(
+                    pex,
+                    "Step sweeper {WorkerId}: no registered consumer for {MessageType} — the " +
+                    "booking driver registration is missing; aborting this sweep",
+                    _workerId, envelope.MessageType);
+                break;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

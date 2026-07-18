@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Application.Behaviours;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.AdvanceOperation;
@@ -8,13 +9,29 @@ using Cordia.Application.Handlers.BookingFulfillment.ReserveCapacity;
 using Cordia.Application.Handlers.BookingFulfillment.Sla;
 using Cordia.Application.Handlers.BookingFulfillment.UserAction;
 using Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
+using Cordia.Application.Handlers.Menu.IngestVendorMenu;
 using Cordia.Application.Handlers.Notifications;
 using Cordia.Application.Handlers.Notifications.MissingTerminalAudit;
 using Cordia.Application.Handlers.Notifications.Reconcile;
 using Cordia.Application.Handlers.Notifications.Retry;
 using Cordia.Application.Handlers.Notifications.SendNotification;
+using Cordia.Application.Handlers.Preorder;
+using Cordia.Application.Handlers.Preorder.BookingSignal;
+using Cordia.Application.Handlers.Preorder.CommitPreorder;
+using Cordia.Application.Handlers.Preorder.CompensateBooking;
+using Cordia.Application.Handlers.Preorder.CompensateItems;
+using Cordia.Application.Handlers.Preorder.Reconcile;
+using Cordia.Application.Handlers.Preorder.Recovery;
+using Cordia.Application.Handlers.Preorder.ReserveItems;
+using Cordia.Application.Handlers.Preorder.StartSaga;
+using Cordia.Application.Handlers.Waitlist;
+using Cordia.Application.Handlers.Waitlist.AutoAccept;
+using Cordia.Application.Handlers.Waitlist.Expire;
+using Cordia.Application.Handlers.Waitlist.Match;
+using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Application.Messaging;
 using Cordia.Application.Observability;
+using Cordia.Application.Services;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Messaging;
@@ -34,12 +51,15 @@ public static class ApplicationServiceCollectionExtensions
         services.AddMediatR(cfg =>
         {
             cfg.RegisterServicesFromAssembly(assembly);
-            // Pipeline order: 1) Validation → 2) Inbox dedup → 3) Correlation enrichment → 4) Handler.
-            // Validation runs first so structurally invalid queue-driven requests are rejected
-            // before the inbox transaction is opened. Correlation enrichment runs after inbox
-            // admission (so the message is already classified) and seeds the ambient context from
-            // the message for queue-driven requests that have no HTTP edge (§25.1).
+            // Pipeline order: 1) Validation → 2) Operator action (spec 14) → 3) Inbox dedup →
+            // 4) Correlation enrichment → 5) Handler. Validation runs first so structurally invalid
+            // queue-driven requests are rejected before the inbox transaction is opened.
+            // OperatorActionBehavior is a no-op for anything that is not an IOperatorActionRequest,
+            // so consumer semantics are unchanged. Correlation enrichment runs after inbox admission
+            // (so the message is already classified) and seeds the ambient context from the message
+            // for queue-driven requests that have no HTTP edge (§25.1).
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationPipelineBehavior<,>));
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(OperatorActionBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(InboxDeduplicationBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(CorrelationEnrichmentBehavior<,>));
         });
@@ -141,11 +161,17 @@ public static class ApplicationServiceCollectionExtensions
             registry.Register("notification.deposit_expired.v1",
                 env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
                     NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            // Spec 11 §21.4 — operator cancel of a ManualReview-parked pre-order. The booking is
+            // already committed and stays confirmed; only the food order is cancelled, so this maps
+            // to the dedicated PreorderCancelled template, never FinalFailure.
+            registry.Register(Handlers.Preorder.PreorderSagaSupport.PreorderCancelledEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.PreorderCancelled, MessagePriority.High, env.CorrelationId));
             // notification.waitlisted.v1 is the informational "added to waitlist" event and is
             // intentionally NOT pushed via this lane — the catalogue's WaitlistOffer is the
             // deadline-bound spec-11 waitlist *match* offer (with {offer_expires_at}), which a
-            // waitlist-entry payload cannot fill (Inv-16). Spec 11 will register its own Critical
-            // WaitlistOffer message type.
+            // waitlist-entry payload cannot fill (Inv-16). Spec 11 registers that Critical
+            // WaitlistOffer type (waitlist.offer.notified.v1) with the waitlist lane below.
 
             // T5a (spec 10): durable notification retry — fired by ScheduledJobPollerHostedService
             // after next_eligible_at has passed. notification_id is extracted from the payload.
@@ -155,10 +181,130 @@ public static class ApplicationServiceCollectionExtensions
                     ExtractNotificationId(env.Payload) ?? string.Empty,
                     env.MessageId));
 
+            // Spec 11 — menu ingestion lane (menu.commands). Realizes the menu.commands.ingest.v1
+            // queue contract; routed through InboxDeduplicationBehavior (consumer "menu.processor").
+            // catalog_id + source_artifact_ref are extracted from the job payload.
+            registry.Register("menu.commands.ingest.v1",
+                env => new IngestVendorMenuCommand(
+                    env.TenantId,
+                    ExtractString(env.Payload, "catalog_id") ?? string.Empty,
+                    ExtractString(env.Payload, "source_artifact_ref") ?? string.Empty,
+                    env.MessageId,
+                    env.CorrelationId));
+
+            // Spec 11 — waitlist lane (waitlist.commands → consumer "waitlist.processor"). Both
+            // commands are inbox-deduplicated (one transaction each, Inv-5).
+            //
+            // match.v1: offer a freed opening to the next eligible enrollee. The matched-slot
+            // criteria (location/service/slot id + start + seats) are carried in the payload by the
+            // matcher / re-match builder (WaitlistRematchMessage).
+            registry.Register(WaitlistRematchMessage.MessageType,
+                env => new MatchWaitlistOfferCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "location_id") ?? string.Empty,
+                    ExtractString(env.Payload, "service_id") ?? string.Empty,
+                    ExtractString(env.Payload, "slot_id") ?? string.Empty,
+                    ExtractDateTimeOffset(env.Payload, "slot_start") ?? default,
+                    ExtractInt(env.Payload, "available_seats") ?? 0));
+
+            // offer_expiry.v1: the offer deadline elapsed — expire it, release the hold, re-match.
+            // offer_id is carried in the scheduled-job payload by OfferExpiryScheduler.
+            registry.Register(OfferExpiryScheduler.JobType,
+                env => new ExpireWaitlistOfferCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty));
+
+            // auto_accept.v1: platform auto-book under a recorded AutoBookGrant (§20, Inv-1). Enqueued by
+            // the matcher; mints the confirmed booking via the spec-04 front door. Registered as a PLAIN
+            // IRequest (no IInboxConsumerRequest) so InboxDeduplicationBehavior does NOT wrap it — the
+            // handler calls SubmitConfirmedIntent, which opens its own transaction (idempotent via the
+            // spec-04 key + the offer's version-guarded claim).
+            registry.Register(AutoAcceptWaitlistOfferCommand.MessageType,
+                env => new AutoAcceptWaitlistOfferCommand(
+                    env.TenantId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty));
+
+            // reconcile_accept.v1: settle a waitlist accept whose offer claim was lost after the booking
+            // was minted (spec 11 §5.1). Scheduled (delayed) by accept/auto-accept via
+            // WaitlistAcceptReconcileScheduler; probes the operation and either marks the enrollment
+            // fulfilled (booked) or leaves it eligible (failed). Inbox-deduplicated (waitlist.processor).
+            registry.Register(ReconcileWaitlistAcceptCommand.MessageType,
+                env => new ReconcileWaitlistAcceptCommand(
+                    env.TenantId,
+                    env.MessageId,
+                    env.CorrelationId,
+                    ExtractString(env.Payload, "offer_id") ?? string.Empty,
+                    ExtractString(env.Payload, "operation_id") ?? string.Empty,
+                    ExtractString(env.Payload, "enrollment_id") ?? string.Empty,
+                    ExtractInt(env.Payload, "attempt") ?? 0));
+
+            // Spec 11 §5.1 — customer-facing offer / offer-expired notifications, delivered through
+            // the spec-10 sender ("notification.sender" inbox dedup, Inv-9). The envelope's
+            // operation id is the offer's op_wl_* id, which has NO booking_operations row until the
+            // offer is accepted — RequiresOperation=false so the sender does not ack-and-drop.
+            registry.Register(MatchWaitlistOfferCommandHandler.OfferNotifiedEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.WaitlistOffer, MessagePriority.Critical, env.CorrelationId,
+                    RequiresOperation: false));
+            registry.Register(ExpireWaitlistOfferCommandHandler.OfferExpiredEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.WaitlistOfferExpired, MessagePriority.Normal, env.CorrelationId,
+                    RequiresOperation: false));
+
+            // Spec 11 — pre-order saga lane (preorder.commands → consumer "preorder.processor"). All
+            // steps are inbox-deduplicated (one transaction each, Inv-5/Inv-9). The start message
+            // carries the immutable PreorderReference; every other step carries only saga_id
+            // (+ operation_id), reloading the saga for its reference + checkpoints.
+            registry.Register(PreorderSagaMessages.Start,
+                env => new StartPreorderSagaCommand(
+                    env.TenantId, env.MessageId, env.CorrelationId,
+                    PreorderOperationId(env),
+                    ExtractRawObject(env.Payload, "preorder_reference") ?? "{}"));
+            registry.Register(PreorderSagaMessages.ReserveItems,
+                env => new ReservePreorderItemsCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CommitPreorder,
+                env => new CommitPreorderCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CompensateItems,
+                env => new CompensatePreorderItemsCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.CompensateBooking,
+                env => new CompensatePreorderBookingCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.Reconcile,
+                env => new ReconcilePreorderSagaCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderSagaId(env), PreorderOperationId(env)));
+            // 06 → saga booking-outcome signals (spec 11 §5.3). Emitted by the 06 engine for a
+            // pre-order operation instead of a customer notification; carry only the operation id
+            // (the handler resolves the saga by operation).
+            registry.Register(PreorderSagaMessages.BookingCommitted,
+                env => new PreorderBookingCommittedCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderOperationId(env)));
+            registry.Register(PreorderSagaMessages.BookingFailed,
+                env => new PreorderBookingFailedCommand(env.TenantId, env.MessageId, env.CorrelationId, PreorderOperationId(env)));
+
+            // ── Deliberately unconsumed event types ────────────────────────────────────────────
+            // These are emitted for the audit trail / a consumer that is not wired yet; the
+            // transport acks them as delivered. Any OTHER routable type with no consumer is a
+            // registration defect and is dead-lettered loudly (spec 11 review root cause: the
+            // silently-dropped waitlist-offer / preorder-alternatives notifications).
+            registry.RegisterUnconsumed("notification.sla_escalation.v1",
+                "ops-internal signal; spec 06 already creates the operations_work_item on SLA breach");
+            registry.RegisterUnconsumed("notification.waitlisted.v1",
+                "informational added-to-waitlist event; no catalogue entry (spec 10 §5 note)");
+            registry.RegisterUnconsumed("payment.deposit_link.requested.v1",
+                "spec 09 provider stub; deposit-link delivery not wired yet");
+            registry.RegisterUnconsumed(IngestVendorMenuCommandHandler.QuarantinedEventType,
+                "owner alert; owner-notification consumer not wired yet (spec 11 §5.2)");
+            registry.RegisterUnconsumed(IngestVendorMenuCommandHandler.ExtractionFailedEventType,
+                "owner alert; owner-notification consumer not wired yet (spec 11 §5.2)");
+
             return registry;
         });
         services.AddScoped<IQueueConsumerDispatcher, MediatRQueueConsumerDispatcher>();
         services.AddScoped<IGrantAuthorizationService, GrantAuthorizationService>();
+
+        // Spec 14 — the audit write path (D13); scoped to share the ambient DbContext/txn.
+        services.AddScoped<IAuditWriter, AuditWriter>();
 
         // Spec 06 T6 retry/escalation helpers — scoped (share the ambient DbContext / UoW).
         services.AddScoped<RetryScheduler>();
@@ -166,6 +312,19 @@ public static class ApplicationServiceCollectionExtensions
 
         // Spec 07 T5 — capacity expiry scheduler; scoped to share the ambient DbContext.
         services.AddScoped<CapacityExpiryScheduler>();
+
+        // Spec 11 — waitlist offer-expiry scheduler; scoped to share the ambient inbox transaction.
+        services.AddScoped<OfferExpiryScheduler>();
+
+        // Spec 11 — waitlist accept-reconcile scheduler (lost-claim-after-mint); scoped to the ambient tx.
+        services.AddScoped<WaitlistAcceptReconcileScheduler>();
+
+        // Spec 11 — pre-order saga services; scoped to share the ambient DbContext / inbox transaction.
+        services.AddScoped<LiveItemRevalidationService>();
+        services.AddScoped<PreorderRecoverySweeper>();
+        // Domain seam so PreorderRecoverySweeperHostedService (Infrastructure) resolves the sweep
+        // without referencing Application directly (mirrors ISlaEvaluator / INotificationReconciler).
+        services.AddScoped<IPreorderRecoverySweeper>(sp => sp.GetRequiredService<PreorderRecoverySweeper>());
 
         // T9: SLA evaluator seam — scoped; resolved by SlaEvaluatorHostedService through domain interface
         // so Infrastructure does not reference Application directly.
@@ -216,4 +375,74 @@ public static class ApplicationServiceCollectionExtensions
             ? n.GetString()
             : null;
     }
+
+    /// <summary>
+    /// Safely extracts a string property named <paramref name="propertyName"/> from a job-payload
+    /// <see cref="JsonElement"/>. Returns <see langword="null"/> when the element is Undefined/Null,
+    /// the property is absent, or the value is not a string.
+    /// </summary>
+    private static string? ExtractString(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts a <see cref="DateTimeOffset"/> property named <paramref name="propertyName"/>
+    /// from a job-payload <see cref="JsonElement"/> (serialized as an ISO-8601 string). Returns
+    /// <see langword="null"/> when absent or unparseable — guards against malformed payloads.
+    /// </summary>
+    private static DateTimeOffset? ExtractDateTimeOffset(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.String
+            && v.TryGetDateTimeOffset(out var dto)
+            ? dto
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts an <see cref="int"/> property named <paramref name="propertyName"/> from a
+    /// job-payload <see cref="JsonElement"/>. Returns <see langword="null"/> when absent or not an
+    /// integer number — guards against malformed payloads.
+    /// </summary>
+    private static int? ExtractInt(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.Number
+            && v.TryGetInt32(out var i)
+            ? i
+            : null;
+    }
+
+    /// <summary>
+    /// Safely extracts a nested JSON object property named <paramref name="propertyName"/> as its raw
+    /// JSON text (so it can be re-parsed by the handler). Returns <see langword="null"/> when absent or
+    /// not an object — guards against malformed payloads.
+    /// </summary>
+    private static string? ExtractRawObject(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return null;
+
+        return payload.TryGetProperty(propertyName, out var v) && v.ValueKind == JsonValueKind.Object
+            ? v.GetRawText()
+            : null;
+    }
+
+    /// <summary>Resolves the saga id for a pre-order step from the payload.</summary>
+    private static string PreorderSagaId(JobEnvelope env)
+        => ExtractString(env.Payload, "saga_id") ?? string.Empty;
+
+    /// <summary>Resolves the operation id for a pre-order step (envelope first, then payload).</summary>
+    private static string PreorderOperationId(JobEnvelope env)
+        => env.OperationId ?? ExtractString(env.Payload, "operation_id") ?? string.Empty;
 }

@@ -26,23 +26,33 @@ from cordia_agent.tools.contracts import (
     AcceptanceResult,
     AvailabilityRequest,
     AvailabilityResult,
+    ConsentPolicyView,
+    ConsentRecordedResult,
     CustomerContextView,
     HandoffRequest,
     HandoffResult,
+    ModelTraceInput,
     OperationStatusView,
     PolicyValidationResult,
+    RecordConsentInput,
     SubmitConfirmedIntentInput,
     TenantContextView,
     ToolResultEnvelope,
+    TranscriptTurnInput,
+    TranscriptTurnPersisted,
     VerificationGrantView,
 )
 from cordia_agent.tools.foreground import (
+    append_transcript_turn,
     check_candidate_availability,
     check_verification,
     find_customer_context,
     get_operation_status,
     get_tenant_context,
+    record_consent,
+    record_model_trace,
     request_human_handoff,
+    resolve_consent_policy,
     submit_confirmed_intent,
     validate_booking_draft,
 )
@@ -445,4 +455,139 @@ def parse_handoff_result(env: ToolResultEnvelope) -> HandoffResult | None:
         return HandoffResult.model_validate(_payload(env.data, HandoffResult))
     except Exception:
         _log.exception("Failed to parse HandoffResult from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Consent-gate wrappers (spec 14 §5.1/§5.2, D12)
+# ---------------------------------------------------------------------------
+
+
+async def resolve_consent_policy_call(channel: str) -> ToolResultEnvelope:
+    """Invoke the resolve_consent_policy tool and return the raw envelope.
+
+    Args:
+        channel: The session origin channel (voice/sms/web/email).
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await resolve_consent_policy.ainvoke({"channel": channel})
+
+
+def parse_consent_policy(env: ToolResultEnvelope) -> ConsentPolicyView | None:
+    """Parse a ``ConsentPolicyView`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`resolve_consent_policy_call`.
+
+    Returns:
+        A validated ``ConsentPolicyView`` when ``env.ok`` and ``env.data`` is
+        present, otherwise ``None`` (the consent gate fails closed on ``None``).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "resolve_consent_policy_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return ConsentPolicyView.model_validate(_payload(env.data, ConsentPolicyView))
+    except Exception:
+        _log.exception("Failed to parse ConsentPolicyView from envelope data")
+        return None
+
+
+async def record_consent_call(inp: RecordConsentInput) -> ToolResultEnvelope:
+    """Invoke the record_consent tool and return the raw envelope.
+
+    Passes ``inp`` verbatim; the consent outcome is persisted onto the session
+    row through the Booking API (single-writer rule, D12).
+
+    Args:
+        inp: The session id + captured ``ConsentState`` to persist.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await record_consent.ainvoke(inp.model_dump(mode="json"))
+
+
+def parse_consent_recorded(env: ToolResultEnvelope) -> ConsentRecordedResult | None:
+    """Parse a ``ConsentRecordedResult`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`record_consent_call`.
+
+    Returns:
+        A validated ``ConsentRecordedResult`` when ``env.ok`` and ``env.data``
+        is present, otherwise ``None`` (the consent gate fails closed).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "record_consent_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return ConsentRecordedResult.model_validate(
+            _payload(env.data, ConsentRecordedResult)
+        )
+    except Exception:
+        _log.exception("Failed to parse ConsentRecordedResult from envelope data")
+        return None
+
+
+async def record_model_trace_call(inp: ModelTraceInput) -> ToolResultEnvelope:
+    """Invoke the record_model_trace tool and return the raw envelope.
+
+    ``inp.content`` MUST already be redacted (Inv-12); traces route to the
+    stricter telemetry retention tier, never to app logs (spec 13 §25.3).
+
+    Args:
+        inp: The redacted model prompt/output to persist.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await record_model_trace.ainvoke(inp.model_dump(mode="json"))
+
+
+async def append_transcript_turn_call(inp: TranscriptTurnInput) -> ToolResultEnvelope:
+    """Invoke the append_transcript_turn tool and return the raw envelope.
+
+    ``inp.text`` MUST already be redacted (Inv-12); the API re-sanitizes and
+    enforces the consent gate authoritatively (spec 14 §5.2).
+
+    Args:
+        inp: The redacted transcript turn to persist.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await append_transcript_turn.ainvoke(inp.model_dump(mode="json"))
+
+
+def parse_transcript_turn_persisted(
+    env: ToolResultEnvelope,
+) -> TranscriptTurnPersisted | None:
+    """Parse a ``TranscriptTurnPersisted`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`append_transcript_turn_call`.
+
+    Returns:
+        A validated ``TranscriptTurnPersisted`` when ``env.ok`` and ``env.data``
+        is present, otherwise ``None`` (the persister treats it as best-effort —
+        a failed persist never blocks the turn).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "append_transcript_turn_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return TranscriptTurnPersisted.model_validate(
+            _payload(env.data, TranscriptTurnPersisted)
+        )
+    except Exception:
+        _log.exception("Failed to parse TranscriptTurnPersisted from envelope data")
         return None

@@ -1,0 +1,4 @@
+{
+  "title": "TranscriptTurnPersisted",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TranscriptTurnPersisted"
+}

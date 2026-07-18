@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using Cordia.Domain.Entities;
+﻿using Cordia.Application.Common.Audit;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
@@ -24,7 +23,7 @@ public sealed class ReplayDeadLetterCommandHandler(
     IDeadLetterRepository dlqRepo,
     IInboxRepository inboxRepo,
     IMessageTransport transport,
-    IAuditEventRepository auditRepo,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<ReplayDeadLetterCommand, ReplayDeadLetterResult>
 {
@@ -125,26 +124,32 @@ public sealed class ReplayDeadLetterCommandHandler(
             if (won == 0)
                 return; // a concurrent replay already claimed this row — do not write a duplicate audit
 
-            var metadata = JsonSerializer.Serialize(new
-            {
-                replay_command_id = replayCommandId,
-                consumer_name = command.ConsumerName,
-                decision = decision.ToString(),
-                dispatched_message_id = dispatchedMessageId,
-            });
-
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = command.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "dead_letter.replayed",
-                Actor = "system",
-                SubjectRef = command.MessageId,
-                CorrelationId = command.MessageId,
-                OperationId = operationId,
-                Metadata = metadata,
-                OccurredAt = now,
-            }, ct2);
+            // Spec 14 §24.5 — operator replay is audited with actor + reason code,
+            // inside the same transaction as the Quarantined→Replayed claim.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: command.ActorRole, // GD-1: owner may perform operator actions; audit the ASSERTED role
+                    ActorId: command.ActorId,
+                    Action: "dead_letter.replayed",
+                    TargetType: "dead_letter_message",
+                    TargetId: command.MessageId,
+                    Decision: "allow",
+                    DataClasses: ["operations"],
+                    ReasonCode: command.ReasonCode,
+                    CorrelationId: command.MessageId,
+                    OperationId: operationId,
+                    Extra: new
+                    {
+                        replay_command_id = replayCommandId,
+                        consumer_name = command.ConsumerName,
+                        replay_decision = decision.ToString(),
+                        dispatched_message_id = dispatchedMessageId,
+                    },
+                    // Same clock value as the published envelope's OccurredAt
+                    // so audit and message correlate exactly.
+                    OccurredAt: now),
+                ct2);
         }, ct);
 
         return new ReplayDeadLetterResult(decision, replayCommandId, dispatchedMessageId);

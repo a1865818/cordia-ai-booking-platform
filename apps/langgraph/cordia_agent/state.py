@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
 
+from cordia_agent.contracts.preorder import PreorderDraft, PreorderReference
 from cordia_agent.tools.status_codes import AvailabilityMode
 
 
@@ -103,6 +104,14 @@ class BookingRequest(BaseModel):
     )
     special_requests: list[str] = Field(
         default_factory=list, description="Free-form special requests."
+    )
+    # Pre-order (spec 11 §4.3): the immutable, revalidated-before-commit reference embedded in
+    # the canonical payload so a pre-order is part of the canonical request hash (Inv-1/Inv-2 —
+    # changing any line forces a new revision). None ⇒ no pre-order; the canonical hasher omits
+    # null/empty so plain bookings hash identically to before this field existed.
+    preorder: PreorderReference | None = Field(
+        default=None,
+        description="Immutable pre-order reference, or None when no pre-order.",
     )
     # Target/system fields stay plain - TriState is meaningless here (not customer-volunteered).
     target_booking_id: str | None = Field(
@@ -210,6 +219,14 @@ class BookingDraft(BaseModel):
         default=None, description="Customer reference, if known."
     )
     request: BookingRequest = Field(description="The booking request.")
+    # Pre-order (spec 11 §4.3): the MUTABLE in-dialog draft the agent assembles from the published
+    # catalog. Frozen into request.preorder (immutable PreorderReference) at confirmation via
+    # PreorderDraft.to_reference(...). Foreground state only — stripped from the canonical projection
+    # (like field_provenance) so it is never itself a booking side effect (§2: the agent only drafts).
+    preorder_draft: PreorderDraft | None = Field(
+        default=None,
+        description="Mutable in-dialog pre-order draft, or None when none in progress.",
+    )
     source: SourceInfo = Field(description="Origin channel + language.")
     field_provenance: dict[str, FieldProvenance] = Field(
         default_factory=dict,
@@ -219,11 +236,12 @@ class BookingDraft(BaseModel):
     def to_canonical(self) -> CanonicalBookingDraft:  # DQ2=B
         """Project to the canonical payload, dropping internal-only fields.
 
-        Strips ``field_provenance``; the TriState distinction is already inline
-        on each request field (DQ1=A), so absent/unknown/declined survive.
+        Strips ``field_provenance`` and the foreground-only ``preorder_draft`` (the immutable
+        ``request.preorder`` reference is what is canonical); the TriState distinction is already
+        inline on each request field (DQ1=A), so absent/unknown/declined survive.
         """
         return CanonicalBookingDraft.model_validate(
-            self.model_dump(exclude={"field_provenance"})
+            self.model_dump(exclude={"field_provenance", "preorder_draft"})
         )
 
 
@@ -326,6 +344,50 @@ class AgentState(BaseModel):
     )
     customer_context: CustomerContext | None = Field(
         default=None, description="Minimized customer context (§9.2)."
+    )
+    # --- Consent-gate channels (spec 14 §5.1/§5.2) ---
+    # consent_state/recording_allowed are exported concepts (persisted via the
+    # Booking API); pending_consent_notice is an internal channel consumed by
+    # the consent_gate → END await loop and the voice pipeline notice playback.
+    consent_state: dict | None = Field(
+        default=None,
+        description=(
+            "Recorded ConsentState (spec 14 §4.1) as a plain dict once the "
+            "outcome has been durably persisted via record_consent; None until "
+            "then. Stored as dict to keep AgentState channels JSON-merge-safe."
+        ),
+    )
+    recording_allowed: bool | None = Field(
+        default=None,
+        description=(
+            "Transcript/audio persistence gate (Inv-12, §5.2). None = consent "
+            "gate has not resolved yet; the checkpointer suppresses the "
+            "transcript whenever this is False."
+        ),
+    )
+    pending_consent_notice: str | None = Field(
+        default=None,
+        description=(
+            "Internal: notice text awaiting a customer consent response. "
+            "Non-None means the gate emitted the notice and is awaiting the "
+            "customer's granted/declined reply (§5.2 AwaitOutcome)."
+        ),
+    )
+    consent_policy: dict | None = Field(
+        default=None,
+        description=(
+            "Internal: the ConsentPolicyView resolved on the gate's first "
+            "pass, stashed so the reply turn records against the SAME policy "
+            "version the customer was shown (no re-resolution)."
+        ),
+    )
+    consent_reply: str | None = Field(
+        default=None,
+        description=(
+            "Internal: a classified consent reply ('granted'/'declined') "
+            "whose record_consent persist failed — retried next turn without "
+            "re-asking the customer."
+        ),
     )
     # --- Internal clarification channels (02-G, §8.5) ---
     # These fields are NOT exported to AgentInputState/AgentOutputState and do
