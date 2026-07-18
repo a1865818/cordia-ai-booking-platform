@@ -2,11 +2,12 @@
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
 /// <summary>Mutable booking operation row with optimistic-concurrency version token.</summary>
-public class BookingOperation : ITenantScoped
+public class BookingOperation : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -45,6 +46,12 @@ public class BookingOperation : ITenantScoped
 
     /// <summary>Set when a cancellation is requested while an operation is in-flight (§15.5).</summary>
     public DateTimeOffset? CancellationRequestedAt { get; set; }
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 
     /// <summary>Guarded in-memory transition (§11): validates the edge then mutates Status/StatusReason/UpdatedAt.
     /// Throws <see cref="InvalidStateTransitionException"/> on an undefined edge. Persistence is done separately via the

@@ -3,6 +3,8 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Reconcile;
@@ -37,7 +39,8 @@ public sealed class ReconcileOperationCommandHandler(
     IBookingProviderAdapter adapter,
     IRetryPolicy retryPolicy,
     ManualReviewEscalator manualReviewEscalator,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    Metrics metrics)
     : IRequestHandler<ReconcileOperationCommand, StepOutcome>
 {
     private const string StepType = "finalize";
@@ -212,6 +215,8 @@ public sealed class ReconcileOperationCommandHandler(
                             }),
                             OccurredAt = now,
                         }, ct2);
+                        metrics.FulfillmentReconciliationTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.Result, via));
+                        metrics.FulfillmentOperationTerminalTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "booked"));
                     }
                 }
             }, ct);

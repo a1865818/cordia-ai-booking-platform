@@ -6,6 +6,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.ManageBooking.SubmitBookingCancellation;
@@ -19,7 +20,8 @@ public sealed class SubmitBookingCancellationCommandHandler(
     IBookingOperationRepository operationRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
-    IGrantAuthorizationService grants)
+    IGrantAuthorizationService grants,
+    Metrics metrics)
     : IRequestHandler<SubmitBookingCancellationCommand, SubmitBookingCancellationResult>
 {
     private static readonly TimeSpan RetentionWindow = TimeSpan.FromDays(365);
@@ -52,15 +54,18 @@ public sealed class SubmitBookingCancellationCommandHandler(
         var existing = await idempotencyRepo.GetByKeyAsync(command.TenantId, request.CancellationIdempotencyKey, ct);
         if (existing is not null)
         {
-            return existing.RequestHash == requestHashStored
-                ? BuildReplay(existing, SubmitBookingCancellationStatusEnum.DuplicateAccepted)
-                : BuildResult(
-                    SubmitBookingCancellationOutcome.Conflict,
-                    SubmitBookingCancellationStatusEnum.IdempotencyConflict,
-                    request,
-                    intentId,
-                    intentRevision,
-                    existing.CreatedAt);
+            if (existing.RequestHash == requestHashStored)
+                return BuildReplay(existing, SubmitBookingCancellationStatusEnum.DuplicateAccepted);
+
+            // Inv-3: key reused with a different payload — alert signal (§25.4).
+            metrics.AcceptanceIdempotencyConflictTotal.Add(1);
+            return BuildResult(
+                SubmitBookingCancellationOutcome.Conflict,
+                SubmitBookingCancellationStatusEnum.IdempotencyConflict,
+                request,
+                intentId,
+                intentRevision,
+                existing.CreatedAt);
         }
 
         if (booking.LifecycleStatus == BookingLifecycleStatus.Cancelled)
@@ -111,15 +116,18 @@ public sealed class SubmitBookingCancellationCommandHandler(
             var winner = await idempotencyRepo.GetByKeyAsync(command.TenantId, request.CancellationIdempotencyKey, ct)
                 ?? throw new InvalidOperationException($"Creator election lost for key '{request.CancellationIdempotencyKey}' but winner was not found.");
 
-            return winner.RequestHash == requestHashStored
-                ? BuildReplay(winner, SubmitBookingCancellationStatusEnum.DuplicateAccepted)
-                : BuildResult(
-                    SubmitBookingCancellationOutcome.Conflict,
-                    SubmitBookingCancellationStatusEnum.IdempotencyConflict,
-                    request,
-                    intentId,
-                    intentRevision,
-                    winner.CreatedAt);
+            if (winner.RequestHash == requestHashStored)
+                return BuildReplay(winner, SubmitBookingCancellationStatusEnum.DuplicateAccepted);
+
+            // Inv-3: key reused with a different payload (post-election race) — alert signal (§25.4).
+            metrics.AcceptanceIdempotencyConflictTotal.Add(1);
+            return BuildResult(
+                SubmitBookingCancellationOutcome.Conflict,
+                SubmitBookingCancellationStatusEnum.IdempotencyConflict,
+                request,
+                intentId,
+                intentRevision,
+                winner.CreatedAt);
         }
 
         return new SubmitBookingCancellationResult(SubmitBookingCancellationOutcome.Accepted, response);

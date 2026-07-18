@@ -5,6 +5,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Notifications;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -51,7 +52,8 @@ public class SendNotificationTests
             _opRepo.Object,
             _auditRepo.Object,
             BuildRetryScheduler(),
-            NullLogger<SendNotificationCommandHandler>.Instance);
+            NullLogger<SendNotificationCommandHandler>.Instance,
+            new Metrics());
 
     private static BookingOperation DefaultOp(string tenantId, string operationId) => new()
     {

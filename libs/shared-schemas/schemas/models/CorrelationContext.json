@@ -1,0 +1,4 @@
+{
+  "title": "CorrelationContext",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/CorrelationContext"
+}

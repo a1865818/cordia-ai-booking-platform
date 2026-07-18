@@ -6,6 +6,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;
 using Cordia.Tests.IntegrationTests.Persistence;
@@ -42,13 +43,13 @@ public class ReserveCapacityHandlerTests(PostgresFixture fixture)
         var auditRepo = new AuditEventRepository(ctx);
         var scheduledJobRepo = new ScheduledJobRepository(ctx);
         var uow = new UnitOfWork(ctx);
-        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo);
+        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
         var expiryScheduler = new CapacityExpiryScheduler(scheduledJobRepo);
         var options = Options.Create(DefaultCapacityOptions);
 
         return new ReserveCapacityCommandHandler(
             opRepo, stepRepo, capacityReservation, slotRepo, intentRepo,
-            expiryScheduler, outboxRepo, auditRepo, uow, options);
+            expiryScheduler, outboxRepo, auditRepo, uow, options, new Metrics());
     }
 
     /// <summary>

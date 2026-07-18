@@ -3,6 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Notifications;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -33,7 +34,8 @@ public sealed class SendNotificationCommandHandler(
     IBookingOperationRepository opRepo,
     IAuditEventRepository auditRepo,
     NotificationRetryScheduler retryScheduler,
-    ILogger<SendNotificationCommandHandler> logger)
+    ILogger<SendNotificationCommandHandler> logger,
+    Metrics metrics)
     : IRequestHandler<SendNotificationCommand, Unit>
 {
     public async Task<Unit> Handle(SendNotificationCommand command, CancellationToken ct)
@@ -49,6 +51,11 @@ public sealed class SendNotificationCommandHandler(
             op = null;
         if (op is null && command.RequiresOperation)
         {
+            // Inv-13: a true cross-tenant hit (op exists, wrong tenant) is an access-attempt alert
+            // signal (§25.4); a plain not-found is not.
+            if (op is not null && op.TenantId != tenantId)
+                metrics.SecurityTenantCrossScopeAttemptTotal.Add(1);
+
             logger.LogWarning(
                 "SendNotification: operation {OperationId} not found or wrong tenant {TenantId}; ack-and-drop.",
                 operationId, tenantId);
@@ -118,8 +125,11 @@ public sealed class SendNotificationCommandHandler(
                 OccurredAt = now,
             }, ct);
 
+            metrics.NotificationDuplicateSuppressedTotal.Add(1);
             return Unit.Value; // SendAsync is NOT called (Inv-9)
         }
+
+        metrics.NotificationPendingStatusTotal.Add(1);
 
         // 7. Guard: no valid destination.
         if (recipient is null)
@@ -150,6 +160,7 @@ public sealed class SendNotificationCommandHandler(
                 OccurredAt = now,
             }, ct);
 
+            metrics.NotificationInvalidRecipientTotal.Add(1);
             return Unit.Value; // SendAsync is NOT called
         }
 
@@ -184,6 +195,7 @@ public sealed class SendNotificationCommandHandler(
                     OccurredAt = now,
                 }, ct);
 
+                metrics.NotificationInvalidRecipientTotal.Add(1);
                 return Unit.Value; // SendAsync is NOT called
 
             case ConsentDecision.Suppressed:
@@ -212,6 +224,7 @@ public sealed class SendNotificationCommandHandler(
                     }),
                     OccurredAt = now,
                 }, ct);
+                metrics.NotificationConsentSuppressedTotal.Add(1);
 
                 return Unit.Value; // SendAsync is NOT called
 
@@ -341,6 +354,7 @@ public sealed class SendNotificationCommandHandler(
                         }),
                         OccurredAt = now,
                     }, ct);
+                    metrics.NotificationProviderAcceptedTotal.Add(1);
                 }
                 break;
 
@@ -418,6 +432,7 @@ public sealed class SendNotificationCommandHandler(
                         }),
                         OccurredAt = now,
                     }, ct);
+                    metrics.NotificationInvalidRecipientTotal.Add(1);
                 }
                 break;
         }

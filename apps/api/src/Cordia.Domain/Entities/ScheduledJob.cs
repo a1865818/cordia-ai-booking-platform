@@ -1,10 +1,11 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
 /// <summary>Durable scheduled job (spec 05); job_type stored as TEXT (open value set).</summary>
-public class ScheduledJob : ITenantScoped
+public class ScheduledJob : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -31,4 +32,10 @@ public class ScheduledJob : ITenantScoped
     public string Payload { get; set; } = "{}";
 
     public string? OperationId { get; set; }
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 }

@@ -4,6 +4,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.BookingFulfillment;
@@ -34,7 +35,7 @@ public class ReconcileOperationCommandHandlerTests
     private ReconcileOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _outboxRepo.Object, _auditRepo.Object, _adapter.Object,
-            _retryPolicy.Object, CreateEscalator(), _uow.Object);
+            _retryPolicy.Object, CreateEscalator(), _uow.Object, new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId, string operationId, OperationStatus status, long version = 0) =>

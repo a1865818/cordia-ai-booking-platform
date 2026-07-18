@@ -1544,6 +1544,80 @@
       "title": "ConsentRecordedResult",
       "type": "object"
     },
+    "CorrelationContext": {
+      "additionalProperties": false,
+      "description": "Cross-service correlation envelope (spec 13 \u00a74.1 / \u00a725.1).\n\nClosed schema (``extra=\"forbid\"``) so the generated Zod schema uses ``.strict()``\nand the C# record rejects unknown properties.  Not frozen \u2014 the context is\ncarried and updated across hops (e.g. ``causation_id`` advances on each hop).",
+      "properties": {
+        "tenant_id": {
+          "description": "Stable tenant identifier. Set before any data access (Inv-13). Derived solely from the verified TenantContext; never supplied raw by callers.",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Minted once at channel ingress and threaded unchanged through every downstream span, tool call, and queue envelope (\u00a725.1). Never re-minted mid-flow.",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The ID of the event, span, or message that directly caused this unit of work. Advanced per hop to preserve lineage (\u00a725.1). Absent only at the very first ingress point.",
+          "title": "Causation Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreground session identifier (specs 01/02 only). Not present on background/durable-operation contexts.",
+          "title": "Session Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreground per-voice-turn identifier (spec 01). Not present on background/durable-operation contexts.",
+          "title": "Turn Id"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Durable operation identifier. Present once a confirmed-intent operation has been accepted (spec 04+). Absent during pure foreground turns.",
+          "title": "Operation Id"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "correlation_id"
+      ],
+      "title": "CorrelationContext",
+      "type": "object"
+    },
     "CustomerRef": {
       "additionalProperties": false,
       "description": "Reference to the customer; all optional (anonymous sessions).",

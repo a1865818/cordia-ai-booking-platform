@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
@@ -11,7 +12,7 @@ namespace Cordia.Domain.Entities;
 /// booking_operations row is minted only at accept, so those rows store NULL here (the envelope's
 /// operation id still keys the notification identity for dedup).
 /// </summary>
-public class Notification : ITenantScoped
+public class Notification : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -61,4 +62,10 @@ public class Notification : ITenantScoped
         UpdatedAt = DateTimeOffset.UtcNow;
         FailureCategory = failureCategory;
     }
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 }

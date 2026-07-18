@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;
 using Cordia.Tests.IntegrationTests.Persistence;
@@ -37,9 +38,9 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
     private static ReleaseExpiredHoldsCommandHandler BuildHandler(ApplicationDbContext ctx)
     {
         var holdRepo = new CapacityHoldRepository(ctx);
-        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo);
+        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
         var auditRepo = new AuditEventRepository(ctx);
-        return new ReleaseExpiredHoldsCommandHandler(capacityReservation, auditRepo, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance);
+        return new ReleaseExpiredHoldsCommandHandler(capacityReservation, auditRepo, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance, new Metrics());
     }
 
     /// <summary>
@@ -57,7 +58,7 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
 
         RequestHandlerDelegate<Unit> next = ct2 => handler.Handle(cmd, ct2);
 
-        var behavior = new InboxDeduplicationBehavior<ReleaseExpiredHoldsCommand, Unit>(uow, inboxRepo);
+        var behavior = new InboxDeduplicationBehavior<ReleaseExpiredHoldsCommand, Unit>(uow, inboxRepo, new Metrics());
         return await behavior.Handle(cmd, next, ct);
     }
 
@@ -112,7 +113,7 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
         {
             await using var tx = await ctx.Database.BeginTransactionAsync();
             var holdRepo = new CapacityHoldRepository(ctx);
-            var svc = new FirstPartyCapacityReservation(ctx, holdRepo);
+            var svc = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
             var outcome = await svc.ReserveAsync(MakeReserveRequest(tenantId, operationId, slotId), default);
             Assert.Equal(ReservationStatus.Held, outcome.Status);
             holdId = outcome.Hold!.HoldId;

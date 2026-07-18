@@ -30,6 +30,7 @@ using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Application.Messaging;
+using Cordia.Application.Observability;
 using Cordia.Application.Services;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
@@ -50,13 +51,17 @@ public static class ApplicationServiceCollectionExtensions
         services.AddMediatR(cfg =>
         {
             cfg.RegisterServicesFromAssembly(assembly);
-            // Pipeline order: 1) Validation → 2) Operator action (spec 14) → 3) Inbox dedup → 4) Handler.
-            // Validation runs first so structurally invalid queue-driven requests are rejected
-            // before the inbox transaction is opened. OperatorActionBehavior is a no-op for
-            // anything that is not an IOperatorActionRequest, so consumer semantics are unchanged.
+            // Pipeline order: 1) Validation → 2) Operator action (spec 14) → 3) Inbox dedup →
+            // 4) Correlation enrichment → 5) Handler. Validation runs first so structurally invalid
+            // queue-driven requests are rejected before the inbox transaction is opened.
+            // OperatorActionBehavior is a no-op for anything that is not an IOperatorActionRequest,
+            // so consumer semantics are unchanged. Correlation enrichment runs after inbox admission
+            // (so the message is already classified) and seeds the ambient context from the message
+            // for queue-driven requests that have no HTTP edge (§25.1).
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationPipelineBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(OperatorActionBehavior<,>));
             cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(InboxDeduplicationBehavior<,>));
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(CorrelationEnrichmentBehavior<,>));
         });
         services.AddValidatorsFromAssembly(assembly);
 

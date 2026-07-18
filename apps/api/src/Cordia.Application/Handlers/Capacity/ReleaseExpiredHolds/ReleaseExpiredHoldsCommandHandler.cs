@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -42,7 +43,8 @@ namespace Cordia.Application.Handlers.Capacity.ReleaseExpiredHolds;
 public sealed class ReleaseExpiredHoldsCommandHandler(
     ICapacityReservation capacityReservation,
     IAuditEventRepository auditRepo,
-    ILogger<ReleaseExpiredHoldsCommandHandler> logger)
+    ILogger<ReleaseExpiredHoldsCommandHandler> logger,
+    Metrics metrics)
     : IRequestHandler<ReleaseExpiredHoldsCommand, Unit>
 {
     public async Task<Unit> Handle(ReleaseExpiredHoldsCommand command, CancellationToken ct)
@@ -63,11 +65,13 @@ public sealed class ReleaseExpiredHoldsCommandHandler(
             }
 
             await capacityReservation.ReleaseAsync(tenantId, command.HoldId, ReleaseReason.Expired, ct);
+            metrics.FulfillmentHoldExpiredTotal.Add(1);
         }
         else
         {
             // ReleaseScope.Operation: bulk-release-by-op (deposit-expiry path — intentional).
             await capacityReservation.ReleaseByOperationAsync(tenantId, operationId, ReleaseReason.Expired, ct);
+            metrics.FulfillmentHoldExpiredTotal.Add(1);
         }
 
         await auditRepo.AddAsync(new AuditEvent

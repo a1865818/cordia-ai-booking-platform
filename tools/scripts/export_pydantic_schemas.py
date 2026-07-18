@@ -53,6 +53,7 @@ from cordia_agent.streaming_models import (
     TurnCancelledFrame,
 )
 from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.observability.correlation import CorrelationContext
 from cordia_agent.models.handoff import HandoffPackage
 from cordia_agent.models.submission import (
     IdempotencyConflict,
@@ -162,6 +163,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         Confirmation,
         ConsentPolicyView,
         ConsentRecordedResult,
+        CorrelationContext,
         SessionConsentState,
         HandoffPackage,
         HandoffRequest,

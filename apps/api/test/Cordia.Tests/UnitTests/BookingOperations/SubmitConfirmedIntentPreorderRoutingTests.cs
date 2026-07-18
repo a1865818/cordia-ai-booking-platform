@@ -61,7 +61,8 @@ public class SubmitConfirmedIntentPreorderRoutingTests
     }
 
     private SubmitConfirmedIntentCommandHandler CreateHandler() =>
-        new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object, _sessions.Object);
+        new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object,
+            new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object);
 
     [Fact]
     public async Task Preorder_Routes_To_Saga_Start_And_Marks_Operation()

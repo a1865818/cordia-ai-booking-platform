@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Cancellation;
@@ -16,7 +17,8 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Cancellation;
 public sealed class RequestCancellationCommandHandler(
     IBookingOperationRepository opRepo,
     IAuditEventRepository auditRepo,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    Metrics metrics)
     : IRequestHandler<RequestCancellationCommand, bool>
 {
     public async Task<bool> Handle(RequestCancellationCommand command, CancellationToken ct)
@@ -24,7 +26,13 @@ public sealed class RequestCancellationCommandHandler(
         var op = await opRepo.GetAsync(command.OperationId, ct);
 
         if (op is null || op.TenantId != command.TenantId)
+        {
+            // Inv-13: a true cross-tenant hit (op exists, wrong tenant) is an access-attempt alert
+            // signal (§25.4); a plain not-found is not.
+            if (op is not null && op.TenantId != command.TenantId)
+                metrics.SecurityTenantCrossScopeAttemptTotal.Add(1);
             return false;
+        }
 
         // Flag set + audit in ONE transaction so they commit or roll back together (C1).
         var newlySet = false;

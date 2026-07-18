@@ -7,6 +7,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
@@ -33,6 +34,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     IBookingOperationRepository operationRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    Metrics metrics,
     IConversationSessionRepository sessions)
     : IRequestHandler<SubmitConfirmedIntentCommand, AcceptanceResult>
 {
@@ -73,14 +75,17 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         var existing = await idempotencyRepo.GetByKeyAsync(command.TenantId, request.IdempotencyKey, ct);
         if (existing != null)
         {
-            return existing.RequestHash == requestHashStored
-                ? BuildReplay(existing)
-                : new Conflict(new IdempotencyConflict
-                {
-                    IdempotencyKey = request.IdempotencyKey,
-                    ExistingOperationId = existing.OperationId,
-                    Message = "Idempotency key already bound to a different request.",
-                });
+            if (existing.RequestHash == requestHashStored)
+                return BuildReplay(existing);
+
+            // Inv-3: key reused with a different payload — alert signal (§25.4).
+            metrics.AcceptanceIdempotencyConflictTotal.Add(1);
+            return new Conflict(new IdempotencyConflict
+            {
+                IdempotencyKey = request.IdempotencyKey,
+                ExistingOperationId = existing.OperationId,
+                Message = "Idempotency key already bound to a different request.",
+            });
         }
 
         // --- Step 4: Build the acceptance snapshot (before the transaction). ---
@@ -138,14 +143,17 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                     return new Accepted(snapshot);
             }
 
-            return winner!.RequestHash == requestHashStored
-                ? BuildReplay(winner)
-                : new Conflict(new IdempotencyConflict
-                {
-                    IdempotencyKey = request.IdempotencyKey,
-                    ExistingOperationId = winner.OperationId,
-                    Message = "Idempotency key already bound to a different request.",
-                });
+            if (winner!.RequestHash == requestHashStored)
+                return BuildReplay(winner);
+
+            // Inv-3: key reused with a different payload (post-election race) — alert signal (§25.4).
+            metrics.AcceptanceIdempotencyConflictTotal.Add(1);
+            return new Conflict(new IdempotencyConflict
+            {
+                IdempotencyKey = request.IdempotencyKey,
+                ExistingOperationId = winner.OperationId,
+                Message = "Idempotency key already bound to a different request.",
+            });
         }
 
         return new Accepted(snapshot);

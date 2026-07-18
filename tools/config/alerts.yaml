@@ -1,0 +1,132 @@
+# Cordia alert rules (spec 13 §25.4 / §6 reliability-mechanisms table)
+#
+# The §25.4 alert set as code, each mapped to a frozen metric name and the invariant it
+# guards. Metric names MUST match a constant value in
+# apps/api/src/Cordia.Domain/Observability/MetricNames.cs (the §4.2 registry) — a unit test
+# (Cordia.Tests) asserts every `metric:` here resolves to a real constant, guarding against
+# name drift. Conditions are human/PromQL-ish expressions; no backend wires this file yet —
+# it is the contract a Prometheus/OTel-collector consumes.
+#
+# Alerts are DERIVED SIGNALS: the authoritative state + SLA (Inv-14) drive the customer
+# outcome, not the alert. An alert auto-resolves when its metric clears (§8).
+#
+# Schema (one entry per alert):
+#   id           stable identifier
+#   name         human-readable name
+#   severity     critical | warning | info
+#   metric       frozen metric name (must exist in MetricNames)
+#   condition    human/PromQL-ish firing expression
+#   invariant    the invariant this alert makes observable
+#   description  what a fire means
+#   runbook      one-line first response
+
+version: 1
+
+alerts:
+  - id: rising_booking_ambiguity
+    name: Rising booking ambiguity without reconciliation
+    severity: critical
+    metric: fulfillment.ambiguous_outcome_total
+    condition: "rate(fulfillment.ambiguous_outcome_total[15m]) > 0 and rate(fulfillment.reconciliation_total[15m]) == 0"
+    invariant: Inv-7
+    description: "Repeated create/charge with an unknown outcome and no reconciliation event — an Inv-7 anomaly (a booking may exist that the platform has not confirmed)."
+    runbook: "Inspect ambiguous operations by correlation_id; confirm the reconciliation lane (spec 06 §16) is draining and not blocked."
+
+  - id: idempotency_key_reuse_different_payload
+    name: Idempotency key reused with a different payload
+    severity: critical
+    metric: acceptance.idempotency_conflict_total
+    condition: "rate(acceptance.idempotency_conflict_total[5m]) > 0"
+    invariant: Inv-3
+    description: "An idempotency key was replayed bound to a DIFFERENT request payload (§13.3 conflict path) — an Inv-3 breach signal."
+    runbook: "Identify the conflicting key + tenant; a real different-payload reuse points at a buggy/abusive client. Verify the 409 was returned and no second operation was created."
+
+  - id: capacity_invariant_violation
+    name: First-party capacity invariant violation
+    severity: critical
+    metric: fulfillment.capacity.invariant_violation_total
+    condition: "increase(fulfillment.capacity.invariant_violation_total[5m]) > 0"
+    invariant: Inv-6
+    description: "The ck_capacity_slots_no_overcommit guardrail fired (held + booked would exceed total, §27.3) — the conditional-write predicate failed to prevent overcommit."
+    runbook: "Treat as an Inv-6 incident. Inspect the slot row + concurrent holds; the write was rolled back, but reconcile held/booked vs. active holds before re-enabling reservations."
+
+  - id: missing_notification_for_terminal_outcome
+    name: Missing notification for terminal outcome
+    severity: warning
+    metric: notification.missing_terminal_total
+    condition: "increase(notification.missing_terminal_total[15m]) > 0"
+    invariant: Inv-8/Inv-9
+    description: "A booking_operations terminal state had no accepted notification past threshold — the auditor raised a work item (Inv-8/Inv-9 watchdog)."
+    runbook: "The booking stays confirmed (Inv-14). Work through operations_work_items reason=missing_notification; check the notification lane (spec 10) for the operation_id."
+
+  - id: tenant_cross_scope_access_attempt
+    name: Tenant cross-scope access attempt
+    severity: critical
+    metric: security.tenant_cross_scope_attempt_total
+    condition: "increase(security.tenant_cross_scope_attempt_total[5m]) > 0"
+    invariant: Inv-13
+    description: "An operation belonging to another tenant was accessed (tenant guard hit, §7/§14) — Inv-13 enforcement signal."
+    runbook: "Identify caller + target tenant; access was denied (returned null/ack-dropped). Investigate for a scoping bug or a probing client."
+
+  - id: dlq_growth
+    name: Dead-letter queue growth
+    severity: warning
+    metric: fulfillment.dlq.depth
+    condition: "fulfillment.dlq.depth > 0 and fulfillment.dlq.oldest_age_seconds > 900"
+    invariant: Inv-14
+    description: "Quarantined dead-letter items are accumulating / ageing — observe (never replace) the customer-visible state + SLA they shadow."
+    runbook: "Inspect the DLQ; correlate by correlation_id. Replay or escalate per spec 05/06; the SLA, not the alert, drives the customer outcome."
+
+  - id: stale_holds
+    name: Stale capacity holds expiring before finalisation
+    severity: warning
+    metric: fulfillment.hold.expired_total
+    condition: "rate(fulfillment.hold.expired_total[15m]) > 0"
+    invariant: Inv-14
+    description: "Capacity holds are expiring before the workflow finalises against them — points at slow finalisation or a stuck reservation lane (spec 07)."
+    runbook: "Check accepted-to-booked latency vs. hold TTL; confirm the expiry-release sweep (spec 07) and the finalize step are healthy."
+
+  - id: retry_backlog_age
+    name: Retry backlog / reconciliation beyond SLA
+    severity: warning
+    metric: fulfillment.retry.elapsed_ms
+    condition: "histogram_quantile(0.95, fulfillment.retry.elapsed_ms) > 900000"
+    invariant: Inv-14
+    description: "Per-operation retry/reconciliation elapsed time is exceeding the ~15 min SLA (see retry_reconciliation_sla)."
+    runbook: "Identify operations exceeding budget by correlation_id; check provider health and the retry policy backoff (spec 06)."
+
+  - id: manual_review_sla_breach
+    name: Manual-review work item beyond SLA
+    severity: warning
+    metric: fulfillment.manual_review.oldest_age_seconds
+    condition: "fulfillment.manual_review.oldest_age_seconds > 14400"
+    invariant: Inv-14
+    description: "The oldest open operations_work_items entry has aged past the proposed 4h human-review SLA (§12)."
+    runbook: "Triage the oldest open work items; the SLA (Inv-14), not the alert, is the customer-facing commitment."
+
+  - id: notification_pending_ratio_high
+    name: Notification pending-status ratio high
+    severity: warning
+    metric: notification.pending_status_total
+    condition: "rate(notification.pending_status_total[1h]) / clamp_min(rate(notification.provider_accepted_total[1h]) + rate(notification.delivered_total[1h]) + rate(notification.pending_status_total[1h]), 1) > 0.02"
+    invariant: Inv-9
+    description: "More than 2% of notifications are stuck in pending-status over 1h (§12 pending-message threshold)."
+    runbook: "Check the notification provider + receipt-webhook lane (spec 10); pending != failed, but a sustained ratio masks delivery problems."
+
+  - id: telemetry_export_loss
+    name: Sustained telemetry export loss
+    severity: warning
+    metric: telemetry.export.dropped_total
+    condition: "rate(telemetry.export.dropped_total[10m]) > 0"
+    invariant: "§8 (fail-open)"
+    description: "Telemetry data points are being dropped during export — the business path is unaffected (fail-open), but observability is degraded."
+    runbook: "Check the OTLP collector / backend availability. Telemetry is non-authoritative; restore export to regain visibility."
+
+  - id: uncorrelated_record
+    name: Uncorrelated record detected
+    severity: warning
+    metric: telemetry.uncorrelated_record_total
+    condition: "increase(telemetry.uncorrelated_record_total[15m]) > 0"
+    invariant: "§25.1"
+    description: "A record in the §25.1 correlation chain was processed without a non-null correlation_id — a contract gap surfaced rather than silently swallowed (§8)."
+    runbook: "Find the emitting component; every chain record must carry correlation_id. The CI contract test should also fail — patch the propagation gap."

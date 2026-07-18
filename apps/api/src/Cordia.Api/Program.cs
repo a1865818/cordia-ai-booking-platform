@@ -1,6 +1,7 @@
 ﻿using Cordia.Application.Extensions;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.Extensions;
+using Cordia.Infrastructure.Observability;
 using Cordia.Api.Logging;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
@@ -8,14 +9,34 @@ using Serilog;
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Logging ---
-// The scrubbing enricher runs on EVERY event (spec 14 §24.4, Inv-12): credential-named
-// properties and Luhn-valid PAN shapes never reach a sink. Sinks/levels stay config-driven.
-// Redaction:SensitiveFields adds deployment/tenant-configured selectors (spec 14 §4.1).
+// §25.1/§25.3 + spec 14 §24.4 (Inv-12): correlation enrichment on every line, two independent
+// default-deny redaction passes before any sink, and a fenced-off model-trace lane.
+//   • SerilogCorrelationEnricher tags every event with the ambient correlation ids (§25.1).
+//   • LogScrubbingEnricher runs on EVERY event — credential-named properties and Luhn-valid PAN
+//     shapes are masked in message-template scalars and destructured trees alike (spec 14 §24.4).
+//     Redaction:SensitiveFields adds deployment/tenant-configured selectors (spec 14 §4.1).
+//   • RedactingDestructuringPolicy is the structured-object backstop for the @-destructured path.
+// The app (console) sink EXCLUDES events tagged ModelTrace; a separate sink INCLUDES ONLY them so
+// model prompts/outputs are never co-mingled with app logs (Inv-12). MinimumLevel + per-source
+// overrides flow in via ReadFrom.Configuration (appsettings "Serilog"). PROD swap point: the
+// model-trace sub-logger writes to Console here for local visibility; point it at the
+// stricter-access, shorter-retention store (§25.3) per environment by replacing its WriteTo.
 builder.Host.UseSerilog((context, loggerConfig) =>
     loggerConfig
         .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .Enrich.With(new SerilogCorrelationEnricher())
         .Enrich.With(new LogScrubbingEnricher(
-            context.Configuration.GetSection("Redaction:SensitiveFields").Get<string[]>())));
+            context.Configuration.GetSection("Redaction:SensitiveFields").Get<string[]>()))
+        .Destructure.With(new RedactingDestructuringPolicy())
+        .WriteTo.Logger(l => l
+            .Filter.ByExcluding(e => e.Properties.ContainsKey(ModelTraceSink.MarkerProperty))
+            .WriteTo.Console())
+        .WriteTo.Logger(l => l
+            .Filter.ByIncludingOnly(e => e.Properties.ContainsKey(ModelTraceSink.MarkerProperty))
+            .WriteTo.Console(
+                outputTemplate:
+                "[MODEL-TRACE {Timestamp:HH:mm:ss}] {Message:lj}{NewLine}")));
 
 // --- Layers ---
 builder.Services.AddApplication();
@@ -142,6 +163,10 @@ if (app.Configuration.GetValue("DatabaseBootstrap:MigrateOnStartup", false))
     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     await db.Database.MigrateAsync();
 }
+
+// Mint/echo correlation id at the HTTP edge BEFORE tenant resolution so the ambient correlation
+// context exists for all downstream work and logging (§25.1).
+app.UseMiddleware<Cordia.Api.Middleware.CorrelationMiddleware>();
 
 // Resolve tenant from X-Tenant-Id header (dev/test shim — replaced by signed-context resolution in spec 08/15).
 app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();

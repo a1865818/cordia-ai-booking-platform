@@ -20,6 +20,8 @@ public sealed class MessagingOptions
 
     public MissingNotificationAuditOptions MissingNotificationAudit { get; set; } = new();
 
+    public MetricsGaugeOptions MetricsGauge { get; set; } = new();
+
     public PreorderRecoveryOptions PreorderRecovery { get; set; } = new();
 
     public RetentionSweepOptions RetentionSweep { get; set; } = new();
@@ -153,6 +155,16 @@ public sealed class MissingNotificationAuditOptions
     /// in-flight notifications to land before declaring them missing. Default: 120 s.
     /// </summary>
     public int TerminalAgeSeconds { get; set; } = 120;
+}
+
+/// <summary>Options for the metrics gauge hosted service (spec 13 §25.2, T5).</summary>
+public sealed class MetricsGaugeOptions
+{
+    /// <summary>Set to false to disable the gauge poller (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Seconds between gauge refresh ticks. Default: 15 s.</summary>
+    public int IntervalSeconds { get; set; } = 15;
 }
 
 /// <summary>Options for the outbox publisher hosted service (§7).</summary>

@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 
 namespace Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
@@ -11,14 +12,22 @@ public record GetOperationStatusQuery(string TenantId, string OperationId) : IRe
 /// Returns the <see cref="OperationStatusView"/> for the requested operation, or <c>null</c>
 /// when no operation exists under the tenant (→ 404 in the controller).
 /// </summary>
-public sealed class GetOperationStatusQueryHandler(IBookingOperationRepository operationRepo)
+public sealed class GetOperationStatusQueryHandler(
+    IBookingOperationRepository operationRepo,
+    Metrics metrics)
     : IRequestHandler<GetOperationStatusQuery, OperationStatusView?>
 {
     public async Task<OperationStatusView?> Handle(GetOperationStatusQuery request, CancellationToken ct)
     {
         var op = await operationRepo.GetAsync(request.OperationId, ct);
         if (op is null || op.TenantId != request.TenantId)
+        {
+            // Inv-13: distinguish a true cross-tenant hit (op exists, wrong tenant) from a plain
+            // not-found. Only the former is an access-attempt alert signal (§25.4).
+            if (op is not null && op.TenantId != request.TenantId)
+                metrics.SecurityTenantCrossScopeAttemptTotal.Add(1);
             return null;
+        }
 
         // Map internal OperationStatus to NormalizedOperationStatusEnum (9-value public projection,
         // Inv-16 — internal substates are never surfaced directly).

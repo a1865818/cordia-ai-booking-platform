@@ -42,7 +42,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx)),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OfferExpiryScheduler(new ScheduledJobRepository(ctx)),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
@@ -67,7 +67,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx)),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             new UnitOfWork(ctx));
@@ -76,7 +76,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx)),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             NullLogger<ExpireWaitlistOfferCommandHandler>.Instance);
@@ -88,7 +88,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx)),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             new UnitOfWork(ctx));

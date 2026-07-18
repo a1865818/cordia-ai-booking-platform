@@ -64,4 +64,23 @@ public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWo
 
         return rows == 1;
     }
+
+    public Task<int> CountOpenAsync(CancellationToken ct = default)
+        => db.OperationWorkItems
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .CountAsync(w => w.State == "open", ct);
+
+    public async Task<double> OldestOpenAgeSecondsAsync(CancellationToken ct = default)
+    {
+        var oldest = await db.OperationWorkItems
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(w => w.State == "open")
+            .MinAsync(w => (DateTimeOffset?)w.CreatedAt, ct);
+
+        return oldest.HasValue
+            ? (DateTimeOffset.UtcNow - oldest.Value).TotalSeconds
+            : 0d;
+    }
 }

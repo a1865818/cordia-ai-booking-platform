@@ -97,6 +97,48 @@
         },
         "type": "object"
       },
+      "BookingFunnelView": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "ambiguous": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "confirmed": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "failedTerminal": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "notified": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "notifyPending": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "tenantId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "BookingProjectionRef": {
         "additionalProperties": false,
         "properties": {
@@ -4512,6 +4554,73 @@
         ]
       }
     },
+    "/api/reporting/funnel": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingFunnelView"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingFunnelView"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingFunnelView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Reporting"
+        ]
+      }
+    },
     "/api/verifications": {
       "post": {
         "requestBody": {
@@ -5054,6 +5163,9 @@
     },
     {
       "name": "Preorder"
+    },
+    {
+      "name": "Reporting"
     },
     {
       "name": "Verifications"

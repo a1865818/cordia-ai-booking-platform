@@ -1,8 +1,10 @@
-﻿using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
+﻿using System.Diagnostics.Metrics;
+using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.BookingOperations;
@@ -39,7 +41,8 @@ public class NormalizedStatusProjectionTests
         var repo = new Mock<IBookingOperationRepository>();
         repo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(op);
-        return new GetOperationStatusQueryHandler(repo.Object);
+        // Projection tests don't assert metrics — a throwaway Metrics instance is fine.
+        return new GetOperationStatusQueryHandler(repo.Object, new Metrics());
     }
 
     private static BookingOperation MakeOp(OperationStatus status, string? statusReason = null)
@@ -149,18 +152,68 @@ public class NormalizedStatusProjectionTests
     }
 
     // -----------------------------------------------------------------------
-    // Cross-tenant isolation — op with wrong tenant returns null
+    // Cross-tenant isolation — op with wrong tenant returns null + alert signal (Inv-13)
     // -----------------------------------------------------------------------
 
+    /// <summary>
+    /// A true cross-tenant hit (op exists, wrong tenant) returns null AND increments the
+    /// security.tenant_cross_scope_attempt_total alert signal (spec 13 §25.4 / Inv-13).
+    /// A plain not-found (op is null) returns null but does NOT increment.
+    /// </summary>
     [Fact]
-    public async Task Handle_WrongTenant_ReturnsNull()
+    public async Task Handle_WrongTenant_ReturnsNull_AndIncrementsCrossScopeCounter()
     {
         var op = MakeOp(OperationStatus.Booked);
         op.TenantId = "other-tenant";
-        var handler = MakeHandler(op);
+
+        var repo = new Mock<IBookingOperationRepository>();
+        repo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+
+        using var metrics = new Metrics();
+        var counters = StartListener(metrics);
+        var handler = new GetOperationStatusQueryHandler(repo.Object, metrics);
 
         var result = await handler.Handle(new GetOperationStatusQuery(TenantId, OperationId), CancellationToken.None);
 
         Assert.Null(result);
+        Assert.Equal(1, counters.GetValueOrDefault("security.tenant_cross_scope_attempt_total"));
+    }
+
+    [Fact]
+    public async Task Handle_NotFound_ReturnsNull_DoesNotIncrementCrossScopeCounter()
+    {
+        var repo = new Mock<IBookingOperationRepository>();
+        repo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BookingOperation?)null);
+
+        using var metrics = new Metrics();
+        var counters = StartListener(metrics);
+        var handler = new GetOperationStatusQueryHandler(repo.Object, metrics);
+
+        var result = await handler.Handle(new GetOperationStatusQuery(TenantId, OperationId), CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(0, counters.GetValueOrDefault("security.tenant_cross_scope_attempt_total"));
+    }
+
+    /// <summary>Starts a MeterListener over the given Metrics meter and returns a live counter map.</summary>
+    private static Dictionary<string, long> StartListener(Metrics metrics)
+    {
+        var counters = new Dictionary<string, long>();
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Meter == metrics.Meter)
+                    l.EnableMeasurementEvents(instrument);
+            },
+        };
+        listener.SetMeasurementEventCallback<long>((inst, measurement, _, _) =>
+        {
+            counters.TryGetValue(inst.Name, out var current);
+            counters[inst.Name] = current + measurement;
+        });
+        listener.Start();
+        return counters;
     }
 }

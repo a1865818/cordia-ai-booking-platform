@@ -276,6 +276,14 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("cancellation_requested_at");
 
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -755,6 +763,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("confirmation_id");
 
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
                     b.Property<string>("ConfirmationChannel")
                         .IsRequired()
                         .HasColumnType("text")
@@ -765,6 +777,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("confirmed_at")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<string>("Disclosures")
                         .IsRequired()
@@ -830,9 +846,17 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("attempt_count");
 
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
                     b.Property<NotificationChannel>("Channel")
                         .HasColumnType("notification_channel_enum")
                         .HasColumnName("channel");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -917,6 +941,14 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<string>("Assignee")
                         .HasColumnType("text")
                         .HasColumnName("assignee");
+
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
@@ -1118,6 +1150,14 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("integer")
                         .HasDefaultValue(0)
                         .HasColumnName("attempt");
+
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<string>("DestinationQueue")
                         .IsRequired()
@@ -1662,9 +1702,17 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("attempt_number");
 
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
                     b.Property<DateTimeOffset?>("CompletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<string>("ErrorCode")
                         .HasColumnType("text")

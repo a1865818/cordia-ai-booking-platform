@@ -1,0 +1,127 @@
+# Cordia Service Level Objectives (spec 13 §12 OD-1, §26)
+#
+# These values are PROPOSED BASELINES pending measurement (OD-1 / §31): "objectives
+# should be established from measured baselines." They MUST NOT weaken any invariant —
+# an SLO is a target for the customer-visible state + SLA, never a substitute for it (Inv-14).
+#
+# `sli.metric` references the frozen metric-name registry in
+# apps/api/src/Cordia.Domain/Observability/MetricNames.cs (§4.2). Where an SLO is measured
+# from a source other than a single metric (e.g. work-item age, RPO/RTO), `sli.source`
+# names it instead. This file is the contract a Prometheus/OTel-collector consumes; no
+# backend wires it yet.
+#
+# Schema (one entry per SLO):
+#   id            stable identifier
+#   name          human-readable name
+#   objective:    target / percentile / window
+#   sli:          metric (frozen name) and/or source it is measured from
+#   owner_spec    the spec that owns the underlying behaviour
+#   notes         baseline status + caveats
+
+version: 1
+
+slos:
+  - id: voice_turn_latency
+    name: Voice turn end-to-end latency
+    objective:
+      target: "< 1500 ms"
+      percentile: p95
+      window: 28d
+    sli:
+      metric: agent.turn.latency_ms
+      source: "caller endpoint -> first audible response (per-stage budget in §7)"
+    owner_spec: "01 (streaming-voice-pipeline); §8.10"
+    notes: "baseline pending measurement (OD-1). UX target inherited from spec 01 §8."
+
+  - id: api_durable_acceptance_latency
+    name: API durable-acceptance latency (binding; spec 13 sole owner)
+    objective:
+      target: "p95 < 300 ms, p99 < 500 ms"
+      percentile: p95/p99
+      window: 28d
+    sli:
+      source: "request received -> 202 committed; inner atomic DB txn (~80 ms) is a component, not a separate target"
+    owner_spec: "13 (owned here); referenced by 02/03/04"
+    notes: "baseline pending measurement (OD-1). Binding SLO — specs 02/03/04 reference this number."
+
+  - id: booking_completion_by_provider
+    name: Booking completion percentile by provider
+    objective:
+      target: "baseline TBD"
+      percentile: p95
+      window: 28d
+    sli:
+      metric: fulfillment.accepted_to_booked_ms
+      source: "accepted -> booked latency, labelled by {provider}"
+    owner_spec: "06 (booking-workflow-and-fulfillment)"
+    notes: "baseline pending measurement (OD-1). Target derived per-provider once data exists."
+
+  - id: notification_pending_threshold
+    name: Pending-message threshold
+    objective:
+      target: "pending-status ratio < 2%"
+      percentile: ratio
+      window: 1h
+    sli:
+      metric: notification.pending_status_total
+      source: "pending_status_total / (pending + provider_accepted + delivered) over 1h"
+    owner_spec: "10 (notifications)"
+    notes: "baseline pending measurement (OD-1)."
+
+  - id: retry_reconciliation_sla
+    name: Retry / reconciliation SLA
+    objective:
+      target: "< 15 min"
+      percentile: p95
+      window: 7d
+    sli:
+      metric: fulfillment.retry.elapsed_ms
+      source: "ambiguous outcome -> reconciled elapsed (histogram p95); correlated with fulfillment.ambiguous_outcome_total"
+    owner_spec: "06 (booking-workflow-and-fulfillment)"
+    notes: "baseline pending measurement (OD-1). Inv-7: ambiguous outcomes MUST reconcile. Uses histogram for p95."
+
+  - id: hold_expiry_safety_margin
+    name: Hold-expiry safety margin
+    objective:
+      target: ">= 30 s before hold TTL"
+      percentile: p95
+      window: 7d
+    sli:
+      metric: fulfillment.accepted_to_booked_ms
+      source: "finalize completion timestamp vs. capacity hold ExpiresAt (TTL); correlate with fulfillment.hold.expired_total"
+    owner_spec: "07 (capacity-and-holds)"
+    notes: "baseline pending measurement (OD-1). Finalize must beat hold TTL by >= 30 s p95."
+
+  - id: notification_dispatch_latency
+    name: Notification dispatch latency
+    objective:
+      target: "< 60 s"
+      percentile: p95
+      window: 7d
+    sli:
+      source: "confirmed (booking_operations terminal) -> dispatched (provider_accepted) elapsed; requires a dedicated dispatch latency histogram (e.g. notification.dispatch_latency_ms) — not yet in the registry (OD-1)"
+    owner_spec: "10 (notifications)"
+    notes: "baseline pending measurement (OD-1). notification.provider_accepted_total is a counter and cannot measure p95 latency; a histogram metric must be added before this SLO can be evaluated."
+
+  - id: human_review_response
+    name: Human-review response time
+    objective:
+      target: "oldest open age < 4h (proposed SLA)"
+      percentile: max-age
+      window: live
+    sli:
+      metric: fulfillment.manual_review.oldest_age_seconds
+      source: "operations_work_items oldest open age"
+    owner_spec: "08 (identity-and-manage-booking)"
+    notes: "baseline pending measurement (OD-1). 4h SLA is proposed; observed via the oldest-age gauge."
+
+  - id: rpo_rto
+    name: Recovery point / recovery time objectives
+    objective:
+      target: "RPO <= 5 min, RTO <= 30 min (proposed)"
+      percentile: n/a
+      window: incident
+    sli:
+      source: "backup/replication lag (RPO); restore-to-serving time (RTO) — operational, not a service metric"
+    owner_spec: "12 (data-model-and-persistence)"
+    notes: "baseline pending measurement (OD-1). Proposed; validated via DR drills."

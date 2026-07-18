@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -29,7 +30,8 @@ public class RecordDeliveryReceiptTests
             _repo.Object,
             _auditRepo.Object,
             _uow.Object,
-            NullLogger<RecordDeliveryReceiptCommandHandler>.Instance);
+            NullLogger<RecordDeliveryReceiptCommandHandler>.Instance,
+            new Metrics());
 
     public RecordDeliveryReceiptTests()
     {

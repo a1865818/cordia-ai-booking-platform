@@ -27,8 +27,15 @@ from cordia_agent.nodes import (
     submit_intent,
     verify_identity,
 )
+from cordia_agent.observability.metrics import init_metrics
 from cordia_agent.security.consent import consent_gate, route_after_consent_gate
 from cordia_agent.state import AgentInputState, AgentOutputState, AgentState
+
+
+# Initialise OTel metrics once at module load (graph startup).
+# Fail-open: init_metrics() never raises — when OTEL_EXPORTER_OTLP_ENDPOINT
+# is not set it returns immediately without attempting a connection (§8).
+init_metrics()
 
 
 def build_agent_graph() -> StateGraph:

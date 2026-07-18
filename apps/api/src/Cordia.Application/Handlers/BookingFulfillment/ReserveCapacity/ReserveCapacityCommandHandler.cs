@@ -3,6 +3,7 @@ using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Services;
 using MediatR;
 using Microsoft.Extensions.Options;
@@ -37,7 +38,8 @@ public sealed class ReserveCapacityCommandHandler(
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
-    IOptions<CapacityOptions> capacityOptions)
+    IOptions<CapacityOptions> capacityOptions,
+    Metrics metrics)
     : IRequestHandler<ReserveCapacityCommand, StepOutcome>
 {
     public async Task<StepOutcome> Handle(ReserveCapacityCommand command, CancellationToken ct)
@@ -126,6 +128,8 @@ public sealed class ReserveCapacityCommandHandler(
                             OperationStatus.ReservingCapacity, OperationStatus.Held,
                             reason: "held", ct: ct2);
 
+                        metrics.FulfillmentHoldAcquiredTotal.Add(1);
+                        metrics.FulfillmentAcceptedToHeldMs.Record((DateTimeOffset.UtcNow - op.CreatedAt).TotalMilliseconds);
                         result = StepOutcome.Continue;
                         break;
 
@@ -176,6 +180,7 @@ public sealed class ReserveCapacityCommandHandler(
                                 Metadata = JsonSerializer.Serialize(new { reason = "no_capacity" }),
                                 OccurredAt = now,
                             }, ct2);
+                            metrics.FulfillmentCapacityRaceLossTotal.Add(1);
                         }
 
                         // rows==0 → lost race; return Continue so the driver reloads (C13).

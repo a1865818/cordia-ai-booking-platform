@@ -1,10 +1,11 @@
 ﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 
 namespace Cordia.Domain.Entities;
 
 /// <summary>Append-only workflow attempt log row (Inv-15: no update after insert).</summary>
-public class WorkflowAttempt : ITenantScoped
+public class WorkflowAttempt : ITenantScoped, ICorrelatable
 {
     public string TenantId { get; set; } = string.Empty;
 
@@ -44,4 +45,10 @@ public class WorkflowAttempt : ITenantScoped
     public DateTimeOffset? NextEligibleAt { get; set; }
 
     public string? Reconciliation { get; set; }
+
+    /// <summary>Ambient correlation id stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CorrelationId { get; set; }
+
+    /// <summary>Causation id lineage stamped on insert by the EF interceptor (spec 13 §4.1). Nullable (fail-open).</summary>
+    public string? CausationId { get; set; }
 }

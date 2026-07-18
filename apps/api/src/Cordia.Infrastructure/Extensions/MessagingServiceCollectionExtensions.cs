@@ -57,6 +57,10 @@ internal static class MessagingServiceCollectionExtensions
         // Alba integration tests are unaffected.
         services.AddHostedService<MissingNotificationAuditHostedService>();
 
+        // T5 (spec 13): metrics gauge hosted service; disabled via Messaging:MetricsGauge:Enabled=false
+        // in appsettings.Test.json so existing Alba integration tests are unaffected.
+        services.AddHostedService<MetricsGaugeHostedService>();
+
         // Spec 11 §5.3 (divergence #3): pre-order saga recovery sweeper backstop; disabled via
         // Messaging:PreorderRecovery:Enabled=false in appsettings.Test.json so existing Alba
         // integration tests are unaffected.

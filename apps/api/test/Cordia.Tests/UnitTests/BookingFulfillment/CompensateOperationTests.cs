@@ -5,6 +5,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Moq;
 
 namespace Cordia.Tests.UnitTests.BookingFulfillment;
@@ -36,7 +37,7 @@ public class CompensateOperationTests
     private CompensateOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _adapter.Object, _outboxRepo.Object, _auditRepo.Object,
-            CreateEscalator(), _uow.Object, _capacityReservation.Object);
+            CreateEscalator(), _uow.Object, _capacityReservation.Object, new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId, string operationId, OperationStatus status, long version = 0,

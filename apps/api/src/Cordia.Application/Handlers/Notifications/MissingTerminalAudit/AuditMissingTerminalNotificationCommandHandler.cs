@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -19,7 +20,8 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
     INotificationRepository notifications,
     IAuditEventRepository audit,
     IUnitOfWork uow,
-    ILogger<AuditMissingTerminalNotificationCommandHandler> logger)
+    ILogger<AuditMissingTerminalNotificationCommandHandler> logger,
+    Metrics metrics)
     : IRequestHandler<AuditMissingTerminalNotificationCommand, bool>
 {
     /// <summary>Maps the terminal operation status to the expected notification event type (F4).</summary>
@@ -112,6 +114,11 @@ public sealed class AuditMissingTerminalNotificationCommandHandler(
                 "tenant={TenantId} operation_id={OperationId}",
                 tenantId, operationId);
         }, cancellationToken);
+
+        // Emit the alert-signal metric AFTER the transaction commits so the counter is never
+        // incremented for a rolled-back work item (avoids false-positive alert signals).
+        if (created)
+            metrics.NotificationMissingTerminalTotal.Add(1);
 
         return created;
     }

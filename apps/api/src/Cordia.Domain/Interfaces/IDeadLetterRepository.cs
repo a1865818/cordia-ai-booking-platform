@@ -43,4 +43,16 @@ public interface IDeadLetterRepository
         string messageId,
         string consumerName,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the count of dead-letter messages in <see cref="DlqReplayState.Quarantined"/> state
+    /// across all tenants. Used for the <c>fulfillment.dlq.depth</c> gauge.
+    /// </summary>
+    Task<int> CountQuarantinedAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the age in seconds of the oldest quarantined dead-letter message
+    /// (based on <c>DeadLetteredAt</c>), or 0 when the queue is empty.
+    /// </summary>
+    Task<double> OldestQuarantinedAgeSecondsAsync(CancellationToken ct = default);
 }

@@ -3,6 +3,7 @@ using Cordia.Application.Behaviours;
 using Cordia.Application.Messaging;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Tests.IntegrationTests.Persistence;
@@ -81,7 +82,7 @@ public class InboxDeduplicationBehaviorTests(PostgresFixture fixture)
             return Unit.Value;
         };
 
-        var behavior = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow, inboxRepo);
+        var behavior = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow, inboxRepo, new Metrics());
         var request = new InboxTestRequest(consumer, tenantId, messageId, null, null);
 
         var result = await behavior.Handle(request, next, CancellationToken.None);
@@ -142,7 +143,7 @@ public class InboxDeduplicationBehaviorTests(PostgresFixture fixture)
                 return Unit.Value;
             };
 
-            var behavior1 = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow1, inboxRepo1);
+            var behavior1 = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow1, inboxRepo1, new Metrics());
             var request = new InboxTestRequest(consumer, tenantId, messageId, null, null);
             await behavior1.Handle(request, next1, CancellationToken.None);
             Assert.Equal(1, callCount1);
@@ -175,7 +176,7 @@ public class InboxDeduplicationBehaviorTests(PostgresFixture fixture)
                 return Unit.Value;
             };
 
-            var behavior2 = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow2, inboxRepo2);
+            var behavior2 = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow2, inboxRepo2, new Metrics());
             var request = new InboxTestRequest(consumer, tenantId, messageId, null, null);
             secondResult = await behavior2.Handle(request, next2, CancellationToken.None);
         }
@@ -231,7 +232,7 @@ public class InboxDeduplicationBehaviorTests(PostgresFixture fixture)
             throw new InvalidOperationException("simulated handler failure");
         };
 
-        var behavior = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow, inboxRepo);
+        var behavior = new InboxDeduplicationBehavior<InboxTestRequest, Unit>(uow, inboxRepo, new Metrics());
         var request = new InboxTestRequest(consumer, tenantId, messageId, null, null);
 
         // Exception must propagate so the broker can redeliver cleanly.
@@ -270,7 +271,7 @@ public class InboxDeduplicationBehaviorTests(PostgresFixture fixture)
             return Task.FromResult(Unit.Value);
         };
 
-        var behavior = new InboxDeduplicationBehavior<PlainRequest, Unit>(uow, inboxRepo);
+        var behavior = new InboxDeduplicationBehavior<PlainRequest, Unit>(uow, inboxRepo, new Metrics());
         var result = await behavior.Handle(new PlainRequest(), next, CancellationToken.None);
 
         // next was called exactly once and returned the handler response.

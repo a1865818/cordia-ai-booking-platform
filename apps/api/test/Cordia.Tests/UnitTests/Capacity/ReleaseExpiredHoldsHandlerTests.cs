@@ -2,6 +2,7 @@
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Observability;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -20,7 +21,7 @@ public class ReleaseExpiredHoldsHandlerTests
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
 
     private ReleaseExpiredHoldsCommandHandler CreateHandler()
-        => new(_capacityReservation.Object, _auditRepo.Object, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance);
+        => new(_capacityReservation.Object, _auditRepo.Object, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance, new Metrics());
 
     // ── Test 1: HoldId present → ReleaseAsync called; ReleaseByOperationAsync NOT called ──
 
