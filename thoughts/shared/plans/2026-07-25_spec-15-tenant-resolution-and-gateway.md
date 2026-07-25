@@ -6,7 +6,7 @@ branch: feature/spec-15-3
 repository: Cordia
 task: "Spec 15 — Tenant Resolution & Channel Gateway"
 tags: [implementation-plan, tenant-resolution, gateway, jws, tenant-context, ingress, langgraph]
-status: draft
+status: implemented
 last_updated: 2026-07-25
 last_updated_by: quangnguyentechno@gmail.com
 ---
@@ -453,16 +453,34 @@ the same value as `apps/api` `Secrets:TenantContextSigningKeys` (deployment wiri
 ### Phase 5: Success Criteria
 
 #### Phase 5: Programmatic Verification
-- [ ] `bun nx test langgraph 2>&1 | tee .tmp/test-langgraph-p5.log` passes.
-- [ ] `bun nx lint langgraph` passes; `bun nx run langgraph:format` clean.
-- [ ] `get_verifier()` no longer raises in a production-bootstrapped process (covered by a startup/registration test).
+- [x] `bun nx test langgraph 2>&1 | tee .tmp/test-langgraph-p5.log` passes (907 passed — +30 verifier tests).
+- [x] `bun nx lint langgraph` passes; `bun nx run langgraph:format` clean.
+- [x] `get_verifier()` no longer raises in a production-bootstrapped process (covered by `test_bootstrap_registers_production_verifier`).
 
 #### Phase 5: Agent Verification
-- [ ] Agent confirms the shared cross-impl vector verifies identically in both the C# (`JwsTenantContextSignerTests`) and Python (`test_jws_verifier`) suites.
-- [ ] Agent confirms production code never imports `tests/_stubs/tenant_context_stub.py`.
+- [x] Agent confirms the shared cross-impl vector verifies identically in both the C# (`JwsTenantContextSignerTests`) and Python (`test_jws_verifier`) suites — the token literals are byte-identical (671 chars, `BYTE-IDENTICAL: True`) and both verify to the same claim set (incl. `allowed_tool_policy_ids=["tool-policy-ü"]`, U+00FC).
+- [x] Agent confirms production code never imports `tests/_stubs/tenant_context_stub.py` (grep of `cordia_agent/` — zero stub imports).
 
 ### Phase 5: Discoveries and Notable Information
-[Filled by the implementing agent during Phase 5 execution.]
+
+**Implemented + independently reviewed (VERDICT: PASS). 907 langgraph tests pass; lint/format clean. The C#↔Python interop loop is closed in both directions.**
+
+**Interop proof:** the Python `_VECTOR_TOKEN` in `test_jws_verifier.py` is **byte-identical** to the C# `JwsTenantContextSignerTests.VectorToken` (671 chars, `BYTE-IDENTICAL: True`); both verify to the same claim set with `allowed_tool_policy_ids=["tool-policy-ü"]` (U+00FC round-trips). The verifier recomputes HMAC over the **received** `header_b64.payload_b64` signing input (never re-canonicalizes), so datetime/canonical-JSON differences can't break verification.
+
+**Verifier (`cordia_agent/safety/jws_verifier.py`):** `JwsTenantContextVerifier(keys: dict[str,str], now=…, skew=60s)`. Verify order: 3-part split → header decode → `alg=="HS256"` + `typ=="tenantctx+jws"` → `kid` in active set (checked BEFORE signature; no default-secret fallback) → `hmac.compare_digest` constant-time → `TenantContext.model_validate` → expiry/future-issued with skew. Every failure raises `InvalidTenantContext` with a generic (leak-free) message. Reviewer ran 15 adversarial inputs → all rejected, zero accepts.
+
+**Config / deployment wiring (REQUIRED before langgraph verifies in a real env):**
+- Env var `CORDIA_TENANT_CONTEXT_SIGNING_KEYS` = JSON `{kid: raw-secret-string}` (multiple entries = rotation overlap).
+- **Byte parity with `apps/api`:** Python HMAC key = `secret.encode()` (UTF-8). The API stores `base64(UTF-8(secret))` under `Secrets:TenantContextSigningKeys:Keys:<kid>`. So per kid: `base64decode(apps/api value) == utf8(python value)`. For the vector: API `c3BlYzE1L…==` ↔ Python `spec15-cross-impl-vector-secret`. Both sides must be provisioned with the same secret bytes (and the API also needs `ActiveKid` + `KeyIds`).
+- `keys_from_config()` fails closed: raises `RuntimeError` if the var is missing/empty/malformed/has a non-string entry — never registers a no-key verifier.
+
+**Startup registration:** `bootstrap_verifier()` at `cordia_agent/graph.py` module load (after `init_metrics()`, the established env-guarded import-time pattern). Idempotent; env-absent → no-op (keeps `import cordia_agent.graph` side-effect-free for dev/test/CI). In production (env set) `get_verifier()` returns the real verifier.
+
+**Fail-closed chain (reviewer-verified end-to-end, no bypass / no default tenant):**
+- env ABSENT → nothing registered → at request time `get_verifier()` raises `RuntimeError` → `resolve_tenant` halts (first node after START, hard edge) → no tenant resolved.
+- env PRESENT but malformed → `bootstrap_verifier()` raises at startup (fail fast).
+
+**Non-blocking follow-up (deployment hardening, NOT done — plan didn't scope it):** with the env var absent, a genuinely misconfigured PRODUCTION process boots and only errors at first request (latent misconfig) rather than crashing at startup. Both are fail-closed. If prod fail-fast is wanted, add an explicit env gate (e.g. `CORDIA_ENV=production`) that turns the absent-env branch into a hard startup raise. Minor doc nuance: the not-wired path raises `RuntimeError` (from `get_verifier()`), not `InvalidTenantContext` — both fail closed.
 
 ---
 

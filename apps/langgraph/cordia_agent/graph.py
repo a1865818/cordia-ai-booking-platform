@@ -28,6 +28,7 @@ from cordia_agent.nodes import (
     verify_identity,
 )
 from cordia_agent.observability.metrics import init_metrics
+from cordia_agent.safety.jws_verifier import bootstrap_verifier
 from cordia_agent.security.consent import consent_gate, route_after_consent_gate
 from cordia_agent.state import AgentInputState, AgentOutputState, AgentState
 
@@ -36,6 +37,13 @@ from cordia_agent.state import AgentInputState, AgentOutputState, AgentState
 # Fail-open: init_metrics() never raises — when OTEL_EXPORTER_OTLP_ENDPOINT
 # is not set it returns immediately without attempting a connection (§8).
 init_metrics()
+
+# Register the production TenantContext JWS verifier once at graph startup
+# (spec-15 Phase 5, Inv-13).  Env-guarded, mirroring init_metrics: a production
+# process with CORDIA_TENANT_CONTEXT_SIGNING_KEYS set registers a real verifier
+# (crashing at startup on malformed key config — fail closed); without the env
+# var the registry stays unset and resolve_tenant fails closed with "not wired".
+bootstrap_verifier()
 
 
 def build_agent_graph() -> StateGraph:
