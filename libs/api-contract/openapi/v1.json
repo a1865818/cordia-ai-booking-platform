@@ -731,15 +731,6 @@
         ],
         "type": "string"
       },
-      "NoticeChannel": {
-        "enum": [
-          "email",
-          "messaging",
-          "voice",
-          "web"
-        ],
-        "type": "string"
-      },
       "OperationAcceptedResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1074,7 +1065,7 @@
             "type": "string"
           },
           "notice_channel": {
-            "$ref": "#/components/schemas/NoticeChannel"
+            "$ref": "#/components/schemas/TenantChannelEnum"
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
@@ -1266,6 +1257,15 @@
           }
         },
         "type": "object"
+      },
+      "TenantChannelEnum": {
+        "enum": [
+          "email",
+          "messaging",
+          "voice",
+          "web"
+        ],
+        "type": "string"
       },
       "TranscriptTurnPersistedResult": {
         "additionalProperties": false,
