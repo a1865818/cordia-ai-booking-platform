@@ -527,6 +527,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("channel_enum")
                         .HasColumnName("channel");
 
+                    b.Property<string>("ChannelEndpointId")
+                        .HasColumnType("text")
+                        .HasColumnName("channel_endpoint_id");
+
                     b.Property<string>("ConsentPolicyVersion")
                         .HasColumnType("text")
                         .HasColumnName("consent_policy_version");
@@ -538,6 +542,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<ConsentState?>("ConsentState")
                         .HasColumnType("consent_state")
                         .HasColumnName("consent_state");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
 
                     b.Property<string>("CustomerRef")
                         .HasColumnType("text")

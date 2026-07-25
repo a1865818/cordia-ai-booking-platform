@@ -93,6 +93,34 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Missing tenant", ex.Message, cancellationToken);
                 return true;
 
+            case TenantNotResolvedException ex:
+                // Spec-15 §7 fail-closed ingress: zero active endpoints matched the channel signal.
+                // Generic customer-facing body — NEVER 500, never a fallback tenant, never echo the
+                // internal reason or the signal value (Inv-12/Inv-13). Ambiguity is indistinguishable
+                // from "not found" to the caller.
+                logger.LogWarning(ex, "Tenant not resolved at channel ingress");
+                await WriteProblemAsync(httpContext, StatusCodes.Status422UnprocessableEntity,
+                    "Unable to reach business", "We couldn't connect you to this business.", cancellationToken);
+                return true;
+
+            case AmbiguousEndpointException ex:
+                // Spec-15 §7 fail-closed ingress: the signal matched more than one active endpoint.
+                // Same generic body as tenant_not_resolved (do not reveal the ambiguity); alerted via
+                // logs/metrics (§25.4). Never guess a tenant.
+                logger.LogError(ex, "Ambiguous channel endpoint at ingress");
+                await WriteProblemAsync(httpContext, StatusCodes.Status422UnprocessableEntity,
+                    "Unable to reach business", "We couldn't connect you to this business.", cancellationToken);
+                return true;
+
+            case TenantContextVerificationException ex:
+                // Spec-15 Phase 4 middleware: a presented signed TenantContext failed verification
+                // (unknown/retired kid, bad signature, expired, wrong typ, malformed). Reject as 401;
+                // the message is already a fixed generic string (no secret/kid/claim leak, Inv-12).
+                logger.LogWarning(ex, "Tenant context verification failed");
+                await WriteProblemAsync(httpContext, StatusCodes.Status401Unauthorized,
+                    "Invalid tenant context", ex.Message, cancellationToken);
+                return true;
+
             case ConsentRequiredException ex:
                 logger.LogWarning(ex, "Consent required: scope={RequiredScope} subject={SubjectRef}",
                     ex.RequiredScope, ex.SubjectRef);

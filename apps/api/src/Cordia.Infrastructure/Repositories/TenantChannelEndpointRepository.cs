@@ -33,4 +33,25 @@ public class TenantChannelEndpointRepository(ApplicationDbContext db) : ITenantC
                      && e.SignalValue == signalValue
                      && e.Status == EndpointStatus.Active,
                 ct);
+
+    /// <summary>
+    /// Resolves at most two active rows (Take(2)) so the handler can fail closed on zero
+    /// (tenant_not_resolved) or many (ambiguous_endpoint) — Inv-13. No tenant filter (cross-tenant
+    /// resolver); IgnoreQueryFilters is defensive in case a future refactor adds one.
+    /// </summary>
+    public async Task<IReadOnlyList<TenantChannelEndpoint>> ResolveAllActiveAsync(
+        TenantChannel channel,
+        SignalType signalType,
+        string signalValue,
+        CancellationToken ct = default)
+        => await db.TenantChannelEndpoints
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(
+                e => e.Channel == channel
+                     && e.SignalType == signalType
+                     && e.SignalValue == signalValue
+                     && e.Status == EndpointStatus.Active)
+            .Take(2)
+            .ToListAsync(ct);
 }

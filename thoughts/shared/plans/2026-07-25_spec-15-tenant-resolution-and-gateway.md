@@ -325,17 +325,38 @@ TTL is a config value (`TenantContext:TtlSeconds`, minutes-scale; OD-3 placehold
 ### Phase 3: Success Criteria
 
 #### Phase 3: Programmatic Verification
-- [ ] `bun nx build api` compiles.
-- [ ] `bun nx test api 2>&1 | tee .tmp/test-api-p3.log` — new resolution/session/handler tests pass.
-- [ ] `bun nx lint api` passes.
+- [x] `bun nx build api` compiles.
+- [x] `bun nx test api 2>&1 | tee .tmp/test-api-p3.log` — new resolution/session/handler tests pass (1015 total green).
+- [x] `bun nx lint api` passes.
 
 #### Phase 3: Agent Verification
-- [ ] Agent confirms the handler appends an audit row on **every** branch (success + each failure) by reading `ResolveTenantContextCommandHandler.cs`.
-- [ ] Agent confirms `CreateConversationSessionCommand` is the only insert path for `conversation_sessions` (grep shows no other `.ConversationSessions.Add`).
-- [ ] Agent confirms no fallback/default tenant exists on any failure branch.
+- [x] Agent confirms the handler appends an audit row on **every** branch (success + each failure) by reading `ResolveTenantContextCommandHandler.cs` (5 outcomes, 5 audits; audit-then-throw).
+- [x] Agent confirms `CreateConversationSessionCommand` is the only insert path for `conversation_sessions` (grep shows exactly one `.ConversationSessions.Add`, in `ConversationSessionRepository.CreateAsync`).
+- [x] Agent confirms no fallback/default tenant exists on any failure branch (every failure throws; zero/many audit `tenant_id` is empty, never fabricated).
 
 ### Phase 3: Discoveries and Notable Information
-[Filled by the implementing agent during Phase 3 execution.]
+
+**Implemented + adversarially reviewed + fixed + re-verified (RE-VERIFY: PASS). Build 0 errors; 1015 api unit tests pass; lint clean. Fail-closed + audit-on-every-branch + single-writer all hold.**
+
+**Command contract (frozen for Phase 4 controllers):**
+- `ResolveTenantContextCommand(TenantChannel Channel, SignalType SignalType, string SignalValue, string? InboundCorrelationId) : IRequest<SignedTenantContext>`; result `SignedTenantContext(string Jws, TenantContextClaims Claims)`.
+- `CreateConversationSessionCommand(string TenantId, string SessionId, TenantChannel Channel, string ChannelEndpointId, string CorrelationId) : IRequest<ConversationSessionDto>` — the ONLY production insert path for `conversation_sessions`.
+- **Exception→status (wired in `GlobalExceptionHandler`):** `TenantNotResolvedException`/`AmbiguousEndpointException` → **422** (identical generic "unable to reach business" body — ambiguity not revealed, never 500, never a fallback tenant); `TenantContextVerificationException` → **401** (for the Phase 4 middleware).
+- **Resolver:** `ITenantChannelEndpointRepository.ResolveAllActiveAsync` uses `.Take(2)` + `.AsNoTracking()`; handler maps `0→TenantNotResolved`, `>1→Ambiguous`, `1→row`. Endpoint table is NOT `ITenantScoped` (cross-tenant resolver).
+- **Correlation precedence:** valid inbound (`^[A-Za-z0-9_-]{1,64}$`, identical to `CorrelationMiddleware.SafeIdRegex`) echoed → else ambient `ICorrelationContext.Current` → else mint `corr_{guid:N}` once; the one id threads claims + session + audit.
+- **Audit envelope:** `IAuditWriter.WriteAsync` with `Action="tenant.resolution"`, `ActorType="system"`, `ActorId="channel-gateway"`, `TargetType="tenant_channel_endpoint"`, `TargetId=channel_endpoint_id`, `Decision=allow|deny`, `Extra={signal_type, channel, channel_endpoint_id, tenant_id, outcome}`, `OccurredAt` = the single captured `now` (shared with `claims.issued_at`). Outcomes: `resolved|tenant_not_resolved|ambiguous_endpoint|signing_failed|session_insert_failed`.
+- **TimeProvider** injected (`TimeProvider.System` singleton), skew via Phase-2 signer; `TTL` from `TenantContext:TtlSeconds` (default 300).
+
+**Reviewer-found BLOCKING bug — FIXED (trust boundary):** `ConversationSessionRepository.CreateAsync` originally detached the failed entity ONLY on `23505`. On any other insert failure the `Added` entity stayed tracked on the request-scoped `ApplicationDbContext`, so the fail-closed `session_insert_failed` audit (same context, same `SaveChanges`) would either lose the audit row or silently insert an orphan session. Fixed with a catch-all that detaches on ANY failure then rethrows. **Phase 4 MUST add an integration test:** force a non-unique session-insert failure → assert the `session_insert_failed` audit row IS written AND no session row exists (this path is not unit-testable — repos are mocked).
+
+**DEVIATION (A) — split policy ids (KEEP AS-IS, reviewed):** the registry has only a single opaque `PolicyBundleId` (no agent/tool split schema; the bundle→sets expander is out of scope). `DerivePolicyIds` seeds BOTH `allowed_agent_policy_ids` and `allowed_tool_policy_ids` with `[PolicyBundleId]` (or `[]`). Provably inert today — NOTHING in production enforces those lists (`ToolAllowlist.from_tenant_context` has no prod caller; the api only serializes them into the JWS). **When the expander lands, the enforcement layer must treat a raw bundle id as unrecognized (fail-closed), not as a literal policy id.**
+
+**DEVIATION (B) — missing session columns (RESOLVED via new migration):** `conversation_sessions` lacked `channel_endpoint_id` + `correlation_id` (spec §5.4 + the plan's Phase 4 "correlation_id on the session row" criterion require them). Added migration `20260725021904_AddSessionEndpointCorrelationColumns` (both nullable `text`; `Up` adds two, `Down` drops two, no model drift), entity props `string? ChannelEndpointId`/`CorrelationId`, persisted in the create handler + DTO read-back. Snapshot auto-updated (never hand-edited). EF workflow: `dotnet ef migrations add … --startup-project ../Cordia.Api --context ApplicationDbContext --output-dir EntityFramework/Migrations`; migration `.cs` files carry BOM.
+
+**Non-blocking notes for Phase 4:**
+- **Correlation split-brain:** if a provider's `InboundCorrelationId` differs from the ambient `X-Correlation-Id` minted by `CorrelationMiddleware`, session/audit use the echoed provider id while request logs use the ambient one — two ids for one flow. Intended (plan: "echo any inbound provider correlation id"), but reconcile/document so Human-Verification #3 ("one correlation_id threads the whole flow") holds.
+- Failure-audit rows carry `tenant_id = ""`; `audit_events` is `ITenantScoped` with no save-time guard, so reads of those rows in tests need `IgnoreQueryFilters()` (or ambient tenant `""`).
+- `ResolveActiveAsync` (single-row) is now dead in production (only `ResolveAllActiveAsync` is used) — candidate cleanup once Phase 4 confirms.
 
 ---
 

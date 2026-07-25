@@ -132,6 +132,14 @@ public static class InfrastructureServiceCollectionExtensions
         // (Secrets:TenantContextSigningKeys); they are never logged or serialized.
         services.AddSingleton<ITenantContextSigner, JwsTenantContextSigner>();
 
+        // Spec 15 Phase 3 — TenantContext TTL, bound from the "TenantContext" config section.
+        services.AddOptions<TenantContextOptions>()
+            .BindConfiguration(TenantContextOptions.SectionName);
+
+        // Injectable clock (matches the signer's TimeProvider seam) so the resolution handler's
+        // issued_at/expires_at are pinnable in tests. Real wall clock in production.
+        services.AddSingleton(TimeProvider.System);
+
         // Spec 14 §24.3/§24.4 — tenant-scoped encrypted blob custody (AES-256-GCM at rest,
         // key resolved lazily from the secret store; expired objects swept by RetentionSweeper).
         services.AddSingleton<IObjectStore, EncryptedFileObjectStore>();
