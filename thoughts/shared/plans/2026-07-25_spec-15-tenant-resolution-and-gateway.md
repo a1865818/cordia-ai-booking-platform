@@ -395,16 +395,30 @@ an inbound signed context on API-side downstream calls before any handler touche
 ### Phase 4: Success Criteria
 
 #### Phase 4: Programmatic Verification
-- [ ] `bun nx build api` compiles.
-- [ ] `bun nx test-integration api 2>&1 | tee .tmp/test-int-api-p4.log` — ingress integration tests pass.
-- [ ] `bun nx test api` still green; `bun nx lint api` passes.
+- [x] `bun nx build api` compiles.
+- [x] `bun nx test-integration api 2>&1 | tee .tmp/test-int-api-p4.log` — ingress integration tests pass (378 passed / 2 skipped / 0 failed; all 10 new ingress tests green).
+- [x] `bun nx test api` still green (1015); `bun nx lint api` passes.
 
 #### Phase 4: Agent Verification
-- [ ] Agent starts the api dev server (dev-server protocol — see below) and POSTs the telephony webhook with a seeded endpoint, confirming a verifiable JWS is returned and one session row is created.
-- [ ] Agent confirms `TenantContextVerificationMiddleware` runs before controllers and the `X-Tenant-Id` shim cannot override a verified context (reads `Program.cs` pipeline order).
+- [x] Agent starts the api dev server (dev-server protocol) and POSTs the telephony webhook with a seeded endpoint, confirming a verifiable JWS is returned and one session row is created. — **Satisfied via the Alba integration test `Telephony_FullIngress`**: it POSTs the telephony webhook to a real in-process API host + real Postgres with a seeded active endpoint and asserts a JWS that re-`Verify`s + exactly one session row. Stronger than a manual `dotnet run` + curl and leaves no long-lived process; the live-provider webhook is the end-of-plan Human Verification.
+- [x] Agent confirms `TenantContextVerificationMiddleware` runs before controllers and the `X-Tenant-Id` shim cannot override a verified context (reads `Program.cs` pipeline order: Correlation → TenantContextVerification → X-Tenant-Id shim; shim gated on empty `TenantContext.TenantId`).
 
 ### Phase 4: Discoveries and Notable Information
-[Filled by the implementing agent during Phase 4 execution.]
+
+**Implemented + independently reviewed (VERDICT: PASS). Build 0 errors; 1015 unit tests + 378 integration tests (2 skipped, unrelated) green; lint/BOM clean. Inv-13 boundary holds under adversarial probing.**
+
+**Ingress design (frozen):**
+- `POST api/channels/telephony` resolves `Voice`/`PhoneNumber` from the transport-attested **called DID** (`to`) ONLY; `POST api/channels/messaging` resolves `Messaging`/`MessagingRecipient` from **`recipient_id`** ONLY. Caller-mutable fields (`from`, `caller_name`, `sender_id`, `sender_name`, SIP display) are carried in the DTO for payload fidelity but NEVER read into resolution (an integration test sends `caller_name="SPOOFED NAME"` and still resolves off the DID — Inv-13). Inbound provider correlation via `X-Provider-Call-Id` / `X-Provider-Message-Id`.
+- Both controllers return `{ tenant_context: <jws>, claims: {...} }` (`ChannelIngressResponse`). NOT a leak — HS256 is integrity-only, the claims are already the base64 JWS payload, no key/secret in the body.
+- **Pipeline order (`Program.cs`):** `UseExceptionHandler` → `CorrelationMiddleware` → `TenantContextVerificationMiddleware` → `TenantResolutionMiddleware` (X-Tenant-Id dev shim). The verification middleware verifies `X-Tenant-Context` via `ITenantContextSigner`, sets the scoped spine `TenantContext.TenantId` + folds tenant into `AmbientCorrelationContext` BEFORE the handler; absent header = pass-through → downstream fails closed at `TenantGuard`. **The shim is gated on `string.IsNullOrEmpty(TenantContext.TenantId)`, so a verified context ALWAYS wins over `X-Tenant-Id`** (reviewer found no path where the shim overrides — `ITenantContext` and concrete `TenantContext` resolve to the same scoped instance). Verification failure → `TenantContextVerificationException` → 401.
+
+**Deviations (both accepted by review):**
+- **(A) Ambiguous-endpoint E2E test downgraded** to a structural-prevention assertion: the `uq_channel_signal_active` partial-unique index makes two ACTIVE same-signal rows impossible to persist, so `ResolveAllActiveAsync` can't return >1 without dropping a global index (which would race the parallel persistence test). The `>1 → AmbiguousEndpointException` branch is covered by the Phase 3 unit test; integration test 10 asserts the DB actually enforces the 23505.
+- **(B) Non-unique session-insert failure returns HTTP 500** (no `GlobalExceptionHandler` arm maps `DbUpdateException`). KEEP for v1 — fail-closed contract holds (no session, no context, `session_insert_failed` audited); a generic insert failure is a genuine server-side condition (500 is honest; a 4xx would wrongly tell the provider not to retry). Optional future refinement: map transient SqlStates (40001/40P01/08xxx) → 503 + Retry-After.
+
+**Integration-test infra — first-run concurrent-migration race (IMPORTANT for CI + devs):** the integration tests run against a **persistent local Postgres** (`localhost:5432`, DB `Cordia_API_Test`), NOT ephemeral Testcontainers. Multiple parallel collection fixtures (`Postgres`, `AcceptanceApi`, and the new `TenantResolutionApi`) each call `MigrateAsync` (`MigrateOnStartup=true`) on that shared DB with no coordination. In steady state `MigrateAsync` is a no-op → no race; but **a newly-added pending migration races across fixtures → `23505` on `__EFMigrationsHistory`** (the first run partially fails; the race winner applies the migration, then subsequent runs pass). This bit us once on the Phase-3 migration's first integration run. **Workaround:** apply the migration first (`dotnet ef database update` against the test DB) or just re-run. **Recommended robust fix (follow-up, NOT done — touches 3 fixture families + bootstrap, out of Spec-15 scope):** wrap the startup `MigrateAsync` in a `pg_advisory_lock` in a shared helper, OR run a single pre-test `dotnet ef database update` and set `MigrateOnStartup=false` for tests.
+
+**Follow-ups (non-blocking):** `TenantResolutionApiFixture` duplicates ~27 `.MapEnum<>()` lines (consistent with the existing duplicative fixture pattern; a shared `ApplyCordiaEnumMappings()` extension would DRY it). `ResolveActiveAsync` (single-row) is now dead in production. Correlation split-brain (provider id vs ambient id) is intended but should be reconciled/documented for Human-Verification #3.
 
 ---
 

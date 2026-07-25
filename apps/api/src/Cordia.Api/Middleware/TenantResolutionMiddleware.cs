@@ -3,11 +3,17 @@
 namespace Cordia.Api.Middleware;
 
 /// <summary>
-/// Placeholder for spec 08/15 signed-context tenant resolution (Inv-13: tenant is authoritative
-/// from the signed context, NOT trusted from arbitrary client input — this header shim is
-/// dev/test scaffolding until spec 08 lands). Reads the <c>X-Tenant-Id</c> request header and
-/// sets the request-scoped <see cref="TenantContext.TenantId"/>. Does not hard-fail when the
-/// header is absent; endpoints that require a tenant validate it themselves.
+/// DEV/TEST-ONLY <c>X-Tenant-Id</c> tenant shim (Inv-13: the authoritative tenant comes from a signed
+/// context verified by <see cref="TenantContextVerificationMiddleware"/>, NOT from arbitrary client
+/// input — this header is dev/test scaffolding). Reads the <c>X-Tenant-Id</c> request header and sets
+/// the request-scoped <see cref="TenantContext.TenantId"/>, but ONLY when no tenant has already been
+/// resolved — so it can never override a verified signed context. Does not hard-fail when the header
+/// is absent; endpoints that require a tenant validate it themselves (fail closed at
+/// <c>TenantGuard.RequireTenant</c>).
+///
+/// <para>Registered AFTER <see cref="TenantContextVerificationMiddleware"/> in <c>Program.cs</c>: the
+/// verification middleware runs first and, on a valid <c>X-Tenant-Context</c>, sets the tenant; this
+/// shim then observes a non-empty <see cref="TenantContext.TenantId"/> and does nothing.</para>
 /// </summary>
 public sealed class TenantResolutionMiddleware(RequestDelegate next)
 {
@@ -17,7 +23,10 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
     /// <summary>Reads <see cref="HeaderName"/> and populates the scoped <see cref="TenantContext"/>.</summary>
     public async Task InvokeAsync(HttpContext context, TenantContext tenantContext)
     {
-        if (context.Request.Headers.TryGetValue(HeaderName, out var values))
+        // Never override a verified signed context (Inv-13): if TenantContextVerificationMiddleware
+        // already set the tenant, the dev/test X-Tenant-Id shim is a no-op.
+        if (string.IsNullOrEmpty(tenantContext.TenantId)
+            && context.Request.Headers.TryGetValue(HeaderName, out var values))
         {
             var tenantId = values.ToString();
             if (!string.IsNullOrWhiteSpace(tenantId))
