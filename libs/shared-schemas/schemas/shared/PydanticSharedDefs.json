@@ -3156,6 +3156,94 @@
       "title": "SubmitModificationInput",
       "type": "object"
     },
+    "TenantChannel": {
+      "description": "Origin channel a signed ``TenantContext`` was minted for (spec-15 \u00a75.1).\n\nDistinct from :class:`cordia_agent.state.Channel` (which carries an ``sms``\nmember for booking-draft provenance): the tenant-context wire contract uses\n``messaging`` as the canonical two-way-text channel name so it byte-matches\nthe C# ``TenantChannel`` enum generated from this same source of truth.",
+      "enum": [
+        "voice",
+        "messaging",
+        "web",
+        "email"
+      ],
+      "title": "TenantChannel",
+      "type": "string"
+    },
+    "TenantContext": {
+      "additionalProperties": false,
+      "description": "Frozen spec-15 \u00a75.1 TenantContext claim set.\n\nAll fields are required; extra fields are rejected.  The model is frozen so\nthat callers cannot mutate a verified context after it has been issued.",
+      "properties": {
+        "tenant_id": {
+          "description": "Stable tenant identifier (Inv-13 scope).",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "channel": {
+          "$ref": "#/$defs/TenantChannel",
+          "description": "Origin channel the request arrived on (spec-15 \u00a75.1)."
+        },
+        "channel_endpoint_id": {
+          "description": "Channel-specific endpoint identifier (e.g. phone number, widget ID).",
+          "title": "Channel Endpoint Id",
+          "type": "string"
+        },
+        "configuration_version": {
+          "description": "Tenant configuration/policy version active at session start.",
+          "title": "Configuration Version",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation ID propagated from the channel gateway for distributed tracing.",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Conversation session identifier allocated by the gateway at ingress (spec-15 \u00a75.1); scopes the session row and downstream audit events.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "allowed_agent_policy_ids": {
+          "description": "Ordered list of agent-policy IDs in force for this session (spec-15 \u00a75.1; split from the former single allowed_policy_ids).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Agent Policy Ids",
+          "type": "array"
+        },
+        "allowed_tool_policy_ids": {
+          "description": "Ordered list of tool-policy IDs authorising tool invocation for this session (spec-15 \u00a75.1).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Tool Policy Ids",
+          "type": "array"
+        },
+        "issued_at": {
+          "description": "Timezone-aware instant the context was minted (spec-15 \u00a75.1).",
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Timezone-aware instant the context expires; verifiers reject a token presented after this instant (spec-15 \u00a75.1).",
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "channel",
+        "channel_endpoint_id",
+        "configuration_version",
+        "correlation_id",
+        "session_id",
+        "allowed_agent_policy_ids",
+        "allowed_tool_policy_ids",
+        "issued_at",
+        "expires_at"
+      ],
+      "title": "TenantContext",
+      "type": "object"
+    },
     "ToolProgressFrame": {
       "additionalProperties": false,
       "description": "Progress signal for an in-flight tool invocation.",

@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantChannel",
+  "description": "Origin channel a signed ``TenantContext`` was minted for (spec-15 \u00a75.1).\n\n    Distinct from :class:`cordia_agent.state.Channel` (which carries an ``sms``\n    member for booking-draft provenance): the tenant-context wire contract uses\n    ``messaging`` as the canonical two-way-text channel name so it byte-matches\n    the C# ``TenantChannel`` enum generated from this same source of truth.",
+  "type": "string",
+  "enum": [
+    "voice",
+    "messaging",
+    "web",
+    "email"
+  ]
+}

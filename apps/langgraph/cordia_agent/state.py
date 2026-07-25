@@ -315,7 +315,8 @@ class AgentState(BaseModel):
     tenant_context_verified: bool = False
     correlation_id: str | None = None
     channel_endpoint_id: str | None = None
-    allowed_policy_ids: list[str] = Field(default_factory=list)
+    allowed_agent_policy_ids: list[str] = Field(default_factory=list)
+    allowed_tool_policy_ids: list[str] = Field(default_factory=list)
     # Session bootstrap fields, mapped from AgentInputState so downstream nodes
     # (e.g. identify_intent) can construct the initial BookingDraft.
     source: SourceInfo | None = Field(

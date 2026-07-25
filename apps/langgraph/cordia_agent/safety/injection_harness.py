@@ -77,8 +77,8 @@ def label_untrusted(text: str) -> LabeledContent:
 class ToolAllowlist:
     """Immutable set of tool names the tenant is authorised to invoke (Inv-12).
 
-    Constructed once from the verified ``TenantContext.allowed_policy_ids``; has
-    no mutation API so no code path can expand the allowlist at runtime.
+    Constructed once from the verified ``TenantContext.allowed_tool_policy_ids``;
+    has no mutation API so no code path can expand the allowlist at runtime.
     """
 
     def __init__(self, allowed_tool_names: list[str] | frozenset[str]) -> None:
@@ -86,18 +86,18 @@ class ToolAllowlist:
 
     @classmethod
     def from_tenant_context(cls, ctx: TenantContext) -> ToolAllowlist:
-        """Build an allowlist from a verified ``TenantContext``'s allowed_policy_ids.
+        """Build an allowlist from a verified ``TenantContext``'s allowed_tool_policy_ids.
 
         .. deprecated:: spec-14 gap closure (2026-07-10)
-            Broken scaffolding — ``allowed_policy_ids`` holds POLICY ids
+            Broken scaffolding — ``allowed_tool_policy_ids`` holds POLICY ids
             (e.g. ``"policy_a"``), not tool names, so the resulting allowlist
             denies every real tool. No production call site uses this. Build
             an explicit allowlist of canonical tool names and install it via
             ``ToolClient.set_tool_allowlist`` instead (gate 1c); the role of
-            allowed_policy_ids in tool authorization is a tracked spec-15
+            allowed_tool_policy_ids in tool authorization is a tracked spec-15
             open decision.
         """
-        return cls(ctx.allowed_policy_ids)
+        return cls(ctx.allowed_tool_policy_ids)
 
     def is_allowed(self, tool_name: str) -> bool:
         """Return True iff *tool_name* appears in the allowlist."""

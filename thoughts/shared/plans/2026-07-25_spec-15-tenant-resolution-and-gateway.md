@@ -167,18 +167,33 @@ fixtures to the new claim set + 3-part token; add assertions for the new fields.
 ### Phase 1: Success Criteria
 
 #### Phase 1: Programmatic Verification
-- [ ] `bun nx run langgraph:generate-schemas` succeeds and emits `TenantContext` under `schemas/models/` + `TenantChannel` under `schemas/enums/`.
-- [ ] `bun nx run shared-schemas:generate-types` regenerates C# (`SharedTypes.cs`) + TS/Zod without error; generated `TenantContext` is present.
-- [ ] `bun nx test langgraph 2>&1 | tee .tmp/test-langgraph-p1.log` passes (updated stub + node + guard tests).
-- [ ] `bun nx lint langgraph` passes; `bun nx run langgraph:format` clean.
+- [x] `bun nx run langgraph:generate-schemas` succeeds and emits `TenantContext` under `schemas/models/` + `TenantChannel` under `schemas/enums/`.
+- [x] `bun nx run shared-schemas:generate-types` regenerates C# (`SharedTypes.cs`) + TS/Zod without error; generated `TenantContext` is present.
+- [x] `bun nx test langgraph 2>&1 | tee .tmp/test-langgraph-p1.log` passes (877 passed — updated stub + node + guard tests).
+- [x] `bun nx lint langgraph` passes; `bun nx run langgraph:format` clean.
 
 #### Phase 1: Agent Verification
-- [ ] Agent greps generated `libs/shared-schemas/generated/typescript/zod.ts` to confirm `TenantContext` uses `.strict()` and `z.string().datetime()` for `issued_at`/`expires_at`.
-- [ ] Agent confirms `state.Channel` (sms) is unchanged and only `TenantContext.channel` moved to `TenantChannel`.
-- [ ] Agent confirms the stub emits a 3-part `header.payload.signature` token.
+- [x] Agent greps generated `libs/shared-schemas/generated/typescript/zod.ts` to confirm `TenantContext` uses `.strict()` and `z.string().datetime()` for `issued_at`/`expires_at`. (Emitted as `.datetime({ offset: true })` — repo convention for `AwareDatetime`.)
+- [x] Agent confirms `state.Channel` (sms) is unchanged and only `TenantContext.channel` moved to `TenantChannel`.
+- [x] Agent confirms the stub emits a 3-part `header.payload.signature` token.
 
 ### Phase 1: Discoveries and Notable Information
-[Filled by the implementing agent during Phase 1 execution.]
+
+**Implemented + independently reviewed (VERDICT: PASS). 877 langgraph tests pass; lint/format clean; both regen steps succeed.**
+
+**Technical Discoveries:**
+- **`injection_harness.py` had to be edited (beyond the plan's file list):** `ToolAllowlist.from_tenant_context` read the removed `ctx.allowed_policy_ids`. Repointed to `ctx.allowed_tool_policy_ids` (tool-authorization semantics — the method builds a TOOL allowlist). The only production `ToolAllowlist` construction (`menu/extraction_agent.py:91`) uses `ToolAllowlist([])`; `from_tenant_context` is called only by tests and remains deprecated scaffolding — behaviour unchanged.
+- **16 test files + the guard suite** construct `TenantContext`/call the stub `sign()` and were migrated to the new claim set. Where prior behaviour was policy-agnostic, both `allowed_agent_policy_ids` and `allowed_tool_policy_ids` were set to the old list value.
+- **Quicktype enum-name unification (watch in Phase 2 + web):** `SessionConsentState.notice_channel` is `Literal["voice","web","messaging","email"]` — the identical value set to the new `TenantChannel`. Quicktype now merges them into one generated type: C# `TenantChannelEnum`, TS `TenantChannelSchema`. Wire-identical (same string values) and both generated files are internally consistent (verified — no dangling type refs), but the generated **type name** for `notice_channel` changed. The `sms`-valued state `ChannelEnum` and `VerificationRequestChannel` remain distinct.
+
+**Interop notes carried to Phase 2/5 (CRITICAL):**
+- **Signing input:** compact JWS `b64url(header).b64url(payload).b64url(signature)`; header canonicalized as `{"alg":"HS256","kid":<id>,"typ":"tenantctx+jws"}`; signature = HMAC-SHA256 over `b64url(header) + "." + b64url(payload)`.
+- **Canonical JSON = `json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=True)`.** `ensure_ascii=True` is retained deliberately — the C# signer MUST match (non-ASCII → `\uXXXX`).
+- **Datetime format:** `model_dump(mode="json")` serializes `issued_at`/`expires_at` with a trailing `Z` (e.g. `2026-07-25T00:00:00Z`). The C# signer must byte-match this exact string form for the byte-parity assertion. NOTE: JWS *verification* recomputes HMAC over the received base64 bytes and never re-serializes — so cross-impl interop is most robustly guarded by a **fixed token string** verified on both sides (Phase 2 & Phase 5), with byte-parity of the two independent serializers as an additional (stricter) assertion.
+
+**Future Considerations:**
+- `ToolAllowlist.from_tenant_context` is dead/deprecated scaffolding pending a tracked spec-15 open decision — candidate for removal once the tool-authorization path is finalized.
+- Pre-existing (out of scope, untouched): `ruff check` reports 4 errors in `tests/unit_tests/observability/{test_context,test_metrics}.py`; not gated by the `langgraph` lint target (which scopes to `cordia_agent/`).
 
 ---
 

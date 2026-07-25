@@ -6,6 +6,7 @@ keeping tests fully isolated.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import httpx
@@ -32,7 +33,11 @@ _VALID_CLAIMS: dict = {
     "channel_endpoint_id": "ep_001",
     "configuration_version": "v2",
     "correlation_id": "corr_xyz",
-    "allowed_policy_ids": ["policy_a", "policy_b"],
+    "session_id": "sess_001",
+    "allowed_agent_policy_ids": ["agent_policy_a"],
+    "allowed_tool_policy_ids": ["policy_a", "policy_b"],
+    "issued_at": "2026-07-25T00:00:00Z",
+    "expires_at": "2026-07-25T01:00:00Z",
 }
 
 
@@ -70,7 +75,9 @@ async def test_resolve_tenant_valid_token_populates_state() -> None:
     assert result["tenant_policy_version"] == "v2"
     assert result["correlation_id"] == "corr_xyz"
     assert result["channel_endpoint_id"] == "ep_001"
-    assert result["allowed_policy_ids"] == ["policy_a", "policy_b"]
+    assert result["session_id"] == "sess_001"
+    assert result["allowed_agent_policy_ids"] == ["agent_policy_a"]
+    assert result["allowed_tool_policy_ids"] == ["policy_a", "policy_b"]
     assert result["tenant_context_verified"] is True
 
 
@@ -122,11 +129,13 @@ async def test_resolve_tenant_same_secret_payload_swap_rejected() -> None:
     """
     benign_token = sign(_VALID_CLAIMS)  # default (correct) secret
     evil_token = sign(dict(_VALID_CLAIMS, tenant_id="evil_tenant"))  # same secret
-    benign_payload, _benign_sig = benign_token.rsplit(".", 1)
-    evil_payload, _evil_sig = evil_token.rsplit(".", 1)
+    _benign_header, benign_payload, benign_sig = benign_token.split(".")
+    evil_header, evil_payload, _evil_sig = evil_token.split(".")
 
-    # Evil payload + benign signature: signature is valid for benign_payload only.
-    spliced = f"{evil_payload}.{_benign_sig}"
+    # Splice the evil header+payload onto the benign signature. Because the HMAC
+    # covers the JWS signing input (header + "." + payload), the benign signature
+    # no longer matches the evil payload and the verifier rejects it.
+    spliced = f"{evil_header}.{evil_payload}.{benign_sig}"
     assert evil_payload != benign_payload  # the swap actually changed the payload
 
     with pytest.raises(InvalidTenantContext):
@@ -159,6 +168,24 @@ async def test_resolve_tenant_ignores_state_tenant_id() -> None:
     # The result must use only the verified context's tenant_id.
     assert result["tenant_id"] == "tenant_abc"
     assert result["tenant_context_verified"] is True
+
+
+@pytest.mark.unit
+def test_stub_emits_three_part_jws_with_expected_header() -> None:
+    """The migrated stub emits a 3-part compact JWS whose header is tenantctx+jws.
+
+    Guards the Phase-1 migration from the old 2-part (payload.signature) form to
+    the real 3-part (header.payload.signature) JWS the C# signer (Phase 2) and
+    production verifier (Phase 5) must byte-match.
+    """
+    token = sign(_VALID_CLAIMS, kid="kid_test")
+    parts = token.split(".")
+    assert len(parts) == 3, "token must be header.payload.signature (3-part JWS)"
+
+    header_b64 = parts[0]
+    padding = "=" * (-len(header_b64) % 4)
+    header = json.loads(base64.urlsafe_b64decode(header_b64 + padding))
+    assert header == {"alg": "HS256", "kid": "kid_test", "typ": "tenantctx+jws"}
 
 
 # ---------------------------------------------------------------------------

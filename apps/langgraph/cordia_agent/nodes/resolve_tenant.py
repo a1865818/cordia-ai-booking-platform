@@ -57,6 +57,8 @@ async def resolve_tenant(state: AgentState) -> dict:
         "tenant_policy_version": ctx.configuration_version,
         "correlation_id": ctx.correlation_id,
         "channel_endpoint_id": ctx.channel_endpoint_id,
-        "allowed_policy_ids": ctx.allowed_policy_ids,
+        "session_id": ctx.session_id,
+        "allowed_agent_policy_ids": ctx.allowed_agent_policy_ids,
+        "allowed_tool_policy_ids": ctx.allowed_tool_policy_ids,
         "tenant_context_verified": True,
     }
