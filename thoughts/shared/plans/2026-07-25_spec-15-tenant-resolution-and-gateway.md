@@ -250,16 +250,33 @@ future `issued_at`, wrong `typ`).
 ### Phase 2: Success Criteria
 
 #### Phase 2: Programmatic Verification
-- [ ] `bun nx build api` compiles.
-- [ ] `bun nx test api 2>&1 | tee .tmp/test-api-p2.log` — `JwsTenantContextSignerTests` all pass.
-- [ ] `bun nx lint api` passes (new files UTF-8 + BOM).
+- [x] `bun nx build api` compiles. (0 errors; needed a Phase-1 build-regression fix — see discoveries.)
+- [x] `bun nx test api 2>&1 | tee .tmp/test-api-p2.log` — `JwsTenantContextSignerTests` all pass (19 incl. added parity test; 997 total green).
+- [x] `bun nx lint api` passes (new files UTF-8 + BOM).
 
 #### Phase 2: Agent Verification
-- [ ] Agent confirms `JwsTenantContextSigner` reads keys only from `ISecretStore` and holds no plaintext key in a field that is logged/serialized.
-- [ ] Agent confirms the canonical-JSON serialization byte-matches the Python `_canonical_json` for a shared fixture (compare hex of the payload bytes in a focused test or REPL).
+- [x] Agent confirms `JwsTenantContextSigner` reads keys only from `ISecretStore` and holds no plaintext key in a field that is logged/serialized.
+- [x] Agent confirms the canonical-JSON serialization byte-matches the Python `_canonical_json` for a shared fixture (Python-regenerated token == C# `VectorToken` constant, byte-for-byte; added `ensure_ascii` special-char parity test).
 
 ### Phase 2: Discoveries and Notable Information
-[Filled by the implementing agent during Phase 2 execution.]
+
+**Implemented + independently reviewed (VERDICT: PASS). Build 0 errors; 997 api unit tests pass (19 in the signer class); lint/BOM clean. Cross-impl interop loop closed (Python-regenerated token == C# constant).**
+
+**THE CROSS-IMPL VECTOR (reuse verbatim in Phase 5 — durable record):**
+- Secret (Python `str`, HMAC key = its UTF-8 bytes): `spec15-cross-impl-vector-secret`
+- Same secret as a C# `Secrets` config value (base64 of the UTF-8 bytes): `c3BlYzE1LWNyb3NzLWltcGwtdmVjdG9yLXNlY3JldA==`
+- `kid`: `vector-kid-1`
+- Claims: `tenant_id=tenant-abc`, `channel=voice`, `channel_endpoint_id=did:+15550001111`, `configuration_version=cfg-v1`, `correlation_id=corr_…0001`, `session_id=sess_…0001`, `allowed_agent_policy_ids=["agent-policy-a","agent-policy-b"]`, `allowed_tool_policy_ids=["tool-policy-ü"]` (U+00FC → `ü`, exercises `ensure_ascii`), `issued_at=2026-07-25T00:00:00Z`, `expires_at=2026-07-25T00:05:00Z`
+- Token: `eyJhbGciOiJIUzI1NiIsImtpZCI6InZlY3Rvci1raWQtMSIsInR5cCI6InRlbmFudGN0eCtqd3MifQ.eyJhbGxvd2VkX2FnZW50X3BvbGljeV9pZHMiOlsiYWdlbnQtcG9saWN5LWEiLCJhZ2VudC1wb2xpY3ktYiJdLCJhbGxvd2VkX3Rvb2xfcG9saWN5X2lkcyI6WyJ0b29sLXBvbGljeS1cdTAwZmMiXSwiY2hhbm5lbCI6InZvaWNlIiwiY2hhbm5lbF9lbmRwb2ludF9pZCI6ImRpZDorMTU1NTAwMDExMTEiLCJjb25maWd1cmF0aW9uX3ZlcnNpb24iOiJjZmctdjEiLCJjb3JyZWxhdGlvbl9pZCI6ImNvcnJfMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yNVQwMDowNTowMFoiLCJpc3N1ZWRfYXQiOiIyMDI2LTA3LTI1VDAwOjAwOjAwWiIsInNlc3Npb25faWQiOiJzZXNzXzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxIiwidGVuYW50X2lkIjoidGVuYW50LWFiYyJ9.-6d8E_84lKWbIUdh8zCrMrqx76DAPX9UNW6axXhKT0M`  (verify with clock pinned between issued/expires, e.g. `2026-07-25T00:02:00Z`). Defined in `JwsTenantContextSignerTests.cs` under a `// CROSS-IMPL VECTOR — shared with Phase 5 test` comment.
+
+**Design decisions (Phase 3/4/5 must honour):**
+- **Hand-written `TenantContextClaims` Domain record** (not the generated `Cordia.Domain.Generated.TenantContext`) is the signer's claim type — fully owns canonical bytes, keeps the Domain port decoupled from generated code. `Channel` is the hand-written `Cordia.Domain.Enums.TenantChannel`; timestamps are `DateTimeOffset`.
+- **Canonical serializer is hand-rolled** (a custom escaper), because no built-in .NET encoder matches CPython `json.dumps(ensure_ascii=True)`: CPython does NOT escape `/ < > & ' +` (the .NET defaults do), and escapes every char >0x7e as lowercase `\uXXXX` (astral → UTF-16 surrogate pair). Verified byte-identical incl. these edge cases.
+- **Datetime format** matches pydantic v2 `model_dump(mode="json")`: UTC → trailing `Z`; non-UTC → `+HH:MM`; microsecond precision, fractional omitted when zero. NOTE: Python only *verifies* (recomputes HMAC over received bytes, never re-serializes), so production interop only requires C# to emit RFC3339 that Pydantic can parse — byte-parity is a test-fixture guarantee, not a runtime dependency.
+- **Key custody / config layout:** keys loaded once from `ISecretStore` at construction; the flat `ISecretStore.GetSecret` can't enumerate a child map, so config adds a `KeyIds` comma-list: `Secrets:TenantContextSigningKeys:{ActiveKid, KeyIds, Keys:<kid>}`, each secret = base64 of the raw HMAC key bytes. **Phase 5 deployment config must include `KeyIds` and use the same secret bytes.** `_keys`/`_activeKid` are `private readonly`, never logged/serialized.
+- **Clock** via injectable `TimeProvider` (skew 60s); DI resolves the `(ISecretStore)`-only ctor. **Verify order:** header-parse → `alg=="HS256"` (alg pinned; no alg-confusion) → `kid` in active set → HMAC + `CryptographicOperations.FixedTimeEquals` → parse claims → `typ` → expiry/skew. Exception messages are fixed generic strings — never leak secret/kid/claims.
+
+**DEVIATION — Phase-1 build regression, fixed here (committed as a separate `fix` commit):** the Phase 1 C# schema regen introduced `Cordia.Domain.Generated.TenantContext`/`TenantChannel` (quicktype) which collided by simple name (`CS0104`, ~130 errors) with the hand-written `Cordia.Domain.Enums.TenantChannel` and `Cordia.Infrastructure.Services.TenantContext`, and renamed the generated `notice_channel` type to the merged `TenantChannelEnum` (`CS0246` in `RecordConsentCommand`). **Phase 1's success criteria never ran `bun nx build api`, so this was missed at the Phase 1 gate** (process gap — future schema-regen phases must build the C# side). Fixed minimally with two `GlobalUsings.cs` alias files (Infrastructure + Tests) resolving the simple names to the hand-written types, plus the `RecordConsentCommand` rename. Reviewer grepped the whole `apps/api` tree: every unqualified `TenantChannel`/`TenantContext` resolves to the intended hand-written type; no production code needs the generated DTO by simple name (use `Cordia.Domain.Generated.TenantContext` fully-qualified if ever needed). Behaviour/wire meaning unchanged.
 
 ---
 
