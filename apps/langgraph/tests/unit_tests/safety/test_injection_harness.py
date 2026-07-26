@@ -21,14 +21,18 @@ from cordia_agent.state import Channel
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(allowed_policy_ids: list[str]) -> TenantContext:
+def _make_ctx(allowed_tool_policy_ids: list[str]) -> TenantContext:
     return TenantContext(
         tenant_id="tenant_test",
         channel=Channel.voice,
         channel_endpoint_id="ep_001",
         configuration_version="v1",
         correlation_id="corr_001",
-        allowed_policy_ids=allowed_policy_ids,
+        session_id="sess_001",
+        allowed_agent_policy_ids=[],
+        allowed_tool_policy_ids=allowed_tool_policy_ids,
+        issued_at="2026-07-25T00:00:00Z",
+        expires_at="2026-07-25T01:00:00Z",
     )
 
 
@@ -65,7 +69,7 @@ def test_privileged_tool_embedded_in_untrusted_not_callable() -> None:
     Allowlist is built from a TenantContext that does NOT include the privileged
     tool; the untrusted source adds a second layer of rejection.
     """
-    ctx = _make_ctx(allowed_policy_ids=["get_availability", "check_candidates"])
+    ctx = _make_ctx(allowed_tool_policy_ids=["get_availability", "check_candidates"])
     allowlist = ToolAllowlist.from_tenant_context(ctx)
 
     privileged_tool = "admin_override"
@@ -162,7 +166,7 @@ def test_system_source_not_allowlisted_is_rejected() -> None:
 
 @pytest.mark.unit
 def test_tool_allowlist_from_tenant_context() -> None:
-    """ToolAllowlist.from_tenant_context maps allowed_policy_ids correctly."""
+    """ToolAllowlist.from_tenant_context maps allowed_tool_policy_ids correctly."""
     ctx = _make_ctx(["policy_read", "policy_write"])
     allowlist = ToolAllowlist.from_tenant_context(ctx)
 

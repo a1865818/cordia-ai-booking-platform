@@ -250,7 +250,11 @@ FAKE_TENANT_CONTEXT = TenantContext(
     channel_endpoint_id="ep_e2e_01i",
     configuration_version="v1",
     correlation_id=CORRELATION_ID,
-    allowed_policy_ids=["policy_a"],
+    session_id="sess_e2e_001",
+    allowed_agent_policy_ids=["policy_a"],
+    allowed_tool_policy_ids=["policy_a"],
+    issued_at="2026-07-25T00:00:00Z",
+    expires_at="2026-07-25T01:00:00Z",
 )
 
 

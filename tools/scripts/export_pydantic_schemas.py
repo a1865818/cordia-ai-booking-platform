@@ -101,6 +101,7 @@ from cordia_agent.contracts.security import (
     SessionConsentState,
     RedactionPolicy,
 )
+from cordia_agent.safety.tenant_context import TenantChannel, TenantContext
 from cordia_agent.streaming.reconnect import ReconnectOutcome
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
@@ -190,6 +191,7 @@ MODEL_REGISTRY: dict[str, list[type]] = {
         SubmitModificationInput,
         ModelTraceInput,
         ModelTraceRecorded,
+        TenantContext,
         ToolResultEnvelope,
         TranscriptTurnInput,
         TranscriptTurnPersisted,
@@ -229,6 +231,7 @@ ENUM_REGISTRY: list[type[Enum]] = [
     RecordConsentStatus,
     AppendTranscriptTurnStatus,
     RecordModelTraceStatus,
+    TenantChannel,
 ]
 
 # Subdirs this exporter owns (cleaned each run). job-events/ is excluded.

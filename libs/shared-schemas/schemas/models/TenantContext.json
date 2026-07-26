@@ -1,0 +1,4 @@
+{
+  "title": "TenantContext",
+  "$ref": "../shared/PydanticSharedDefs.json#/$defs/TenantContext"
+}

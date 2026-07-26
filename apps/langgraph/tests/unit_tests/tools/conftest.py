@@ -77,7 +77,11 @@ def resolved_tenant_context() -> TenantContext:
         channel_endpoint_id="ep_test_001",
         configuration_version="v1",
         correlation_id="corr_test_abc123",
-        allowed_policy_ids=["policy_a", "policy_b"],
+        session_id="sess_test_001",
+        allowed_agent_policy_ids=["policy_a", "policy_b"],
+        allowed_tool_policy_ids=["policy_a", "policy_b"],
+        issued_at="2026-07-25T00:00:00Z",
+        expires_at="2026-07-25T01:00:00Z",
     )
 
 

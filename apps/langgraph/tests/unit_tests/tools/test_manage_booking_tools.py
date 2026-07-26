@@ -144,7 +144,11 @@ def resolved_tenant_ctx() -> TenantContext:
         channel_endpoint_id="ep_test_001",
         configuration_version="v1",
         correlation_id="corr_test_abc",
-        allowed_policy_ids=["policy_a"],
+        session_id="sess_test_001",
+        allowed_agent_policy_ids=["policy_a"],
+        allowed_tool_policy_ids=["policy_a"],
+        issued_at="2026-07-25T00:00:00Z",
+        expires_at="2026-07-25T01:00:00Z",
     )
 
 

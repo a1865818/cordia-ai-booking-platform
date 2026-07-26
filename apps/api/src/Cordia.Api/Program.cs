@@ -168,7 +168,15 @@ if (app.Configuration.GetValue("DatabaseBootstrap:MigrateOnStartup", false))
 // context exists for all downstream work and logging (§25.1).
 app.UseMiddleware<Cordia.Api.Middleware.CorrelationMiddleware>();
 
-// Resolve tenant from X-Tenant-Id header (dev/test shim — replaced by signed-context resolution in spec 08/15).
+// Verify an inbound signed TenantContext (spec-15 Phase 4, Inv-13). Runs AFTER correlation (so the
+// correlation id exists) and BEFORE the X-Tenant-Id shim so a verified context is AUTHORITATIVE — on
+// a valid X-Tenant-Context it sets the request tenant + folds it into the ambient correlation before
+// any handler runs; a bad context throws → 401. No header ⇒ pass through (endpoints fail closed at
+// TenantGuard). This is the API-side mirror of the langgraph resolve_tenant node.
+app.UseMiddleware<Cordia.Api.Middleware.TenantContextVerificationMiddleware>();
+
+// Resolve tenant from the X-Tenant-Id header (DEV/TEST shim only). Gated so it NEVER overrides a
+// context already verified above (Inv-13); superseded by signed-context resolution (spec 08/15).
 app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
 
 // --- Pipeline ---

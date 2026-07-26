@@ -11,15 +11,29 @@ no caller may supply a raw tenant_id that bypasses signature verification.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
-from cordia_agent.state import Channel
+
+class TenantChannel(str, Enum):
+    """Origin channel a signed ``TenantContext`` was minted for (spec-15 §5.1).
+
+    Distinct from :class:`cordia_agent.state.Channel` (which carries an ``sms``
+    member for booking-draft provenance): the tenant-context wire contract uses
+    ``messaging`` as the canonical two-way-text channel name so it byte-matches
+    the C# ``TenantChannel`` enum generated from this same source of truth.
+    """
+
+    voice = "voice"
+    messaging = "messaging"
+    web = "web"
+    email = "email"
 
 
 class TenantContext(BaseModel):
-    """Frozen spec-15 TenantContext claim set (line 55 of the foreground-agent spec).
+    """Frozen spec-15 §5.1 TenantContext claim set.
 
     All fields are required; extra fields are rejected.  The model is frozen so
     that callers cannot mutate a verified context after it has been issued.
@@ -28,7 +42,9 @@ class TenantContext(BaseModel):
     model_config = {"extra": "forbid", "frozen": True}
 
     tenant_id: str = Field(description="Stable tenant identifier (Inv-13 scope).")
-    channel: Channel = Field(description="Origin channel the request arrived on.")
+    channel: TenantChannel = Field(
+        description="Origin channel the request arrived on (spec-15 §5.1)."
+    )
     channel_endpoint_id: str = Field(
         description="Channel-specific endpoint identifier (e.g. phone number, widget ID)."
     )
@@ -38,8 +54,32 @@ class TenantContext(BaseModel):
     correlation_id: str = Field(
         description="Correlation ID propagated from the channel gateway for distributed tracing."
     )
-    allowed_policy_ids: list[str] = Field(
-        description="Ordered list of policy IDs the tenant is allowed to invoke."
+    session_id: str = Field(
+        description=(
+            "Conversation session identifier allocated by the gateway at ingress "
+            "(spec-15 §5.1); scopes the session row and downstream audit events."
+        )
+    )
+    allowed_agent_policy_ids: list[str] = Field(
+        description=(
+            "Ordered list of agent-policy IDs in force for this session "
+            "(spec-15 §5.1; split from the former single allowed_policy_ids)."
+        )
+    )
+    allowed_tool_policy_ids: list[str] = Field(
+        description=(
+            "Ordered list of tool-policy IDs authorising tool invocation for this "
+            "session (spec-15 §5.1)."
+        )
+    )
+    issued_at: AwareDatetime = Field(
+        description="Timezone-aware instant the context was minted (spec-15 §5.1)."
+    )
+    expires_at: AwareDatetime = Field(
+        description=(
+            "Timezone-aware instant the context expires; verifiers reject a token "
+            "presented after this instant (spec-15 §5.1)."
+        )
     )
 
 

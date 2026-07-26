@@ -2,6 +2,7 @@
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.TenantResolution;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.EntityFramework.Interceptors;
 using Cordia.Infrastructure.Observability;
@@ -12,6 +13,7 @@ using Cordia.Infrastructure.Security;
 using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
 using Cordia.Infrastructure.Storage;
+using Cordia.Infrastructure.TenantResolution;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -124,6 +126,19 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 14 §24.4 — server-side secret custody; values never serialized or logged.
         services.AddSingleton<ISecretStore, ConfigurationSecretStore>();
+
+        // Spec 15 Phase 2 — HS256 compact-JWS TenantContext signer/verifier. Signing keys are
+        // loaded once at construction from the ISecretStore custody seam
+        // (Secrets:TenantContextSigningKeys); they are never logged or serialized.
+        services.AddSingleton<ITenantContextSigner, JwsTenantContextSigner>();
+
+        // Spec 15 Phase 3 — TenantContext TTL, bound from the "TenantContext" config section.
+        services.AddOptions<TenantContextOptions>()
+            .BindConfiguration(TenantContextOptions.SectionName);
+
+        // Injectable clock (matches the signer's TimeProvider seam) so the resolution handler's
+        // issued_at/expires_at are pinnable in tests. Real wall clock in production.
+        services.AddSingleton(TimeProvider.System);
 
         // Spec 14 §24.3/§24.4 — tenant-scoped encrypted blob custody (AES-256-GCM at rest,
         // key resolved lazily from the secret store; expired objects swept by RetentionSweeper).

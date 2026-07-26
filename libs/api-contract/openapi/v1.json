@@ -656,6 +656,24 @@
         },
         "type": "object"
       },
+      "MessagingWebhookRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "recipient_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sender_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sender_name": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ModelTraceRecordedResult": {
         "additionalProperties": false,
         "properties": {
@@ -728,15 +746,6 @@
           "in_progress",
           "rejected",
           "waitlisted"
-        ],
-        "type": "string"
-      },
-      "NoticeChannel": {
-        "enum": [
-          "email",
-          "messaging",
-          "voice",
-          "web"
         ],
         "type": "string"
       },
@@ -1074,7 +1083,7 @@
             "type": "string"
           },
           "notice_channel": {
-            "$ref": "#/components/schemas/NoticeChannel"
+            "$ref": "#/components/schemas/TenantChannelEnum"
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
@@ -1261,6 +1270,106 @@
             "type": "string"
           },
           "target_booking_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "TelephonyWebhookRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "caller_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "from": {
+            "nullable": true,
+            "type": "string"
+          },
+          "to": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "TenantChannel": {
+        "enum": [
+          "voice",
+          "messaging",
+          "web",
+          "email"
+        ],
+        "type": "string"
+      },
+      "TenantChannelEnum": {
+        "enum": [
+          "email",
+          "messaging",
+          "voice",
+          "web"
+        ],
+        "type": "string"
+      },
+      "TenantContextClaimsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_agent_policy_ids": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "allowed_tool_policy_ids": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/TenantChannel"
+          },
+          "channel_endpoint_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "configuration_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "correlation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "session_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "TenantContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "claims": {
+            "$ref": "#/components/schemas/TenantContextClaimsResponse"
+          },
+          "tenant_context": {
             "nullable": true,
             "type": "string"
           }
@@ -2794,6 +2903,200 @@
         },
         "tags": [
           "Catalog"
+        ]
+      }
+    },
+    "/api/channels/messaging": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Provider-Message-Id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingWebhookRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingWebhookRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          }
+        },
+        "tags": [
+          "MessagingWebhook"
+        ]
+      }
+    },
+    "/api/channels/telephony": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Provider-Call-Id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelephonyWebhookRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelephonyWebhookRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelephonyWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          }
+        },
+        "tags": [
+          "TelephonyWebhook"
         ]
       }
     },
@@ -5153,6 +5456,9 @@
       "name": "Menu"
     },
     {
+      "name": "MessagingWebhook"
+    },
+    {
       "name": "ModelTraces"
     },
     {
@@ -5166,6 +5472,9 @@
     },
     {
       "name": "Reporting"
+    },
+    {
+      "name": "TelephonyWebhook"
     },
     {
       "name": "Verifications"

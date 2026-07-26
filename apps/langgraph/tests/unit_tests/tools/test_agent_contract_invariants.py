@@ -66,8 +66,12 @@ def _make_tenant_context(*, allowed_tools: list[str] | None = None) -> TenantCon
         channel_endpoint_id="ep_inv_001",
         configuration_version="v1",
         correlation_id="corr_inv_001",
-        allowed_policy_ids=allowed_tools
+        session_id="sess_inv_001",
+        allowed_agent_policy_ids=[],
+        allowed_tool_policy_ids=allowed_tools
         or ["submit_confirmed_intent", "request_verification"],
+        issued_at="2026-07-25T00:00:00Z",
+        expires_at="2026-07-25T01:00:00Z",
     )
 
 

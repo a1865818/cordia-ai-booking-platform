@@ -32,13 +32,15 @@ public sealed record RecordConsentCommand(
             [Domain.Generated.Outcome.AlternativeOffered] = "alternative_offered",
         };
 
-    private static readonly IReadOnlyDictionary<NoticeChannel, string> NoticeChannelWire =
-        new Dictionary<NoticeChannel, string>
+    // Phase-1 regen merged the notice_channel enum into the shared TenantChannelEnum
+    // (same wire values); SessionConsentState.NoticeChannel is now TenantChannelEnum.
+    private static readonly IReadOnlyDictionary<TenantChannelEnum, string> NoticeChannelWire =
+        new Dictionary<TenantChannelEnum, string>
         {
-            [Domain.Generated.NoticeChannel.Voice] = "voice",
-            [Domain.Generated.NoticeChannel.Web] = "web",
-            [Domain.Generated.NoticeChannel.Messaging] = "messaging",
-            [Domain.Generated.NoticeChannel.Email] = "email",
+            [Domain.Generated.TenantChannelEnum.Voice] = "voice",
+            [Domain.Generated.TenantChannelEnum.Web] = "web",
+            [Domain.Generated.TenantChannelEnum.Messaging] = "messaging",
+            [Domain.Generated.TenantChannelEnum.Email] = "email",
         };
 
     /// <summary>Builds the command from the generated cross-service contract.</summary>
