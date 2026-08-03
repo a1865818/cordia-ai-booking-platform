@@ -677,9 +677,16 @@ export function ConsolePage() {
           );
           // Transcript for the open thread is fetched on demand; it is a sensitive read
           // and carries actor + reason-code headers (spec 14 §4.2).
+          //
+          // A live session that has NOT loaded gets an explicit empty entry rather than
+          // falling through to MESSAGES: the mock map has no key for a real session id, so
+          // the pane rendered a clean empty conversation for a failed or forbidden read of
+          // the most sensitive data in the product.
           const liveMessages = transcriptQuery.data
             ? { ...MESSAGES, [convOpen]: toMessages(transcriptQuery.data) }
-            : MESSAGES;
+            : openSessionIsLive
+              ? { ...MESSAGES, [convOpen]: [] }
+              : MESSAGES;
           // The read does not happen until the operator says why. Rendered only for a real
           // session — the demo threads are not transcripts and nothing is disclosed by them.
           const needsPurpose = openSessionIsLive && transcriptPurpose === null;
@@ -715,7 +722,19 @@ export function ConsolePage() {
               )}
               <ConversationsScreen device={device} threads={displayThreads} messages={liveMessages}
                 convOpen={convOpen} convView={convView} openConv={openConv}
-                backConv={() => setConvView('list')} takeOver={takeOver} />
+                backConv={() => setConvView('list')} takeOver={takeOver}
+                transcriptPending={openSessionIsLive && transcriptPurpose !== null && transcriptQuery.isPending}
+                transcriptError={
+                  // Named, with a retry — never an empty thread that reads as "nothing was said".
+                  openSessionIsLive && transcriptQuery.isError ? (
+                    <ErrorState
+                      inline
+                      error={transcriptQuery.error}
+                      title="Couldn’t load this transcript."
+                      onRetry={() => void transcriptQuery.refetch()}
+                    />
+                  ) : undefined
+                } />
             </>
           );
         }

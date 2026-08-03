@@ -203,9 +203,10 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
    fallback for **live** sessions (demo threads keep theirs).
 
 **Automated Verification**
-- [ ] `bun nx test web` — adapter tests assert no fabricated `retries`/`channel`/`wait`; a
-      conversations test asserts a failed transcript renders an error, not an empty thread
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+- [x] `bun nx test web` — adapter tests assert no fabricated `retries`/`channel`/`wait`; a
+      conversations test asserts a failed transcript renders an error, not an empty thread —
+      **250 passed** (was 233)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
 
 **Manual Verification**
 - [ ] Stop the API, open a live conversation → error + retry, no blank thread
@@ -213,6 +214,24 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
 - [ ] *Regression:* dismiss/undo still work; an escalated operation still resurfaces
 
 ### Discoveries and Notable Information
+
+- **Two more fabrications surfaced while implementing, both fixed here.**
+  - `QueueScreen` rendered `<Chip status="failed" />` for **every** row. The board carries
+    `manual_review`, `alternatives_required` and `compensation_required` alongside genuine
+    failures — colouring four situations identically red tells the operator they are the same
+    one. Live rows now show the platform's own status via `operationStatusLabel` in a neutral
+    pill; demo rows keep the red chip.
+  - `ConversationThread`'s header hard-coded *"· handled by AI"* and an **AI** badge on every
+    thread. Same provenance claim the schedule grid was already careful not to make. Now shown
+    only when the row actually carries `prov`, which live rows no longer do.
+- `Thread.status`/`prov` and `QueueItem.retries`/`channel` became **optional** rather than being
+  given honest defaults — there is no honest default. The demo constants still populate them, so
+  the mock screens are unchanged.
+- The mock `MESSAGES` fallback needed an explicit empty entry for a live session, not just an
+  error prop: `messages[id] || []` would otherwise still fall through to the mock map.
+- `Element.prototype.scrollIntoView` does not exist in jsdom, so any test rendering the
+  conversation thread threw. Stubbed once in `src/test-setup.ts`; this unblocks component tests
+  for every screen, which the suite had none of before.
 
 ---
 

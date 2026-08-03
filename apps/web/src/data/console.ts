@@ -32,8 +32,13 @@ export interface QueueItem {
   service: string;
   slot: string;
   reason: string;
-  retries: number;
-  channel: Channel;
+  /**
+   * Attempt count. **Optional** — `OperationSummary` does not project it, so a live row omits
+   * it rather than reporting 0, which read as "this has never been retried".
+   */
+  retries?: number;
+  /** Optional for the same reason: the API models no channel on an operation. */
+  channel?: Channel;
   transcript: string | null;
   /**
    * The server's operation status. Carried so a local dismissal can be tied to the state it
@@ -48,8 +53,13 @@ export interface Thread {
   name: string;
   channel: Channel;
   preview: string;
-  status: BookingStatus;
-  prov: string;
+  /**
+   * **Optional.** `ConversationSessionSummary` carries no outcome, so a live thread sets
+   * nothing rather than claiming `pending` for every session that has ended.
+   */
+  status?: BookingStatus;
+  /** Optional for the same reason: nothing records whether the agent or a human handled it. */
+  prov?: string;
   ago: string;
   live?: boolean;
 }

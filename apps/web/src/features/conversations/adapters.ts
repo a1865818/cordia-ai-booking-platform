@@ -48,8 +48,10 @@ export function toThread(session: ConversationSessionSummary, now = Date.now()):
     // The list endpoint carries no transcript text (by design); the preview fills in when
     // the thread is opened and its transcript loads.
     preview: "",
-    status: "pending",
-    prov: "ai",
+    // `status` and `prov` are deliberately omitted. The summary carries no outcome and no
+    // provenance, and the previous constants (`"pending"`, `"ai"`) meant every ended session
+    // was labelled pending and every thread claimed the agent had handled it — asserting two
+    // facts the API does not record (Inv-16).
     ago: timeAgo(session.started_at, now),
     // A session with no end time is still open.
     live: !session.ended_at,
