@@ -186,7 +186,11 @@ export function useCancelBooking() {
     mutationFn: async ({ bookingId, grantId }: CancelBookingVariables): Promise<CancelBookingResult> => {
       const attemptKey = `cancel:${bookingId}`;
 
-      const details = await getBookingDetails(bookingId);
+      // The grant travels on the READ as well as the write. `GET /api/Bookings/{id}` answers
+      // `requires_verification` as a typed 403 for a gated booking, so omitting it here meant
+      // the operator completed step-up and the cancellation still failed — on the version
+      // lookup, before the cancellation was ever submitted.
+      const details = await getBookingDetails(bookingId, grantId);
       const version = details.booking?.version;
       if (version === null || version === undefined) {
         throw new Error(

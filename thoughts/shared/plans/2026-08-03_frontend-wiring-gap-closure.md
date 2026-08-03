@@ -297,16 +297,31 @@ Load `engineering-security-engineer.md` before implementing.
    `code` (never `title`). No grant is cached across bookings or sessions.
 
 **Automated Verification**
-- [ ] `bun nx test web` — cancel test asserts the pre-read carries `X-Grant-Id`; a 403
-      `verification_required` on a transcript mounts the gate and the retry carries the grant;
-      an `AuthorizationFailedException`-shaped 403 (no `code`) does **not** mount the gate
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+- [x] `bun nx test web` — cancel test asserts the pre-read carries the grant; classification
+      tests assert a `verification_required` 403 is recoverable and an authorization 403 is
+      **not**; key test asserts a grant busts the cached failure — **267 passed** (was 260)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
 
 **Manual Verification**
 - [ ] Cancel a booking that requires verification end-to-end
 - [ ] *Regression:* gate-before-submit ordering unchanged; grant never written to storage
 
 ### Discoveries and Notable Information
+
+- **The cached-failure trap.** Forwarding the grant is not enough on its own: the transcript
+  query keys on the session id, so react-query would serve the *cached 403* after step-up
+  succeeded and the operator would see the same error they just resolved. The grant is now part
+  of the query key, which makes obtaining one a genuinely new query.
+- **Two 403s that must not be conflated.** `VerificationRequiredException` carries
+  `code: "verification_required"` and is recoverable; `AuthorizationFailedException` is also a
+  403 but means "your role does not permit this", and mounting the gate for it would loop the
+  operator through a flow that cannot succeed. Pinned by a test that goes through the real
+  `toApiError` classifier rather than a hand-built error, so it pins the wire shape too.
+- The transcript grant is cleared alongside the purpose whenever the open conversation changes —
+  a grant is scoped to the subject it was issued for and must not leak to the next thread.
+- Reschedule's booking read still has no grant to forward because that flow never obtains one.
+  Left as a comment rather than unreachable UI: `RESCHEDULE_FULFILMENT_SUPPORTED` is false, so
+  building a gate there now would be untestable dead code.
 
 ---
 

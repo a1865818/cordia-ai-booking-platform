@@ -56,11 +56,17 @@ export function useSessions(limit = 50, enabled = true) {
 export function useTranscript(
   sessionId: string | null,
   reasonCode: SensitiveReadPurpose | null,
+  /**
+   * Step-up grant, when the platform has demanded one for this session (spec 08, Inv-11).
+   * Part of the key: a read that failed without a grant must genuinely re-run once one is
+   * obtained, rather than serving the cached failure.
+   */
+  grantId?: string,
   enabled = true
 ) {
   return useQuery({
-    queryKey: queryKeys.conversations.transcript(sessionId ?? ""),
-    queryFn: ({ signal }) => getTranscript(sessionId!, reasonCode!, { signal }),
+    queryKey: queryKeys.conversations.transcript(sessionId ?? "", grantId),
+    queryFn: ({ signal }) => getTranscript(sessionId!, reasonCode!, { signal, grantId }),
     enabled: enabled && Boolean(sessionId) && Boolean(reasonCode),
     staleTime: Infinity,
     refetchOnWindowFocus: false,

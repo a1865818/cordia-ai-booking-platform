@@ -241,13 +241,28 @@ export function ConsolePage() {
    * investigation from idle browsing (spec 14 §2, purpose-restricted access).
    */
   const [transcriptPurpose, setTranscriptPurpose] = useState<SensitiveReadPurpose | null>(null);
+  /**
+   * Step-up grant for this transcript, held **in memory only** and never across conversations
+   * (Inv-11). A transcript can be gated just like a booking; without this the read dead-ended
+   * on a 403 the operator had no way to resolve.
+   */
+  const [transcriptGrant, setTranscriptGrant] = useState<string | null>(null);
   const transcriptQuery = useTranscript(
     openSessionIsLive ? convOpen : null,
-    transcriptPurpose
+    transcriptPurpose,
+    transcriptGrant ?? undefined
   );
 
-  // A purpose is stated for one reading of one conversation; it must not carry over to the next.
-  useEffect(() => { setTranscriptPurpose(null); }, [convOpen]);
+  // A purpose AND a grant are stated for one reading of one conversation; neither may carry
+  // over to the next — a grant is scoped to the subject it was issued for.
+  useEffect(() => {
+    setTranscriptPurpose(null);
+    setTranscriptGrant(null);
+  }, [convOpen]);
+
+  /** True when the platform says this transcript needs step-up, not that it refused outright. */
+  const transcriptNeedsVerification =
+    openSessionIsLive && isApiVerificationRequiredError(transcriptQuery.error);
 
   // Local overlays: optimistic removals applied on top of server data until the next
   // refetch. Server truth always wins on reload (Inv-16).
@@ -478,6 +493,8 @@ export function ConsolePage() {
     const controller = new AbortController();
     pollAbort.current = controller;
     try {
+      // No grant is held for a reschedule yet; a gated booking surfaces `verification_required`
+      // and the drawer puts up the gate, the same way cancel does.
       const details = await getBookingDetails(id);
       const version = details.booking?.version;
       if (version === null || version === undefined) {
@@ -725,8 +742,17 @@ export function ConsolePage() {
                 backConv={() => setConvView('list')} takeOver={takeOver}
                 transcriptPending={openSessionIsLive && transcriptPurpose !== null && transcriptQuery.isPending}
                 transcriptError={
-                  // Named, with a retry — never an empty thread that reads as "nothing was said".
-                  openSessionIsLive && transcriptQuery.isError ? (
+                  // A `verification_required` 403 is resolvable, so it gets the gate rather than
+                  // an error the operator can only stare at. Anything else is named, with a retry
+                  // — never an empty thread that reads as "nothing was said".
+                  transcriptNeedsVerification ? (
+                    <VerificationGate
+                      action="read_sensitive"
+                      customerId={sourceThreads.find(t => t.id === convOpen)?.name}
+                      purpose="read this transcript"
+                      onGranted={setTranscriptGrant}
+                    />
+                  ) : openSessionIsLive && transcriptQuery.isError ? (
                     <ErrorState
                       inline
                       error={transcriptQuery.error}

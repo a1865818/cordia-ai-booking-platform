@@ -164,6 +164,21 @@ describe("useCancelBooking", () => {
     });
   });
 
+  it("carries the grant on the version READ too, not only on the write", async () => {
+    // `GET /api/Bookings/{id}` answers `requires_verification` as a typed 403 for a gated
+    // booking. The read ran without the grant, so an operator could complete step-up and
+    // still have the cancellation fail — on the version lookup, before anything was submitted.
+    vi.mocked(submitCancellation).mockResolvedValue({ operation_id: "op_1" } as never);
+    vi.mocked(getOperationStatus).mockResolvedValue({ status: "booked", terminal: true } as never);
+
+    const { result } = renderHook(() => useCancelBooking(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ bookingId: "bk_1", grantId: "grant_abc" });
+    });
+
+    expect(vi.mocked(getBookingDetails)).toHaveBeenCalledWith("bk_1", "grant_abc");
+  });
+
   it("refuses a booking with no confirmed version rather than guessing one", async () => {
     vi.mocked(getBookingDetails).mockResolvedValue({ booking: {} } as never);
 

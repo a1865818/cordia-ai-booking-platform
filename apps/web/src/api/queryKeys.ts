@@ -31,7 +31,13 @@ export const queryKeys = {
   conversations: {
     all: () => [...root(), "conversations"] as const,
     sessions: (limit: number) => [...root(), "conversations", "sessions", limit] as const,
-    transcript: (sessionId: string) => [...root(), "conversations", "transcript", sessionId] as const,
+    /**
+     * The grant is part of the key. A gated session's read fails without one, and react-query
+     * would otherwise serve that cached failure forever — the operator would complete step-up
+     * and see the same error.
+     */
+    transcript: (sessionId: string, grantId?: string) =>
+      [...root(), "conversations", "transcript", sessionId, grantId ?? "no-grant"] as const,
   },
 
   waitlist: {
