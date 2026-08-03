@@ -83,14 +83,14 @@ export interface WaitlistItem {
   /** True for a row from `/api/waitlist/enrollments`; absent on demo rows. */
   isLive?: boolean;
   /**
-   * The offer to accept or decline. Present **only** when the offer is live and unexpired —
-   * the screen renders its actions off this, so a terminal offer simply cannot be answered.
+   * The latest offer's id, raw. Whether it can be **answered** is decided at render against a
+   * ticking clock, not here — an offer's expiry passes while the row sits on screen.
    */
   offerId?: string;
   /** Raw latest-offer status, for display. */
   offerStatus?: string;
-  /** e.g. "expires in 7 min". Empty when there is no offer. */
-  offerExpiry?: string;
+  /** Raw ISO expiry of the latest offer. */
+  offerExpiresAt?: string;
   /** Raw enrollment fields, carried so "Book now" can prefill rather than open a blank form. */
   serviceId?: string;
   partySize?: number;

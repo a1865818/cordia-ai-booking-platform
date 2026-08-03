@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { WaitlistItem } from "../../../data/console";
+import { isOfferActionable, offerExpiryLabel } from "../../../features/waitlist/adapters";
 import { Avatar } from "../../ui/Avatar";
 import { Icon } from "../../ui/Icon";
 import { Toggle } from "../../ui/Toggle";
@@ -20,10 +22,31 @@ interface WaitlistScreenProps {
   offerBusyId?: string | null;
 }
 
+/**
+ * A clock that ticks while the board is open.
+ *
+ * An offer's expiry passes whether or not the list refetches, so actionability and the countdown
+ * have to be re-evaluated over time. Without this a row kept a live Accept button and a frozen
+ * "expires in 3 min" indefinitely, and clicking it 409'd.
+ */
+function useTickingNow(intervalMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
 export function WaitlistScreen({
   autoBook, toggleAutoBook, waitlist, onToggleAuto, onRemove, onBookNow,
   onAcceptOffer, onDeclineOffer, offerBusyId,
 }: WaitlistScreenProps) {
+  const now = useTickingNow();
+  // Any decision in flight disables every offer button, not just its own row's: the mutation is
+  // shared, so a click on another row was silently swallowed with no spinner and no message.
+  const anyOfferBusy = Boolean(offerBusyId);
+
   return (
     <div>
       {/* Auto-book banner */}
@@ -60,7 +83,16 @@ export function WaitlistScreen({
       ) : (
         <div className="flex flex-col gap-[9px]">
           {waitlist.map(w => {
-            const eligible = autoBook && w.auto;
+            // A LIVE row's chip reflects only the guest's recorded grant. Folding in `autoBook`
+            // — a venue switch this screen badges as unsaved — meant flipping an unpersisted
+            // toggle visually withdrew every guest's consent while the label still read "Auto".
+            // Demo rows keep the combined behaviour, which is what the mock screen demonstrates.
+            const eligible = w.isLive ? w.auto : (autoBook && w.auto);
+            // Recomputed every tick, so an offer that expires while the board is open loses its
+            // actions and its countdown at the same moment.
+            const offerActionable =
+              Boolean(w.offerId) && isOfferActionable(w.offerStatus, w.offerExpiresAt, now);
+            const offerExpiry = offerExpiryLabel(w.offerExpiresAt, now);
             return (
               <div
                 key={w.id}
@@ -73,18 +105,18 @@ export function WaitlistScreen({
                   {/* Offer state, straight from the projection. An offer that is terminal or
                       expired shows its state but carries no `offerId`, so no action appears. */}
                   {w.offerStatus && (
-                    <div className="text-[11.5px] mt-[3px]" style={{ color: w.offerId ? '#7E5606' : '#9A9A9A' }}>
-                      Offer {w.offerStatus}{w.offerExpiry ? ` · ${w.offerExpiry}` : ''}
+                    <div className="text-[11.5px] mt-[3px]" style={{ color: offerActionable ? '#7E5606' : '#9A9A9A' }}>
+                      Offer {w.offerStatus}{offerExpiry ? ` · ${offerExpiry}` : ''}
                     </div>
                   )}
                 </div>
 
                 {/* Accept / decline a live offer. Rendered only when there is one to answer. */}
-                {w.offerId && onAcceptOffer && onDeclineOffer && (
+                {offerActionable && onAcceptOffer && onDeclineOffer && (
                   <div className="flex gap-[6px] shrink-0">
                     <button
                       type="button"
-                      disabled={offerBusyId === w.offerId}
+                      disabled={anyOfferBusy}
                       onClick={() => onAcceptOffer(w.offerId!, w.name)}
                       className="h-[30px] px-[10px] rounded-[8px] text-[11.5px] font-semibold border cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                       style={{ background: '#0A0A0A', color: '#fff', borderColor: '#0A0A0A', fontFamily: "'Inter Tight', system-ui, sans-serif" }}
@@ -93,7 +125,7 @@ export function WaitlistScreen({
                     </button>
                     <button
                       type="button"
-                      disabled={offerBusyId === w.offerId}
+                      disabled={anyOfferBusy}
                       onClick={() => onDeclineOffer(w.offerId!, w.name)}
                       className="h-[30px] px-[10px] rounded-[8px] text-[11.5px] font-semibold border bg-white cursor-pointer transition-colors hover:bg-wash disabled:opacity-40 disabled:cursor-not-allowed"
                       style={{ color: '#55554F', borderColor: '#E5E5E5', fontFamily: "'Inter Tight', system-ui, sans-serif" }}

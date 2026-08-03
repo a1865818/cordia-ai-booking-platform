@@ -24,8 +24,9 @@
 public static class TestIds
 {
     /// <summary>
-    /// A unique id of the form <c>{prefix}-a1b2-c3d4-...</c>: hex, hyphen-separated into groups of
-    /// four, so no digit run can reach 13 even when every character happens to be a digit.
+    /// A unique id of the form <c>{prefix}-a1b2xc3d4x...</c>: hex in groups of four joined by the
+    /// letter <c>x</c>, so no digit run can reach 13 even when every hex character happens to be a
+    /// digit. The separator is a <b>letter</b>, not a hyphen, for the reason in the remarks.
     /// </summary>
     /// <remarks>
     /// The separator matters as much as the grouping: the detector tolerates up to three

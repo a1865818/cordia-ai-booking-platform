@@ -98,7 +98,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     private async Task<string> SeedSlotAsync(
         string tenantId, DateTimeOffset startsAt, int total, int held)
     {
-        var resourceId = $"res-{Guid.NewGuid():N}";
+        var resourceId = TestIds.New("res");
         var slotId = $"{resourceId}|{startsAt:O}";
         await using var ctx = fixture.CreateContext(tenantId);
         ctx.CapacitySlots.Add(new CapacitySlot
@@ -123,7 +123,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         AutoBookGrant? grant = null,
         DateTimeOffset? createdAt = null)
     {
-        var enrollmentId = $"wle_{Guid.NewGuid():N}";
+        var enrollmentId = TestIds.New("wle_");
         await using var ctx = fixture.CreateContext(tenantId);
         ctx.WaitlistEnrollments.Add(new WaitlistEnrollment
         {
@@ -148,9 +148,9 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     private async Task<(string offerId, string holdId, string operationId)> SeedOfferedAsync(
         string tenantId, string enrollmentId, string slotId, DateTimeOffset slotStart, int seats = 2, int reserved = 2)
     {
-        var offerId = $"wlo_{Guid.NewGuid():N}";
-        var holdId = $"hold_{Guid.NewGuid():N}";
-        var operationId = $"op_wl_{Guid.NewGuid():N}";
+        var offerId = TestIds.New("wlo_");
+        var holdId = TestIds.New("hold_");
+        var operationId = TestIds.New("op_wl_");
         var now = DateTimeOffset.UtcNow;
 
         await using var ctx = fixture.CreateContext(tenantId);
@@ -198,14 +198,14 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     }
 
     private static MatchWaitlistOfferCommand MatchCmd(string tenantId, string slotId, DateTimeOffset slotStart, int seats)
-        => new(tenantId, $"msg-{Guid.NewGuid():N}", slotId, "loc-1", "svc-1", slotId, slotStart, seats);
+        => new(tenantId, TestIds.New("msg"), slotId, "loc-1", "svc-1", slotId, slotStart, seats);
 
     // ── Enroll / Cancel ──────────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Enroll_PersistsPendingEnrollment_AndAudits()
     {
-        var tenantId = $"wl-enroll-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-enroll");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
 
         string enrollmentId;
@@ -232,7 +232,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Cancel_StampsCancelled_AndIsIdempotent_AndUnknown404()
     {
-        var tenantId = $"wl-cancel-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-cancel");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart);
 
@@ -261,7 +261,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         // Review 2026-07-03 C10: cancelling an enrollment that holds a live offer must re-match
         // the freed opening to the next eligible enrollee, exactly like decline/expire (§5.1/FM#1)
         // — otherwise the slot silently leaves the waitlist queue.
-        var tenantId = $"wl-cancel-live-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-cancel-live");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -288,7 +288,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Match_ReservesHoldAndOffers_NextEligibleEnrollee()
     {
-        var tenantId = $"wl-match-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-match");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 0);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -319,7 +319,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Match_AutoBooks_UnderSatisfiedConsentGrant()
     {
-        var tenantId = $"wl-autobook-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-autobook");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 0);
         var grant = new AutoBookGrant(
@@ -364,7 +364,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Match_NoCapacity_SettlesWithoutOffer()
     {
-        var tenantId = $"wl-nocap-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-nocap");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 2, held: 2); // full
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -384,7 +384,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
                  "lets the 06 engine finalize the reused capacity hold.")]
     public async Task Accept_FinalizesHold_ConfirmsBooking_AndIsIdempotent()
     {
-        var tenantId = $"wl-accept-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-accept");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -430,7 +430,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Decline_ReleasesHold_AndEnqueuesRematch()
     {
-        var tenantId = $"wl-decline-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-decline");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -463,7 +463,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Expire_ExpiresOffer_ReleasesHold_AndRematches()
     {
-        var tenantId = $"wl-expire-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-expire");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -473,7 +473,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         {
             var handler = BuildExpire(ctx);
             await using var tx = await ctx.Database.BeginTransactionAsync();
-            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, offerId), CancellationToken.None);
+            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, TestIds.New("msg"), null, offerId), CancellationToken.None);
             await tx.CommitAsync();
         }
 
@@ -497,7 +497,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Expire_OnAlreadyResolvedOffer_SettlesNoop()
     {
-        var tenantId = $"wl-expire-noop-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-expire-noop");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -516,7 +516,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         {
             var handler = BuildExpire(ctx);
             await using var tx = await ctx.Database.BeginTransactionAsync();
-            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, offerId), CancellationToken.None);
+            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, TestIds.New("msg"), null, offerId), CancellationToken.None);
             await tx.CommitAsync();
         }
 

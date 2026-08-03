@@ -44,22 +44,29 @@ export function isOfferActionable(
   return Number.isNaN(expiry) || expiry > now;
 }
 
-/** "expires in 7 min" / "expired" — the only offer timing the projection supports. */
+/**
+ * "expires in 7 min" / "expired" — the only offer timing the projection supports.
+ *
+ * Shares `isOfferActionable`'s threshold exactly: expired means `expiry <= now`, nothing else.
+ * Rounding to the nearest minute made the two disagree — an offer 25 seconds from expiry was
+ * still actionable but its label already read "expired", so the row showed a live Accept button
+ * beside the word expired. Floors throughout, so the label can understate the time remaining
+ * but never overstate it.
+ */
 export function offerExpiryLabel(expiresAt: string | null | undefined, now = Date.now()): string {
   if (!expiresAt) return "";
   const expiry = new Date(expiresAt).getTime();
   if (Number.isNaN(expiry)) return "";
 
-  const minutes = Math.round((expiry - now) / 60_000);
-  if (minutes <= 0) return "expired";
+  if (expiry <= now) return "expired";
+
+  const minutes = Math.floor((expiry - now) / 60_000);
+  if (minutes < 1) return "expires in under a minute";
   if (minutes < 60) return `expires in ${minutes} min`;
-  return `expires in ${Math.round(minutes / 60)} hr`;
+  return `expires in ${Math.floor(minutes / 60)} hr`;
 }
 
-export function toWaitlistItem(
-  enrollment: WaitlistEnrollmentSummary,
-  now = Date.now()
-): WaitlistItem {
+export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistItem {
   const serviceId = enrollment.service_id ?? "";
   return {
     id: enrollment.enrollment_id ?? "",
@@ -74,14 +81,14 @@ export function toWaitlistItem(
     // into a different state would claim a grant was given or withdrawn when nothing was
     // written at all.
     isLive: true,
-    // Only carried when the offer can actually be answered; the screen renders the
-    // accept/decline actions off the presence of this id, so a terminal or expired offer
-    // simply has none.
-    offerId: isOfferActionable(enrollment.latest_offer_status, enrollment.latest_offer_expires_at, now)
-      ? enrollment.latest_offer_id ?? undefined
-      : undefined,
+    // The RAW offer fields. Actionability and the countdown are deliberately NOT decided here:
+    // an adapter runs once per fetch, so freezing them meant a row kept a live Accept button
+    // and a stale "expires in 3 min" for as long as the list went un-refetched — the very 409
+    // the actionability guard exists to prevent. The screen recomputes both against a ticking
+    // clock instead.
+    offerId: enrollment.latest_offer_id ?? undefined,
     offerStatus: enrollment.latest_offer_status ?? undefined,
-    offerExpiry: offerExpiryLabel(enrollment.latest_offer_expires_at, now),
+    offerExpiresAt: enrollment.latest_offer_expires_at ?? undefined,
     serviceId: serviceId || undefined,
     partySize: enrollment.party_size ?? undefined,
     acceptableFrom: enrollment.acceptable_from ?? undefined,
@@ -89,8 +96,7 @@ export function toWaitlistItem(
 }
 
 export function toWaitlistItems(
-  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined,
-  now = Date.now()
+  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined
 ): WaitlistItem[] {
-  return (enrollments ?? []).map((e) => toWaitlistItem(e, now));
+  return (enrollments ?? []).map(toWaitlistItem);
 }

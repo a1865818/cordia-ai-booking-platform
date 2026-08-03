@@ -115,8 +115,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
     [Fact]
     public async Task SweepAllTenants_DiscoversAndSweepsEveryTenant()
     {
-        var tenantA = $"t14-sweepall-a-{Guid.NewGuid():N}";
-        var tenantB = $"t14-sweepall-b-{Guid.NewGuid():N}";
+        var tenantA = TestIds.New("t14-sweepall-a");
+        var tenantB = TestIds.New("t14-sweepall-b");
 
         // Tenant A: an ended session past the anonymization window.
         await using (var ctx = fixture.CreateContext(tenantA))
@@ -149,7 +149,7 @@ public class RetentionSweeperTests(PostgresFixture fixture)
         }
 
         // Tenant A also has an expired encrypted object (e.g. raw audio past its 72h TTL).
-        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var objectRoot = Path.Combine(Path.GetTempPath(), TestIds.New("cordia-objstore"));
         var objectStore = BuildObjectStore(objectRoot);
         await objectStore.PutAsync(
             tenantA, "raw-audio", "sweepall-audio", new byte[] { 1, 2, 3 },
@@ -206,8 +206,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
     {
         // B5: a single DeleteAsync failure must not abort the delete loop — every OTHER expired
         // object still gets pruned this cycle (per-object fault isolation, matching the per-tenant loop).
-        var tenant = $"t14-delfail-{Guid.NewGuid():N}";
-        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var tenant = TestIds.New("t14-delfail");
+        var objectRoot = Path.Combine(Path.GetTempPath(), TestIds.New("cordia-objstore"));
         var real = BuildObjectStore(objectRoot);
 
         // Two expired objects; deletion of "audio-fails" is rigged to throw.

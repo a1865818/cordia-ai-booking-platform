@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Service, STAFF, CUSTOMERS, fmtT, fmtDur, money, TIME_SLOTS, Booking } from "../../../data/console";
+import { Service, STAFF, CUSTOMERS, fmtT, fmtDur, money, TIME_SLOTS, Booking, type Customer } from "../../../data/console";
 import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import type { CreatePrefill } from "../../../features/waitlist/prefill";
 import { Drawer } from "../../ui/Drawer";
@@ -58,6 +58,8 @@ interface CreateBookingDrawerProps {
   onClose: () => void;
   onCreated: (b: Omit<Booking, 'id'>) => void;
   services: Service[];
+  /** The tenant's customers, or `undefined` while the list has never loaded. */
+  customers?: Customer[];
   /**
    * Defaults to open with, e.g. when booking a specific waitlisted guest. Applied on open
    * only — the operator can change anything before submitting.
@@ -65,7 +67,7 @@ interface CreateBookingDrawerProps {
   prefill?: CreatePrefill;
 }
 
-export function CreateBookingDrawer({ open, device, week, onClose, onCreated, services, prefill }: CreateBookingDrawerProps) {
+export function CreateBookingDrawer({ open, device, week, onClose, onCreated, services, customers, prefill }: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
@@ -78,6 +80,8 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
   const [partySize, setPartySize] = useState('2');
   const [phase, setPhase] = useState<'form' | 'confirming' | 'done'>('form');
   const [submitError, setSubmitError] = useState<unknown>(null);
+  /** A prefilled service id absent from this venue's list; surfaced rather than swapped. */
+  const [unmatchedService, setUnmatchedService] = useState<string | null>(null);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
@@ -94,9 +98,15 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
   useEffect(() => {
     if (open) {
       setName(prefill?.name ?? ''); setCustomerSearch('');
-      // A prefilled service must still exist in the catalogue; fall back rather than
-      // submitting an id the tenant does not offer.
+      // A prefilled service that is not in the list is REPORTED, never silently swapped. The
+      // services list is the hand-written mock catalogue, so a real enrolment's service_id
+      // almost never matches — quietly falling back to services[0] meant an operator who
+      // clicked a row reading "SNS dipping powder" submitted a durable booking for "Gel
+      // manicure", with the rest of the form prefilled and equally trustworthy-looking.
       const prefilledService = services.find(s => s.key === prefill?.serviceId)?.key;
+      setUnmatchedService(
+        prefill?.serviceId && !prefilledService ? prefill.serviceId : null
+      );
       setSvc(prefilledService ?? services[0]?.key ?? ''); setStaff('s1');
       setDay(String(prefill?.day ?? week.todayIndex ?? 0));
       setTime(String(prefill?.start ?? 600));
@@ -139,7 +149,11 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
     if (!eligible.find(s => s.id === staff) && eligible[0]) setStaff(eligible[0].id);
   }, [svc]);
 
-  const suggestions = CUSTOMERS.filter(c =>
+  // The tenant's real customers once loaded; the mock array only while the list has never
+  // loaded, and then labelled — the command palette was fixed the same way. Offering six
+  // invented people as a venue's customer list is the same false claim wherever it appears.
+  const showingDemoCustomers = customers === undefined;
+  const suggestions = (customers ?? CUSTOMERS).filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) && customerSearch.length > 0
   ).slice(0, 6);
 
@@ -265,6 +279,16 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
             platform as guest identity. The hint says so rather than letting the operator
             believe they have recorded who the booking is for.
           */}
+          {unmatchedService && (
+            <div
+              className="mb-[13px] rounded-[10px] p-[10px_12px] text-[12px] leading-[1.5]"
+              style={{ background: '#FBF3DF', border: '1px solid #F0DCA8', color: '#7E5606' }}
+              role="status"
+            >
+              This guest asked for <strong>{unmatchedService}</strong>, which is not in the service
+              list. Pick the right service below — nothing has been chosen for you.
+            </div>
+          )}
           <Field
             label="Customer"
             hint="Used on this screen only. Until guest identity capture exists, the platform records this booking against you."
@@ -298,7 +322,9 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
                       </span>
                       <div>
                         <div className="text-[13.5px] font-semibold text-ink">{c.name}</div>
-                        <div className="text-[11px] text-t3">{c.fav}</div>
+                        <div className="text-[11px] text-t3">
+                          {showingDemoCustomers ? 'Demo data' : (c.fav || `${c.visits} bookings`)}
+                        </div>
                       </div>
                     </button>
                   ))}

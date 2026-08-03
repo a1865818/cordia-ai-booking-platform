@@ -24,7 +24,7 @@ public class RetentionSweepTests(PostgresFixture fixture)
     [Fact]
     public async Task Sweep_PrunesRecord_AndEmitsAuditEvent_WhenTerminalOpAndPastDeadline()
     {
-        var tenantId = $"t6-sw-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t6-sw");
         var iKey = TestIds.New("ikey");
 
         // Seed a terminal operation (Booked).
@@ -97,7 +97,7 @@ public class RetentionSweepTests(PostgresFixture fixture)
     [Fact]
     public async Task Sweep_SkipsRecord_WhenLinkedOperationIsNonTerminal()
     {
-        var tenantId = $"t6-skip-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t6-skip");
         var iKey = TestIds.New("ikey");
 
         // Seed a non-terminal operation (ManualReview — open dispute/SLA window).
@@ -168,7 +168,7 @@ public class RetentionSweepTests(PostgresFixture fixture)
     [Fact]
     public async Task Sweep_DoesNotPrune_WhenDeadlineHasNotElapsed()
     {
-        var tenantId = $"t6-due-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t6-due");
         var iKey = TestIds.New("ikey");
 
         // Seed terminal op so the only guard is the future deadline.
@@ -229,8 +229,8 @@ public class RetentionSweepTests(PostgresFixture fixture)
     [Fact]
     public async Task Sweep_WithMismatchedContextTenant_DoesNotTouchContextTenantRecords()
     {
-        var protectedTenant = $"t6-prot-{Guid.NewGuid():N}";
-        var otherTenant = $"t6-other-{Guid.NewGuid():N}";
+        var protectedTenant = TestIds.New("t6-prot");
+        var otherTenant = TestIds.New("t6-other");
         var iKey = TestIds.New("ikey");
 
         // Seed protectedTenant: a NON-terminal op + a past-deadline record (would be SKIPPED

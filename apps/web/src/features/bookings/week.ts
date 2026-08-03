@@ -15,6 +15,18 @@
 
 import { startOfWeek } from "./adapters";
 
+/**
+ * The locale every date label is formatted in.
+ *
+ * Explicit, not the host default (`undefined`). Passing `undefined` made every label follow the
+ * machine's ICU locale while `buildRangeLabel` still assembled its parts in English word order —
+ * so a non-English machine produced a mixed-language label, and the tests, which necessarily
+ * assert concrete strings, failed on any CI runner whose `LANG` was not English. Pinning it makes
+ * the UI and its tests agree everywhere; a real localisation pass would thread a user locale
+ * through here and replace `buildRangeLabel` with `Intl.DateTimeFormat.formatRange`.
+ */
+export const LABEL_LOCALE = "en-GB";
+
 export interface ConsoleWeek {
   /** Local Monday 00:00 of the displayed week. */
   start: Date;
@@ -44,11 +56,11 @@ function localMidnight(date: Date): Date {
 }
 
 function shortDow(date: Date): string {
-  return date.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
+  return date.toLocaleDateString(LABEL_LOCALE, { weekday: "short" }).toUpperCase();
 }
 
 function monthName(date: Date): string {
-  return date.toLocaleDateString(undefined, { month: "long" });
+  return date.toLocaleDateString(LABEL_LOCALE, { month: "long" });
 }
 
 function buildRangeLabel(first: Date, last: Date): string {
@@ -99,7 +111,7 @@ export function buildWeek(windowFrom: string, now: Date = new Date()): ConsoleWe
 export function dayLabel(week: ConsoleWeek, index: number): string {
   const date = week.dates[index];
   if (!date) return "";
-  const dow = date.toLocaleDateString(undefined, { weekday: "short" });
+  const dow = date.toLocaleDateString(LABEL_LOCALE, { weekday: "short" });
   return `${dow}, ${date.getDate()} ${monthName(date)}`;
 }
 
@@ -107,7 +119,7 @@ export function dayLabel(week: ConsoleWeek, index: number): string {
 export function shortDayLabel(week: ConsoleWeek, index: number): string {
   const date = week.dates[index];
   if (!date) return "";
-  const dow = date.toLocaleDateString(undefined, { weekday: "short" });
+  const dow = date.toLocaleDateString(LABEL_LOCALE, { weekday: "short" });
   return `${dow} ${date.getDate()}`;
 }
 
@@ -119,9 +131,14 @@ export function dayOptions(week: ConsoleWeek): { value: string; label: string }[
 /** The seven-day ISO window `deltaWeeks` away from the one given. */
 export function shiftWeekWindow(
   window: { from: string; to: string },
-  deltaWeeks: number
+  deltaWeeks: number,
+  now: Date = new Date()
 ): { from: string; to: string } {
-  const start = startOfWeek(new Date(window.from));
+  // The same guard `buildWeek` carries, for the same input. Without it an unparseable window
+  // propagates an Invalid Date into `toISOString()`, which throws RangeError inside the state
+  // updater and unmounts the console — a harder failure than the labels the guard was added for.
+  const parsed = new Date(window.from);
+  const start = startOfWeek(Number.isNaN(parsed.getTime()) ? now : parsed);
   start.setDate(start.getDate() + deltaWeeks * 7);
   const to = new Date(start);
   to.setDate(to.getDate() + 7);

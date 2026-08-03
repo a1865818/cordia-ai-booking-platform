@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Booking, THREADS, MESSAGES,
   QueueItem, WaitlistItem,
@@ -10,6 +10,7 @@ import {
   useWaitlistEnrollments,
 } from "../features/hooks";
 import { toBookings, weekWindow } from "../features/bookings/adapters";
+import { updateForKey, valueForKey, type ScopedTo } from "../features/bookings/scoped";
 import { buildWeek, dayLabel, shiftWeekWindow } from "../features/bookings/week";
 import { buildSubmission, toIsoInstant } from "../features/bookings/buildSubmission";
 import { getOrCreateAttempt, resetAttempt } from "../features/bookings/identity";
@@ -100,6 +101,15 @@ function LoadingSkeletons() {
 function dismissalKey(item: QueueItem): string {
   return `${item.id}|${item.status ?? item.reason}`;
 }
+
+/** Stable empty identities, so a scoped miss does not produce a new array/object each render. */
+const EMPTY_BOOKINGS: Booking[] = [];
+
+interface TranscriptAuth {
+  purpose: SensitiveReadPurpose | null;
+  grant: string | null;
+}
+const NO_TRANSCRIPT_AUTH: TranscriptAuth = { purpose: null, grant: null };
 
 /** "a", "a and b", "a, b and c" — so the banner names exactly what failed. */
 function listLabels(labels: string[]): string {
@@ -236,6 +246,10 @@ export function ConsolePage() {
   // query key already includes from/to, so each week caches independently.
   const [scheduleWindow, setScheduleWindow] = useState(() => weekWindow());
   const week = useMemo(() => buildWeek(scheduleWindow.from), [scheduleWindow.from]);
+  // Read by `setBookings`, which must tag writes with the CURRENT week without being recreated
+  // (and thus re-running every effect that depends on it) each time the week changes.
+  const scheduleWindowRef = useRef(scheduleWindow.from);
+  scheduleWindowRef.current = scheduleWindow.from;
   const scheduleQuery = useBookingSchedule(scheduleWindow);
   const operationsQuery = useOperations({ needsAttention: true, limit: 100 });
   const sessionsQuery = useSessions(50);
@@ -270,25 +284,40 @@ export function ConsolePage() {
    * recorded verbatim in `audit_events`, and a constant leaves the trail unable to tell a dispute
    * investigation from idle browsing (spec 14 §2, purpose-restricted access).
    */
-  const [transcriptPurpose, setTranscriptPurpose] = useState<SensitiveReadPurpose | null>(null);
   /**
-   * Step-up grant for this transcript, held **in memory only** and never across conversations
-   * (Inv-11). A transcript can be gated just like a booking; without this the read dead-ended
-   * on a 403 the operator had no way to resolve.
+   * The purpose and step-up grant for reading a transcript, **bound to the session they were
+   * given for** and held in memory only (Inv-11).
+   *
+   * Bound rather than reset in an effect, and read at render, because an effect is too late:
+   * `useTranscript` subscribes during this render, so clearing in a `useEffect` keyed on
+   * `convOpen` let one render escape with the NEW session id and the PREVIOUS conversation's
+   * reason code and grant — firing an audited sensitive read the operator never authorised for
+   * that subject, with a grant issued for someone else (spec 14 §2, Inv-11). Comparing the
+   * stored session id makes that frame impossible.
    */
-  const [transcriptGrant, setTranscriptGrant] = useState<string | null>(null);
+  const [transcriptAuth, setTranscriptAuth] = useState<ScopedTo<string, TranscriptAuth>>(
+    () => ({ key: "", value: NO_TRANSCRIPT_AUTH })
+  );
+
+  const openAuth = valueForKey(transcriptAuth, convOpen, NO_TRANSCRIPT_AUTH);
+  const transcriptPurpose = openAuth.purpose;
+  const transcriptGrant = openAuth.grant;
+
+  const setTranscriptPurpose = (purpose: SensitiveReadPurpose) =>
+    // A new purpose drops any grant with it: both are stated for one reading of one conversation.
+    setTranscriptAuth({ key: convOpen, value: { purpose, grant: null } });
+
+  const setTranscriptGrant = (grant: string) =>
+    setTranscriptAuth(current =>
+      // Only ever attach a grant to the session it was obtained for.
+      updateForKey(current, convOpen, NO_TRANSCRIPT_AUTH, existing => ({ ...existing, grant }))
+    );
+
   const transcriptQuery = useTranscript(
     openSessionIsLive ? convOpen : null,
     transcriptPurpose,
     transcriptGrant ?? undefined
   );
-
-  // A purpose AND a grant are stated for one reading of one conversation; neither may carry
-  // over to the next — a grant is scoped to the subject it was issued for.
-  useEffect(() => {
-    setTranscriptPurpose(null);
-    setTranscriptGrant(null);
-  }, [convOpen]);
 
   /** True when the platform says this transcript needs step-up, not that it refused outright. */
   const transcriptNeedsVerification =
@@ -304,7 +333,28 @@ export function ConsolePage() {
   // bookings and queue items — with no Demo badge — for as long as the first fetch took,
   // which an operator would read as their own data. An empty list plus the query's own
   // pending state is honest.
-  const [bookings, setBookings] = useState<Booking[]>([]);
+  /**
+   * The grid's rows, **tagged with the week they belong to**.
+   *
+   * Tagging rather than a bare array, and read at render rather than reset in an effect: moving
+   * to another week changes `week` immediately, but the new window's query starts at
+   * `data === undefined`, so a plain array would keep the previous week's bookings on screen
+   * under the new week's dates — the exact "the label disagrees with the data underneath it"
+   * defect this whole change exists to remove. A stale tag renders as empty, with no
+   * intermediate frame in which the two disagree.
+   */
+  const [bookingsState, setBookingsState] = useState<ScopedTo<string, Booking[]>>(
+    () => ({ key: scheduleWindow.from, value: [] })
+  );
+  const bookings = valueForKey(bookingsState, scheduleWindow.from, EMPTY_BOOKINGS);
+
+  const setBookings = useCallback((update: React.SetStateAction<Booking[]>) => {
+    // Re-bases onto an empty list when the stored rows belong to another week, so a
+    // late-arriving optimistic write cannot resurrect the previous week's bookings.
+    setBookingsState(current =>
+      updateForKey(current, scheduleWindowRef.current, EMPTY_BOOKINGS, update)
+    );
+  }, []);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   // Queue actions are local and instant now that 'finish' is an acknowledgement rather
   // than a server call, so there is no pending state to show.
@@ -561,8 +611,12 @@ export function ConsolePage() {
     const controller = new AbortController();
     pollAbort.current = controller;
     try {
-      // No grant is held for a reschedule yet; a gated booking surfaces `verification_required`
-      // and the drawer puts up the gate, the same way cancel does.
+      // No grant is held for a reschedule, and no gate is mounted for one either: the drawer's
+      // `verificationGate` is driven solely by `cancelAwaitingGrant`. A gated booking therefore
+      // surfaces `verification_required` as a message the operator cannot act on from here.
+      // Acceptable only because reschedule is disabled (RESCHEDULE_FULFILMENT_SUPPORTED); wiring
+      // a gate for a flow that cannot be reached would be untestable dead code. When the
+      // fulfilment engine lands, this needs the same treatment cancel got.
       const details = await getBookingDetails(id);
       const version = details.booking?.version;
       if (version === null || version === undefined) {
@@ -648,8 +702,12 @@ export function ConsolePage() {
   const dismissQueue = (id: string) => {
     const item = queue.find(x => x.id === id);
     if (!item) return;
+    // The SAME key the refetch filter matches on. Storing a bare id here meant the filter
+    // (`dismissalKey(q)` = `id|status`) could never match it, so the row reappeared on the very
+    // next render — and the orphan id was then pruned, leaving Undo nothing to undo either.
+    const key = dismissalKey(item);
     setQueue(q => q.filter(x => x.id !== id));
-    setDismissedQueueIds(prev => new Set([...prev, id]));
+    setDismissedQueueIds(prev => new Set([...prev, key]));
     toast({
       message: 'Dismissed',
       action: {
@@ -657,7 +715,7 @@ export function ConsolePage() {
         onClick: () => {
           setDismissedQueueIds(prev => {
             const next = new Set(prev);
-            next.delete(id);
+            next.delete(key);
             return next;
           });
           setQueue(q => [item, ...q]);
@@ -992,6 +1050,7 @@ export function ConsolePage() {
         onClose={closeDrawer}
         onCreated={onCreated}
         services={services}
+        customers={customersQuery.data ? liveCustomers : undefined}
         prefill={createPrefill}
       />
       <RescheduleDrawer

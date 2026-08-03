@@ -66,6 +66,7 @@ describe("offerExpiryLabel", () => {
   it("counts down in minutes, then hours", () => {
     expect(offerExpiryLabel("2026-08-03T12:07:00Z", NOW)).toBe("expires in 7 min");
     expect(offerExpiryLabel("2026-08-03T14:00:00Z", NOW)).toBe("expires in 2 hr");
+    expect(offerExpiryLabel("2026-08-03T12:00:30Z", NOW)).toBe("expires in under a minute");
   });
 
   it("says expired rather than counting backwards", () => {
@@ -79,36 +80,59 @@ describe("offerExpiryLabel", () => {
 });
 
 describe("toWaitlistItem offer fields", () => {
-  it("carries the offer id only when the offer can be answered", () => {
+  it("carries the offer RAW, leaving actionability to the screen's ticking clock", () => {
+    // Deciding it here froze it at fetch time: a row kept a live Accept button and a stale
+    // countdown for as long as the list went un-refetched, and the click 409'd.
     const live = toWaitlistItem(
       enrollment({
         latest_offer_id: "off_1",
         latest_offer_status: "offered",
         latest_offer_expires_at: "2026-08-03T12:10:00Z",
-      }),
-      NOW
+      })
     );
 
     expect(live.offerId).toBe("off_1");
     expect(live.offerStatus).toBe("offered");
-    expect(live.offerExpiry).toBe("expires in 10 min");
+    expect(live.offerExpiresAt).toBe("2026-08-03T12:10:00Z");
   });
 
-  it("shows a terminal offer's state but gives nothing to click", () => {
+  it("carries a terminal offer's id too — the screen decides it cannot be answered", () => {
     const answered = toWaitlistItem(
-      enrollment({ latest_offer_id: "off_1", latest_offer_status: "accepted" }),
-      NOW
+      enrollment({ latest_offer_id: "off_1", latest_offer_status: "accepted" })
     );
 
-    expect(answered.offerId).toBeUndefined();
     expect(answered.offerStatus).toBe("accepted");
+    expect(isOfferActionable(answered.offerStatus, answered.offerExpiresAt, NOW)).toBe(false);
   });
 
   it("carries the raw enrollment fields so Book now can prefill", () => {
-    const row = toWaitlistItem(enrollment(), NOW);
+    const row = toWaitlistItem(enrollment());
 
     expect(row.serviceId).toBe("gel");
     expect(row.partySize).toBe(2);
     expect(row.acceptableFrom).toBe("2026-08-06T09:00:00Z");
+  });
+});
+
+describe("the label and the guard agree", () => {
+  it("never says expired while the offer is still answerable", () => {
+    // Rounding to the nearest minute made them disagree: an offer 25 seconds out was actionable
+    // but already labelled "expired", so Accept rendered beside the word expired.
+    const expiresAt = "2026-08-03T12:00:25Z";
+
+    expect(isOfferActionable("offered", expiresAt, NOW)).toBe(true);
+    expect(offerExpiryLabel(expiresAt, NOW)).toBe("expires in under a minute");
+  });
+
+  it("never offers an action once the label says expired", () => {
+    const expiresAt = "2026-08-03T11:59:59Z";
+
+    expect(isOfferActionable("offered", expiresAt, NOW)).toBe(false);
+    expect(offerExpiryLabel(expiresAt, NOW)).toBe("expired");
+  });
+
+  it("understates rather than overstates the time remaining", () => {
+    // 90 minutes rounded UP to "2 hr", which promises time the guest does not have.
+    expect(offerExpiryLabel("2026-08-03T13:30:00Z", NOW)).toBe("expires in 1 hr");
   });
 });

@@ -102,9 +102,9 @@ public class MenuIngestionTests(PostgresFixture fixture)
     private async Task<(string tenantId, string catalogId, string messageId)> SeedUploadedCatalogAndIngestMessageAsync(
         string sourceArtifactRef)
     {
-        var tenantId = $"t11-menu-{Guid.NewGuid():N}";
-        var catalogId = $"cat-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t11-menu");
+        var catalogId = TestIds.New("cat");
+        var messageId = TestIds.New("msg");
 
         await using var seedCtx = fixture.CreateContext(tenantId);
         seedCtx.VendorCatalogs.Add(new VendorCatalog

@@ -1,5 +1,7 @@
 ﻿using Alba;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Cordia.Tests.IntegrationTests.TenantResolution;
 
@@ -17,22 +19,41 @@ namespace Cordia.Tests.IntegrationTests.TenantResolution;
 /// database rows, so they assert the tenant gate rather than any seeded state.</para>
 /// </summary>
 [Trait("Category", "Integration")]
-public class TenantHeaderShimGateTests
+public class TenantHeaderShimGateTests(TenantResolutionApiFixture fixture)
+    : IClassFixture<TenantResolutionApiFixture>
 {
+    // The fixture is depended on ONLY for its bootstrap: constructing it ensures the shared test
+    // database exists and its migrations have been applied. These tests then boot their own hosts,
+    // because the thing under test is a startup-time registration decision and cannot be varied on
+    // an already-built host. Without the dependency, running this class alone on a clean machine
+    // (or ahead of the migrating fixtures) hit an absent database and failed with a 500 where a
+    // 200 was asserted — a flake in the very range whose sibling commit exists to remove flakes.
+    private readonly TenantResolutionApiFixture _bootstrap = fixture;
+
     /// <summary>A tenant-scoped GET that fails closed at <c>TenantGuard.RequireTenant</c>.</summary>
     private const string TenantScopedRoute = "/api/consent-policies?channel=web";
 
-    private static Task<IAlbaHost> HostWithShim(bool allowShim) =>
-        AlbaHost.For<Program>(builder =>
+    private Task<IAlbaHost> HostWithShim(bool allowShim)
+    {
+        // Touch the fixture so the compiler cannot elide the dependency and a reader can see that
+        // the database bootstrap is what it is for.
+        Assert.NotNull(_bootstrap.Host);
+
+        return AlbaHost.For<Program>(builder =>
         {
             builder.UseEnvironment("Test");
-            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixtureConnection);
+            // One source for the connection string, shared with every other fixture family.
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", TenantResolutionApiFixture.TestConnStr);
+            // The fixture already migrated; re-running per host would race the other fixtures.
             builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "false");
+            // UseSetting is applied after appsettings.Test.json, so it wins — which is the whole
+            // point: appsettings.Test.json pins the shim ON, and the disabled case must be able to
+            // override it. `ShimSettingOverridesAppSettings` below fails loudly if that ever stops
+            // being true, so this regression guard cannot silently degrade into asserting the
+            // shim-on path twice.
             builder.UseSetting("Tenancy:AllowHeaderShim", allowShim ? "true" : "false");
         });
-
-    private const string AcceptanceApiFixtureConnection =
-        "Host=localhost;Port=5432;Database=Cordia_API_Test;Username=cordia;Password=localdev";
+    }
 
     [Fact]
     public async Task HeaderIsHonoured_WhenShimIsAllowed()
@@ -78,6 +99,20 @@ public class TenantHeaderShimGateTests
             api.Get.Url(TenantScopedRoute);
             api.StatusCodeShouldBe(400);
         });
+    }
+
+    [Fact]
+    public async Task ShimSettingOverridesAppSettings_SoTheDisabledCaseIsReal()
+    {
+        // appsettings.Test.json sets Tenancy:AllowHeaderShim = true. If UseSetting ever stopped
+        // out-ranking it, HeaderIsIgnored_… above would boot a shim-ON host, still see its
+        // expected 400 for an unrelated reason, and quietly stop testing anything. Asserting the
+        // resolved configuration value makes that impossible.
+        await using var host = await HostWithShim(allowShim: false);
+
+        var configuration = host.Services.GetRequiredService<IConfiguration>();
+
+        Assert.False(configuration.GetValue<bool>("Tenancy:AllowHeaderShim"));
     }
 
     [Fact]
