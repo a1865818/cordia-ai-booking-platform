@@ -915,6 +915,9 @@ export function ConsolePage() {
         onNavigate={go}
         onCreateBooking={openCreate}
         onOpenCustomer={handleOpenCustomer}
+        // Undefined until the list has loaded — the palette then labels its demo rows rather
+        // than offering fabricated people as if they were the venue's customers.
+        customers={customersQuery.data ? liveCustomers : undefined}
       />
     </div>
   );

@@ -252,9 +252,10 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
    `customer_ref`.
 
 **Automated Verification**
-- [ ] `bun nx test web` — a palette test asserts live customers are searched and demo rows are
-      labelled; a settings test asserts the three panels render a badge
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+- [x] `bun nx test web` — a palette test asserts live customers are searched and demo rows are
+      labelled; waitlist tests assert the consent chip is read-only on live rows —
+      **260 passed** (was 250)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
 
 **Manual Verification**
 - [ ] Every non-live surface carries a visible **Demo data** badge (walk all 10 screens)
@@ -262,6 +263,19 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
 - [ ] *Regression:* consent-policy and catalog panels still live, with their own error/empty states
 
 ### Discoveries and Notable Information
+
+- The waitlist auto-book chip was the sharpest instance of the whole class: it looked like a
+  venue preference but is the **guest's** consent (`auto_book_authorized`, recorded at
+  enrollment). Live rows now render it as a read-only state whose tooltip says whose decision it
+  was; demo rows stay interactive so the mock screen is unchanged. The venue-level switch above
+  it is badged, since nothing persists it either.
+- `WaitlistItem.isLive` is the discriminator. An `isLive` flag beats "is the id a UUID"-style
+  sniffing, and it is the same shape `Booking.isBooking` already uses.
+- The palette's empty-array case matters as much as the undefined one: `customers: []` is a real
+  answer ("this tenant has no customers") and must **not** fall back to demo names. Pinned by a
+  test.
+- The palette selects on `onMouseDown`, not `onClick` — deliberate, so selection wins the race
+  against the input's blur. The test had to match.
 
 ---
 

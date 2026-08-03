@@ -34,6 +34,11 @@ export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistI
     // Per-guest auto-book reflects the explicit grant recorded at enrollment; silent
     // auto-book is prohibited by default (spec 11 §20, Inv-1), so this is never assumed.
     auto: enrollment.auto_book_authorized ?? false,
+    // Marks the row as authoritative, which makes the auto-book state read-only: the console
+    // has no endpoint that records a change of consent, and a chip the operator could click
+    // into a different state would claim a grant was given or withdrawn when nothing was
+    // written at all.
+    isLive: true,
   };
 }
 

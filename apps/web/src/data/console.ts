@@ -74,7 +74,14 @@ export interface WaitlistItem {
   name: string;
   service: string;
   want: string;
+  /**
+   * Whether the guest authorized auto-book. This is a **consent grant recorded at enrollment**
+   * (spec 11 §20, Inv-1), not a venue preference — and no endpoint changes it, so it is
+   * read-only on any row that came from the API.
+   */
   auto: boolean;
+  /** True for a row from `/api/waitlist/enrollments`; absent on demo rows. */
+  isLive?: boolean;
 }
 
 export interface Customer {

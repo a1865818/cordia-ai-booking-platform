@@ -2,6 +2,7 @@ import { WaitlistItem } from "../../../data/console";
 import { Avatar } from "../../ui/Avatar";
 import { Icon } from "../../ui/Icon";
 import { Toggle } from "../../ui/Toggle";
+import { DemoBadge } from "../../ui/DemoBadge";
 import { SectionLabel } from "../../ui/SectionLabel";
 
 interface WaitlistScreenProps {
@@ -23,9 +24,14 @@ export function WaitlistScreen({ autoBook, toggleAutoBook, waitlist, onToggleAut
           <Icon name="zap" size={19} fill="#DDF247" />
         </span>
         <div className="flex-1 min-w-0">
-          <div className="text-[15px] font-semibold text-ink">Auto-book from waitlist</div>
+          <div className="flex items-center gap-[8px]">
+            <div className="text-[15px] font-semibold text-ink">Auto-book from waitlist</div>
+            <DemoBadge reason="no venue auto-book setting endpoint — this switch is not saved" />
+          </div>
           <div className="text-[12.5px] text-t2 mt-[3px] leading-[1.45]">
-            When a matching slot opens, the agent offers it to the next eligible guest and books on reply. Toggle eligibility per person below.
+            When a matching slot opens, the agent offers it to the next eligible guest and books on
+            reply. Whether a guest is eligible is <strong>their</strong> decision, recorded when they
+            joined — it is shown per person below and cannot be changed from here.
           </div>
         </div>
         <Toggle on={autoBook} onClick={toggleAutoBook} />
@@ -58,25 +64,54 @@ export function WaitlistScreen({ autoBook, toggleAutoBook, waitlist, onToggleAut
                   <div className="text-[12px] text-t2 mt-[1px]">{w.service} · {w.want}</div>
                 </div>
 
-                {/* Per-item auto-book toggle chip */}
-                <button
-                  type="button"
-                  onClick={() => onToggleAuto(w.id)}
-                  className="shrink-0 inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[4px] rounded-full border cursor-pointer transition-all duration-120 hover:opacity-80"
-                  style={{
-                    background: eligible ? '#E7F6EC' : '#F2F2F0',
-                    color: eligible ? '#0B6431' : '#6B6B6B',
-                    borderColor: eligible ? '#C0E8CE' : '#E5E5E5',
-                    fontFamily: "'Inter Tight', system-ui, sans-serif",
-                  }}
-                  title={w.auto ? 'Click to make manual' : 'Click to enable auto-book'}
-                >
+                {/*
+                  Per-guest auto-book. On a live row this is the guest's own consent, recorded
+                  when they joined (spec 11 §20, Inv-1), and no endpoint changes it — so it is
+                  rendered as a read-only state, not a toggle. Clicking it used to flip the chip
+                  and write nothing, which showed a consent grant being given or withdrawn that
+                  the platform never saw.
+                */}
+                {w.isLive ? (
                   <span
-                    className="w-[5px] h-[5px] rounded-full"
-                    style={{ background: eligible ? '#15924B' : '#9A9A9A' }}
-                  />
-                  {w.auto ? 'Auto' : 'Manual'}
-                </button>
+                    className="shrink-0 inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[4px] rounded-full border"
+                    style={{
+                      background: eligible ? '#E7F6EC' : '#F2F2F0',
+                      color: eligible ? '#0B6431' : '#6B6B6B',
+                      borderColor: eligible ? '#C0E8CE' : '#E5E5E5',
+                      fontFamily: "'Inter Tight', system-ui, sans-serif",
+                    }}
+                    title={
+                      w.auto
+                        ? 'This guest agreed to auto-book when they joined the waitlist.'
+                        : 'This guest did not agree to auto-book, so an offer is sent instead.'
+                    }
+                  >
+                    <span
+                      className="w-[5px] h-[5px] rounded-full"
+                      style={{ background: eligible ? '#15924B' : '#9A9A9A' }}
+                    />
+                    {w.auto ? 'Auto' : 'Manual'}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onToggleAuto(w.id)}
+                    className="shrink-0 inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[4px] rounded-full border cursor-pointer transition-all duration-120 hover:opacity-80"
+                    style={{
+                      background: eligible ? '#E7F6EC' : '#F2F2F0',
+                      color: eligible ? '#0B6431' : '#6B6B6B',
+                      borderColor: eligible ? '#C0E8CE' : '#E5E5E5',
+                      fontFamily: "'Inter Tight', system-ui, sans-serif",
+                    }}
+                    title={w.auto ? 'Click to make manual' : 'Click to enable auto-book'}
+                  >
+                    <span
+                      className="w-[5px] h-[5px] rounded-full"
+                      style={{ background: eligible ? '#15924B' : '#9A9A9A' }}
+                    />
+                    {w.auto ? 'Auto' : 'Manual'}
+                  </button>
+                )}
 
                 {/* Book now */}
                 <button

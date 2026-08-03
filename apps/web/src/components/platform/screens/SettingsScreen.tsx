@@ -342,8 +342,11 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
 
   return (
     <div>
-      {/* Business setup */}
-      <SectionLabel>Business setup</SectionLabel>
+      {/* Business setup — local state only; no endpoint accepts a tenant profile. */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Business setup</SectionLabel>
+        <DemoBadge reason="no tenant-profile endpoint — changes are not saved" />
+      </div>
       <BusinessSetup tenantCfg={tenantCfg} onUpdateTenant={onUpdateTenant} device={device} />
 
       {/* Consent policy — live (spec 14). Read-only: no editing endpoint exists yet. */}
@@ -467,8 +470,12 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
         </div>
       </Panel>
 
-      {/* Guardrails */}
-      <SectionLabel>Agent guardrails</SectionLabel>
+      {/* Guardrails — local state only. A toggle that appears to arm or disarm a safety rule
+          while writing nothing is worse than no toggle at all. */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Agent guardrails</SectionLabel>
+        <DemoBadge reason="no guardrail endpoint — these toggles are not saved" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         {SETTINGS.guardrails.map((g, i) => (
           <div key={g.id}
@@ -495,6 +502,8 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
       }>
         Agent knowledge base
       </SectionLabel>
+      {/* Answers are held in component state; nothing persists them, so "Save" is local. */}
+      <div className="mb-[9px]"><DemoBadge reason="no knowledge-base endpoint — answers are not saved" /></div>
       <div className="flex flex-col gap-2">
         {kb.map((k, i) => (
           <div key={i}
