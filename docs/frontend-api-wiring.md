@@ -27,7 +27,7 @@ the wiring described in §11.
 | Layer | Was (2026-07-24) | Now (2026-07-27) |
 |---|---|---|
 | API REST endpoints | Live, tenant-scoped (38 actions / 15 controllers) | **46 actions / 18 controllers** — six console read endpoints added (§11) |
-| Tenant resolution | `X-Tenant-Id` header (dev shim) | unchanged — swapped for the signed context in spec 15 |
+| Tenant resolution | `X-Tenant-Id` header (dev shim) | spec 15 has **landed**: `TenantContextVerificationMiddleware` runs first and a verified `X-Tenant-Context` is authoritative. The header shim survives for dev, but is now **registered only when `Tenancy:AllowHeaderShim` is true** (default: Development only) — see §12 |
 | CORS for `localhost:4200` | Allowed in `appsettings.Development.json` | unchanged |
 | Generated TS contract | present | regenerated; 44 paths |
 | Typed fetch client (`fetchApi`) | existed but **not called anywhere** | the single front door for every API call |
@@ -593,16 +593,16 @@ the opaque `customer_ref`, a booking count and timestamps; no name, phone or ema
 | Screen | Status |
 |---|---|
 | Analytics | **Live** — funnel + per-day/channel/service. KPI tiles and the "who handled them" split stay mock (nothing records who handled a booking; reporting one would breach Inv-16) |
-| Today | **Live** — schedule grid from `/api/Bookings/schedule` |
-| Queue | **Live** — operations needing attention |
-| Conversations | **Live** — session list + per-session transcript (sensitive read: sends actor + reason code) |
+| Today | **Live** — schedule grid from `/api/Bookings/schedule`, dated from the window the rows were fetched for, with week navigation. Until 2026-08-04 the grid fetched the real week and labelled it from a frozen `9–15 June` literal (§12) |
+| Queue | **Live** — operations needing attention. Rows show only what `OperationSummary` carries: no retry count, no channel, no waiting time, and the platform's own status rather than a blanket "Failed". The primary action is labelled *Clear from queue*, which is what it does (§12) |
+| Conversations | **Live** — session list + per-session transcript (sensitive read: sends actor + reason code). A failed or gated transcript read shows an error or the verification gate, never an empty thread; live threads claim neither an outcome nor "handled by AI" (§12) |
 | Customers | **Live list** — stats the API does not model (no-shows, lifetime spend, phone, tags) are suppressed rather than shown as zeros |
-| Waitlist | **Live list + real removal** (audited against `X-Actor`) |
+| Waitlist | **Live list + real removal + real offer accept/decline** (all audited against `X-Actor`). Per-guest auto-book is the guest's recorded consent and renders **read-only**; *Book now* prefills from the enrollment. Enrolling from the console is still not offered — enrollment is guest-initiated (§12) |
 | Settings | **Partly live** — consent policy and menu catalog; hours and deposit policy badged as demo |
-| Create | **Live** — 202 + poll to terminal, real idempotency key, drawer confirms only on a `booked` status |
+| Create | **Live** — 202 + poll to terminal, real idempotency key, drawer confirms only on a `booked` status. `confirmation.identity` carries the **operator**, not the typed guest name; the name is a local label and the drawer says so (§12) |
 | Cancel | **Live end-to-end** — real version token + reason code, 202 + poll to terminal; the engine cancels with the provider, moves the booking to `cancelled`, releases the capacity hold and emits `notification.cancel_confirmed.v1`. Ambiguous provider outcomes route to `Reconciling` rather than guessing |
 | Reschedule | **Disabled** — payload/hashing/identity/polling all built and tested, but not submitted while fulfilment would create a duplicate booking (blocking gap above). Would go through `POST /api/bookings` with `operation: "reschedule"`, **not** `/modifications`: that endpoint's body has no field for the changed data |
-| Verification | **Live for cancel** — clicking Cancel opens `VerificationGate` in the booking drawer (request → code → grant, grant held in memory only), and the cancellation is submitted with that grant. It is obtained *before* the first submit because `grant_id` is `NotEmpty`-validated server-side: an empty grant is a 400 nobody can act on, not a 403 that can be recovered from. A grant that expires between issue and use returns a 403 carrying `code: verification_required`, which puts the gate back rather than dead-ending |
+| Verification | **Live for cancel and for gated transcript reads** — clicking Cancel opens `VerificationGate` in the booking drawer (request → code → grant, grant held in memory only), and the cancellation is submitted with that grant. It is obtained *before* the first submit because `grant_id` is `NotEmpty`-validated server-side: an empty grant is a 400 nobody can act on, not a 403 that can be recovered from. A grant that expires between issue and use returns a 403 carrying `code: verification_required`, which puts the gate back rather than dead-ending |
 | Deposits, Campaigns | **Mock, badged** — spec 09 payment surface is deferred; no spec owns Campaigns |
 
 Everything still on demo data carries a visible **Demo data** badge, so a plausible number
@@ -643,3 +643,148 @@ cannot be mistaken for the venue's own. Two rules the console holds to throughou
 - **`confirmation.verification_level` is hard-coded to `"staff_confirmed"`** on every
   console-originated write. The validator only requires the field to be non-empty, so this is
   accepted, but a real operator identity/level should replace it when auth lands (spec 14).
+
+---
+
+## 12. Gap-closure pass (2026-08-04)
+
+Audit: [`frontend-api-wiring-gaps.md`](./frontend-api-wiring-gaps.md) ·
+Plan: `thoughts/shared/plans/2026-08-03_frontend-wiring-gap-closure.md` ·
+Baseline: `thoughts/shared/research/2026-08-03_22-54-00_frontend-wiring-gap-closure.md`
+
+A second audit checked §11's claims against the code. Most held. What follows is what did not,
+and what closing it turned up. The two rules §11 sets for itself — *a successful-but-empty
+response is a real answer*, and *nothing is asserted that the API does not record* — are now
+genuinely held rather than approximately held.
+
+### 🔴 The grid showed live bookings under fabricated dates
+
+The worst of it, and unmentioned anywhere before. `weekWindow()` fetched the **real** current
+week; every date on screen came from `WEEK` in `data/console.ts`, a frozen literal reading
+*9–15 June, today = Thursday*. So a booking on the real Monday rendered in a column labelled
+`MON 9 June`, and the same constant dated the detail drawer, the reschedule drawer and the
+create drawer's day picker. `WEEK.today = 3` meant every week highlighted a Thursday.
+
+Dates now derive from the window the rows were actually fetched for (`features/bookings/week.ts`).
+`todayIndex` is **null** in any week that does not contain today rather than guessing a column,
+the week is navigable (day arrows roll over; *Today* moves the window as well as the column), and
+the create drawer anchors its submitted instant to the **displayed** week — it used
+`startOfWeek(new Date())`, so a booking made while viewing next week was silently submitted for
+this one. `WEEK` still exists; it just no longer reaches a live surface.
+
+### Things the console asserted that the API does not record
+
+- **The queue invented a waiting time.** `MOCK_WAIT[id] ?? retries * 9 + 8` minutes — and since
+  no live id is in that map, every row read *"8m waiting"*. Alongside a hard-coded `0 retries`
+  and a `web` channel badge, none of which `OperationSummary` models. All three are gone; the row
+  shows the real last-updated age.
+- **Every queue row wore a red *Failed* chip**, although the board also carries `manual_review`,
+  `alternatives_required` and `compensation_required`. Four different situations, styled as one.
+- **Every conversation claimed *"handled by AI"*** with an AI badge, and every ended session
+  showed *Pending* — the session summary carries neither provenance nor outcome.
+- **A failed or forbidden transcript read rendered an empty conversation.** The pane fell back to
+  the mock `MESSAGES` map, which has no entry for a real session id, so the most sensitive read in
+  the product failed to a clean, confident, silent blank. It was the one query outside
+  `loadFailures`.
+- **Three settings panels and the waitlist consent chip were unbadged demo data.** Business setup,
+  agent guardrails and the knowledge base all held local state behind controls that appeared to
+  save. The waitlist chip was the sharpest: `auto_book_authorized` is the **guest's** consent,
+  recorded at enrollment (spec 11 §20, Inv-1), with no endpoint to change it — yet it was
+  clickable, so an operator could appear to grant or withdraw a guest's consent while nothing was
+  written. It is read-only on live rows now.
+- **Cmd-K searched six fabricated customers** and focused an id that exists nowhere.
+
+### Verification could not reach two of the calls that need it
+
+`useCancelBooking` obtained a `cancel` grant and then read the booking's version **without it**.
+`GET /api/Bookings/{id}` answers `requires_verification` as a typed 403, so on a gated booking the
+operator completed step-up and the cancellation still failed — on the version lookup, before
+anything was submitted. Transcripts could not be verified at all: `getTranscript` accepted a
+`grantId` nothing ever passed.
+
+Both are wired. The grant is part of the transcript **query key**, without which react-query
+served the cached 403 after step-up succeeded. An authorization 403 is deliberately *not* treated
+as recoverable — `AuthorizationFailedException` omits the `verification_required` code because no
+amount of guest verification fixes it.
+
+### The console was writing a guest's name into a minimised field
+
+The create drawer sent the typed name as `confirmation.identity`. Spec 04 documents that field as
+*"verified identity, or the `anonymous_session` sentinel"*, and the platform surfaces it as the
+opaque `customer_ref` on `/api/customers` — which spec 14 minimises precisely so it cannot carry a
+person's name. Cancel and reschedule already sent the operator; only create did not.
+
+It now sends the operator. The canonical hash is unaffected because `identity` lives on the
+confirmation rather than on `revision.canonical_payload` — **pinned by a test**, since had it been
+otherwise this would have been a 422 and a broken idempotency replay.
+
+**Open for spec 04/08/12:** there is no ratified way to attach a *guest* to a staff-made booking.
+`BookingRequest` has no customer field at all. Until one exists, console-created bookings have no
+notification destination and cannot be found by `GET /api/Bookings?phone_e164=`. The drawer keeps
+a name field as a local label and says so, rather than collecting one that goes nowhere.
+
+### Waitlist offers were unreachable for an upstream reason
+
+`acceptOffer`/`declineOffer` had existed since the wiring work and were called from nowhere. The
+cause was in the projection: `WaitlistEnrollmentSummary` resolved the latest offer server-side and
+returned only its *status* and *expiry* — a caller could see that an offer existed and had nothing
+to address. `latest_offer_id` is now exposed (additive, no DDL) and the board can answer offers.
+
+Deliberately **not** optimistic, unlike removal: accepting finalizes a capacity hold and confirms a
+booking server-side, and both actions can legitimately 409 when the guest answered first. An offer
+past its expiry is treated as unanswerable even when the row still says `offered` — the sweeper may
+not have run, and a button certain to 409 is worse than no button.
+
+### 🔒 The `X-Tenant-Id` shim was registered in every environment
+
+`TenantResolutionMiddleware` documents itself as DEV/TEST-ONLY and was always on. Ordering was the
+only control — it never overrides a verified `X-Tenant-Context` — but that says nothing about a
+request carrying **no** signed context: wherever the shim runs, such a caller simply names the
+tenant whose data they receive. Fine on a developer machine; unauthenticated cross-tenant access
+anywhere else.
+
+Registration is now conditional on `Tenancy:AllowHeaderShim`, defaulting to `IsDevelopment()`.
+Middleware order is unchanged. With the shim off and no verified context, a request fails closed at
+`TenantGuard.RequireTenant`. Four integration tests prove the same request returns **200 with the
+shim on and 400 with it off**, that a tenant-less request fails closed either way, and that a
+malformed signed context is refused with 401 rather than downgrading into the shim. The Alba
+fixtures run as environment `Test`, so the flag is set in `appsettings.Test.json` — the test host
+opts in explicitly rather than the production default being loosened to keep tests green.
+
+### The flaky integration test was misdiagnosed here
+
+§11 attributed `RetentionSweepTests` to shared-database accumulation. That was wrong: the test
+already used a unique tenant per run. The real mechanism is a **PAN-detector false positive**.
+`AuditEventSanitizationInterceptor` masks `subject_ref` through `SensitiveDataMask.Sanitize`, and
+the test seeded `ikey-{Guid:N}`. A hex GUID is drawn from `0-9a-f`, so ~1.8% contain a run of 13+
+digits and **~0.6% — about 1 in 166, measured over 300 000 draws — additionally embed a Luhn-valid
+window**. Those are stored masked, and a lookup by the raw key finds nothing. A per-run lottery on
+a random id, which is exactly why it "failed in a full run and passed 6/6 in isolation": isolation
+was never the variable.
+
+The interceptor states that "system-minted values carry no maskable shape and pass byte-identical".
+**That does not hold for hex ids** — in production roughly one audit row in 166 whose subject is a
+hex id loses the value linking it back to its record. Whether the detector should exempt
+system-minted id shapes is **spec 14's** decision, so the behaviour is pinned by tests
+(`SensitiveDataMaskFalsePositiveTests`) and raised rather than fixed by weakening a fail-closed PAN
+detector. Tests use `TestIds.New`, whose ids cannot reach a 13-digit run. The suite is now green
+twice consecutively (418 passed, 2 skipped).
+
+The **preorder** self-poisoning test described in §11 is a genuinely different mechanism and is
+untouched.
+
+### `bun nx typecheck web` was a no-op
+
+`apps/web/tsconfig.json` is solution-style (`{ "files": [], "references": [...] }`), so
+`tsc --noEmit` compiled **zero files** and exited 0 whatever the code said. Not theoretical: a real
+dangling reference passed `typecheck` and was caught only by `bun nx build web`. The target now runs
+`tsc -b --noEmit`.
+
+### Still open after this pass
+
+- **Modify/reschedule fulfilment** (the blocking gap above) — spec 06/08, unchanged.
+- **Guest identity on a staff-made booking** — needs a spec 04/08/12 decision, as above.
+- **The PAN-detector false positive** on hex ids — spec 14's call.
+- Operator actions on operations (`resume`/`resolve`/`alternatives`), conversation writes,
+  enrolment from the console, deposits/campaigns, analytics KPIs, routing/deep links, pagination
+  and a projected indexed `starts_at` — all as recorded in §11's follow-ups.

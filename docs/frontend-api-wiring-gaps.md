@@ -1,7 +1,20 @@
 # Frontend ↔ API Wiring — Gap Audit
 
-**Status:** Audit · **Audited against:** [`docs/frontend-api-wiring.md`](./frontend-api-wiring.md)
-(§11, "Implementation status 2026-07-27") · **Date:** 2026-08-03 · **Branch:** `feat/ui-wire`
+**Status:** Audit — **mostly closed 2026-08-04** · **Audited against:**
+[`docs/frontend-api-wiring.md`](./frontend-api-wiring.md) (§11) · **Date:** 2026-08-03 ·
+**Branch:** `feat/ui-wire`
+
+> **Closure (2026-08-04).** G2–G9 and G14 are closed; see
+> [`frontend-api-wiring.md` §12](./frontend-api-wiring.md#12-gap-closure-pass-2026-08-04) for what
+> each fix actually was and what it turned up. Findings are marked inline below rather than
+> deleted, so the audit trail survives. **Still open:** G1 (modify/reschedule fulfilment — spec
+> 06/08), the G3 contract half (guest identity on a staff-made booking — spec 04/08/12), and the
+> deliberately-out-of-scope items in §5, §7 and §8.
+>
+> Two things this audit got wrong, corrected during closure: **G14's diagnosis** (not database
+> accumulation — a ~0.6% PAN-detector false positive on random hex ids), and an unlisted defect it
+> missed entirely — **`bun nx typecheck web` compiled zero files**, so every type gate in the
+> original audit was false-green.
 
 This is a re-read of the code against every claim the wiring guide makes, plus a sweep for
 things the guide does not mention. It is deliberately blunt: §11 is largely accurate, and the
@@ -47,7 +60,7 @@ almost all *unbuilt* or *untrue-on-screen*, not *broken build*.
 
 ## 2. Blocking gaps (P0 — a venue could be harmed)
 
-### G1 · Fulfilment engine still cannot modify or reschedule *(already documented — restating because it bounds everything else)*
+### G1 · 🟠 STILL OPEN — Fulfilment engine still cannot modify or reschedule *(already documented — restating because it bounds everything else)*
 
 `AdvanceBookingOperationCommandHandler.cs:104-108` throws `PoisonMessageException` for
 `Modify`/`Reschedule` at `Finalizing`; `revision.canonical_payload.target_booking_id` is read
@@ -60,7 +73,7 @@ transaction, staged transaction, capacity move rather than release, version guar
 `notification.modify_confirmed.v1`, reconcile path). Spec 06/08 work, ~the size of the cancel
 handler plus capacity re-reservation. Then flip one constant.
 
-### G2 · The calendar is dated by a hard-coded mock week — while showing live bookings 🔴 **NEW**
+### G2 · ✅ CLOSED — The calendar is dated by a hard-coded mock week — while showing live bookings 🔴 **NEW**
 
 `data/console.ts:275` pins `WEEK = { doms: [9..15], month: 'June', today: 3 }`. That constant
 still drives **every date the operator sees**:
@@ -83,7 +96,7 @@ unbadged.
 week navigation (see G12) — the window is currently `useMemo(..., [])`, so the console can
 *only* ever show the current week.
 
-### G3 · A console-created booking carries no guest identity 🔴 **NEW**
+### G3 · ◐ HALF-CLOSED — A console-created booking carries no guest identity 🔴 **NEW**
 
 `toCanonicalPayload` (`buildSubmission.ts:58-75`) emits only
 `operation, service_id, starts_at, party_size, duration_minutes, location_id,
@@ -107,7 +120,7 @@ identity (contact fields on `BookingRequest`, or an identity-registration call p
 real `customer_ref`) and whether resources are modelled at all. Until then the create drawer
 should stop collecting a name it does not send, or say plainly that it is only a label.
 
-### G4 · None of this work is committed 🔴 **NEW**
+### G4 · ✅ CLOSED — None of this work is committed 🔴 **NEW**
 
 `git status`: **50 files modified, 42 untracked**, ~3 200 insertions, and no
 `origin/feat/ui-wire` exists. The entire wiring feature — including the §11 rewrite of
@@ -124,7 +137,7 @@ format/tests per file type), push, open the PR. Do this before anything else on 
 
 These all violate the two rules §11 sets for itself. None is badged.
 
-### G5 · Queue rows are part fiction
+### G5 · ✅ CLOSED — Queue rows are part fiction
 
 `QueueScreen.tsx:9-11,60` renders `{waitingTime(q.id, q.retries)} waiting`, where
 `waitingTime` is `MOCK_WAIT[id] ?? retries*9+8` minutes. For a live operation the id never
@@ -138,7 +151,7 @@ Also: the primary button says **"Finish booking" / "Re-booking"** but `finishQue
 (`ConsolePage.tsx:538`) is a purely local acknowledgement. The label promises a server action
 that does not happen.
 
-### G6 · A failed or forbidden transcript read renders an empty conversation
+### G6 · ✅ CLOSED — A failed or forbidden transcript read renders an empty conversation
 
 `ConsolePage.tsx:664-666` falls back to the mock `MESSAGES` map when `transcriptQuery.data` is
 absent; for a live session id that lookup misses, and `ConversationsScreen.tsx:212` renders
@@ -146,7 +159,7 @@ absent; for a live session id that lookup misses, and `ConversationsScreen.tsx:2
 (`ConsolePage.tsx:612-618`). So a 403/500 on the most sensitive read in the product shows a
 clean, empty, confident thread — the defect §11 says was fixed for the other five queries.
 
-### G7 · Unbadged local-only state presented as settings
+### G7 · ✅ CLOSED — Unbadged local-only state presented as settings
 
 - **Agent guardrails** (`SettingsScreen.tsx:471`) — toggles flip `useState` only. No badge.
 - **Agent knowledge base** (`:495`) — "Save" writes to `useState` only. No badge.
@@ -168,7 +181,7 @@ clean, empty, confident thread — the defect §11 says was fixed for the other 
 
 ## 4. Flows that exist in code but are not reachable, or only half-wired
 
-### G8 · Verification is wired for exactly one call
+### G8 · ✅ CLOSED — Verification is wired for exactly one call
 
 `VerificationGate` is mounted only for cancel (`ConsolePage.tsx:843-853`). Everything else that
 can demand a grant is unprotected:
@@ -184,7 +197,7 @@ can demand a grant is unprotected:
 - `submitReschedule` (`ConsolePage.tsx:463`) reads details without a grant too — latent until
   reschedule is enabled.
 
-### G9 · Waitlist is one-quarter wired
+### G9 · ✅ CLOSED (except enrolment) — Waitlist is one-quarter wired
 
 Plan Phase 9 called for `enroll / cancelEnrollment / acceptOffer / declineOffer`. Only
 `cancelEnrollment` is reachable. `acceptOffer` and `declineOffer` are implemented and **called
@@ -193,7 +206,7 @@ from nowhere** (`features/waitlist/api.ts:37-49`), even though the list already 
 console cannot put anyone on a waitlist. "Book now" (`ConsolePage.tsx:715`) opens an empty
 create drawer — it does not prefill the guest, service or window.
 
-### G10 · Operator actions on operations are unwired
+### G10 · 🟠 OUT OF SCOPE — Operator actions on operations are unwired
 
 `POST /api/booking-operations/{id}/{cancel|resume|resolve|alternatives}` are all in the
 contract and none is called. Consequences: an `alternatives_required` operation cannot be
@@ -201,7 +214,7 @@ answered from the console; a stuck operation cannot be resumed; `manual_review` 
 resolved (hence the local-acknowledgement design). `validateChange`
 (`features/bookings/submit.ts:35`) is implemented and unused pending reschedule.
 
-### G11 · Conversations are read-only, with no live channel
+### G11 · 🟠 OUT OF SCOPE — Conversations are read-only, with no live channel
 
 No reply/compose (no endpoint), `takeOver` is local state only, and
 `POST /api/conversation-sessions/{id}/{consent|transcript-turns}` are unwired. There is no SSE
@@ -269,7 +282,7 @@ navigation (G2). Fine for the wiring milestone, a real limitation for daily use.
 
 ## 9. Test and CI hygiene
 
-### G14 · The integration suite is still non-deterministic 🔴 **NEW instance**
+### G14 · ✅ CLOSED (diagnosis corrected) — The integration suite is still non-deterministic 🔴 **NEW instance**
 
 This run: `RetentionSweepTests.Sweep_PrunesRecord_AndEmitsAuditEvent_WhenTerminalOpAndPastDeadline`
 failed at `RetentionSweepTests.cs:88` (`Assert.NotNull(auditRow)`), then **passed 6/6 in

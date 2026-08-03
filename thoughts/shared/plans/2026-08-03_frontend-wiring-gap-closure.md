@@ -523,13 +523,21 @@ held, the waitlist/verification/create rows, and G2/G4 which appear nowhere. Mar
 `docs/frontend-api-wiring-gaps.md` rather than deleting them, so the audit trail survives.
 
 **Automated Verification**
-- [ ] All lanes green: `bun nx test web` · `bun nx test api` · `bun nx test-integration api` ·
-      `bun nx test langgraph` · lints · builds
+- [x] All lanes green: `bun nx test web` (**292**) · `bun nx test api` (**1176**) ·
+      `bun nx test-integration api` (**418 passed, 2 skipped, 0 failed**, twice consecutively) ·
+      `bun nx test langgraph` (**1007**) · all lints (0 warnings) · all builds
 
 **Manual Verification**
 - [ ] Walk all 10 screens against §11's per-screen table; every row's claim is true
 
 ### Discoveries and Notable Information
+
+- §11's per-screen rows were edited in place rather than appended to, so the table cannot be read
+  as still-true-as-written; §12 carries the narrative.
+- The gap audit is **marked up, not deleted** — each finding now carries its status (`✅ CLOSED`,
+  `◐ HALF-CLOSED`, `🟠 STILL OPEN`, `🟠 OUT OF SCOPE`) so the trail from finding to fix survives.
+- The audit's own two mistakes are recorded at the top of it: the G14 diagnosis, and the
+  false-green `typecheck` it never caught because the target it used was a no-op.
 
 ---
 
