@@ -477,11 +477,42 @@ Load `engineering-security-engineer.md` + `engineering-backend-architect.md`.
 disease. Narrow fix: give each such test a **unique tenant** and clean up the rows it seeds, so a
 bounded query over accumulated state can no longer starve it. No fixture re-architecture.
 
+> **The diagnosis in the plan (and in §11) was wrong.** See discoveries — the real cause is a
+> PAN-detector false positive on random hex ids, and it is not an isolation problem at all.
+
 **Automated Verification**
-- [ ] `bun nx test-integration api` — full suite green **twice consecutively**
-- [ ] The two tests still pass in isolation
+- [x] `bun nx test-integration api` — full suite green **twice consecutively** (418 passed,
+      2 skipped, 0 failed, both runs, `--skip-nx-cache`)
+- [x] `bun nx test api` — **1176 passed** (4 new mask-behaviour tests)
+- [x] The affected tests still pass in isolation
 
 ### Discoveries and Notable Information
+
+- 🔴 **The documented diagnosis was wrong, and the real one is a product finding.**
+  `RetentionSweepTests` already used a unique tenant per run, so accumulation could not have
+  been the cause. The actual mechanism: `AuditEventSanitizationInterceptor` masks `subject_ref`
+  through `SensitiveDataMask.Sanitize`, and the test seeds `iKey = $"ikey-{Guid.NewGuid():N}"`.
+  A hex GUID is drawn from `0-9a-f`, so **~1.8% contain a run of 13+ digits and ~0.6% (1 in 166,
+  measured over 300k draws) additionally embed a Luhn-valid window** — those are stored masked,
+  and the test's lookup by the raw key finds nothing. That is a per-run lottery on a random id,
+  which is exactly why it "failed in a full run and passed 6/6 in isolation". Isolation was never
+  the variable.
+- The interceptor's own comment states that "system-minted values carry no maskable shape and
+  pass byte-identical". **That assumption does not hold for hex ids.** In production roughly one
+  audit row in 166 whose subject is a hex id loses the value linking it to its record. Whether
+  the detector should exempt system-minted id shapes is **spec 14's** decision, not this branch's
+  — so the behaviour is now *pinned by tests* (`SensitiveDataMaskFalsePositiveTests`) and raised,
+  rather than quietly "fixed" by weakening a fail-closed PAN detector.
+- Fix applied at the test level: `TestIds.New(prefix)` mints hex ids interleaved with a letter
+  every four characters, so no digit run can reach 13. Pinned by a 5,000-draw test asserting both
+  that they survive sanitisation byte-identical **and** that they stay unique, plus a test
+  asserting real PANs (plain and `4-4-4-4`) are still masked — the detector must not have been
+  weakened.
+- The detector is narrower than the "13+ digits" its summary implies: it window-scans for a
+  Luhn-valid 13–19 sequence. My first pinning test used a non-Luhn digit run and correctly did
+  **not** mask, which is what surfaced the distinction. Both behaviours are now pinned.
+- The **preorder** self-poisoning test documented in §11 is a genuinely different mechanism
+  (a bounded 500-row cross-tenant sweep over unbounded accumulated state) and is untouched here.
 
 ---
 

@@ -115,7 +115,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task NeverAdmitted_PreservesOriginalMessageId_AndDispatchesPayload()
     {
         var tenantId = $"t7-rpl-a-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var operationId = $"op-{Guid.NewGuid():N}";
         var consumer = "booking.finalizer";
 
@@ -162,7 +162,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task AlreadyAdmitted_NewControlMessageId_AndDispatchesOriginalPayload()
     {
         var tenantId = $"t7-rpl-b-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var operationId = $"op-{Guid.NewGuid():N}";
         var consumer = "booking.finalizer";
 
@@ -203,7 +203,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task InboxCompleted_AckedWithoutReadmit_NoPublish()
     {
         var tenantId = $"t7-rpl-c-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var consumer = "booking.finalizer";
 
         await SeedDlqRowAsync(fixture, tenantId, messageId, consumer);
@@ -242,7 +242,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task DlqNotFound_ThrowsDeadLetterNotFoundException()
     {
         var tenantId = $"t7-rpl-d-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var consumer = "booking.finalizer";
         // No DLQ row seeded
 
@@ -260,7 +260,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task AlreadyReplayed_IsNoOp_DoesNotRePublish()
     {
         var tenantId = $"t7-rpl-idem-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var consumer = "booking.finalizer";
 
         // Seed a DLQ row that has ALREADY been replayed (not Quarantined).
@@ -303,7 +303,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task AlreadyAdmitted_MarkFailsThenRetries_ReusesSameDeterministicControlId()
     {
         var tenantId = $"t7-rpl-det-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var operationId = $"op-{Guid.NewGuid():N}";
         var consumer = "booking.finalizer";
 
@@ -368,7 +368,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task PayloadPreserved_NeverAdmitted_RawTextEquals_DlqPayload()
     {
         var tenantId = $"t7-rpl-e1-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var operationId = $"op-{Guid.NewGuid():N}";
         var consumer = "booking.finalizer";
         var originalPayload = JsonSerializer.Serialize(new
@@ -413,7 +413,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task PayloadPreserved_AlreadyAdmitted_RawTextEquals_DlqPayload()
     {
         var tenantId = $"t7-rpl-e2-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var operationId = $"op-{Guid.NewGuid():N}";
         var consumer = "booking.finalizer";
         var originalPayload = JsonSerializer.Serialize(new
@@ -469,7 +469,7 @@ public class ReplayDeadLetterTests(PostgresFixture fixture)
     public async Task TryMarkReplayedAsync_TransitionsQuarantinedExactlyOnce()
     {
         var tenantId = $"t7-claim-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var messageId = TestIds.New("msg");
         var consumer = "booking.finalizer";
 
         await SeedDlqRowAsync(fixture, tenantId, messageId, consumer);
