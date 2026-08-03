@@ -545,3 +545,39 @@ held, the waitlist/verification/create rows, and G2/G4 which appear nowhere. Mar
 
 **No new dependencies.** Everything uses `@tanstack/react-query`, the generated contract packages and
 existing UI primitives already in the tree.
+
+---
+
+## Stage 6 — Regression diff against the Stage 1 baseline audit
+
+Every **must-stay-the-same** item from the baseline audit, re-verified against the final tree.
+
+| Baseline item | Verdict | Evidence |
+|---|---|---|
+| B1 five list queries + `loadFailures` + demo-only-on-`undefined` | ✅ unchanged | all five hooks present; `loadFailures` still 5 entries; the `data === undefined` fallback rule intact at 4 sites |
+| B3 `dismissalKey` = `id|status ?? reason`, state-aware dismissal, bounded set | ✅ unchanged | `ConsolePage.tsx:100-102, 325-331` byte-identical |
+| B4 transcript purpose gate, `staleTime: Infinity`, no refetch on focus/reconnect, live-session-only | ✅ unchanged | `features/hooks.ts:70-73` |
+| B5 `useRemoveFromWaitlist` optimistic-with-rollback + its 2 tests | ✅ untouched | diff over `mutations.ts` shows no change to `onMutate`/`onError`/`splice` logic |
+| B6 canon.v1 hash binding, attempt-identity reuse, `retry: false`, cancel wording, reschedule gate | ✅ unchanged | `intent_payload_hash: payloadHash`; `retry: false`; `RESCHEDULE_FULFILMENT_SUPPORTED = false`; `normalizedStatusLabel(status, 'cancel')` |
+| B7 gate-before-submit, in-memory grant, match on `code` not `title` | ✅ unchanged | `setCancelAwaitingGrant(id)` before submit; `body.code === "verification_required"` |
+| B8 consent-policy + catalog live panels | ✅ unchanged | `SettingsScreen.tsx:339-340` |
+| B9 header set; shim subordinate to a verified context; `TenantGuard` fail-closed | ✅ unchanged | 8 `headers.set` calls identical; `IsNullOrEmpty(tenantContext.TenantId)` guard intact; **registration** gated, ordering not |
+| B10 suites green | ✅ improved | web 221 → **292**; api 1170 → **1176**; integration 413/1-failed → **418/0-failed** twice; langgraph **1007** unchanged |
+
+**Intentionally changed** (each traced to a plan phase): B2 calendar dates (P1); B3 queue
+fabrications + button label (P2); B4 transcript error path and thread `status`/`prov` (P2);
+B6 create `identityRef` and the cancel pre-read grant (P4, P6); B8 badges on the three unbadged
+panels (P3); B9 shim registration (P7).
+
+**Release-blocking invariants re-checked:** Inv-2/3 (canonical hash unmoved — pinned by test),
+Inv-11 (grants still server-issued, in-memory, pre-submit), Inv-12 / spec-14 minimisation
+(**strengthened** — the console no longer writes a name into `customer_ref`), Inv-13
+(**strengthened** — shim no longer reachable in production), Inv-16 (**strengthened** — six
+classes of fabricated assertion removed). None weakened.
+
+**Deviations from the plan, both recorded rather than silent:**
+1. `apps/web/project.json` typecheck target fixed (P1) — outside the blast radius, but the plan's
+   own verification depended on it.
+2. `latest_offer_id` added to the console projection + api-contract regenerated (P5) — the plan
+   predicted no regeneration; this branch owns the console projections and the change is additive
+   with no DDL.
