@@ -177,7 +177,27 @@ app.UseMiddleware<Cordia.Api.Middleware.TenantContextVerificationMiddleware>();
 
 // Resolve tenant from the X-Tenant-Id header (DEV/TEST shim only). Gated so it NEVER overrides a
 // context already verified above (Inv-13); superseded by signed-context resolution (spec 08/15).
-app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
+//
+// REGISTERED ONLY WHERE IT IS MEANT TO EXIST. `X-Tenant-Id` is trusted client input: wherever this
+// runs and no signed context is present, any caller can name the tenant whose data they get. That is
+// acceptable on a developer machine and in the test host, and is unauthenticated cross-tenant access
+// anywhere else — so the shim is opt-in outside Development rather than always-on (Inv-13).
+// Deployments that still need it set Tenancy:AllowHeaderShim explicitly; the default is off.
+var allowTenantHeaderShim = app.Configuration.GetValue(
+    "Tenancy:AllowHeaderShim",
+    app.Environment.IsDevelopment());
+
+if (allowTenantHeaderShim)
+{
+    app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
+}
+else
+{
+    // Say so once at startup: a silently absent shim looks exactly like a broken tenant lookup.
+    app.Logger.LogInformation(
+        "X-Tenant-Id header shim is disabled ({Environment}); tenant must come from a verified X-Tenant-Context.",
+        app.Environment.EnvironmentName);
+}
 
 // --- Pipeline ---
 app.UseSerilogRequestLogging();

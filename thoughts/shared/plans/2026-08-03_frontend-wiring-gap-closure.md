@@ -441,15 +441,30 @@ Load `engineering-security-engineer.md` + `engineering-backend-architect.md`.
    configuration rather than weakening the default.
 
 **Automated Verification**
-- [ ] `bun nx build api` · `bun nx lint api` (new/edited `.cs` UTF-8 **with BOM**)
-- [ ] `bun nx test api`
-- [ ] `bun nx test-integration api` — new tests: shim honoured in Development; **ignored** when
-      disabled (request fails closed); a verified `X-Tenant-Context` still wins in both modes
+- [x] `bun nx build api` · `bun nx lint api` (new `.cs` written UTF-8 **with BOM**)
+- [x] `bun nx test api` — **1170 passed**
+- [x] `bun nx test-integration api` — **418 passed, 2 skipped, 0 failed** (was 416 total); the four
+      new `TenantHeaderShimGateTests` prove the same request returns **200 with the shim on and
+      400 with it off**, that a request with no tenant fails closed either way, and that a
+      malformed signed context is refused rather than downgrading into the shim
 
 **Manual Verification**
 - [ ] `bun nx serve api` + `bun nx serve web` still work unchanged in dev
 
 ### Discoveries and Notable Information
+
+- **`IsDevelopment()` alone would have broken every integration test**: the Alba fixtures boot the
+  host as environment `Test`, not `Development`. Resolved with a `Tenancy:AllowHeaderShim` flag
+  that *defaults* to `IsDevelopment()` and is set true in `appsettings.Test.json` — the test host
+  opts in explicitly, rather than the production default being loosened to keep tests green.
+- Putting the flag in `appsettings.Test.json` rather than in each fixture matters: at least six
+  test classes build their own ad-hoc `AlbaHost`, and patching them individually would have left
+  whichever one was missed silently depending on a default that no longer holds.
+- The disabled path **logs once at startup**. A silently absent shim looks identical to a broken
+  tenant lookup, and that is a bad thing to debug at 2am.
+- The test asserting a malformed `X-Tenant-Context` returns **401 rather than falling through to
+  the header** is the one that matters most: without it, a forged context could downgrade into
+  the dev shim instead of being refused.
 
 ---
 
