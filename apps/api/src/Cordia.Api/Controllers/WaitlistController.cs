@@ -65,6 +65,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
                 e.AutoBookAuthorized,
                 e.Cancelled,
                 e.CreatedAt,
+                e.LatestOfferId,
                 EnumWireNames.ToWireName(e.LatestOfferStatus),
                 e.LatestOfferExpiresAt)).ToList()));
     }
@@ -209,6 +210,7 @@ public sealed record WaitlistEnrollmentView(
     [property: JsonPropertyName("auto_book_authorized")] bool AutoBookAuthorized,
     [property: JsonPropertyName("cancelled")] bool Cancelled,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("latest_offer_id")] string? LatestOfferId,
     [property: JsonPropertyName("latest_offer_status")] string? LatestOfferStatus,
     [property: JsonPropertyName("latest_offer_expires_at")] DateTimeOffset? LatestOfferExpiresAt);
 

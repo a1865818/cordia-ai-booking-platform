@@ -82,6 +82,12 @@ public sealed record WaitlistEnrollmentSummary(
     bool AutoBookAuthorized,
     bool Cancelled,
     DateTimeOffset CreatedAt,
+    /// <summary>
+    /// Identifies the offer for <c>accept</c>/<c>decline</c>. Without it a caller can see that an
+    /// offer exists but has nothing to address, which is why the console could display offer
+    /// state but never act on it. Null when the enrollment has no offer yet.
+    /// </summary>
+    string? LatestOfferId,
     WaitlistOfferStatus? LatestOfferStatus,
     DateTimeOffset? LatestOfferExpiresAt);
 

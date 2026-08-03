@@ -13,9 +13,17 @@ interface WaitlistScreenProps {
   onToggleAuto: (id: string) => void;
   onRemove: (id: string) => void;
   onBookNow: (id: string) => void;
+  /** Answers a live offer. Absent on the demo-only rendering, which has no offers. */
+  onAcceptOffer?: (offerId: string, name: string) => void;
+  onDeclineOffer?: (offerId: string, name: string) => void;
+  /** The offer currently being answered, so its buttons cannot be double-fired. */
+  offerBusyId?: string | null;
 }
 
-export function WaitlistScreen({ autoBook, toggleAutoBook, waitlist, onToggleAuto, onRemove, onBookNow }: WaitlistScreenProps) {
+export function WaitlistScreen({
+  autoBook, toggleAutoBook, waitlist, onToggleAuto, onRemove, onBookNow,
+  onAcceptOffer, onDeclineOffer, offerBusyId,
+}: WaitlistScreenProps) {
   return (
     <div>
       {/* Auto-book banner */}
@@ -62,7 +70,38 @@ export function WaitlistScreen({ autoBook, toggleAutoBook, waitlist, onToggleAut
                 <div className="flex-1 min-w-0">
                   <div className="text-[14px] font-semibold text-ink">{w.name}</div>
                   <div className="text-[12px] text-t2 mt-[1px]">{w.service} · {w.want}</div>
+                  {/* Offer state, straight from the projection. An offer that is terminal or
+                      expired shows its state but carries no `offerId`, so no action appears. */}
+                  {w.offerStatus && (
+                    <div className="text-[11.5px] mt-[3px]" style={{ color: w.offerId ? '#7E5606' : '#9A9A9A' }}>
+                      Offer {w.offerStatus}{w.offerExpiry ? ` · ${w.offerExpiry}` : ''}
+                    </div>
+                  )}
                 </div>
+
+                {/* Accept / decline a live offer. Rendered only when there is one to answer. */}
+                {w.offerId && onAcceptOffer && onDeclineOffer && (
+                  <div className="flex gap-[6px] shrink-0">
+                    <button
+                      type="button"
+                      disabled={offerBusyId === w.offerId}
+                      onClick={() => onAcceptOffer(w.offerId!, w.name)}
+                      className="h-[30px] px-[10px] rounded-[8px] text-[11.5px] font-semibold border cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      style={{ background: '#0A0A0A', color: '#fff', borderColor: '#0A0A0A', fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      disabled={offerBusyId === w.offerId}
+                      onClick={() => onDeclineOffer(w.offerId!, w.name)}
+                      className="h-[30px] px-[10px] rounded-[8px] text-[11.5px] font-semibold border bg-white cursor-pointer transition-colors hover:bg-wash disabled:opacity-40 disabled:cursor-not-allowed"
+                      style={{ color: '#55554F', borderColor: '#E5E5E5', fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
 
                 {/*
                   Per-guest auto-book. On a live row this is the guest's own consent, recorded

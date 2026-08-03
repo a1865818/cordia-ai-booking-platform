@@ -26,7 +26,7 @@ import { getOrCreateAttempt, resetAttempt } from "./identity";
 import { submitBooking, submitCancellation } from "./submit";
 import { buildSubmission, type BookingDraft } from "./buildSubmission";
 import { POLL_TIMEOUT_MS, nextInterval } from "./useOperationStatus";
-import { cancelEnrollment } from "../waitlist/api";
+import { acceptOffer, cancelEnrollment, declineOffer } from "../waitlist/api";
 import type { WaitlistItem } from "../../data/console";
 
 /**
@@ -297,4 +297,59 @@ export function useRemoveFromWaitlist(applyRows: Dispatch<SetStateAction<Waitlis
       void queryClient.invalidateQueries({ queryKey: queryKeys.waitlist.all() });
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Waitlist offers
+// ---------------------------------------------------------------------------
+
+export interface OfferDecisionVariables {
+  offerId: string;
+  /** The enrolled guest, for the toast. */
+  name: string;
+}
+
+/**
+ * Accepts or declines a live waitlist offer.
+ *
+ * **Not** optimistic, unlike removal. Accepting finalizes a capacity hold and confirms a
+ * booking server-side (spec 11 §5.1); declining releases the hold and re-matches the next
+ * eligible guest. Both can legitimately 409 — the offer may have expired or been answered by
+ * the guest in the meantime — so the row is left alone until the server has actually decided,
+ * and the list is refetched either way (Inv-16).
+ *
+ * Every waitlist action is audited against `X-Actor`, which the API layer attaches.
+ */
+function useOfferDecision(decide: (offerId: string) => Promise<unknown>) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (variables: OfferDecisionVariables) => decide(variables.offerId),
+    onSettled: () => {
+      // Both outcomes change the offer's state and can change capacity, so the board and
+      // the schedule are both stale afterwards.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.waitlist.all() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bookings.all() });
+    },
+  });
+}
+
+export function useAcceptOffer() {
+  return useOfferDecision(acceptOffer);
+}
+
+export function useDeclineOffer() {
+  return useOfferDecision(declineOffer);
+}
+
+/** Operator-facing message for a failed offer decision. */
+export function offerFailureMessage(error: unknown, action: "accept" | "decline"): string {
+  // A 409 here is not a bug: the offer was answered or expired between render and click.
+  if (isApiError(error) && error.status === 409) {
+    return "That offer is no longer live — the guest answered it or it expired.";
+  }
+  if (isApiError(error) && error.status === 404) {
+    return "That offer no longer exists.";
+  }
+  return error instanceof Error ? error.message : `Could not ${action} this offer`;
 }

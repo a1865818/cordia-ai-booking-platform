@@ -2030,6 +2030,10 @@
             "nullable": true,
             "type": "string"
           },
+          "latest_offer_id": {
+            "nullable": true,
+            "type": "string"
+          },
           "latest_offer_status": {
             "nullable": true,
             "type": "string"

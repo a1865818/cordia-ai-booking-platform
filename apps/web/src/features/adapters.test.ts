@@ -192,13 +192,13 @@ describe("customer adapters", () => {
 describe("waitlist adapters", () => {
   it("reflects the per-guest auto-book grant rather than assuming it", () => {
     const [granted] = toWaitlistItems([
-      { enrollment_id: "w1", customer_ref: "cust-1", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "2026-08-01T09:00:00Z", acceptable_to: "2026-08-01T11:00:00Z", auto_book_authorized: true, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_status: null, latest_offer_expires_at: null },
+      { enrollment_id: "w1", customer_ref: "cust-1", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "2026-08-01T09:00:00Z", acceptable_to: "2026-08-01T11:00:00Z", auto_book_authorized: true, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_id: null, latest_offer_status: null, latest_offer_expires_at: null },
     ]);
     expect(granted.auto).toBe(true);
     expect(granted.service).toBe("Gel manicure");
 
     const [ungranted] = toWaitlistItems([
-      { enrollment_id: "w2", customer_ref: "cust-2", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "", acceptable_to: "", auto_book_authorized: false, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_status: null, latest_offer_expires_at: null },
+      { enrollment_id: "w2", customer_ref: "cust-2", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "", acceptable_to: "", auto_book_authorized: false, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_id: null, latest_offer_status: null, latest_offer_expires_at: null },
     ]);
     expect(ungranted.auto).toBe(false);
     expect(ungranted.want).toBe("Any time");

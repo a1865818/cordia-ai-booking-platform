@@ -10,11 +10,16 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { useRemoveFromWaitlist, useCancelBooking } from "./mutations";
+import {
+  useRemoveFromWaitlist, useCancelBooking, useAcceptOffer, useDeclineOffer,
+  offerFailureMessage,
+} from "./mutations";
 import type { WaitlistItem } from "../../data/console";
 
 vi.mock("../waitlist/api", () => ({
   cancelEnrollment: vi.fn(),
+  acceptOffer: vi.fn(),
+  declineOffer: vi.fn(),
 }));
 vi.mock("./api", () => ({
   getBookingDetails: vi.fn(),
@@ -24,7 +29,8 @@ vi.mock("./submit", () => ({
   submitCancellation: vi.fn(),
 }));
 
-import { cancelEnrollment } from "../waitlist/api";
+import { acceptOffer, cancelEnrollment, declineOffer } from "../waitlist/api";
+import { ApiError } from "../../api/problem";
 import { getBookingDetails, getOperationStatus } from "./api";
 import { submitCancellation } from "./submit";
 
@@ -189,5 +195,60 @@ describe("useCancelBooking", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(submitCancellation).not.toHaveBeenCalled();
+  });
+});
+
+describe("waitlist offer decisions", () => {
+  it("sends the offer id to the server and reports success only then", async () => {
+    vi.mocked(acceptOffer).mockResolvedValue({ status: "accepted" });
+
+    const { result } = renderHook(() => useAcceptOffer(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ offerId: "off_1", name: "Ada" });
+    });
+
+    expect(acceptOffer).toHaveBeenCalledWith("off_1");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  it("declines through the decline endpoint, not the accept one", async () => {
+    vi.mocked(declineOffer).mockResolvedValue({ status: "declined" });
+
+    const { result } = renderHook(() => useDeclineOffer(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ offerId: "off_2", name: "Bo" });
+    });
+
+    expect(declineOffer).toHaveBeenCalledWith("off_2");
+    expect(acceptOffer).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failure rather than claiming the offer was answered", async () => {
+    // Deliberately NOT optimistic: accepting finalizes a capacity hold and confirms a
+    // booking server-side, so the row must not move until the server has decided (Inv-16).
+    vi.mocked(acceptOffer).mockRejectedValue(new ApiError(409, "gone"));
+
+    const { result } = renderHook(() => useAcceptOffer(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ offerId: "off_1", name: "Ada" }).catch(() => {});
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("offerFailureMessage", () => {
+  it("explains a 409 as the race it is, not as a bug", () => {
+    expect(offerFailureMessage(new ApiError(409, "conflict"), "accept"))
+      .toBe("That offer is no longer live — the guest answered it or it expired.");
+  });
+
+  it("explains a 404 separately", () => {
+    expect(offerFailureMessage(new ApiError(404, "missing"), "decline"))
+      .toBe("That offer no longer exists.");
+  });
+
+  it("falls back to the error's own message", () => {
+    expect(offerFailureMessage(new Error("network down"), "accept")).toBe("network down");
   });
 });

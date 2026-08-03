@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Service, STAFF, CUSTOMERS, fmtT, fmtDur, money, TIME_SLOTS, Booking } from "../../../data/console";
 import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
+import type { CreatePrefill } from "../../../features/waitlist/prefill";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
@@ -56,9 +57,14 @@ interface CreateBookingDrawerProps {
   onClose: () => void;
   onCreated: (b: Omit<Booking, 'id'>) => void;
   services: Service[];
+  /**
+   * Defaults to open with, e.g. when booking a specific waitlisted guest. Applied on open
+   * only — the operator can change anything before submitting.
+   */
+  prefill?: CreatePrefill;
 }
 
-export function CreateBookingDrawer({ open, device, week, onClose, onCreated, services }: CreateBookingDrawerProps) {
+export function CreateBookingDrawer({ open, device, week, onClose, onCreated, services, prefill }: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
@@ -86,15 +92,20 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
 
   useEffect(() => {
     if (open) {
-      setName(''); setCustomerSearch('');
-      setSvc(services[0]?.key ?? ''); setStaff('s1');
-      setDay(String(week.todayIndex ?? 0)); setTime('600'); setPartySize('2');
+      setName(prefill?.name ?? ''); setCustomerSearch('');
+      // A prefilled service must still exist in the catalogue; fall back rather than
+      // submitting an id the tenant does not offer.
+      const prefilledService = services.find(s => s.key === prefill?.serviceId)?.key;
+      setSvc(prefilledService ?? services[0]?.key ?? ''); setStaff('s1');
+      setDay(String(prefill?.day ?? week.todayIndex ?? 0));
+      setTime(String(prefill?.start ?? 600));
+      setPartySize(String(prefill?.partySize ?? 2));
       setPhase('form'); setShowDropdown(false);
       setSubmitError(null); setOperationId(null); setStartedAt(null);
       announcedRef.current = null;
       setAttemptKey(`create:${Date.now()}`);
     }
-  }, [open, services, week.todayIndex]);
+  }, [open, services, week.todayIndex, prefill]);
 
   const hasServices = services.length > 0;
   const service = services.find(s => s.key === svc) ?? services[0];

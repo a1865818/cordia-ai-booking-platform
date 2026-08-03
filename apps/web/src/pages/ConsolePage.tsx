@@ -17,12 +17,13 @@ import { toQueueItems } from "../features/operations/adapters";
 import { toMessages, toThreads } from "../features/conversations/adapters";
 import { toCustomers } from "../features/customers/adapters";
 import { toWaitlistItems } from "../features/waitlist/adapters";
+import { prefillFromWaitlist, type CreatePrefill } from "../features/waitlist/prefill";
 import { useQueryClient } from "@tanstack/react-query";
 import { getBookingDetails } from "../features/bookings/api";
 import { RESCHEDULE_FULFILMENT_SUPPORTED, submitBooking } from "../features/bookings/submit";
 import {
-  isRetryableWithNewAttempt, pollToTerminal, useCancelBooking, useRemoveFromWaitlist,
-  writeFailureMessage,
+  isRetryableWithNewAttempt, offerFailureMessage, pollToTerminal, useAcceptOffer,
+  useCancelBooking, useDeclineOffer, useRemoveFromWaitlist, writeFailureMessage,
 } from "../features/bookings/mutations";
 import { normalizedStatusLabel } from "../features/bookings/useOperationStatus";
 import { VerificationGate } from "../features/verification/VerificationGate";
@@ -173,6 +174,35 @@ export function ConsolePage() {
    */
   const removeWaitlistMutation = useRemoveFromWaitlist(setWaitlist);
 
+  /**
+   * Answering a live waitlist offer.
+   *
+   * Not optimistic: accepting finalizes a capacity hold and confirms a booking server-side,
+   * and both actions can legitimately 409 when the guest answered first or the offer expired.
+   * The row is left alone until the server has decided, then the list refetches.
+   */
+  const acceptOfferMutation = useAcceptOffer();
+  const declineOfferMutation = useDeclineOffer();
+  const offerBusyId =
+    acceptOfferMutation.isPending ? acceptOfferMutation.variables?.offerId ?? null
+    : declineOfferMutation.isPending ? declineOfferMutation.variables?.offerId ?? null
+    : null;
+
+  function answerOffer(kind: 'accept' | 'decline', offerId: string, name: string) {
+    const mutation = kind === 'accept' ? acceptOfferMutation : declineOfferMutation;
+    if (mutation.isPending) return;
+
+    mutation.mutate({ offerId, name }, {
+      onSuccess: () => toast({
+        message: kind === 'accept'
+          ? `Offer accepted for ${name}`
+          : `Offer declined for ${name} — the next guest will be matched`,
+        duration: 4000,
+      }),
+      onError: (error) => toast({ message: offerFailureMessage(error, kind), duration: 6000 }),
+    });
+  }
+
   function removeFromWaitlist(id: string) {
     const item = waitlist.find(w => w.id === id);
     if (!item) return;
@@ -313,6 +343,13 @@ export function ConsolePage() {
     bookingId: string | null;
   }>({ kind: null, bookingId: null });
 
+  /**
+   * What the create drawer opens with. Empty for a plain "New booking"; populated when the
+   * operator books a specific waitlisted guest, so they do not retype what the enrollment
+   * already records.
+   */
+  const [createPrefill, setCreatePrefill] = useState<CreatePrefill | undefined>(undefined);
+
   // Toasts
   const { toasts, toast, dismiss } = useToast();
 
@@ -352,7 +389,38 @@ export function ConsolePage() {
 
   // Drawer actions
   const openBooking = (id: string) => setDrawer({ kind: 'detail', bookingId: id });
-  const openCreate = () => setDrawer({ kind: 'create', bookingId: null });
+  const openCreate = () => {
+    setCreatePrefill(undefined);
+    setDrawer({ kind: 'create', bookingId: null });
+  };
+
+  /**
+   * Books a waitlisted guest.
+   *
+   * Opens the create drawer already carrying what the enrollment records — guest, service,
+   * party size and the start of their acceptable window — instead of a blank form the
+   * operator has to re-derive from the row they just clicked. When that window falls in a
+   * different week, the grid moves there first so the prefilled day index means what it says.
+   */
+  function bookFromWaitlist(id: string) {
+    const entry = waitlist.find(w => w.id === id);
+    if (!entry) { openCreate(); return; }
+
+    let targetWeek = week;
+    if (entry.acceptableFrom) {
+      const from = new Date(entry.acceptableFrom);
+      if (!Number.isNaN(from.getTime())) {
+        const targetWindow = weekWindow(from);
+        if (targetWindow.from !== scheduleWindow.from) {
+          setScheduleWindow(targetWindow);
+          targetWeek = buildWeek(targetWindow.from);
+        }
+      }
+    }
+
+    setCreatePrefill(prefillFromWaitlist(entry, targetWeek));
+    setDrawer({ kind: 'create', bookingId: null });
+  }
   const closeDrawer = () => {
     // Drop any pending step-up: it belonged to the booking being closed, and leaving it set
     // would make the gate reappear on whichever booking is opened next.
@@ -773,7 +841,10 @@ export function ConsolePage() {
               waitlist={waitlist}
               onToggleAuto={toggleWaitlistAuto}
               onRemove={removeFromWaitlist}
-              onBookNow={() => openCreate()}
+              onBookNow={bookFromWaitlist}
+              onAcceptOffer={(offerId, name) => answerOffer('accept', offerId, name)}
+              onDeclineOffer={(offerId, name) => answerOffer('decline', offerId, name)}
+              offerBusyId={offerBusyId}
             />
           );
         case 'customers':
@@ -921,6 +992,7 @@ export function ConsolePage() {
         onClose={closeDrawer}
         onCreated={onCreated}
         services={services}
+        prefill={createPrefill}
       />
       <RescheduleDrawer
         open={drawer.kind === 'reschedule'}

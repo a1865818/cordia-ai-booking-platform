@@ -237,6 +237,7 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                     !string.IsNullOrWhiteSpace(e.AutoBook),
                     e.CancelledAt.HasValue,
                     e.CreatedAt,
+                    offer?.OfferId,
                     offer?.Status,
                     offer?.OfferExpiresAt);
             })

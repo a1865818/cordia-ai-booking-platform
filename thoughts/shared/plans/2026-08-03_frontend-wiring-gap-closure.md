@@ -339,15 +339,41 @@ Load `engineering-security-engineer.md` before implementing.
 4. No `enroll` UI — enrollment is a guest-initiated flow; out of scope (record in §11).
 
 **Automated Verification**
-- [ ] `bun nx test web` — accept/decline mutation tests (success, rollback on failure, actor header);
-      a row with no offer renders no action
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+- [x] `bun nx test web` — accept/decline mutation tests, offer-actionability matrix, prefill
+      mapping — **289 passed** (was 267)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
+- [x] `bun nx build api` · `bun nx lint api` · `bun nx test api` (1170) ·
+      `bun nx test-integration api` (**414 passed, 2 skipped, 0 failed** this run)
+- [x] `bun nx run api-contract:generate-types` — `latest_offer_id` present in the contract
 
 **Manual Verification**
 - [ ] Accepting an offer reports the server's outcome, not an assumed one
 - [ ] *Regression:* removal (optimistic + rollback) unchanged, both existing tests green
 
 ### Discoveries and Notable Information
+
+- 🔴 **The offer actions were unreachable for a reason nobody had noticed: the projection
+  exposed no offer id.** `WaitlistEnrollmentSummary` resolved the latest offer server-side and
+  returned only its *status* and *expiry* — so a caller could see that an offer existed and had
+  nothing to address. `acceptOffer`/`declineOffer` could not have been wired without this.
+  Added `LatestOfferId` to the projection + `latest_offer_id` to the view (this branch **owns**
+  the console projections; additive, no DDL) and regenerated the api-contract TS. **Deviation
+  from the plan**, which predicted no contract regeneration — recorded here rather than done
+  silently.
+- **Not optimistic, unlike removal.** Accepting finalizes a capacity hold and confirms a booking
+  server-side; both actions can legitimately 409 when the guest answered first or the offer
+  expired. The row is left alone until the server decides, and a 409 is phrased as the race it
+  is rather than as an error.
+- An offer whose `expires_at` has passed is treated as **not actionable even when the row still
+  says `offered`** — the expiry sweeper may not have run, and rendering Accept there guarantees
+  a 409. `offerId` is only carried for a genuinely answerable offer, and the screen renders its
+  actions off that, so the two can never disagree.
+- "Book now" prefills from the enrollment (guest, service, party size, window start) and moves
+  the grid to the week containing that window first — otherwise a prefilled day index would
+  point at the same weekday of whatever week was on screen.
+- The integration suite passed **414/416 with zero failures** this run, where the pre-work
+  baseline had one failure. Confirms `RetentionSweepTests` is non-deterministic rather than
+  broken — Phase 8 still required.
 
 ---
 

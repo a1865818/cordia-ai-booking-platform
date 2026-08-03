@@ -24,7 +24,42 @@ export function wantLabel(from: string | null | undefined, to: string | null | u
   return `${day} ${time}–${endTime}`;
 }
 
-export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistItem {
+/**
+ * Whether the latest offer is one the operator can still answer.
+ *
+ * `offered` is the only actionable state: `pending`/`matched` have not reached the guest,
+ * and `accepted`/`declined`/`expired` are terminal. An expiry in the past is treated as
+ * inactionable even if the row still says `offered` — the sweeper may not have run yet, and
+ * offering a button that will 409 is worse than offering none.
+ */
+export function isOfferActionable(
+  status: string | null | undefined,
+  expiresAt: string | null | undefined,
+  now = Date.now()
+): boolean {
+  if (status !== "offered") return false;
+  if (!expiresAt) return true;
+
+  const expiry = new Date(expiresAt).getTime();
+  return Number.isNaN(expiry) || expiry > now;
+}
+
+/** "expires in 7 min" / "expired" — the only offer timing the projection supports. */
+export function offerExpiryLabel(expiresAt: string | null | undefined, now = Date.now()): string {
+  if (!expiresAt) return "";
+  const expiry = new Date(expiresAt).getTime();
+  if (Number.isNaN(expiry)) return "";
+
+  const minutes = Math.round((expiry - now) / 60_000);
+  if (minutes <= 0) return "expired";
+  if (minutes < 60) return `expires in ${minutes} min`;
+  return `expires in ${Math.round(minutes / 60)} hr`;
+}
+
+export function toWaitlistItem(
+  enrollment: WaitlistEnrollmentSummary,
+  now = Date.now()
+): WaitlistItem {
   const serviceId = enrollment.service_id ?? "";
   return {
     id: enrollment.enrollment_id ?? "",
@@ -39,11 +74,23 @@ export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistI
     // into a different state would claim a grant was given or withdrawn when nothing was
     // written at all.
     isLive: true,
+    // Only carried when the offer can actually be answered; the screen renders the
+    // accept/decline actions off the presence of this id, so a terminal or expired offer
+    // simply has none.
+    offerId: isOfferActionable(enrollment.latest_offer_status, enrollment.latest_offer_expires_at, now)
+      ? enrollment.latest_offer_id ?? undefined
+      : undefined,
+    offerStatus: enrollment.latest_offer_status ?? undefined,
+    offerExpiry: offerExpiryLabel(enrollment.latest_offer_expires_at, now),
+    serviceId: serviceId || undefined,
+    partySize: enrollment.party_size ?? undefined,
+    acceptableFrom: enrollment.acceptable_from ?? undefined,
   };
 }
 
 export function toWaitlistItems(
-  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined
+  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined,
+  now = Date.now()
 ): WaitlistItem[] {
-  return (enrollments ?? []).map(toWaitlistItem);
+  return (enrollments ?? []).map((e) => toWaitlistItem(e, now));
 }
