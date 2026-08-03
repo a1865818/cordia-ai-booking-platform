@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Booking, WEEK, STAFF, fmtT, TIME_SLOTS, DAY_OPTS } from "../../../data/console";
+import { Booking, STAFF, fmtT, TIME_SLOTS } from "../../../data/console";
+import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
@@ -44,12 +45,14 @@ function SelectField({ value, onChange, options }: { value: string; onChange: (v
 interface RescheduleDrawerProps {
   open: boolean;
   device: 'phone' | 'desktop';
+  /** The displayed week — both the "currently" label and the day picker are dated from it. */
+  week: ConsoleWeek;
   booking: Booking | null;
   onClose: () => void;
   onDone: (id: string, patch: { day: number; start: number; staff: string }) => void;
 }
 
-export function RescheduleDrawer({ open, device, booking, onClose, onDone }: RescheduleDrawerProps) {
+export function RescheduleDrawer({ open, device, week, booking, onClose, onDone }: RescheduleDrawerProps) {
   const b = useRetained(booking, open);
   const [day, setDay] = useState('0');
   const [time, setTime] = useState('600');
@@ -114,7 +117,7 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
           <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Moved</div>
           <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
             {b.serviceName} is now<br />
-            {DAY_OPTS[Number(day)]?.label} at {fmtT(Number(time))}
+            {shortDayLabel(week, Number(day))} at {fmtT(Number(time))}
           </div>
           <div className="text-[12px] text-t3 mt-3 leading-[1.5]">
             The customer gets an SMS with the new time and a link to confirm.
@@ -127,9 +130,7 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
             <Icon name="clock" size={16} strokeWidth={1.9} color="#9A9A9A" />
             <div className="text-[12.5px] text-t2">
               Currently{' '}
-              <span className="font-semibold text-ink">
-                {WEEK.dows[b.day].charAt(0) + WEEK.dows[b.day].slice(1).toLowerCase()} {WEEK.doms[b.day]}
-              </span>
+              <span className="font-semibold text-ink">{shortDayLabel(week, b.day)}</span>
               {' '}at{' '}
               <span className="font-semibold text-ink">{fmtT(b.start)}</span>
             </div>
@@ -137,7 +138,7 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
           <div className="flex gap-[10px]">
             <div className="flex-1">
               <Field label="New day">
-                <SelectField value={day} onChange={setDay} options={DAY_OPTS} />
+                <SelectField value={day} onChange={setDay} options={dayOptions(week)} />
               </Field>
             </div>
             <div className="flex-1">

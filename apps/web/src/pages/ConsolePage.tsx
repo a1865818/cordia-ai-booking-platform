@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Booking, THREADS, MESSAGES,
   QueueItem, WaitlistItem,
-  Service, SERVICE_LIST, TenantConfig, TENANT, WEEK,
+  Service, SERVICE_LIST, TenantConfig, TENANT,
 } from "../data/console";
 
 import {
@@ -10,6 +10,7 @@ import {
   useWaitlistEnrollments,
 } from "../features/hooks";
 import { toBookings, weekWindow } from "../features/bookings/adapters";
+import { buildWeek, dayLabel, shiftWeekWindow } from "../features/bookings/week";
 import { buildSubmission, toIsoInstant } from "../features/bookings/buildSubmission";
 import { getOrCreateAttempt, resetAttempt } from "../features/bookings/identity";
 import { toQueueItems } from "../features/operations/adapters";
@@ -151,8 +152,8 @@ export function ConsolePage() {
     go('customers');
   }
 
-  // Calendar
-  const [selDay, setSelDay] = useState(3);
+  // Calendar. Opens on the real current weekday (0 = Monday), not a fixed column.
+  const [selDay, setSelDay] = useState(() => (new Date().getDay() + 6) % 7);
 
   // Conversations
   const [convOpen, setConvOpen] = useState('c3');
@@ -200,7 +201,11 @@ export function ConsolePage() {
   // genuinely has nothing to show (a fresh tenant) — never to paper over an error, which
   // surfaces on the screen instead.
   const queryClient = useQueryClient();
-  const scheduleWindow = useMemo(() => weekWindow(), []);
+  // The displayed week is state, not a constant: the grid can move week to week, and every
+  // date on screen is derived from THIS window rather than from a hard-coded literal. The
+  // query key already includes from/to, so each week caches independently.
+  const [scheduleWindow, setScheduleWindow] = useState(() => weekWindow());
+  const week = useMemo(() => buildWeek(scheduleWindow.from), [scheduleWindow.from]);
   const scheduleQuery = useBookingSchedule(scheduleWindow);
   const operationsQuery = useOperations({ needsAttention: true, limit: 100 });
   const sessionsQuery = useSessions(50);
@@ -208,9 +213,20 @@ export function ConsolePage() {
   const customersQuery = useCustomers("", 50);
 
   const liveBookings = useMemo(
-    () => toBookings(scheduleQuery.data?.bookings, { weekStart: new Date(scheduleWindow.from) }),
-    [scheduleQuery.data, scheduleWindow.from]
+    () => toBookings(scheduleQuery.data?.bookings, { weekStart: week.start }),
+    [scheduleQuery.data, week.start]
   );
+
+  /** Moves the grid a whole week; the rows follow because the window is the query key. */
+  function goToWeek(deltaWeeks: number) {
+    setScheduleWindow(current => shiftWeekWindow(current, deltaWeeks));
+  }
+
+  /** Back to the current week AND to today's column — "Today" must mean today. */
+  function goToToday() {
+    setScheduleWindow(weekWindow());
+    setSelDay((new Date().getDay() + 6) % 7);
+  }
   const liveQueue = useMemo(() => toQueueItems(operationsQuery.data?.operations), [operationsQuery.data]);
   const liveThreads = useMemo(() => toThreads(sessionsQuery.data?.sessions), [sessionsQuery.data]);
   const liveWaitlist = useMemo(() => toWaitlistItems(waitlistQuery.data?.enrollments), [waitlistQuery.data]);
@@ -452,7 +468,9 @@ export function ConsolePage() {
     id: string,
     patch: { day: number; start: number; staff: string; dur?: number }
   ) {
-    const startsAt = toIsoInstant(new Date(scheduleWindow.from), patch.day, patch.start);
+    // Anchored to the DISPLAYED week, not the current one: dragging a booking while viewing
+    // next week must submit next week's date.
+    const startsAt = toIsoInstant(week.start, patch.day, patch.start);
     // Scoped by the payload it will be bound to, not just the booking: an idempotency key
     // must never carry two different canonical payloads (Inv-3).
     const attemptKey = `modify:${id}|${startsAt}|${patch.dur ?? ''}`;
@@ -592,14 +610,8 @@ export function ConsolePage() {
   const primaryLabel = screen === 'today' ? 'New booking' : undefined;
   const onPrimary = screen === 'today' ? openCreate : undefined;
 
-  // Dynamic header subtitle for Today (tracks selected day)
-  const todaySub = screen === 'today'
-    ? (() => {
-        const dow = WEEK.dows[selDay];
-        const dom = WEEK.doms[selDay];
-        return `${dow.charAt(0) + dow.slice(1).toLowerCase()}, ${dom} ${WEEK.month}`;
-      })()
-    : undefined;
+  // Dynamic header subtitle for Today — the real date of the selected column.
+  const todaySub = screen === 'today' ? dayLabel(week, selDay) : undefined;
 
   /**
    * Load failures, named.
@@ -637,6 +649,10 @@ export function ConsolePage() {
               )}
             <TodayScreen
               device={device}
+              week={week}
+              onPrevWeek={() => goToWeek(-1)}
+              onNextWeek={() => goToWeek(1)}
+              onGoToToday={goToToday}
               selDay={selDay}
               setSelDay={setSelDay}
               openBooking={openBooking}
@@ -834,6 +850,7 @@ export function ConsolePage() {
       <BookingDetailDrawer
         open={drawer.kind === 'detail'}
         device={device}
+        week={week}
         booking={activeBooking}
         onClose={closeDrawer}
         onStartReschedule={startReschedule}
@@ -855,6 +872,7 @@ export function ConsolePage() {
       <CreateBookingDrawer
         open={drawer.kind === 'create'}
         device={device}
+        week={week}
         onClose={closeDrawer}
         onCreated={onCreated}
         services={services}
@@ -862,6 +880,7 @@ export function ConsolePage() {
       <RescheduleDrawer
         open={drawer.kind === 'reschedule'}
         device={device}
+        week={week}
         booking={activeBooking}
         onClose={closeDrawer}
         onDone={onRescheduleDone}

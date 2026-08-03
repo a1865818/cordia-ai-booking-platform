@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useState, useRef } from "react";
-import { Booking, WEEK, staffById, chMeta, fmtRange, idemKey } from "../../../data/console";
+import { Booking, staffById, chMeta, fmtRange, idemKey } from "../../../data/console";
+import { dayLabel as weekDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { Chip } from "../../ui/Chip";
 import { DepTag, ProvTag } from "../../ui/StatusTags";
@@ -31,6 +32,8 @@ function MetaRow({ label, children, top }: MetaRowProps) {
 interface BookingDetailDrawerProps {
   open: boolean;
   device: 'phone' | 'desktop';
+  /** The displayed week, so the booking's date is the real one rather than a fixed literal. */
+  week: ConsoleWeek;
   booking: Booking | null;
   onClose: () => void;
   onStartReschedule: (id: string) => void;
@@ -46,7 +49,7 @@ interface BookingDetailDrawerProps {
 }
 
 export function BookingDetailDrawer({
-  open, device, booking, onClose,
+  open, device, week, booking, onClose,
   onStartReschedule, onCancelBooking, cancelBusy, onViewTranscript, verificationGate,
 }: BookingDetailDrawerProps) {
   const b = useRetained(booking, open);
@@ -59,7 +62,7 @@ export function BookingDetailDrawer({
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Booking">{null}</Drawer>;
 
   const st = staffById(b.staff);
-  const dayLabel = WEEK.dows[b.day].charAt(0) + WEEK.dows[b.day].slice(1).toLowerCase() + ' ' + WEEK.doms[b.day] + ' ' + WEEK.month;
+  const dayLabel = weekDayLabel(week, b.day);
   // `isBooking === false` means the platform has accepted the request but not finalised it, so
   // `b.id` is an OPERATION id. Cancel and reschedule both address a booking; sending an operation
   // id would 404, and offering the buttons implies an action that cannot be taken yet.

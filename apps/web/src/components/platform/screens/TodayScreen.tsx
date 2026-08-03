@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Booking, STAFF, WEEK, dayBounds, statusMeta, fmtT, fmtRange } from "../../../data/console";
+import { Booking, STAFF, dayBounds, statusMeta, fmtT, fmtRange } from "../../../data/console";
+import { dayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Icon } from "../../ui/Icon";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -707,6 +708,11 @@ function ListView({
 // ── TodayScreen ───────────────────────────────────────────────────────────
 export interface TodayScreenProps {
   device: 'phone' | 'desktop';
+  /** The displayed week, derived from the window the schedule query used. */
+  week: ConsoleWeek;
+  onPrevWeek: () => void;
+  onNextWeek: () => void;
+  onGoToToday: () => void;
   selDay: number;
   setSelDay: (d: number) => void;
   openBooking: (id: string) => void;
@@ -726,7 +732,7 @@ const TIME_OPTS   = [
 ];
 
 export function TodayScreen({
-  device, selDay, setSelDay,
+  device, week, onPrevWeek, onNextWeek, onGoToToday, selDay, setSelDay,
   openBooking, goQueue, queueCount,
   bookings, onDragReschedule, resourceLabel,
 }: TodayScreenProps) {
@@ -734,7 +740,15 @@ export function TodayScreen({
   const [calView,    setCalView]    = useState<'diagram' | 'list'>('diagram');
   const [timeFilter, setTimeFilter] = useState('all');
 
-  const dayLabel = `${WEEK.dows[selDay].charAt(0)}${WEEK.dows[selDay].slice(1).toLowerCase()}, ${WEEK.month} ${WEEK.doms[selDay]}`;
+  const selectedDayLabel = dayLabel(week, selDay);
+
+  /** Day arrows roll over into the adjacent week rather than dead-ending at Monday/Sunday. */
+  function stepDay(delta: -1 | 1) {
+    const next = selDay + delta;
+    if (next < 0) { onPrevWeek(); setSelDay(6); return; }
+    if (next > 6) { onNextWeek(); setSelDay(0); return; }
+    setSelDay(next);
+  }
   const dayClosed = dayBounds(selDay).closed;
   const dayBookings = bookings.filter(b => b.day === selDay && isActive(b.status));
 
@@ -760,21 +774,19 @@ export function TodayScreen({
         <div className="flex items-center gap-2 mb-[12px]">
           <button
             aria-label="Previous day"
-            onClick={() => setSelDay(Math.max(0, selDay - 1))}
-            disabled={selDay === 0}
-            className="w-[28px] h-[28px] flex items-center justify-center rounded-[7px] border border-cd-border bg-white disabled:opacity-30 cursor-pointer hover:bg-wash transition-colors"
+            onClick={() => stepDay(-1)}
+            className="w-[28px] h-[28px] flex items-center justify-center rounded-[7px] border border-cd-border bg-white cursor-pointer hover:bg-wash transition-colors"
           >
             <Icon name="chevL" size={13} strokeWidth={2.4} color="#55554F" />
           </button>
           <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
-            <span className="text-[14px] font-semibold truncate" style={{ color: '#0A0A0A' }}>{dayLabel}</span>
+            <span className="text-[14px] font-semibold truncate" style={{ color: '#0A0A0A' }}>{selectedDayLabel}</span>
             {closedPill}
           </div>
           <button
             aria-label="Next day"
-            onClick={() => setSelDay(Math.min(6, selDay + 1))}
-            disabled={selDay === 6}
-            className="w-[28px] h-[28px] flex items-center justify-center rounded-[7px] border border-cd-border bg-white disabled:opacity-30 cursor-pointer hover:bg-wash transition-colors"
+            onClick={() => stepDay(1)}
+            className="w-[28px] h-[28px] flex items-center justify-center rounded-[7px] border border-cd-border bg-white cursor-pointer hover:bg-wash transition-colors"
           >
             <Icon name="chevR" size={13} strokeWidth={2.4} color="#55554F" />
           </button>
@@ -847,16 +859,15 @@ export function TodayScreen({
           <div className="flex items-center">
             <button
               aria-label="Previous day"
-              onClick={() => setSelDay(Math.max(0, selDay - 1))}
-              disabled={selDay === 0}
-              className="w-[30px] h-[30px] flex items-center justify-center border border-r-0 disabled:opacity-30 cursor-pointer hover:bg-wash transition-colors"
+              onClick={() => stepDay(-1)}
+              className="w-[30px] h-[30px] flex items-center justify-center border border-r-0 cursor-pointer hover:bg-wash transition-colors"
               style={{ borderColor: '#EAEAEA', borderRadius: '7px 0 0 7px', background: '#fff' }}
             >
               <Icon name="chevL" size={14} strokeWidth={2.4} color="#55554F" />
             </button>
             <button
               aria-label="Jump to today"
-              onClick={() => setSelDay(WEEK.today)}
+              onClick={onGoToToday}
               className="h-[30px] px-[11px] border cursor-pointer transition-colors hover:bg-wash"
               style={{ borderColor: '#EAEAEA', background: '#fff', fontFamily: 'inherit', fontSize: 12.5, color: '#55554F', fontWeight: 500 }}
             >
@@ -864,16 +875,15 @@ export function TodayScreen({
             </button>
             <button
               aria-label="Next day"
-              onClick={() => setSelDay(Math.min(6, selDay + 1))}
-              disabled={selDay === 6}
-              className="w-[30px] h-[30px] flex items-center justify-center border border-l-0 disabled:opacity-30 cursor-pointer hover:bg-wash transition-colors"
+              onClick={() => stepDay(1)}
+              className="w-[30px] h-[30px] flex items-center justify-center border border-l-0 cursor-pointer hover:bg-wash transition-colors"
               style={{ borderColor: '#EAEAEA', borderRadius: '0 7px 7px 0', background: '#fff' }}
             >
               <Icon name="chevR" size={14} strokeWidth={2.4} color="#55554F" />
             </button>
           </div>
           <h2 className="text-[16px] font-semibold tracking-[-0.02em] m-0" style={{ color: '#0A0A0A' }}>
-            {dayLabel}
+            {selectedDayLabel}
           </h2>
           {closedPill}
           {queueCount > 0 && (
@@ -919,13 +929,31 @@ export function TodayScreen({
           <div className="rounded-[10px] p-[11px_12px] mb-[12px]" style={{ border: '1px solid #ECEEF1' }}>
             <div className="flex items-center justify-between mb-[10px]">
               <span className="text-[12.5px] font-semibold" style={{ color: '#0A0A0A' }}>
-                {WEEK.month} {WEEK.doms[0]}–{WEEK.doms[6]}
+                {week.rangeLabel}
+              </span>
+              <span className="flex items-center gap-[2px]">
+                <button
+                  aria-label="Previous week"
+                  onClick={onPrevWeek}
+                  className="w-[22px] h-[22px] flex items-center justify-center rounded-[6px] border-none bg-transparent cursor-pointer hover:bg-wash transition-colors"
+                >
+                  <Icon name="chevL" size={13} strokeWidth={2.4} color="#55554F" />
+                </button>
+                <button
+                  aria-label="Next week"
+                  onClick={onNextWeek}
+                  className="w-[22px] h-[22px] flex items-center justify-center rounded-[6px] border-none bg-transparent cursor-pointer hover:bg-wash transition-colors"
+                >
+                  <Icon name="chevR" size={13} strokeWidth={2.4} color="#55554F" />
+                </button>
               </span>
             </div>
             <div className="grid grid-cols-7 gap-[2px]">
-              {WEEK.dows.map((dw, i) => {
+              {week.dows.map((dw, i) => {
                 const sel     = i === selDay;
-                const isToday = i === WEEK.today;
+                // Null in any week that isn't the current one — nothing is marked "today"
+                // in a week that does not contain today.
+                const isToday = i === week.todayIndex;
                 return (
                   <button
                     key={i}
@@ -941,7 +969,7 @@ export function TodayScreen({
                     <span className="font-mono text-[9px] font-medium tracking-[0.04em]" style={{ opacity: 0.75 }}>
                       {dw.charAt(0)}
                     </span>
-                    <span className="font-mono text-[12px] font-bold">{WEEK.doms[i]}</span>
+                    <span className="font-mono text-[12px] font-bold">{week.doms[i]}</span>
                   </button>
                 );
               })}

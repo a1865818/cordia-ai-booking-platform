@@ -150,10 +150,10 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
    `startOfWeek(new Date())`, or a booking made while viewing next week lands in the wrong week.
 
 **Automated Verification**
-- [ ] `bun nx test web` — new `week.test.ts` covers: month-boundary week (labels span two months),
+- [x] `bun nx test web` — new `week.test.ts` covers: month-boundary week (labels span two months),
       a week not containing today (`todayIndex === null`), DST-crossing week, and
-      `toIsoInstant(displayedWeekStart, …)` landing on the intended date
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+      `toIsoInstant(displayedWeekStart, …)` landing on the intended date — **233 passed** (was 221)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
 
 **Manual Verification**
 - [ ] Today's grid shows the real current dates; "today" is highlighted on the real weekday
@@ -162,6 +162,23 @@ RescheduleDrawer,CreateBookingDrawer}.tsx`, new `features/bookings/week.ts` (+ t
 - [ ] *Regression:* the five list queries, their error banner and `truncated` badges unchanged
 
 ### Discoveries and Notable Information
+
+- 🔴 **`bun nx typecheck web` was a no-op — every phase's type gate was false-green.**
+  `apps/web/tsconfig.json` is solution-style (`{ "files": [], "references": [...] }`), so
+  `tsc --noEmit` compiled **zero files** and exited 0 no matter what. Proven by dropping
+  `const x: number = "nope"` into `src/` — `tsc --noEmit` exited **0**; `tsc -b --noEmit` exited
+  **2** and named the file. This was not theoretical: a real `DAY_OPTS` reference left in
+  `RescheduleDrawer` passed `typecheck` and was only caught by `bun nx build web`. Target changed
+  to `tsc -b --noEmit` (outside the plan's blast radius, but the plan's own Automated Verification
+  is meaningless without it).
+- `todayIndex` is deliberately **nullable**. The old `WEEK.today = 3` meant every week highlighted a
+  Thursday; a week that does not contain today must highlight nothing rather than guess a column.
+- Day arrows now **roll over** between weeks instead of disabling at Monday/Sunday, and "Today"
+  jumps the *window* as well as the column — otherwise "Today" could leave you on the wrong week.
+- `buildWeek` falls back to the current week on an unparseable window rather than rendering
+  `Invalid Date` across the whole grid.
+- `WEEK`, `DAY_OPTS` and the other mock constants are **kept** in `data/console.ts` — the demo
+  screens still consume them. They are simply no longer reachable from any live surface.
 
 ---
 

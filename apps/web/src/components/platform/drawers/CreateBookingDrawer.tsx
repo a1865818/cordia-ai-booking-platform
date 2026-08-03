@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Service, STAFF, CUSTOMERS, WEEK, fmtT, fmtDur, money, TIME_SLOTS, DAY_OPTS, Booking } from "../../../data/console";
+import { Service, STAFF, CUSTOMERS, fmtT, fmtDur, money, TIME_SLOTS, Booking } from "../../../data/console";
+import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
@@ -11,7 +12,6 @@ import { submitBooking } from "../../../features/bookings/submit";
 import {
   isBooked, normalizedStatusLabel, useOperationStatus,
 } from "../../../features/bookings/useOperationStatus";
-import { startOfWeek } from "../../../features/bookings/adapters";
 import { isApiIdempotencyConflictError } from "../../../api/problem";
 
 const inputStyle: React.CSSProperties = {
@@ -47,18 +47,25 @@ function SelectField({ value, onChange, options }: { value: string; onChange: (v
 interface CreateBookingDrawerProps {
   open: boolean;
   device: 'phone' | 'desktop';
+  /**
+   * The displayed week. The day picker is dated from it AND the submitted instant is anchored
+   * to it — anchoring to `startOfWeek(new Date())` instead meant a booking made while viewing
+   * next week was silently submitted for this week.
+   */
+  week: ConsoleWeek;
   onClose: () => void;
   onCreated: (b: Omit<Booking, 'id'>) => void;
   services: Service[];
 }
 
-export function CreateBookingDrawer({ open, device, onClose, onCreated, services }: CreateBookingDrawerProps) {
+export function CreateBookingDrawer({ open, device, week, onClose, onCreated, services }: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [svc, setSvc] = useState('');
   const [staff, setStaff] = useState('s1');
-  const [day, setDay] = useState(String(WEEK.today));
+  // Defaults to today's column when the displayed week is the current one, else Monday.
+  const [day, setDay] = useState(String(week.todayIndex ?? 0));
   const [time, setTime] = useState('600');
   // Party size is required by the API's BookingRequest; the mock form never collected it.
   const [partySize, setPartySize] = useState('2');
@@ -81,13 +88,13 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
     if (open) {
       setName(''); setCustomerSearch('');
       setSvc(services[0]?.key ?? ''); setStaff('s1');
-      setDay(String(WEEK.today)); setTime('600'); setPartySize('2');
+      setDay(String(week.todayIndex ?? 0)); setTime('600'); setPartySize('2');
       setPhase('form'); setShowDropdown(false);
       setSubmitError(null); setOperationId(null); setStartedAt(null);
       announcedRef.current = null;
       setAttemptKey(`create:${Date.now()}`);
     }
-  }, [open, services]);
+  }, [open, services, week.todayIndex]);
 
   const hasServices = services.length > 0;
   const service = services.find(s => s.key === svc) ?? services[0];
@@ -136,7 +143,7 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
         {
           operation: 'create',
           serviceId: svc,
-          startsAt: toIsoInstant(startOfWeek(new Date()), Number(day), Number(time)),
+          startsAt: toIsoInstant(week.start, Number(day), Number(time)),
           partySize: Number(partySize),
           durationMinutes: service?.dur,
         },
@@ -217,7 +224,7 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
           <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Booking confirmed</div>
           <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
             {name} · {service?.name}<br />
-            {DAY_OPTS[Number(day)]?.label} at {fmtT(Number(time))}
+            {shortDayLabel(week, Number(day))} at {fmtT(Number(time))}
           </div>
           {/* No deposit line. This panel renders only after a terminal `booked` status, and the
               deposit here comes from the hand-written mock catalog — the platform defers
@@ -282,7 +289,7 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
           <div className="flex gap-[10px]">
             <div className="flex-1">
               <Field label="Day">
-                <SelectField value={day} onChange={setDay} options={DAY_OPTS} />
+                <SelectField value={day} onChange={setDay} options={dayOptions(week)} />
               </Field>
             </div>
             <div className="flex-1">

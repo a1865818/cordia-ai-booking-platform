@@ -83,9 +83,12 @@
       "executor": "nx:run-commands",
       "inputs": ["typescript"],
       "cache": true,
+      "metadata": {
+        "description": "tsc -b, NOT plain tsc: apps/web/tsconfig.json is solution-style ({ files: [], references: [...] }), so `tsc --noEmit` compiled zero files and exited 0 on any type error. Errors only surfaced at build time."
+      },
       "options": {
         "cwd": "apps/web",
-        "command": "bunx tsc --noEmit"
+        "command": "bunx tsc -b --noEmit"
       }
     }
   }
