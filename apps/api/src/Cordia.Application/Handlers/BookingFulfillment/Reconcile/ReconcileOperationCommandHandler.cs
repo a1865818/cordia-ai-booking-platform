@@ -59,6 +59,33 @@ public sealed class ReconcileOperationCommandHandler(
         var tenantId = command.TenantId;
         var operationId = command.OperationId;
 
+        // A cancellation cannot be reconciled by the lookup below. That lookup is create-shaped:
+        // `Created`/`AlreadyExists` prove a booking EXISTS at the provider, which says nothing
+        // about whether a cancellation landed, and the not-proven path recreates the booking.
+        // Worse, this handler reads the "finalize" step, which a cancel never writes — so every
+        // redelivery would see attempt 1 of 4 with 0 elapsed, never exhaust the budget, and
+        // re-invoke the provider blind. Escalate to a human instead of guessing (Inv-7).
+        if (op.OperationType == Domain.Generated.OperationTypeEnum.Cancel)
+        {
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                var opInsideTxn = await opRepo.GetAsync(operationId, ct2);
+                if (opInsideTxn is not null && opInsideTxn.Status == OperationStatus.Reconciling)
+                {
+                    await manualReviewEscalator.EscalateAsync(
+                        tenantId,
+                        operationId,
+                        opInsideTxn.Version,
+                        OperationStatus.Reconciling,
+                        reason: "cancel_reconcile_requires_review",
+                        slaDeadline: DateTimeOffset.UtcNow.AddMinutes(30),
+                        ct: ct2);
+                }
+            }, ct);
+
+            return StepOutcome.Wait;
+        }
+
         // Derive the stable idempotency key for the finalize step (Inv-2/3/7).
         var step = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct);
         var latest = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct);

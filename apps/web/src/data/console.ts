@@ -12,11 +12,18 @@ export interface Booking {
   service: string;
   serviceName: string;
   name: string;
-  prov: 'ai' | 'you';
+  /** Who made the booking. `unknown` when the source does not record it (the API does not). */
+  prov: 'ai' | 'you' | 'unknown';
   status: BookingStatus;
   channel: Channel | null;
   dep: number;
   transcript: string | null;
+  /**
+   * False when the row is an operation the platform has accepted but not yet finalised, so there
+   * is no booking to act on: `id` holds the operation id, and cancel/modify against it would 404.
+   * Absent on demo rows, which are all treated as real.
+   */
+  isBooking?: boolean;
 }
 
 export interface QueueItem {
@@ -28,6 +35,12 @@ export interface QueueItem {
   retries: number;
   channel: Channel;
   transcript: string | null;
+  /**
+   * The server's operation status. Carried so a local dismissal can be tied to the state it
+   * acknowledged: an operation that escalates afterwards must come back, not stay hidden.
+   * Absent on demo rows.
+   */
+  status?: string;
 }
 
 export interface Thread {

@@ -2,21 +2,22 @@
 
 All functions are pure and deterministic.  No LLM, no I/O.
 
-NOTE: ``canonical_payload_hash`` is a deterministic stand-in.  Ticket 04 owns
-the real algorithm (§10.2); this implementation is intentionally compatible with
-the frozen 04 contract (sha256 over canonical JSON) so tests can pin hashes.
+``canonical_payload_hash`` delegates to the ``canon.v1`` implementation in
+:mod:`cordia_agent.revisions.canonical_hash`, which mirrors the authoritative C#
+hasher byte-for-byte (spec 04 §5).  It must: the acceptance endpoint recomputes the
+hash server-side and rejects a mismatch with 422, so a divergent hash here means the
+agent cannot submit a booking at all.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import TYPE_CHECKING
 
 from cordia_agent.models.intent import (  # noqa: F401
     IntentRevision,
     confirmation_binds_revision,
 )
+from cordia_agent.revisions.canonical_hash import canonical_hash
 
 
 if TYPE_CHECKING:
@@ -26,19 +27,17 @@ if TYPE_CHECKING:
 
 
 def canonical_payload_hash(payload: BookingRequest) -> str:
-    """Deterministic sha256 content hash of a BookingRequest.
+    """``canon.v1`` content hash of a BookingRequest (spec 04 §5, §10.2).
 
-    Algorithm: ``sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True,
-    separators=(",",":")))``
+    Returns the BARE 64-char lowercase hex digest — the same value the API stores on
+    ``booking_intent_revisions.payload_hash`` and compares against
+    ``intent_confirmations.intent_payload_hash``.  The version label is carried
+    separately by the API (``canon.v1:<hex>``) and is not part of this value.
 
-    NOTE (stub): Ticket 04 owns the canonical algorithm (§10.2).  This is a
-    deterministic stand-in that produces stable, reproducible hashes so the
-    §8.8 binding invariant can be tested end-to-end before 04 lands.
+    The payload is dumped in JSON mode first so datetimes, enums and unions reach the
+    canonicaliser in their wire form — the same form the server sees.
     """
-    serialized = json.dumps(
-        payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(serialized.encode()).hexdigest()
+    return canonical_hash(payload.model_dump(mode="json")).value
 
 
 def build_revision(

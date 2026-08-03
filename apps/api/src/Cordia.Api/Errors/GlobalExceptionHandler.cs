@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+﻿using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using FluentValidation;
@@ -19,11 +19,12 @@ namespace Cordia.Api.Errors;
 /// </summary>
 public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) : IExceptionHandler
 {
-    private static readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-    };
+    /// <summary>
+    /// Stable discriminator for a 403 a client can resolve by obtaining a verification grant
+    /// (spec 08, Inv-11). Public so tests and the frontend contract pin to one literal.
+    /// </summary>
+    public const string VerificationRequiredCode = "verification_required";
+
 
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
@@ -137,8 +138,20 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
             case VerificationRequiredException ex:
                 logger.LogWarning(ex, "Verification required: tenant={TenantId} customer={CustomerRef} action={Action} booking={TargetBookingId}",
                     ex.TenantId, ex.CustomerRef, ex.Action, ex.TargetBookingId);
+                // Carries what a client needs to actually resolve this: which D5 action to run
+                // step-up for, and against which booking. Deliberately NOT emitted for
+                // AuthorizationFailedException, which is also a 403 but means "your role does not
+                // permit this" — no amount of guest verification fixes that.
+                // `customer_ref` is intentionally omitted: it is the identity the caller has not
+                // yet proven a right to see, and this body is returned before that proof exists.
                 await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
-                    "Verification required", ex.Message, cancellationToken);
+                    "Verification required", ex.Message, cancellationToken,
+                    new Dictionary<string, object?>
+                    {
+                        ["code"] = VerificationRequiredCode,
+                        ["action"] = EnumWireNames.ToWireName(ex.Action),
+                        ["target_booking_id"] = ex.TargetBookingId,
+                    });
                 return true;
 
             case StaleBookingVersionException ex:
@@ -239,7 +252,8 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
         int statusCode,
         string title,
         string detail,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? extensions = null)
     {
         var problem = new ProblemDetails
         {
@@ -248,9 +262,22 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
             Detail = detail,
         };
 
+        // Machine-readable discriminators belong in `extensions` (RFC 9457 §3.2). `title` is prose
+        // for a human — a client that branches on it is branching on copy, and copy changes.
+        if (extensions is not null)
+        {
+            foreach (var (key, value) in extensions)
+                problem.Extensions[key] = value;
+        }
+
         httpContext.Response.StatusCode = statusCode;
         httpContext.Response.ContentType = "application/problem+json";
-        await httpContext.Response.WriteAsJsonAsync(problem, _jsonOptions, cancellationToken: cancellationToken);
+        // No explicit options: that routes through ASP.NET's ProblemDetails converter, which
+        // FLATTENS `Extensions` into the object per RFC 9457. Passing a hand-rolled
+        // JsonSerializerOptions serializes ProblemDetails as a plain POCO instead, burying the
+        // discriminators under a nested "extensions" node no RFC-following client looks in.
+        // (The ValidationProblemDetails branch above already relies on this for its `errors`.)
+        await httpContext.Response.WriteAsJsonAsync(problem, cancellationToken: cancellationToken);
     }
 
     private static async Task WriteIdempotencyConflictAsync(

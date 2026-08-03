@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { CUSTOMERS, Customer, chMeta, money } from "../../../data/console";
 import { Avatar } from "../../ui/Avatar";
 import { Icon } from "../../ui/Icon";
+import { DemoBadge } from "../../ui/DemoBadge";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton, GhostButton } from "../../ui/Button";
 import { SectionLabel } from "../../ui/SectionLabel";
@@ -17,15 +18,17 @@ function useRetained<T>(val: T | null, open: boolean): T | null {
 interface CustomerProfileProps {
   device: 'phone' | 'desktop';
   c: Customer | null;
+  /** True when `c` came from the API, where no-shows / spend / phone / tags do not exist. */
+  live?: boolean;
   onClose: () => void;
   onNewBooking?: () => void;
   onMessage?: (name: string) => void;
 }
 
-function CustomerProfile({ device, c, onClose, onNewBooking, onMessage }: CustomerProfileProps) {
+function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: CustomerProfileProps) {
   const open = !!c;
   const cc = useRetained(c, open);
-  const risk = !!cc && cc.noShows >= 2;
+  const risk = !live && !!cc && cc.noShows >= 2;
   const cm = cc ? chMeta(cc.channel) : null;
 
   return (
@@ -60,15 +63,18 @@ function CustomerProfile({ device, c, onClose, onNewBooking, onMessage }: Custom
             <Avatar name={cc.name} size={52} radius={15} font="19px" />
             <div className="flex-1 min-w-0">
               <div className="flex gap-[6px] flex-wrap mb-[5px]">
-                {cc.tags.length ? cc.tags.map(t => <Tag key={t}>{t}</Tag>) : <Tag>Customer</Tag>}
+                {!live && cc.tags.length ? cc.tags.map(t => <Tag key={t}>{t}</Tag>) : <Tag>Customer</Tag>}
               </div>
-              <span className="font-mono text-[11.5px] text-t2">{cc.phone}</span>
+              <span className="font-mono text-[11.5px] text-t2">{live ? '' : cc.phone}</span>
             </div>
           </div>
 
           {/* Stats */}
           <div className="flex gap-[9px] mb-[14px]">
-            {[['Visits', String(cc.visits)], ['No-shows', String(cc.noShows)], ['Lifetime', money(cc.spend)]].map((s, i) => (
+            {(live
+              ? [['Bookings', String(cc.visits)]]
+              : [['Visits', String(cc.visits)], ['No-shows', String(cc.noShows)], ['Lifetime', money(cc.spend)]]
+            ).map((s, i) => (
               <div key={i}
                 className="flex-1 rounded-[12px] p-[12px_13px]"
                 style={{
@@ -128,19 +134,29 @@ function CustomerProfile({ device, c, onClose, onNewBooking, onMessage }: Custom
 
 interface CustomersScreenProps {
   device: 'phone' | 'desktop';
+  /**
+   * Live customers from the API. When present the screen renders these instead of demo
+   * data and suppresses the stats the API does not model (no-shows, lifetime spend,
+   * phone, tags) rather than showing them as zeros.
+   */
+  customers?: Customer[];
   onNewBooking?: () => void;
   onMessage?: (customerName: string) => void;
   focusCustomerId?: string | null;
   onClearFocus?: () => void;
 }
 
-export function CustomersScreen({ device, onNewBooking, onMessage, focusCustomerId, onClearFocus }: CustomersScreenProps) {
+export function CustomersScreen({ device, customers, onNewBooking, onMessage, focusCustomerId, onClearFocus }: CustomersScreenProps) {
+  // `live` gates the stats the API does not model, so a real customer never shows a
+  // fabricated "0 no-shows" or "$0 lifetime".
+  const live = customers !== undefined;
+  const source = customers ?? CUSTOMERS;
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<Customer | null>(null);
 
   useEffect(() => {
     if (focusCustomerId) {
-      const c = CUSTOMERS.find(c => c.id === focusCustomerId) ?? null;
+      const c = source.find(c => c.id === focusCustomerId) ?? null;
       if (c) setSel(c);
       onClearFocus?.();
     }
@@ -148,7 +164,7 @@ export function CustomersScreen({ device, onNewBooking, onMessage, focusCustomer
   const [customerFilter, setCustomerFilter] = useState<'all' | 'vip' | 'at-risk' | 'new'>('all');
   const [sort, setSort] = useState<'default' | 'visits' | 'noshows'>('default');
 
-  let list = CUSTOMERS.filter(c => c.name.toLowerCase().includes(q.toLowerCase()));
+  let list = source.filter(c => c.name.toLowerCase().includes(q.toLowerCase()));
   if (customerFilter === 'vip') list = list.filter(c => c.visits >= 5);
   if (customerFilter === 'at-risk') list = list.filter(c => c.noShows >= 2);
   if (customerFilter === 'new') list = list.filter(c => c.tags.includes('New'));
@@ -158,6 +174,14 @@ export function CustomersScreen({ device, onNewBooking, onMessage, focusCustomer
   return (
     <div>
       {/* Search */}
+      {/* These rows are invented — names, phone numbers, no-show counts and lifetime spend.
+          Without the badge an operator could phone a number that belongs to nobody. */}
+      {!live && (
+        <div className="mb-[10px]">
+          <DemoBadge reason="customers have not loaded — these are sample rows, not your account" />
+        </div>
+      )}
+
       <div className="relative mb-[10px]">
         <span className="absolute left-[13px] top-1/2 -translate-y-1/2">
           <Icon name="search" size={16} strokeWidth={2} color="#9A9A9A" />
@@ -215,15 +239,17 @@ export function CustomersScreen({ device, onNewBooking, onMessage, focusCustomer
             </div>
             <div className="text-right shrink-0">
               <span className="font-mono text-[13px] font-semibold text-ink">{c.visits}</span>
-              <div className="text-[10.5px] mt-[1px]" style={{ color: c.noShows >= 2 ? '#B82C22' : '#9A9A9A' }}>
-                {c.noShows} no-show{c.noShows === 1 ? '' : 's'}
+              <div className="text-[10.5px] mt-[1px]" style={{ color: !live && c.noShows >= 2 ? '#B82C22' : '#9A9A9A' }}>
+                {live
+                  ? `booking${c.visits === 1 ? '' : 's'}`
+                  : `${c.noShows} no-show${c.noShows === 1 ? '' : 's'}`}
               </div>
             </div>
           </button>
         ))}
       </div>
       <div className="h-2" />
-      <CustomerProfile device={device} c={sel} onClose={() => setSel(null)} onNewBooking={onNewBooking} onMessage={onMessage} />
+      <CustomerProfile device={device} c={sel} live={live} onClose={() => setSel(null)} onNewBooking={onNewBooking} onMessage={onMessage} />
     </div>
   );
 }

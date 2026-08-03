@@ -47,6 +47,26 @@ public interface ICapacityReservation
     Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default);
 
     /// <summary>
+    /// Gives back capacity that a <b>completed</b> booking is holding (spec 07 §14, spec 08 §5.3).
+    ///
+    /// <para>Distinct from <see cref="ReleaseByOperationAsync"/>, which only touches <i>active</i>
+    /// holds. Once an operation finalizes, its hold is <see cref="HoldStatus.Finalized"/> and the
+    /// slot's units have moved from held to <b>booked</b> — so releasing an active hold is a no-op
+    /// and the slot would stay occupied forever after a cancellation.</para>
+    ///
+    /// <para>Conditionally flips the finalized hold to <see cref="HoldStatus.Released"/> and
+    /// decrements the slot's booked capacity in the same guarded update, inside the caller's
+    /// transaction (Inv-4). Idempotent (Inv-5): a hold already released returns 0 and the slot is
+    /// untouched, so a redelivered cancellation cannot give the same seat back twice.</para>
+    /// </summary>
+    /// <returns>Number of finalized holds released (0 when none, or when already released).</returns>
+    Task<int> ReleaseFinalizedByOperationAsync(
+        string tenantId,
+        string operationId,
+        ReleaseReason reason,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Looks up the latest hold for <paramref name="operationId"/>/<paramref name="workflowStep"/>
     /// and conditionally transitions it from Active to Finalized, atomically moving
     /// <see cref="CapacityHold.ReservedCapacity"/> units from held to booked on the associated

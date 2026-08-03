@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.EntityFramework.Concurrency;
@@ -92,6 +93,24 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
         OperationStatus.CompensationRequired,
         OperationStatus.ManualReview,
     ];
+
+    public Task<BookingOperation?> GetBookedOperationForBookingAsync(
+        string tenantId,
+        string bookingId,
+        CancellationToken ct = default)
+        // The operation that actually created the booking — i.e. the one whose capacity hold the
+        // booking occupies. Cancel/modify operations also carry this BookingId, so they are
+        // excluded by type; the newest Booked one wins if a booking was ever re-created.
+        => db.BookingOperations
+            .AsNoTracking()
+            .Where(o => o.TenantId == tenantId
+                        && o.BookingId == bookingId
+                        && o.Status == OperationStatus.Booked
+                        && (o.OperationType == OperationTypeEnum.Create
+                            || o.OperationType == OperationTypeEnum.Reschedule
+                            || o.OperationType == OperationTypeEnum.Modify))
+            .OrderByDescending(o => o.UpdatedAt)
+            .FirstOrDefaultAsync(ct);
 
     public async Task<IReadOnlyList<BookingOperation>> ListNonTerminalForSlaAsync(
         DateTimeOffset now, int limit, CancellationToken ct = default)

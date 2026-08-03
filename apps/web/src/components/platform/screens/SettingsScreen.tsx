@@ -4,6 +4,10 @@ import { Toggle } from "../../ui/Toggle";
 import { Panel } from "../../ui/Panel";
 import { SectionLabel } from "../../ui/SectionLabel";
 import { Icon, IconName } from "../../ui/Icon";
+import { DemoBadge } from "../../ui/DemoBadge";
+import { ErrorState } from "../../ui/ErrorState";
+import { Skeleton } from "../../ui/Skeleton";
+import { useCatalogItems, useConsentPolicy } from "../../../features/hooks";
 
 // ---- Business setup ----
 
@@ -331,18 +335,101 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
 
+  // Live, read-only surfaces the API actually exposes today.
+  const consentPolicy = useConsentPolicy('web');
+  const catalog = useCatalogItems();
+  const catalogItems = catalog.data ?? [];
+
   return (
     <div>
       {/* Business setup */}
       <SectionLabel>Business setup</SectionLabel>
       <BusinessSetup tenantCfg={tenantCfg} onUpdateTenant={onUpdateTenant} device={device} />
 
+      {/* Consent policy — live (spec 14). Read-only: no editing endpoint exists yet. */}
+      <SectionLabel>Consent policy</SectionLabel>
+      <Panel style={{ marginBottom: 18 }}>
+        {consentPolicy.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+
+        {!consentPolicy.isPending && consentPolicy.isError && (
+          <div className="py-2">
+            <ErrorState inline error={consentPolicy.error} onRetry={() => void consentPolicy.refetch()} />
+          </div>
+        )}
+
+        {!consentPolicy.isPending && !consentPolicy.isError && (
+          <>
+            <div className="flex items-center justify-between py-3 border-b border-hair">
+              <div>
+                <div className="text-[13.5px] font-medium text-ink">Notice required before recording</div>
+                <div className="text-[11.5px] text-t3 mt-[1px]">
+                  Policy {consentPolicy.data?.consent_policy_version ?? 'unknown'}
+                  {consentPolicy.data?.jurisdiction_policy_id
+                    ? ` · ${consentPolicy.data.jurisdiction_policy_id}`
+                    : ''}
+                </div>
+              </div>
+              <span className="text-[12.5px] font-semibold text-ink">
+                {consentPolicy.data?.notice_required ? 'Yes' : 'No'}
+              </span>
+            </div>
+            {consentPolicy.data?.notice_text && (
+              <div className="py-3 text-[12.5px] text-t2 leading-[1.5]">
+                {consentPolicy.data.notice_text}
+              </div>
+            )}
+          </>
+        )}
+      </Panel>
+
+      {/* Published menu catalog — live (spec 11). */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Menu catalog</SectionLabel>
+      </div>
+      <Panel style={{ marginBottom: 18 }}>
+        {catalog.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+
+        {!catalog.isPending && catalog.isError && (
+          <div className="py-2">
+            <ErrorState inline error={catalog.error} onRetry={() => void catalog.refetch()} />
+          </div>
+        )}
+
+        {!catalog.isPending && !catalog.isError && catalogItems.length === 0 && (
+          <div className="py-4 text-[12.5px] text-t3">
+            No published items yet. Upload and publish a menu to make items bookable.
+          </div>
+        )}
+
+        {catalogItems.slice(0, 8).map((item, i) => (
+          <div key={item.item_id ?? i}
+            className="flex items-center justify-between py-[11px]"
+            style={{ borderBottom: i < Math.min(catalogItems.length, 8) - 1 ? '1px solid #EFEFEF' : 'none' }}>
+            <div className="min-w-0">
+              <div className="text-[13.5px] text-ink font-medium truncate">{item.name ?? item.item_id}</div>
+              {item.category && <div className="text-[11.5px] text-t3 mt-[1px]">{item.category}</div>}
+            </div>
+            {typeof item.price_minor === 'number' && (
+              <span className="font-mono text-[12px] text-t2">
+                {(item.price_minor / 100).toFixed(2)} {item.currency ?? ''}
+              </span>
+            )}
+          </div>
+        ))}
+      </Panel>
+
       {/* Services */}
-      <SectionLabel>Services</SectionLabel>
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Services</SectionLabel>
+        <DemoBadge reason="no services endpoint — changes are not saved" />
+      </div>
       <ServicesManagement services={services} onUpdateServices={onUpdateServices} />
 
       {/* Hours */}
-      <SectionLabel>Hours</SectionLabel>
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Hours</SectionLabel>
+        <DemoBadge reason="no operating-hours endpoint yet" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         {SETTINGS.hours.map((h, i) => (
           <div key={h.d}
@@ -357,7 +444,10 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
       </Panel>
 
       {/* Deposit policy */}
-      <SectionLabel>Deposit policy</SectionLabel>
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Deposit policy</SectionLabel>
+        <DemoBadge reason="spec 09 payment surface deferred" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         <div className="flex items-center justify-between py-3 border-b border-hair">
           <div>

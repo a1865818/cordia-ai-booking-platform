@@ -44,6 +44,9 @@ file sealed class CapstoneNoCapacityReservation : ICapacityReservation
     public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
         => Task.FromResult(0);
 
+    public Task<int> ReleaseFinalizedByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.FromResult(0);
+
     public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
         => Task.FromResult(FinalizeOutcome.NotTracked);
 }

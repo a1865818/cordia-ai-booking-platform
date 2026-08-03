@@ -3,6 +3,8 @@ import { Booking, WEEK, STAFF, fmtT, TIME_SLOTS, DAY_OPTS } from "../../../data/
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
+import { ErrorState } from "../../ui/ErrorState";
+import { RESCHEDULE_FULFILMENT_SUPPORTED } from "../../../features/bookings/submit";
 
 function useRetained<T>(val: T | null, open: boolean): T | null {
   const ref = useRef<T | null>(val);
@@ -81,23 +83,30 @@ export function RescheduleDrawer({ open, device, booking, onClose, onDone }: Res
 
   function submit() {
     if (phase !== 'form') return;
-    setPhase('confirming');
-    confirmTimer.current = setTimeout(() => {
-      confirmTimer.current = null;
-      setPhase('done');
-      onDone(b!.id, { day: Number(day), start: Number(time), staff });
-    }, 950);
+    // No local timer and no local "done": the drawer hands the change to the parent, which
+    // owns the real submission and reports the server's outcome. Declaring success on a
+    // fixed delay claimed a booking had moved before anything had been asked of the server.
+    onDone(b!.id, { day: Number(day), start: Number(time), staff });
+    onClose();
   }
 
-  const footer = phase === 'done'
-    ? <PrimaryButton full onClick={onClose}>Done</PrimaryButton>
-    : <PrimaryButton full busy={phase === 'confirming'} onClick={submit}>
-        {phase === 'confirming' ? 'Updating' : 'Confirm new time'}
-      </PrimaryButton>;
+  const footer = RESCHEDULE_FULFILMENT_SUPPORTED
+    ? <PrimaryButton full onClick={submit}>Confirm new time</PrimaryButton>
+    : undefined;
 
   return (
     <Drawer open={open} onClose={onClose} device={device} eyebrow="Reschedule" title={b.name} footer={footer}>
-      {phase === 'done' ? (
+      {!RESCHEDULE_FULFILMENT_SUPPORTED ? (
+        <div className="py-6 px-2">
+          <ErrorState
+            error={new Error(
+              'The platform cannot move an existing booking yet — a submitted reschedule would create a ' +
+              'second booking instead of changing this one. Cancel and rebook until that lands.'
+            )}
+            title="Rescheduling isn't available yet"
+          />
+        </div>
+      ) : phase === 'done' ? (
         <div className="text-center py-6 px-2">
           <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
             <Icon name="check" size={26} strokeWidth={2.4} color="#15924B" />

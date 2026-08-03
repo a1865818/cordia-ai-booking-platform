@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
 
@@ -213,10 +214,17 @@ public sealed class ValidateOperationCommandHandler(
                     return;
                 }
 
+                // Spec 08 §5.3: a cancellation undoes an existing booking, so it reserves no
+                // capacity and holds nothing — it goes straight to Finalizing, where the cancel
+                // step calls the provider. Routing it through ReservingCapacity would reserve a
+                // slot for an operation whose whole purpose is to give one back.
+                var isCancel = afterValidating.OperationType == OperationTypeEnum.Cancel;
+                var next = isCancel ? OperationStatus.Finalizing : OperationStatus.ReservingCapacity;
+
                 var rows3 = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, afterValidating.Version,
-                    OperationStatus.Validating, OperationStatus.ReservingCapacity,
-                    reason: "validated", ct: ct2);
+                    OperationStatus.Validating, next,
+                    reason: isCancel ? "validated_cancel" : "validated", ct: ct2);
                 if (rows3 == 0)
                 {
                     result = StepOutcome.Continue;

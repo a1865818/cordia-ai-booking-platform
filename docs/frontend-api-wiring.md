@@ -1,40 +1,46 @@
 # Wiring the Cordia Web Console to the Backend API
 
-**Status:** Guide · **Audience:** whoever connects `apps/web` to `apps/api` · **Last mapped:** 2026-07-24
+**Status:** Guide · **Audience:** whoever connects `apps/web` to `apps/api` · **Last mapped:** 2026-07-27
+
+> **Update (2026-07-27, branch `feat/ui-wire`):** the wiring described here has been
+> implemented. See §11 for what is live, the two contract gaps that had to be closed
+> first, and what remains on mock data.
 
 This document explains how to replace the web console's mock data with real calls to
 the .NET API, exactly what can be wired today, what is blocked on missing endpoints,
 and the step-by-step plan to do it. It is based on a full audit of both sides.
 
-> **TL;DR** — The UI is 100% mock data today; nothing calls the API. You do **not** need
-> spec 15 to start wiring: the API already resolves tenant from a dev `X-Tenant-Id`
-> header and CORS already allows `http://localhost:4200`. The real limiter is that the
-> API is **command/write + lookup-by-id** oriented — it exposes almost none of the
-> **list/collection reads** the dashboard screens need. So the *write/detail* flows
-> (create / reschedule / cancel a booking, waitlist actions, verification) can be wired
-> now; most *list* screens (Today grid, Queue, Conversations list, Customers, Deposits,
-> Campaigns, most of Analytics) are blocked on new endpoints, not on spec 15.
+> **TL;DR (original assessment, now superseded — see §11)** — When this was written the UI
+> was 100% mock data and the API exposed almost no **list/collection reads**, so the
+> dashboard screens were blocked on new endpoints rather than on spec 15. Those six list
+> endpoints have since been added and the screens wired; §11 records what is actually live.
+> The remaining limiter is no longer the read surface but the **fulfilment engine**, which
+> implements only the create path — see §11's "Blocking gap".
 
 ---
 
 ## 1. Current state
 
-| Layer | State |
-|---|---|
-| API REST endpoints | ✅ Live, tenant-scoped (38 actions across 15 controllers) |
-| Tenant resolution | ✅ `X-Tenant-Id` header (dev shim; replaced by signed context in spec 15) |
-| CORS for `localhost:4200` | ✅ Allowed in `appsettings.Development.json` |
-| Generated TS contract | ✅ `libs/api-contract/generated/typescript/index.ts` (from committed `openapi/v1.json`) |
-| Typed fetch client (`fetchApi`) | ✅ Exists at `apps/web/src/api/client.ts` — ⚠️ **not called anywhere** |
-| Screens → backend | ❌ **Not connected.** Every screen reads `src/data/console.ts` mock constants |
-| Mutations (create/cancel/reschedule) | ❌ Simulated with `setTimeout` + local `setState` in `ConsolePage.tsx` |
-| Data-fetching library | ❌ None (no react-query/SWR); only raw `fetch` |
-| DB seed/demo data | ❌ None — a fresh DB returns empty lists / 404s until you write data |
+The left column is the state this guide was written against; the right is the state after
+the wiring described in §11.
 
-The entire "backend" the UI talks to today is one file: **`apps/web/src/data/console.ts`**.
-The whole console lives on a single route, `/dashboard` → `ConsolePage.tsx`, which switches
-between 10 internal "screens" (`today | queue | conversations | waitlist | customers |
-deposits | campaigns | analytics | settings | more`).
+| Layer | Was (2026-07-24) | Now (2026-07-27) |
+|---|---|---|
+| API REST endpoints | Live, tenant-scoped (38 actions / 15 controllers) | **46 actions / 18 controllers** — six console read endpoints added (§11) |
+| Tenant resolution | `X-Tenant-Id` header (dev shim) | unchanged — swapped for the signed context in spec 15 |
+| CORS for `localhost:4200` | Allowed in `appsettings.Development.json` | unchanged |
+| Generated TS contract | present | regenerated; 44 paths |
+| Typed fetch client (`fetchApi`) | existed but **not called anywhere** | the single front door for every API call |
+| Screens → backend | **Not connected** — all mock | Today, Queue, Conversations, Customers, Waitlist, Analytics, Settings read live data |
+| Mutations (create/cancel/reschedule) | `setTimeout` + local `setState` | TanStack `useMutation` (`features/bookings/mutations.ts`); create/cancel submit + poll for real and are fulfilled end-to-end; **reschedule is blocked on fulfilment, see §11** |
+| Data-fetching library | none | `@tanstack/react-query` |
+| DB seed/demo data | none | unchanged — a fresh tenant returns empty lists |
+
+The whole console still lives on a single route, `/dashboard` → `ConsolePage.tsx`, which
+switches between 10 internal "screens" (`today | queue | conversations | waitlist |
+customers | deposits | campaigns | analytics | settings | more`). `apps/web/src/data/console.ts`
+remains the source of the *component shapes* and of the demo data still used by the screens
+that have no endpoint.
 
 ---
 
@@ -87,7 +93,11 @@ The API is **command-oriented**: it accepts intents/commands, runs async operati
 lets you look records up **by id or by customer identity** — it does **not** currently
 expose tenant-wide **list** endpoints for the dashboard. Here is the honest per-screen map.
 
-| Screen | Needs | Endpoint(s) available | Verdict |
+> **Superseded by §11.** The verdicts below describe the API *before* the six console read
+> endpoints were added. Every "Blocked" row except Deposits and Campaigns has since been
+> unblocked; see §11 for the current per-screen status. Kept for the rationale.
+
+| Screen | Needs | Endpoint(s) available | Verdict (pre-implementation) |
 |---|---|---|---|
 | **Today** (weekly booking grid) | List all bookings for the tenant/week | ❌ none — `GET /api/Bookings` is an **identity lookup** (`phone_e164`/`booking_reference`/`email`), not a tenant list | **Blocked** — needs a "list bookings by date range" endpoint |
 | **Queue** (failed/attention ops) | List booking operations needing attention | ❌ none — `GET /api/booking-operations/{operationId}` is by-id only | **Blocked** — needs a "list operations by status" endpoint |
@@ -99,12 +109,11 @@ expose tenant-wide **list** endpoints for the dashboard. Here is the honest per-
 | **Analytics** | KPIs, per-day, channel/service breakdowns | ⚠️ `GET /api/reporting/funnel?from&to` only | **Partial** — funnel wireable; rest blocked |
 | **Settings** | Services/hours/policies/guardrails/knowledge | ⚠️ `GET /api/consent-policies`, `GET /api/catalog/items`, Menu CRUD | **Partial** — catalog/menu/consent wireable; hours/guardrails/knowledge have no endpoint |
 | **Create / Reschedule / Cancel booking** (drawers) | Submit intent → poll op | ✅ full support (see §7) | **Wireable now** |
-| **Verification** (grant sub-flow) | Request code → verify → grant | ✅ `POST /api/verifications`, `GET`, `.../verify` | **Wireable now** (needs new UI) |
+| **Verification** (grant sub-flow) | Request code → verify → grant | ✅ `POST /api/verifications`, `GET`, `.../verify` | **Wired** — drives the cancel flow (§11) |
 
-**Bottom line:** the *action* surface (booking lifecycle, waitlist actions, verification,
-menu/catalog management) can be wired now. The *dashboard read* surface needs new
-list/query endpoints on the API before those screens can leave mock data. Track that as
-API work separate from spec 15.
+**Bottom line (as assessed then):** the *action* surface could be wired immediately; the
+*dashboard read* surface needed new list/query endpoints first. Those endpoints were
+subsequently built (§11), so this bottom line no longer describes the current state.
 
 ---
 
@@ -174,6 +183,16 @@ There is no react-query/SWR today; server state is plain `useState` in `ConsoleP
   refetch, and mutation lifecycle for the operation-polling flows (§7) essentially for
   free. Wrap `ConsolePage` in a `QueryClientProvider`; replace each `useState(() => [...MOCK])`
   with a `useQuery`, and each `setTimeout` mutation with a `useMutation`.
+
+  > **How the writes ended up structured.** Booking writes are `202 Accepted` + poll-to-terminal,
+  > not plain POSTs, so `features/bookings/mutations.ts` puts the *whole* submit→poll sequence
+  > inside `mutationFn`. That keeps `isPending` honest — true for as long as the operation is
+  > genuinely in flight — and moves invalidation into a single `onSettled` instead of every call
+  > site. Create is the exception: it returns at the 202 so the drawer can watch the intermediate
+  > states with `useOperationStatus`, which is what drives its progress UI. Waitlist removal is
+  > the textbook optimistic case (`onMutate` snapshot → `onError` rollback → `onSettled`
+  > refetch). Mutations inherit `retry: false` from the shared `QueryClient`: a write is never
+  > silently re-sent behind the operator's back.
 - **Minimal: hand-rolled `useEffect` + `fetchApi`** with local `loading`/`error`/`data`
   state. Fine for a first read-only screen; gets painful once you add operation polling
   and cache invalidation.
@@ -229,8 +248,13 @@ components already expect (least churn), or refactor components to the generated
 - **Booking time model differs.** Mock `Booking` uses `day: number` + `start: number`
   (minutes-since-midnight) + string `staff`/`service` keys. API `ManageableBooking` /
   `BookingProjectionRef` use ISO `starts_at`, `booking_id`, `booking_reference`, `party_size`.
-- **No API equivalent** exists for mock `Customer`, `Deposit`, `Campaign`, `Thread`
-  (as a list), or the full `AnalyticsData` shape — those stay on mock data until endpoints exist.
+- **No API equivalent** exists for mock `Deposit`, `Campaign`, or the full `AnalyticsData`
+  shape — those stay on mock data until endpoints exist. (`Customer` and `Thread`-as-a-list
+  now have endpoints — §11 — though the customer projection deliberately carries far less
+  than the mock type: no phone, no-show count, lifetime spend or tags.)
+- **No API equivalent for provenance.** Nothing records whether a booking was made by the
+  agent or by staff, so live rows render no "Booked by AI"/"Booked by you" tag at all rather
+  than guessing one.
 
 ---
 
@@ -276,7 +300,13 @@ Base: `/api`. All require `X-Tenant-Id` unless noted. Route casing is literal
 | Verb | Path | Response | Notes |
 |---|---|---|---|
 | GET | `/api/Bookings?phone_e164&booking_reference&email` | `FindManageableBookingsResponse` | Identity lookup, **not** a list |
-| GET | `/api/Bookings/{bookingId}` | `GetBookingDetailsResponse` | May need `X-Grant-Id`; 403 if `requires_verification` |
+| GET | `/api/Bookings/schedule?from&to&limit` | `BookingScheduleResponse` | Tenant-wide list by date range; `truncated` flag |
+| GET | `/api/booking-operations?status&needs_attention&limit` | `ListOperationsResponse` | Unknown `status` → 400 |
+| GET | `/api/conversation-sessions?limit` | `ListConversationSessionsResponse` | Metadata only, never transcript text |
+| GET | `/api/waitlist/enrollments?active_only&limit` | `ListWaitlistEnrollmentsResponse` | Includes latest offer state |
+| GET | `/api/customers?query&limit` | `ListCustomersResponse` | Derived projection; no PII |
+| GET | `/api/reporting/overview?from&to` | `BookingOverviewResponse` | Per-day exact; breakdowns may be `breakdown_truncated` |
+| GET | `/api/Bookings/{bookingId}` | `GetBookingDetailsResponse` | Carries `version` for modify/cancel. 200/403/404 share one body — a 403 is the typed `requires_verification` status, not a ProblemDetails |
 | POST | `/api/Bookings` | `OperationAcceptedResponse` (202) / `IdempotencyConflict` (409) | Create; submit confirmed intent |
 | POST | `/api/Bookings/{id}/changes:validate` | `ValidateBookingChangeResponse` | Pre-flight for modify |
 | POST | `/api/Bookings/{id}/modifications` | `SubmitBookingModificationResponse` (202/409/422) | Reschedule/modify |
@@ -285,9 +315,9 @@ Base: `/api`. All require `X-Tenant-Id` unless noted. Route casing is literal
 | POST | `/api/booking-operations/{id}/{cancel\|resume\|resolve\|alternatives}` | anon status objects | Operator follow-ups (`X-Actor*` required on resume/resolve) |
 | GET | `/api/catalog/items?query&category&max_results` | anon item list | |
 | GET | `/api/catalog/items/{itemId}` | anon item | |
-| GET | `/api/reporting/funnel?from&to` | `BookingFunnelView` | Only analytics endpoint |
+| GET | `/api/reporting/funnel?from&to` | `BookingFunnelView` | Separated funnel counts (see also `/overview`) |
 | POST | `/api/verifications` · GET `/{id}` · POST `/{id}/verify` | verification responses | Grant sub-flow |
-| POST | `/api/waitlist/enrollments` · DELETE `/{id}` · POST `/offers/{id}/{accept\|decline}` | anon status | No list endpoint |
+| POST | `/api/waitlist/enrollments` · DELETE `/{id}` · POST `/offers/{id}/{accept\|decline}` | anon status | `X-Actor` required |
 | GET | `/api/conversation-sessions/{sessionId}/transcript` | `TranscriptView` | Per-id; may need grant |
 | POST | `/api/conversation-sessions/{sessionId}/{consent\|transcript-turns}` | persisted results | |
 | POST | `/api/menu/catalogs` + `/{id}/{review\|edit\|approve\|publish}` | anon status | `X-Actor*` required |
@@ -300,3 +330,316 @@ Base: `/api`. All require `X-Tenant-Id` unless noted. Route casing is literal
 
 Full generated contract (types + `paths`): `libs/api-contract/generated/typescript/index.ts`
 (source `libs/api-contract/openapi/v1.json`).
+
+---
+
+## 11. Implementation status (2026-07-27)
+
+Plan: `thoughts/shared/plans/2026-07-27_frontend-api-wiring.md` ·
+Baseline: `thoughts/shared/research/2026-07-27_17-46-20_frontend-api-wiring-baseline.md`
+
+### 🟠 Remaining gap: the fulfilment engine handles create and cancel, not modify/reschedule
+
+Found while reviewing this work, and it bounds what "wired" can mean for manage-booking.
+
+**The original defect:** nothing in `apps/api/src/Cordia.Application/Handlers/BookingFulfillment/**`
+branched on `OperationTypeEnum`. `FinalizeBookingCommandHandler` called
+`adapter.CreateBookingAsync` unconditionally, for *every* operation type — so a `modify`,
+`cancel` or `reschedule` operation was accepted (202) and then fulfilled as if it were a
+brand-new booking, creating a **second, disconnected booking** instead of acting on the target.
+
+**Cancel is now fulfilled end-to-end.** `AdvanceBookingOperationCommandHandler` branches at
+`Finalizing` on `OperationType == Cancel` and dispatches `CancelBookingCommand` instead of
+`FinalizeBookingCommand`. `CancelBookingCommandHandler`
+(`.../BookingFulfillment/CancelBooking/`) calls `adapter.CancelBookingAsync` — never
+`CreateBookingAsync` — outside the transaction (design §12.6), then in one staged transaction:
+
+- operation `Finalizing → Booked` under a version guard (D1 has no `cancelled` operation
+  status; the *booking* carries the cancellation), reason `cancelled` /
+  `already_cancelled` / `cancelled_no_provider_effect`;
+- booking → `cancelled` (a transition, never a delete — MB-Inv-6);
+- **capacity released** via `ReleaseFinalizedByOperationAsync` against the *originating*
+  booked operation's `Finalized` hold → `Released`, decrementing `booked_capacity`;
+- outbox `notification.cancel_confirmed.v1` (state before notification — Inv-8) and an
+  `operation.cancelled` audit event.
+
+An ambiguous provider outcome routes to `Reconciling` and touches nothing else (Inv-7); an
+already-cancelled booking short-circuits without re-invoking the provider (§9.4.4); redelivery
+is safe (Inv-5). Covered by 17 unit tests (`CancelBookingTests`) and 5 Postgres integration
+tests (`CancelFulfilmentTests`) asserting the booking row, the slot's `booked_capacity`, the
+hold status, the notification, and that exactly one booking row exists afterwards.
+
+**Modify and reschedule are still create-only — and now refused rather than mis-fulfilled.**
+`revision.canonical_payload.target_booking_id` is read by no handler, and
+`FinalizeBookingCommandHandler` still creates unconditionally. `AdvanceBookingOperationCommandHandler`
+therefore throws `PoisonMessageException` when a `Modify`/`Reschedule` operation reaches
+`Finalizing`, so it dead-letters into the operator work-item queue instead of silently creating
+a duplicate booking. That guard is server-side on purpose: `RESCHEDULE_FULFILMENT_SUPPORTED`
+protects the console, but the HTTP endpoints and the LangGraph lane reach the same path.
+Consequence: **reschedule is not offered.** The console builds, hashes, and can
+submit a valid `operation: "reschedule"` intent — verified live returning 202 — but submitting
+would put a duplicate booking in the venue's system, so `RESCHEDULE_FULFILMENT_SUPPORTED`
+(`apps/web/src/features/bookings/submit.ts`) is **false** and the drawer explains why. Flip that
+one constant when the engine handles modify/reschedule; everything else is built and tested.
+
+This is spec 06/08 work, not frontend wiring. It predates this change — the
+`/modifications` and `/cancellations` endpoints already had it.
+
+### Integration suite: a self-poisoning preorder test (found 2026-07-28, not fixed)
+
+`RecoverySweep_FindsStuckSaga_...` began failing partway through a long session, then failed in
+isolation too. It is **not** a flake and not caused by any change here:
+
+`PreorderSagaRepository.FindStuckAsync` is a cross-tenant recovery sweep — `IgnoreQueryFilters()`,
+`OrderBy(UpdatedAt)` ascending, `Take(StuckSweepBatchSize)` where the batch is **500**. Every run of
+the test seeds a saga backdated an hour and nothing ever cleans it up, so the shared
+`Cordia_API_Test` database accumulates stale sagas across runs. Once the count passed 500 (measured:
+**526**), the sweep filled its batch with older rows and never reached the one the test had just
+seeded. The test's own `Assert.True(swept >= 1)` still passed — it swept 500 *other* sagas — so the
+failure surfaced one line later, on the outbox assertion, which reads as unrelated.
+
+Deleting the accumulated rows restores a green suite (414 passed), which confirms the diagnosis. The
+underlying weakness is that the integration database is never reset between runs, so any test whose
+assertion depends on a **bounded** query over unbounded accumulated state will eventually fail on a
+developer machine and pass in CI. Worth fixing at the fixture level rather than by periodically
+truncating tables by hand.
+
+### In-flight bookings were invisible on the schedule (closed 2026-07-28)
+
+The highest-severity defect the conformance pass left open, and it was real.
+
+`ConsoleReadModel.Parse()` resolved a booking id from
+`payload.target_booking_id ?? operation.booking_id ?? payload.booking_id` and **dropped the row when
+all three were null**. `BookingOperation.BookingId` is assigned in exactly one place —
+`FinalizeBookingCommandHandler`, from the provider reference — and a create's canonical payload
+carries neither `booking_id` nor `target_booking_id`. So every operation in `accepted`,
+`validating`, `reserving_capacity`, `held`, `awaiting_payment` and `finalizing` was discarded before
+the window filter.
+
+**The consequence was a double-booking.** A booking submitted for Thursday 09:30 that sat in `held`
+for forty seconds did not appear on the grid at all, so a second operator saw the slot as free and
+booked over a guest who already held it.
+
+Why no test caught it: the schedule fixtures built their canonical payload with
+`PayloadFor(startsAt, serviceId, bookingId)`, which bakes a `booking_id` into the payload. Real
+create payloads have none, so every schedule assertion had been exercising the already-finalised
+case only. The fix is pinned by `InFlightCreatePayload`, a payload shaped like the one the API
+actually stores, across all six in-flight statuses.
+
+The fix keeps those rows and tells the truth about them:
+
+- `ParsedRow` now carries a **nullable** `BookingId` plus a non-null `Key` (`BookingId ??
+  OperationId`) used for de-duplication and grouping — an unfinalised operation's only stable handle
+  is its operation id.
+- `ScheduledBooking.BookingId` / `booking_id` became **nullable**. The row does not invent an id:
+  cancel and modify address a booking, and sending an operation id would 404.
+- `lifecycle_status` is **null** for an unfinalised operation. Every value of
+  `BookingLifecycleStatus` (`confirmed`, `modification_pending`, `cancellation_pending`,
+  `cancelled`) presupposes a booking row exists, and the old `_ => "confirmed"` fallback reported an
+  in-flight create as **confirmed** — the fabricated outcome Inv-16 exists to prevent. That arm was
+  unreachable while the rows were being dropped; keeping them made it live, and a test now pins it.
+- The console marks such a row `isBooking: false`, and the detail drawer offers neither Cancel nor
+  Reschedule for it, explaining that it is still being confirmed.
+
+The customer projection benefits for free: `BuildCustomerResolverAsync` already fell back to the
+confirmation's `identity_ref` when no booking row exists (spec 04 §8.8), so a guest whose only
+booking is in flight now appears in `/api/customers` instead of being absent.
+
+Also closed: the *Partial results* badge this document already claimed. The server-side half landed
+in the conformance pass (a limit-capped page reports `truncated: true`, and paging has a tie-break);
+the console now actually reads the flag on both the schedule and the customers list.
+
+### Verification and audit purposes (closed 2026-07-28)
+
+Two items the conformance pass deferred, and what auditing them actually turned up.
+
+**The console's cancel could never have worked.** `SubmitBookingCancellationCommandHandler`
+consumes a `cancel` verification grant unconditionally (correctly — Inv-11), and nothing in the app
+could obtain one: `features/verification/**` was fully implemented and imported by no page, drawer,
+or hook. Worse than the "403 you can't resolve" this looked like from the outside — `grant_id` is
+`NotEmpty`-validated, so the console's `grant_id: ""` was rejected **structurally as a 400**, before
+the authorization spine ran. There was no 403 to recover from, which is why a submit-then-verify
+design would not have worked either. The gate is now opened *before* the first submit. The
+integration tests that covered cancellation all seeded a grant row straight into the database, so
+the console's actual request shape had never been exercised in any lane.
+
+**A verification 403 now says what to do about it.** `VerificationRequiredException` maps to a
+ProblemDetails carrying `code: "verification_required"`, the D5 `action`, and `target_booking_id`
+(RFC 9457 extensions). The client matches on `code`, never on `title` — the title is prose for a
+human, and a client that branches on copy breaks when copy changes. `AuthorizationFailedException`
+deliberately does **not** carry the code: it is also a 403, but it means "your role does not permit
+this", which no amount of guest verification fixes. Note this required dropping a hand-rolled
+`JsonSerializerOptions` from the handler — it bypassed ASP.NET's ProblemDetails converter and buried
+extensions under a nested `extensions` node instead of flattening them per the RFC.
+
+**Transcript reads now record a purpose the operator chose.** The reason code was
+`"operator_review"`, hard-coded in the fetcher, on a query inheriting `refetchOnWindowFocus: true` —
+so alt-tabbing back to a tab left open on a conversation wrote another `read_sensitive_transcript`
+row with the same reason as a genuine dispute investigation. The operator now picks a purpose before
+the read happens; the query never refetches on focus or reconnect and never goes stale. Seven
+purposes are ratified server-side (`SensitiveReadPurpose`) and enforced by FluentValidation, so an
+invented code is a 400 rather than an unfalsifiable audit row.
+
+The allowlist is deliberately narrow. It is **not** applied to `IOperatorActionRequest.ReasonCode`
+(DLQ replay, catalog review, manual recovery), which carries open-ended operational narrative like
+`provider_outage_recovered`; not to the booking `reason_code` business field (`customer_request`,
+`complaint`), a different vocabulary saying why the *guest* changed a booking; and not to model-trace
+reads, which are referenced to an incident (`incident_42`) rather than drawn from a category list —
+a closed vocabulary there would replace a specific pointer with a vague label. Spec 14 owns
+`AuditEventEnvelope.reason_code` and types it `str | None`; ratifying the vocabulary in the Pydantic
+contract would bind all three lanes and is that spec's decision, not this one's.
+
+### Conformance pass against this document
+
+A second review audited the implementation against every rule stated above. Fifteen defects
+were found and fixed; the ones that changed behaviour visible to an operator:
+
+- **A cancelled booking read back as "confirmed".** Both read models mapped
+  `OperationStatus.Booked` to lifecycle `confirmed` before testing the operation type, and a
+  successful cancel terminates at `Booked`. A guest who cancelled and then looked their
+  booking up was told it was confirmed. The `Cancel` arm now precedes the generic one.
+- **A cancellation removed the booking from the schedule grid.** A cancel's canonical payload
+  has no `starts_at`, but its row (newest activity) claimed the booking's dedupe slot and was
+  then dropped by the window filter, so the booking vanished the instant a cancellation was
+  *submitted* — the slot looked free while the guest still held it. Slot and lifecycle are now
+  resolved from different rows.
+- **A hard-failed booking rendered as "Cancelled"** (`toBookingStatus` tested lifecycle before
+  the failure statuses, and the server maps `rejected`/`expired`/`failed_final` onto lifecycle
+  `cancelled` too). An operator reads that as "the guest cancelled" and never investigates.
+- **A duplicate cancel re-notified the guest.** The already-cancelled short-circuit still wrote
+  `notification.cancel_confirmed.v1`; the outbox write is now guarded (the audit event is not —
+  it is internal and carries `reason=already_cancelled`).
+- **An ambiguous cancel could never resolve.** `ReconcileOperationCommandHandler` is hard-coded
+  to the create path's `finalize` step and its lookups prove a booking *exists*, which says
+  nothing about a cancellation; its not-proven path recreates the booking. A cancel now
+  escalates to manual review instead (`cancel_reconcile_requires_review`).
+- **Cancellations inflated the funnel** — `confirmed` counted every `Booked` operation
+  regardless of type, so cancelling a booking raised the confirmed figure.
+- **A failed fetch rendered as a confident empty list.** None of the console's five queries read
+  `isError`, so an API outage showed an empty week rather than an error; `CustomersScreen`
+  substituted six fabricated customers — names, phone numbers, lifetime spend — with no badge.
+  Failures are now named on screen, and the demo rows are badged.
+- **Reaching the row limit reported `truncated: false`**, presenting a partial week as complete;
+  and `Skip`/`Take` paged over a non-unique `ORDER BY UpdatedAt`, so tied rows could be skipped
+  or duplicated between pages.
+- **`canon.v1` diverged from the server in two cases** — see below.
+- Live bookings asserted a channel (`b.channel || 'phone'` turned a deliberate `null` into
+  "Booked via Phone") and a deposit read from the mock catalog. Both are now omitted, matching
+  the `ProvTag` treatment.
+- `ConsentState.NotRequired` shipped as `"notrequired"`, not the declared `"not_required"`.
+  A shared `EnumWireNames.ToWireName` now reads the generated attribute.
+- `vite-env.d.ts` ended with `export {}`, making it a module — so its `ImportMetaEnv`
+  declarations never augmented the global and every `import.meta.env.VITE_*` read silently fell
+  back to `any`.
+
+### Two contract gaps this guide did not anticipate
+
+1. **`canon.v1` has to run in the client.** `POST /api/bookings` requires the caller to
+   supply `revision.payload_hash` **and** `confirmation.intent_payload_hash`; the server
+   recomputes the canonical hash and rejects a mismatch with **422**
+   (`ConfirmationHashMismatchException`), and a DB trigger requires the two to be equal.
+   There was no conforming non-C# implementation: the Python one
+   (`cordia_agent/revisions/manager.py`) was a documented stub that could not have matched,
+   so the LangGraph lane would have 422'd too.
+
+   Closed by porting `canon.v1` to **TypeScript** (`apps/web/src/api/canonicalHash.ts`) and
+   **Python** (`cordia_agent/revisions/canonical_hash.py`), both pinned to a shared corpus
+   at `tools/config/canon-v1-test-vectors.json` whose expected hashes are produced and
+   asserted by the authoritative C# hasher. Two traps are worth knowing: the canonical
+   bytes come from .NET's default `JavaScriptEncoder`, which escapes every non-ASCII code
+   unit as `\uXXXX` with **uppercase** hex (`JSON.stringify` does not, which would break
+   any accented name); and the whitespace class is .NET's `char.IsWhiteSpace`, which
+   includes U+0085 and excludes U+FEFF — the opposite of JavaScript's `\s` on both counts.
+
+   The conformance pass found two more, both verified by running the real encoder on
+   net10.0 and now pinned as corpus vectors (82 total):
+
+   - **`System.Text.Json` writes `\b \t \n \f \r` as two-character escapes**, not `\uXXXX`
+     (`` and other control characters stay numeric). The ports emitted `\uXXXX`
+     universally. Whitespace collapsing hides `\t\n\f\r` inside *values* — but
+     `char.IsWhiteSpace('')` is **false**, so a backspace survives into the encoder,
+     and object *keys* are never whitespace-collapsed, so all five matter. A payload
+     containing one hashed differently on client and server and was rejected 422.
+   - **`DateTimeOffset.TryParse` disagreed with the anchored ISO regex in both directions**:
+     it tolerates surrounding whitespace (`" 2026-06-15T18:00:00Z"` is a timestamp to the
+     server, a plain string to the ports) and it rejects offsets past ±14:00 (`+15:00` is a
+     plain string to the server, a normalised UTC instant to the ports). Both now match.
+
+2. **`expected_booking_version` was not readable.** Modify and cancel require it, but
+   `BookingProjectionRef` had no version field. Worse, the obvious candidate was wrong:
+   `BookingProjection.Version` is the *operation* version, while the handlers compare
+   against `bookings.version`. Closed by adding an optional `version` to
+   `BookingProjectionRef` (Pydantic → regenerated C#/TS) sourced from `IBookingRepository`.
+   It is `null` when no authoritative booking row exists yet — treat that as "not
+   modifiable yet", not as version 0.
+
+### Endpoints added for the console (all `GET`, all read-only, no migration)
+
+| Verb | Path | Response |
+|---|---|---|
+| GET | `/api/Bookings/schedule?from&to&limit` | `BookingScheduleResponse` |
+| GET | `/api/booking-operations?status&needs_attention&limit` | `ListOperationsResponse` |
+| GET | `/api/conversation-sessions?limit` | `ListConversationSessionsResponse` |
+| GET | `/api/waitlist/enrollments?active_only&limit` | `ListWaitlistEnrollmentsResponse` |
+| GET | `/api/customers?query&limit` | `ListCustomersResponse` |
+| GET | `/api/reporting/overview?from&to` | `BookingOverviewResponse` |
+
+`/api/customers` is a **derived projection** over booking operations and their confirmed
+intent revisions — spec 12 ratifies no customers table, so none was invented. It exposes
+the opaque `customer_ref`, a booking count and timestamps; no name, phone or email.
+
+### Per-screen status
+
+| Screen | Status |
+|---|---|
+| Analytics | **Live** — funnel + per-day/channel/service. KPI tiles and the "who handled them" split stay mock (nothing records who handled a booking; reporting one would breach Inv-16) |
+| Today | **Live** — schedule grid from `/api/Bookings/schedule` |
+| Queue | **Live** — operations needing attention |
+| Conversations | **Live** — session list + per-session transcript (sensitive read: sends actor + reason code) |
+| Customers | **Live list** — stats the API does not model (no-shows, lifetime spend, phone, tags) are suppressed rather than shown as zeros |
+| Waitlist | **Live list + real removal** (audited against `X-Actor`) |
+| Settings | **Partly live** — consent policy and menu catalog; hours and deposit policy badged as demo |
+| Create | **Live** — 202 + poll to terminal, real idempotency key, drawer confirms only on a `booked` status |
+| Cancel | **Live end-to-end** — real version token + reason code, 202 + poll to terminal; the engine cancels with the provider, moves the booking to `cancelled`, releases the capacity hold and emits `notification.cancel_confirmed.v1`. Ambiguous provider outcomes route to `Reconciling` rather than guessing |
+| Reschedule | **Disabled** — payload/hashing/identity/polling all built and tested, but not submitted while fulfilment would create a duplicate booking (blocking gap above). Would go through `POST /api/bookings` with `operation: "reschedule"`, **not** `/modifications`: that endpoint's body has no field for the changed data |
+| Verification | **Live for cancel** — clicking Cancel opens `VerificationGate` in the booking drawer (request → code → grant, grant held in memory only), and the cancellation is submitted with that grant. It is obtained *before* the first submit because `grant_id` is `NotEmpty`-validated server-side: an empty grant is a 400 nobody can act on, not a 403 that can be recovered from. A grant that expires between issue and use returns a 403 carrying `code: verification_required`, which puts the gate back rather than dead-ending |
+| Deposits, Campaigns | **Mock, badged** — spec 09 payment surface is deferred; no spec owns Campaigns |
+
+Everything still on demo data carries a visible **Demo data** badge, so a plausible number
+cannot be mistaken for the venue's own. Two rules the console holds to throughout:
+
+- **A successful-but-empty response is a real answer.** Screens fall back to demo rows only
+  while a list has *never* loaded, never to fill in an empty result.
+- **Nothing is asserted that the API does not record.** Live bookings render no
+  "Booked by AI"/"Booked by you" tag (no provenance exists), no channel, and the customers
+  list suppresses no-show/spend/phone/tags rather than showing zeros.
+
+### Known follow-ups
+
+- `CatalogController.Search` and the waitlist/menu/preorder actions return `IActionResult`,
+  so the generated contract types their bodies as `never`. Only the **catalog search**
+  response is Zod-validated today (`features/settings/api.ts`); the waitlist action responses
+  are typed `unknown` and their bodies are simply not read. Returning `ActionResult<T>` would
+  let the types flow through and remove the need for either.
+- `AcceptanceApiFixture`, `TenantResolutionApiFixture` and `PostgresFixture` all migrate the
+  same test database and xUnit runs collections in parallel, so a cold database can race
+  (`column ... already exists`). Serialising fixture migration would fix it.
+- Spec 15: replace the `X-Tenant-Id` dev shim in `src/api/config.ts` with the signed
+  `TenantContext`. No screen code is affected.
+- **No queryable booking start time.** `starts_at` exists only inside the intent revision's
+  canonical-payload JSON, so `/api/Bookings/schedule` and `/api/customers` page through the
+  tenant's operations and filter in memory, capped at 20 000 rows and reporting `truncated`
+  (the console shows a *Partial results* badge). A projected, indexed start column would let
+  both push their predicate into SQL.
+- **`SubmitModificationInput` carries no changed data**, so `/modifications` can only
+  confirm an already-submitted revision. Worth either documenting as such or giving it a
+  payload; today any caller expecting it to apply a change gets a silent no-op.
+- **`/api/booking-operations/{id}/resolve` is `manual_review`-only** and needs a reason code,
+  so the console's queue "finish" is a local acknowledgement rather than a server
+  resolution. A general operator-acknowledgement endpoint would close that gap.
+- **`validateChange` (`POST /changes:validate`) is implemented but unused** — §7 marks the
+  pre-flight optional, and there is no reschedule form to gate on it while reschedule is
+  disabled. It activates with the reschedule flow.
+- **`confirmation.verification_level` is hard-coded to `"staff_confirmed"`** on every
+  console-originated write. The validator only requires the field to be non-empty, so this is
+  accepted, but a real operator identity/level should replace it when auth lands (spec 14).

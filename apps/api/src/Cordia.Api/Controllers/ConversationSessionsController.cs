@@ -1,4 +1,6 @@
-﻿using System.Text.Json.Serialization;
+﻿using Cordia.Domain.Enums;
+using System.Text.Json.Serialization;
+using Cordia.Application.Handlers.Console.ListConversationSessions;
 using Cordia.Application.Handlers.Security.AppendTranscriptTurn;
 using Cordia.Application.Handlers.Security.GetTranscript;
 using Cordia.Application.Handlers.Security.RecordConsent;
@@ -21,6 +23,40 @@ namespace Cordia.Api.Controllers;
 [Route("api/conversation-sessions")]
 public class ConversationSessionsController(IMediator mediator, ITenantContext tenant) : ControllerBase
 {
+    /// <summary>Default page size when the caller does not specify one.</summary>
+    public const int DefaultListLimit = 50;
+
+    /// <summary>
+    /// Lists conversation sessions for the console's thread list, most recent first.
+    ///
+    /// Metadata only: transcript turns stay behind
+    /// <c>GET /api/conversation-sessions/{sessionId}/transcript</c>, which requires a grant
+    /// and reason code (spec 14 §4.2). Nothing here carries transcript text.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(ListConversationSessionsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListConversationSessionsResponse>> List(
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var sessions = await mediator.Send(
+            new ListConversationSessionsQuery(tenant.TenantId, limit ?? DefaultListLimit),
+            ct);
+
+        return Ok(new ListConversationSessionsResponse(
+            sessions.Select(s => new ConversationSessionView(
+                s.SessionId,
+                EnumWireNames.ToWireName(s.Channel),
+                s.CustomerRef,
+                EnumWireNames.ToWireName(s.ConsentState),
+                s.RecordingAllowed,
+                s.StartedAt,
+                s.EndedAt)).ToList()));
+    }
+
     [HttpPost("{sessionId}/consent")]
     [ProducesResponseType(typeof(ConsentRecordedResult), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -128,3 +164,16 @@ public sealed record TranscriptTurnRequest(
     // Parameterless ctor for model binding when optional fields are absent.
     public TranscriptTurnRequest() : this(0, null, null, null) { }
 }
+
+/// <summary>One row of the console's conversation thread list (metadata only).</summary>
+public sealed record ConversationSessionView(
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("channel")] string Channel,
+    [property: JsonPropertyName("customer_ref")] string? CustomerRef,
+    [property: JsonPropertyName("consent_state")] string? ConsentState,
+    [property: JsonPropertyName("recording_allowed")] bool? RecordingAllowed,
+    [property: JsonPropertyName("started_at")] DateTimeOffset StartedAt,
+    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt);
+
+public sealed record ListConversationSessionsResponse(
+    [property: JsonPropertyName("sessions")] IReadOnlyList<ConversationSessionView> Sessions);

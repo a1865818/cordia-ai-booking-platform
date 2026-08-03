@@ -31,10 +31,25 @@ public sealed class FirstPartyCapacityReservation(
     // last-line Inv-6 guardrail behind the conditional-write predicate. If it ever fires, the
     // predicate failed to prevent overcommit — surface it as an alert signal (§25.4) and rethrow.
     internal static bool IsOvercommitViolation(Exception ex) =>
+        IsCapacityCheckViolation(ex, "no_overcommit");
+
+    /// <summary>
+    /// The mirror of <see cref="IsOvercommitViolation"/> for the RELEASE direction:
+    /// <c>ck_capacity_slots_nonneg</c> fires when a decrement would drive a counter below zero.
+    ///
+    /// Unreachable if the idempotency guards hold — a finalized hold is released at most once,
+    /// because the flip to <c>Released</c> is itself conditional on <c>Finalized</c>. That is
+    /// precisely why it is worth catching: if it ever does fire, the guards have been violated and
+    /// the slot's accounting is wrong, which is an Inv-6 alert (§25.4), not an anonymous 500.
+    /// </summary>
+    internal static bool IsNonNegativeViolation(Exception ex) =>
+        IsCapacityCheckViolation(ex, "nonneg");
+
+    private static bool IsCapacityCheckViolation(Exception ex, string constraintFragment) =>
         (ex as PostgresException ?? ex.InnerException as PostgresException) is
         { SqlState: PostgresErrorCodes.CheckViolation, ConstraintName: var name }
         && name is not null
-        && name.Contains("no_overcommit", StringComparison.Ordinal);
+        && name.Contains(constraintFragment, StringComparison.Ordinal);
 
     /// <inheritdoc/>
     public async Task<ReservationOutcome> ReserveAsync(ReserveRequest req, CancellationToken ct = default)
@@ -199,6 +214,75 @@ public sealed class FirstPartyCapacityReservation(
 
         // Expired, Released, or Reconciling → capacity gone (FIX 2).
         return FinalizeOutcome.HoldNoLongerValid;
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> ReleaseFinalizedByOperationAsync(
+        string tenantId,
+        string operationId,
+        ReleaseReason reason,
+        CancellationToken ct = default)
+    {
+        // Finalized holds are what a completed booking occupies: the hold row is Finalized and
+        // its units live in the slot's BOOKED bucket, not held. Releasing an active hold (the
+        // ReleaseByOperationAsync path) is therefore a no-op here and would silently leak the
+        // slot after a cancellation.
+        var holds = await db.CapacityHolds
+            .IgnoreQueryFilters()
+            .Where(h => h.TenantId == tenantId
+                        && h.OperationId == operationId
+                        && h.Status == HoldStatus.Finalized)
+            .ToListAsync(ct);
+
+        var released = 0;
+
+        foreach (var hold in holds)
+        {
+            // Conditional flip guarded by status='finalized' — a concurrent or redelivered
+            // cancellation observes rows==0 and does not give the same seat back twice (Inv-5).
+            var rows = await db.CapacityHolds
+                .IgnoreQueryFilters()
+                .Where(h => h.TenantId == tenantId
+                            && h.HoldId == hold.HoldId
+                            && h.Status == HoldStatus.Finalized)
+                .ExecuteUpdateAsync(
+                    b => b
+                        .SetProperty(h => h.Status, HoldStatus.Released)
+                        .SetProperty(h => h.ReleaseReason, reason)
+                        .SetProperty(h => h.Version, h => h.Version + 1),
+                    ct);
+
+            if (rows == 0)
+                continue;
+
+            released += rows;
+
+            // Give the units back from BOOKED (not held — finalize already moved them).
+            if (hold.SlotId is not null)
+            {
+                // Defence in depth, matching ReserveAsync's overcommit guard in the other
+                // direction: surface a driven-negative counter as the capacity-invariant alert
+                // rather than letting it escape as an unclassified 500.
+                try
+                {
+                    await db.CapacitySlots
+                        .IgnoreQueryFilters()
+                        .Where(s => s.TenantId == tenantId && s.SlotId == hold.SlotId)
+                        .ExecuteUpdateAsync(
+                            b => b
+                                .SetProperty(s => s.BookedCapacity, s => s.BookedCapacity - hold.ReservedCapacity)
+                                .SetProperty(s => s.Version, s => s.Version + 1),
+                            ct);
+                }
+                catch (Exception ex) when (IsNonNegativeViolation(ex))
+                {
+                    metrics.FulfillmentCapacityInvariantViolationTotal.Add(1);
+                    throw;
+                }
+            }
+        }
+
+        return released;
     }
 
     /// <summary>

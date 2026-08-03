@@ -2,6 +2,8 @@
 using Cordia.Application.Handlers.BookingFulfillment.Cancellation;
 using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
+using Cordia.Application.Handlers.Console.ListOperations;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -27,6 +29,73 @@ namespace Cordia.Api.Controllers;
 [Route("api/booking-operations")]
 public class BookingOperationsController(IMediator mediator, ITenantContext tenant) : ControllerBase
 {
+    /// <summary>Default page size when the caller does not specify one.</summary>
+    public const int DefaultListLimit = 100;
+
+    /// <summary>
+    /// Lists booking operations for the console's Queue / Operations board, newest activity first.
+    ///
+    /// <paramref name="status"/> accepts repeated or comma-separated snake_case values from
+    /// the ratified 16-value set (D1, owner spec 06); an unknown value is a 400 rather than
+    /// being ignored, so a typo cannot silently widen the result to "everything".
+    /// <paramref name="needsAttention"/> is shorthand for the states that are waiting on a
+    /// person or have stopped making progress on their own.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(ListOperationsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListOperationsResponse>> List(
+        [FromQuery(Name = "status")] string[]? status,
+        [FromQuery(Name = "needs_attention")] bool? needsAttention,
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var requested = (status ?? [])
+            .SelectMany(s => s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToArray();
+
+        var parsed = new List<OperationStatus>(requested.Length);
+        var unknown = new List<string>();
+        foreach (var value in requested)
+        {
+            if (OperationStatusNames.TryParse(value, out var operationStatus))
+                parsed.Add(operationStatus);
+            else
+                unknown.Add(value);
+        }
+
+        if (unknown.Count > 0)
+        {
+            ModelState.AddModelError(
+                "status",
+                $"Unknown operation status: {string.Join(", ", unknown)}. Valid values: {string.Join(", ", OperationStatusNames.All)}.");
+            return ValidationProblem(ModelState);
+        }
+
+        if (needsAttention == true)
+            parsed.AddRange(ListOperationsQueryHandler.NeedsAttention);
+
+        var operations = await mediator.Send(
+            new ListOperationsQuery(tenant.TenantId, parsed.Distinct().ToArray(), limit ?? DefaultListLimit),
+            ct);
+
+        return Ok(new ListOperationsResponse(
+            operations.Select(o => new OperationSummaryView(
+                o.OperationId,
+                o.BookingId,
+                o.IntentId,
+                o.IntentRevision,
+                EnumWireNames.ToWireName(o.OperationType),
+                OperationStatusNames.ToWireName(o.Status),
+                o.StatusReason,
+                o.IsPreorder,
+                o.CorrelationId,
+                o.CreatedAt,
+                o.UpdatedAt)).ToList()));
+    }
+
     /// <summary>Returns the current status of the given booking operation, or 404 if not found.</summary>
     [HttpGet("{operationId}")]
     [ProducesResponseType(typeof(OperationStatusView), StatusCodes.Status200OK)]
@@ -268,3 +337,21 @@ public sealed record AlternativesRequest(
     // Parameterless ctor for model binding.
     public AlternativesRequest() : this(string.Empty) { }
 }
+
+/// <summary>One row of the console's operations board.</summary>
+public sealed record OperationSummaryView(
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_id")] string OperationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("booking_id")] string? BookingId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("intent_id")] string IntentId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("intent_revision")] int IntentRevision,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_type")] string OperationType,
+    [property: System.Text.Json.Serialization.JsonPropertyName("status")] string Status,
+    [property: System.Text.Json.Serialization.JsonPropertyName("status_reason")] string? StatusReason,
+    [property: System.Text.Json.Serialization.JsonPropertyName("is_preorder")] bool IsPreorder,
+    [property: System.Text.Json.Serialization.JsonPropertyName("correlation_id")] string? CorrelationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("created_at")] System.DateTimeOffset CreatedAt,
+    [property: System.Text.Json.Serialization.JsonPropertyName("updated_at")] System.DateTimeOffset UpdatedAt);
+
+public sealed record ListOperationsResponse(
+    [property: System.Text.Json.Serialization.JsonPropertyName("operations")]
+    IReadOnlyList<OperationSummaryView> Operations);

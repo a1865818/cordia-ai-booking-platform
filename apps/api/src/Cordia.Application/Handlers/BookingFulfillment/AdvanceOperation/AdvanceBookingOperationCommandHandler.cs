@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Handlers.BookingFulfillment.CancelBooking;
 using Cordia.Application.Handlers.BookingFulfillment.Compensate;
 using Cordia.Application.Handlers.BookingFulfillment.Finalize;
 using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
@@ -88,6 +89,25 @@ public sealed class AdvanceBookingOperationCommandHandler(
                     // or Held→AwaitingPayment deposit path). Finalizing routes directly to Finalize.
                     OperationStatus.Held
                         => new RequestPaymentCommand(command.TenantId, command.OperationId),
+                    // Spec 08 §5.3: at Finalizing the external call differs by operation type —
+                    // a create books with the provider, a cancel un-books. This is the one place
+                    // the driver is type-aware; everything else stays status-driven.
+                    OperationStatus.Finalizing when op.OperationType == Domain.Generated.OperationTypeEnum.Cancel
+                        => new CancelBookingCommand(command.TenantId, command.OperationId),
+                    // FinalizeBookingCommandHandler calls CreateBookingAsync unconditionally, so
+                    // letting a modify/reschedule through here puts a SECOND, disconnected booking
+                    // into the venue's system while the original stays pending — and the operation
+                    // reports `booked`, so nothing surfaces it. Refuse loudly instead: this
+                    // dead-letters into the operator's work-item queue. The web console also guards
+                    // this (RESCHEDULE_FULFILMENT_SUPPORTED), but that protects one client — the
+                    // HTTP endpoints and the LangGraph lane reach this path too.
+                    OperationStatus.Finalizing when op.OperationType
+                        is Domain.Generated.OperationTypeEnum.Modify
+                        or Domain.Generated.OperationTypeEnum.Reschedule
+                        => throw new PoisonMessageException(
+                            $"Operation '{command.OperationId}' is a {op.OperationType} reaching Finalizing, " +
+                            "but the fulfilment engine can only create and cancel. Refusing rather than " +
+                            "creating a duplicate booking."),
                     OperationStatus.Finalizing
                         => new FinalizeBookingCommand(command.TenantId, command.OperationId),
                     OperationStatus.Reconciling

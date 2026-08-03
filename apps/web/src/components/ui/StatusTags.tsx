@@ -20,8 +20,11 @@ export function DepTag({ dep }: DepTagProps) {
 }
 
 // ---- ProvTag ----
-interface ProvTagProps { prov: 'ai' | 'you'; }
+interface ProvTagProps { prov: 'ai' | 'you' | 'unknown'; }
 export function ProvTag({ prov }: ProvTagProps) {
+  // The API records no provenance for a booking, so `unknown` renders nothing rather than
+  // asserting "Booked by AI" — stating an outcome the platform cannot back would breach Inv-16.
+  if (prov === 'unknown') return null;
   if (prov === 'ai') {
     return (
       <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-[3px] rounded-[7px] bg-ink text-white">

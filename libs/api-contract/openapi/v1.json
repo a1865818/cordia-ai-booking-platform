@@ -139,6 +139,48 @@
         },
         "type": "object"
       },
+      "BookingOverviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "breakdown_truncated": {
+            "type": "boolean"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewChannelView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "per_day": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewDayView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "top_services": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewServiceView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "BookingProjectionRef": {
         "additionalProperties": false,
         "properties": {
@@ -163,6 +205,11 @@
           "status": {
             "nullable": true,
             "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -250,6 +297,30 @@
             "format": "int64",
             "nullable": true,
             "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "BookingScheduleResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bookings": {
+            "items": {
+              "$ref": "#/components/schemas/ScheduledBookingView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -406,10 +477,77 @@
         },
         "type": "object"
       },
+      "ConversationSessionView": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "nullable": true,
+            "type": "string"
+          },
+          "consent_state": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "recording_allowed": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "session_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ConvertStandaloneRequest": {
         "additionalProperties": false,
         "properties": {
           "grant_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CustomerView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_service_id": {
             "nullable": true,
             "type": "string"
           }
@@ -626,6 +764,61 @@
         },
         "type": "object"
       },
+      "ListConversationSessionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationSessionView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ListCustomersResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "customers": {
+            "items": {
+              "$ref": "#/components/schemas/CustomerView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ListOperationsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationSummaryView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ListWaitlistEnrollmentsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollments": {
+            "items": {
+              "$ref": "#/components/schemas/WaitlistEnrollmentView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "ManageableBooking": {
         "additionalProperties": false,
         "properties": {
@@ -817,6 +1010,55 @@
         },
         "type": "object"
       },
+      "OperationSummaryView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "correlation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "is_preorder": {
+            "type": "boolean"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_type": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "OperationTypeEnum": {
         "enum": [
           "cancel",
@@ -834,6 +1076,52 @@
           "not_required"
         ],
         "type": "string"
+      },
+      "OverviewChannelView": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "nullable": true,
+            "type": "string"
+          },
+          "count": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "OverviewDayView": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "booked": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "date": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "OverviewServiceView": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "PingResult": {
         "additionalProperties": false,
@@ -1056,6 +1344,59 @@
             },
             "nullable": true,
             "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ScheduledBookingView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_reference": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "duration_minutes": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "lifecycle_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
           }
         },
         "type": "object"
@@ -1654,6 +1995,59 @@
           }
         },
         "type": "object"
+      },
+      "WaitlistEnrollmentView": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptable_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "acceptable_to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "auto_book_authorized": {
+            "type": "boolean"
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "enrollment_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "latest_offer_expires_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "latest_offer_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "location_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1677,6 +2071,82 @@
   },
   "openapi": "3.0.4",
   "paths": {
+    "/api/booking-operations": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "needs_attention",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "BookingOperations"
+        ]
+      }
+    },
     "/api/booking-operations/{operationId}": {
       "get": {
         "parameters": [
@@ -2788,6 +3258,81 @@
         ]
       }
     },
+    "/api/Bookings/schedule": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
     "/api/catalog/items": {
       "get": {
         "parameters": [
@@ -3158,6 +3703,65 @@
         ]
       }
     },
+    "/api/conversation-sessions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "ConversationSessions"
+        ]
+      }
+    },
     "/api/conversation-sessions/{sessionId}/consent": {
       "post": {
         "parameters": [
@@ -3512,6 +4116,72 @@
         },
         "tags": [
           "ConversationSessions"
+        ]
+      }
+    },
+    "/api/customers": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Customers"
         ]
       }
     },
@@ -4924,6 +5594,73 @@
         ]
       }
     },
+    "/api/reporting/overview": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Reporting"
+        ]
+      }
+    },
     "/api/verifications": {
       "post": {
         "requestBody": {
@@ -5117,6 +5854,70 @@
       }
     },
     "/api/waitlist/enrollments": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "active_only",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Waitlist"
+        ]
+      },
       "post": {
         "parameters": [
           {
@@ -5445,6 +6246,9 @@
     },
     {
       "name": "ConversationSessions"
+    },
+    {
+      "name": "Customers"
     },
     {
       "name": "DeadLetterMessages"

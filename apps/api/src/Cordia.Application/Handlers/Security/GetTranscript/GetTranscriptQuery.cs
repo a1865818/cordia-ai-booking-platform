@@ -1,4 +1,5 @@
-﻿using System.Text.Json.Serialization;
+﻿using Cordia.Domain.Enums;
+using System.Text.Json.Serialization;
 using Cordia.Domain.Security;
 using FluentValidation;
 using MediatR;
@@ -45,5 +46,13 @@ public sealed class GetTranscriptValidator : AbstractValidator<GetTranscriptQuer
         RuleFor(x => x.SessionId).NotEmpty()
             .Must(ObjectStoreSegment.IsValid)
             .WithMessage("SessionId contains characters not allowed in a storage path segment.");
+        // A *present* purpose must be one the audit trail can reason about (spec 14 §2). Absence is
+        // deliberately NOT handled here: the handler's §3.1 spine already rejects a missing reason
+        // with a deny-audited 403, and moving that to a 400 would drop the audit record.
+        RuleFor(x => x.ReasonCode)
+            .Must(SensitiveReadPurpose.IsRatified)
+            .When(x => !string.IsNullOrWhiteSpace(x.ReasonCode))
+            .WithMessage(
+                "ReasonCode must be one of: " + string.Join(", ", SensitiveReadPurpose.All) + ".");
     }
 }

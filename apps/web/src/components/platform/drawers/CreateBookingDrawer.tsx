@@ -1,8 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Service, STAFF, CUSTOMERS, WEEK, fmtT, fmtDur, money, TIME_SLOTS, DAY_OPTS, Booking } from "../../../data/console";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
+import { Spinner } from "../../ui/Spinner";
+import { ErrorState } from "../../ui/ErrorState";
+import { buildSubmission, toIsoInstant } from "../../../features/bookings/buildSubmission";
+import { getOrCreateAttempt, resetAttempt } from "../../../features/bookings/identity";
+import { submitBooking } from "../../../features/bookings/submit";
+import {
+  isBooked, normalizedStatusLabel, useOperationStatus,
+} from "../../../features/bookings/useOperationStatus";
+import { startOfWeek } from "../../../features/bookings/adapters";
+import { isApiIdempotencyConflictError } from "../../../api/problem";
 
 const inputStyle: React.CSSProperties = {
   width: '100%', height: 42, border: '1px solid #EAEAEA', borderRadius: 10,
@@ -50,19 +60,58 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
   const [staff, setStaff] = useState('s1');
   const [day, setDay] = useState(String(WEEK.today));
   const [time, setTime] = useState('600');
+  // Party size is required by the API's BookingRequest; the mock form never collected it.
+  const [partySize, setPartySize] = useState('2');
   const [phase, setPhase] = useState<'form' | 'confirming' | 'done'>('form');
+  const [submitError, setSubmitError] = useState<unknown>(null);
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+
+  // One attempt identity per open drawer: the operation id and idempotency key are minted
+  // before the first call and reused on every retry (Inv-2). `attemptKey` changes only
+  // when the drawer is reopened for a genuinely new booking.
+  const [attemptKey, setAttemptKey] = useState(() => `create:${Date.now()}`);
+  // Guards the one-shot 'booking confirmed' announcement; see the effect below.
+  const announcedRef = useRef<string | null>(null);
+
+  const poll = useOperationStatus(operationId, startedAt);
+  const booked = isBooked(poll.status);
 
   useEffect(() => {
     if (open) {
       setName(''); setCustomerSearch('');
       setSvc(services[0]?.key ?? ''); setStaff('s1');
-      setDay(String(WEEK.today)); setTime('600'); setPhase('form'); setShowDropdown(false);
+      setDay(String(WEEK.today)); setTime('600'); setPartySize('2');
+      setPhase('form'); setShowDropdown(false);
+      setSubmitError(null); setOperationId(null); setStartedAt(null);
+      announcedRef.current = null;
+      setAttemptKey(`create:${Date.now()}`);
     }
   }, [open, services]);
 
   const hasServices = services.length > 0;
   const service = services.find(s => s.key === svc) ?? services[0];
   const eligible = STAFF; // all staff eligible across business types
+
+  // The booking only counts as made when the server says so (Inv-16). Until then the
+  // drawer stays in its submitting state, however long that takes.
+  //
+  // Guarded by a ref, not by `phase`: `onCreated` is a fresh function reference on every
+  // parent render, and StrictMode double-invokes effects against the same state snapshot,
+  // so a `phase === 'done'` check alone would let the booking be appended twice.
+  useEffect(() => {
+    if (!booked || announcedRef.current === attemptKey) return;
+    announcedRef.current = attemptKey;
+    setPhase('done');
+    resetAttempt(attemptKey);
+    onCreated({
+      day: Number(day), staff, start: Number(time), service: svc,
+      serviceName: service?.name ?? svc,
+      name: name.trim(), prov: 'you', status: 'confirmed', channel: null,
+      dep: service?.dep ?? 0, transcript: null, dur: service?.dur ?? 60,
+    });
+  }, [booked, phase, attemptKey, day, staff, time, svc, service, name, onCreated]);
+
 
   useEffect(() => {
     if (!eligible.find(s => s.id === staff) && eligible[0]) setStaff(eligible[0].id);
@@ -72,24 +121,55 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) && customerSearch.length > 0
   ).slice(0, 6);
 
-  function submit() {
+  async function submit() {
     if (phase !== 'form' || !name.trim() || !hasServices) return;
+
     setPhase('confirming');
-    setTimeout(() => {
-      setPhase('done');
-      onCreated({
-        day: Number(day), staff, start: Number(time), service: svc, serviceName: service.name,
-        name: name.trim(), prov: 'you', status: 'confirmed', channel: null, dep: service.dep, transcript: null,
-        dur: service.dur,
-      });
-    }, 1000);
+    setSubmitError(null);
+
+    // Reusing the stored identity is what makes a retry safe: the same key + same payload
+    // replays the original acceptance rather than creating a second operation (§13.4).
+    const identity = getOrCreateAttempt(attemptKey);
+
+    try {
+      const request = await buildSubmission(
+        {
+          operation: 'create',
+          serviceId: svc,
+          startsAt: toIsoInstant(startOfWeek(new Date()), Number(day), Number(time)),
+          partySize: Number(partySize),
+          durationMinutes: service?.dur,
+        },
+        {
+          identity,
+          sessionId: `console:${identity.intentId}`,
+          identityRef: name.trim(),
+          readBackVersion: `${svc}|${day}|${time}|${partySize}`,
+        }
+      );
+
+      const accepted = await submitBooking(request);
+      setOperationId(accepted.operation_id ?? null);
+      setStartedAt(Date.now());
+    } catch (error) {
+      // A conflict means this key is already bound to a different request — retrying can
+      // never succeed, so the operator must start a new booking rather than resubmit.
+      if (isApiIdempotencyConflictError(error)) resetAttempt(attemptKey);
+      setSubmitError(error);
+      setPhase('form');
+    }
   }
 
   const footer = phase === 'done'
     ? <PrimaryButton full onClick={onClose}>Done</PrimaryButton>
     : hasServices
-      ? <PrimaryButton full busy={phase === 'confirming'} disabled={!name.trim() || phase !== 'form'} onClick={submit}>
-          {phase === 'confirming' ? 'Confirming' : 'Confirm booking'}
+      ? <PrimaryButton
+          full
+          busy={phase === 'confirming'}
+          disabled={!name.trim() || !partySize || phase !== 'form'}
+          onClick={() => { void submit(); }}
+        >
+          {phase === 'confirming' ? 'Submitting' : 'Confirm booking'}
         </PrimaryButton>
       : undefined;
 
@@ -102,6 +182,33 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
             Add a service in Settings before creating a booking.
           </div>
         </div>
+      ) : phase === 'confirming' ? (
+        <div className="text-center py-8 px-2">
+          <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#F2F2F0' }}>
+            <Spinner size={22} color="#0A0A0A" track="rgba(10,10,10,0.18)" />
+          </span>
+          <div className="text-[17px] font-bold tracking-[-0.02em] text-ink" aria-live="polite">
+            {normalizedStatusLabel(poll.status?.status)}
+          </div>
+          <div className="text-[12.5px] text-t2 mt-[5px] leading-[1.5]">
+            {poll.status?.customer_message
+              ?? 'The booking has been accepted and is being confirmed with the venue.'}
+          </div>
+          {poll.timedOut && (
+            <div className="text-[12px] text-t3 mt-[10px] leading-[1.5]">
+              Still working. You can close this — the booking will appear in the queue when it settles.
+            </div>
+          )}
+          {poll.status?.terminal && !booked && (
+            <div className="mt-[14px]">
+              <ErrorState
+                inline
+                error={new Error(poll.status?.customer_message ?? 'This booking could not be completed.')}
+                title={normalizedStatusLabel(poll.status?.status)}
+              />
+            </div>
+          )}
+        </div>
       ) : phase === 'done' ? (
         <div className="text-center py-6 px-2">
           <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
@@ -109,15 +216,16 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
           </span>
           <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Booking confirmed</div>
           <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
-            {name} · {service.name}<br />
+            {name} · {service?.name}<br />
             {DAY_OPTS[Number(day)]?.label} at {fmtT(Number(time))}
           </div>
-          <div className="inline-flex items-center gap-[6px] mt-[14px] px-[11px] py-[6px] rounded-full bg-wash2">
-            <span className="font-mono text-[10.5px] font-semibold text-ink">{money(service.dep)} deposit requested</span>
-          </div>
+          {/* No deposit line. This panel renders only after a terminal `booked` status, and the
+              deposit here comes from the hand-written mock catalog — the platform defers
+              payments (spec 09) and never requested or collected anything. Telling the
+              operator a hold is pending would be a fabricated fact about money. */}
         </div>
       ) : (
-        <fieldset disabled={phase === 'confirming'} className="border-none p-0 m-0" style={{ opacity: phase === 'confirming' ? 0.6 : 1 }}>
+        <fieldset className="border-none p-0 m-0">
           {/* Customer autocomplete */}
           <Field label="Customer">
             <div className="relative">
@@ -183,6 +291,22 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
               </Field>
             </div>
           </div>
+          <Field label="Party size" hint="How many people the booking is for.">
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={partySize}
+              onChange={e => setPartySize(e.target.value)}
+              className="w-full h-[42px] border border-cd-border rounded-[10px] px-3 text-[14px] text-ink outline-none focus:border-[#2F6BEB] transition-colors"
+              style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+            />
+          </Field>
+          {submitError != null && (
+            <div className="mb-[13px]">
+              <ErrorState inline error={submitError} onRetry={() => { void submit(); }} />
+            </div>
+          )}
           <div className="flex items-center gap-[10px] p-[12px_13px] rounded-[11px] mt-[3px]"
             style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
             <Icon name="card" size={17} strokeWidth={1.9} color="#6B6B6B" />

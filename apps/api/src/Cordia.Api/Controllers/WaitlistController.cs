@@ -1,4 +1,6 @@
-﻿using System.Text.Json.Serialization;
+﻿using Cordia.Domain.Enums;
+using System.Text.Json.Serialization;
+using Cordia.Application.Handlers.Console.ListWaitlistEnrollments;
 using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.Cancel;
 using Cordia.Application.Handlers.Waitlist.Decline;
@@ -27,6 +29,46 @@ namespace Cordia.Api.Controllers;
 [Route("api/waitlist")]
 public class WaitlistController(IMediator mediator, ITenantContext tenant) : ControllerBase
 {
+    /// <summary>Default page size when the caller does not specify one.</summary>
+    public const int DefaultListLimit = 100;
+
+    /// <summary>
+    /// Lists waitlist enrollments with their latest offer state, newest first.
+    ///
+    /// <c>auto_book_authorized</c> reflects whether an explicit auto-book grant was recorded
+    /// at enrollment; silent auto-book is prohibited by default (spec 11 §20, Inv-1), so the
+    /// board shows this per row rather than implying a global toggle.
+    /// </summary>
+    [HttpGet("enrollments")]
+    [ProducesResponseType(typeof(ListWaitlistEnrollmentsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListWaitlistEnrollmentsResponse>> ListEnrollments(
+        [FromQuery(Name = "active_only")] bool? activeOnly,
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var enrollments = await mediator.Send(
+            new ListWaitlistEnrollmentsQuery(tenant.TenantId, activeOnly ?? true, limit ?? DefaultListLimit),
+            ct);
+
+        return Ok(new ListWaitlistEnrollmentsResponse(
+            enrollments.Select(e => new WaitlistEnrollmentView(
+                e.EnrollmentId,
+                e.CustomerRef,
+                e.ServiceId,
+                e.LocationId,
+                e.PartySize,
+                e.AcceptableFrom,
+                e.AcceptableTo,
+                e.AutoBookAuthorized,
+                e.Cancelled,
+                e.CreatedAt,
+                EnumWireNames.ToWireName(e.LatestOfferStatus),
+                e.LatestOfferExpiresAt)).ToList()));
+    }
+
     /// <summary>Enrolls a customer on the waitlist. Returns 201 with the new enrollment id.</summary>
     [HttpPost("enrollments")]
     [ProducesResponseType(StatusCodes.Status201Created)]
@@ -154,3 +196,21 @@ public sealed record AutoBookGrantDto(
 {
     public AutoBookGrantDto() : this(string.Empty, default, 0, default, default, 0, string.Empty) { }
 }
+
+/// <summary>One row of the console's waitlist board.</summary>
+public sealed record WaitlistEnrollmentView(
+    [property: JsonPropertyName("enrollment_id")] string EnrollmentId,
+    [property: JsonPropertyName("customer_ref")] string CustomerRef,
+    [property: JsonPropertyName("service_id")] string ServiceId,
+    [property: JsonPropertyName("location_id")] string LocationId,
+    [property: JsonPropertyName("party_size")] int PartySize,
+    [property: JsonPropertyName("acceptable_from")] DateTimeOffset AcceptableFrom,
+    [property: JsonPropertyName("acceptable_to")] DateTimeOffset AcceptableTo,
+    [property: JsonPropertyName("auto_book_authorized")] bool AutoBookAuthorized,
+    [property: JsonPropertyName("cancelled")] bool Cancelled,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("latest_offer_status")] string? LatestOfferStatus,
+    [property: JsonPropertyName("latest_offer_expires_at")] DateTimeOffset? LatestOfferExpiresAt);
+
+public sealed record ListWaitlistEnrollmentsResponse(
+    [property: JsonPropertyName("enrollments")] IReadOnlyList<WaitlistEnrollmentView> Enrollments);

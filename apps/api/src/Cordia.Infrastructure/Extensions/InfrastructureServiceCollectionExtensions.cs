@@ -101,6 +101,7 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 13 T6 — product-reporting projector (read-only funnel, Inv-16).
         services.AddScoped<IBookingFunnelReadModel, BookingFunnelReadModel>();
+        services.AddScoped<IConsoleReadModel, ConsoleReadModel>();
 
         // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
         services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();

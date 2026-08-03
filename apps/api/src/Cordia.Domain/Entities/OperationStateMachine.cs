@@ -36,6 +36,12 @@ public static class OperationStateMachine
             {
                 OperationStatus.AwaitingUserAction,
                 OperationStatus.ReservingCapacity,
+                // Spec 08 §5.3: a cancellation is its own operation and reserves nothing — it
+                // undoes an existing booking. It therefore skips ReservingCapacity/Held and goes
+                // straight to Finalizing, which is the only state with an edge to the Booked
+                // terminal. Create/modify never take this edge (ValidateOperationCommandHandler
+                // routes only OperationTypeEnum.Cancel here).
+                OperationStatus.Finalizing,
                 OperationStatus.Rejected,
             }.ToFrozenSet(),
             [OperationStatus.AwaitingUserAction] = new HashSet<OperationStatus>

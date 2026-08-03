@@ -72,7 +72,17 @@ internal static class ManageBookingMapper
             PartySize = candidate.PartySize,
         };
 
-    public static BookingProjectionRef ToContract(BookingProjection projection)
+    /// <summary>
+    /// Maps the read projection to the wire contract.
+    ///
+    /// <paramref name="bookingVersion"/> is the <c>bookings</c> row's optimistic-concurrency
+    /// token and MUST come from <see cref="Cordia.Domain.Interfaces.IBookingRepository"/> —
+    /// deliberately NOT <see cref="BookingProjection.Version"/>, which is the *operation*
+    /// version (<c>booking_operations.version</c>). Modify and cancel compare
+    /// <c>expected_booking_version</c> against the booking row, so returning the operation
+    /// version here would hand callers a value guaranteed to fail with 409 stale_version.
+    /// </summary>
+    public static BookingProjectionRef ToContract(BookingProjection projection, long? bookingVersion = null)
         => new()
         {
             BookingId = projection.BookingId,
@@ -80,5 +90,6 @@ internal static class ManageBookingMapper
             Status = projection.LifecycleStatus,
             StartsAt = projection.StartsAt,
             PartySize = projection.PartySize,
+            Version = bookingVersion,
         };
 }

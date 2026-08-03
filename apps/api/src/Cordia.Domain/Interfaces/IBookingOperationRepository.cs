@@ -48,6 +48,17 @@ public interface IBookingOperationRepository
     /// Cross-tenant scan (IgnoreQueryFilters): returns up to <paramref name="limit"/> non-terminal
     /// operations that are NOT in a user-wait state, ordered by UpdatedAt asc. Used by the SLA evaluator.
     /// </summary>
+    /// <summary>
+    /// The operation that actually created <paramref name="bookingId"/> — the one whose capacity
+    /// hold the booking occupies. Needed when cancelling, because the cancellation is a
+    /// <i>different</i> operation and holds no capacity of its own (spec 08 §5.3).
+    /// </summary>
+    /// <returns>The booked create/reschedule operation for this booking, or null if none.</returns>
+    Task<BookingOperation?> GetBookedOperationForBookingAsync(
+        string tenantId,
+        string bookingId,
+        CancellationToken ct = default);
+
     Task<IReadOnlyList<BookingOperation>> ListNonTerminalForSlaAsync(
         DateTimeOffset now, int limit, CancellationToken ct = default);
 }

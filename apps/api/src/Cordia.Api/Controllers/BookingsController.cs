@@ -1,10 +1,12 @@
 ﻿using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
+using Cordia.Application.Handlers.Console.ListBookingSchedule;
 using Cordia.Application.Handlers.ManageBooking.FindManageableBookings;
 using Cordia.Application.Handlers.ManageBooking.GetBookingDetails;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingCancellation;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingModification;
 using Cordia.Application.Handlers.ManageBooking.ValidateBookingChange;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -39,6 +41,56 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
 
         return Ok(new FindManageableBookingsResponse(result.Status, result.Candidates));
     }
+
+    /// <summary>
+    /// Lists bookings starting inside [from, to) for the console's schedule grid.
+    ///
+    /// Distinct from <see cref="FindManageable"/>, which is an identity lookup requiring a
+    /// phone/reference/email hint: this is the tenant-wide, date-ranged read the operator
+    /// console needs. Read-only — it reports persisted state and transitions nothing (Inv-16).
+    /// </summary>
+    /// <param name="from">Window start, inclusive. Default: start of the current UTC day.</param>
+    /// <param name="to">Window end, exclusive. Default: seven days after <paramref name="from"/>.</param>
+    /// <param name="limit">Maximum rows to return (1–500).</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("schedule")]
+    [ProducesResponseType(typeof(BookingScheduleResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<BookingScheduleResponse>> GetSchedule(
+        [FromQuery(Name = "from")] DateTimeOffset? from,
+        [FromQuery(Name = "to")] DateTimeOffset? to,
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var resolvedFrom = from ?? new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+        var resolvedTo = to ?? resolvedFrom.AddDays(7);
+
+        var result = await mediator.Send(
+            new ListBookingScheduleQuery(tenant.TenantId, resolvedFrom, resolvedTo, limit ?? DefaultScheduleLimit),
+            ct);
+
+        return Ok(new BookingScheduleResponse(
+            resolvedFrom,
+            resolvedTo,
+            result.Truncated,
+            result.Bookings.Select(b => new ScheduledBookingView(
+                b.BookingId,
+                b.OperationId,
+                b.BookingReference,
+                b.StartsAt,
+                b.PartySize,
+                b.DurationMinutes,
+                b.ServiceId,
+                b.CustomerRef,
+                b.LifecycleStatus,
+                OperationStatusNames.ToWireName(b.OperationStatus),
+                b.UpdatedAt)).ToList()));
+    }
+
+    /// <summary>Default schedule page size when the caller does not specify one.</summary>
+    public const int DefaultScheduleLimit = 200;
 
     /// <summary>Returns a verification-leveled booking projection.</summary>
     [HttpGet("{bookingId}")]
@@ -188,3 +240,29 @@ public sealed record ValidateBookingChangeRequest(
 public sealed record ValidateBookingChangeResponse(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("validation")] BookingChangeValidation Validation);
+
+/// <summary>
+/// One row of the console schedule grid. Carries the opaque <c>customer_ref</c> rather than
+/// a name or contact detail (spec 14 minimisation) — those stay behind the
+/// verification-gated single-booking read.
+/// </summary>
+public sealed record ScheduledBookingView(
+    /// <summary>Null until the operation finalises — see <c>ScheduledBooking.BookingId</c>.</summary>
+    [property: JsonPropertyName("booking_id")] string? BookingId,
+    [property: JsonPropertyName("operation_id")] string OperationId,
+    [property: JsonPropertyName("booking_reference")] string? BookingReference,
+    [property: JsonPropertyName("starts_at")] DateTimeOffset? StartsAt,
+    [property: JsonPropertyName("party_size")] int? PartySize,
+    [property: JsonPropertyName("duration_minutes")] int? DurationMinutes,
+    [property: JsonPropertyName("service_id")] string? ServiceId,
+    [property: JsonPropertyName("customer_ref")] string? CustomerRef,
+    [property: JsonPropertyName("lifecycle_status")] string? LifecycleStatus,
+    [property: JsonPropertyName("operation_status")] string OperationStatus,
+    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt);
+
+public sealed record BookingScheduleResponse(
+    [property: JsonPropertyName("from")] DateTimeOffset From,
+    [property: JsonPropertyName("to")] DateTimeOffset To,
+    /// <summary>True when the list is partial because the scan hit its ceiling.</summary>
+    [property: JsonPropertyName("truncated")] bool Truncated,
+    [property: JsonPropertyName("bookings")] IReadOnlyList<ScheduledBookingView> Bookings);

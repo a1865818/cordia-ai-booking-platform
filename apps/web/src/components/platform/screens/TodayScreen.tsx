@@ -266,6 +266,9 @@ function DiagramView({
       e.stopPropagation();
       const b = bookings.find(x => x.id === id);
       if (!b) return;
+      // An unfinalised operation has no booking to move — `id` is an operation id. Dragging it
+      // would snap the row to a new time and silently snap back a round trip later.
+      if (b.isBooking === false) return;
       const d: DragState = {
         id, mode,
         mx0: e.clientX, my0: e.clientY,
