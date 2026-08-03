@@ -244,3 +244,33 @@ describe("write failure handling", () => {
     expect(writeFailureMessage(new Error("disk on fire"), "cancel this booking")).toBe("disk on fire");
   });
 });
+
+describe("who the confirmation identifies (spec 04 / spec 14)", () => {
+  it("leaves the canonical hash untouched whoever confirmed", async () => {
+    // `identity` lives on the CONFIRMATION, not on the canonical payload. Changing the console
+    // from sending the guest's typed name to sending the operator must therefore not move the
+    // hash by a single byte — a moved hash is a 422 (ConfirmationHashMismatchException) and a
+    // broken idempotency replay (Inv-2/3).
+    const asGuestName = await buildSubmission(draft, { ...context, identityRef: "Sarah Nguyen" });
+    const asOperator = await buildSubmission(draft, { ...context, identityRef: "console-operator" });
+
+    expect(asOperator.revision.payload_hash).toBe(asGuestName.revision.payload_hash);
+    expect(asOperator.confirmation.intent_payload_hash).toBe(asOperator.revision.payload_hash);
+  });
+
+  it("carries no guest name in the canonical payload — there is no field for one", async () => {
+    // BookingRequest models operation/service/time/party/duration/target only. Any guest
+    // identity the console collected would have had nowhere to go.
+    const request = await buildSubmission(draft, { ...context, identityRef: "console-operator" });
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+
+    expect(Object.keys(payload)).not.toContain("customer_ref");
+    expect(Object.keys(payload)).not.toContain("customer_name");
+    expect(JSON.stringify(payload)).not.toContain("Sarah");
+  });
+
+  it("puts exactly what the caller passed into confirmation.identity", async () => {
+    const request = await buildSubmission(draft, { ...context, identityRef: "console-operator" });
+    expect(request.confirmation.identity).toBe("console-operator");
+  });
+});

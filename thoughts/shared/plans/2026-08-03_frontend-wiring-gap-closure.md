@@ -396,15 +396,32 @@ Load `engineering-security-engineer.md` before implementing.
 4. Record the contract gap in §11 as an explicit open item for spec 04/08/12.
 
 **Automated Verification**
-- [ ] `bun nx test web` — submission test pins the unchanged canonical hash **and** the new
-      `confirmation.identity`
-- [ ] `bun nx typecheck web` · `bun nx lint web` · `bun nx build web`
+- [x] `bun nx test web` — submission tests pin the **unchanged** canonical hash across a change
+      of `identityRef`, the absence of any guest field in the payload, and the new
+      `confirmation.identity` — **292 passed** (was 289)
+- [x] `bun nx typecheck web` · `bun nx lint web` (0 warnings) · `bun nx build web`
 
 **Manual Verification**
 - [ ] A console-created booking appears under the operator ref, and the drawer says so
 - [ ] *Regression:* create still polls to `booked` and confirms only on a real terminal status
 
 ### Discoveries and Notable Information
+
+- The hash really is unaffected, and it is now **pinned by a test** rather than reasoned about:
+  `identity` lives on the confirmation, not on `revision.canonical_payload`. Had it been on the
+  payload, this change would have been a 422 (`ConfirmationHashMismatchException`) and a broken
+  idempotency replay. Two submissions differing only in `identityRef` are asserted to produce
+  byte-identical hashes.
+- The create drawer was also the last place asserting provenance: its optimistic row claimed
+  `prov: 'you'`. Now `unknown`, matching what the server's row will say — otherwise the row
+  changed its story the moment the refetch landed.
+- The guest-name field is **kept**, because an operator needs a label on the grid, but its hint
+  now states plainly that it is local and that the platform records the booking against them.
+  Silently continuing to collect a field that goes nowhere was the alternative, and it is worse.
+- **Still open, and now recorded in §11 for spec 04/08/12:** there is no ratified way to attach a
+  guest to a staff-made booking. `BookingRequest` has no customer field; `Confirmation.identity`
+  means "verified identity". Until one exists, console bookings have no notification destination
+  and cannot be found by `GET /api/Bookings?phone_e164=`.
 
 ---
 

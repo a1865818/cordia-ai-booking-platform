@@ -14,6 +14,7 @@ import {
   isBooked, normalizedStatusLabel, useOperationStatus,
 } from "../../../features/bookings/useOperationStatus";
 import { isApiIdempotencyConflictError } from "../../../api/problem";
+import { getActor } from "../../../api/config";
 
 const inputStyle: React.CSSProperties = {
   width: '100%', height: 42, border: '1px solid #EAEAEA', borderRadius: 10,
@@ -125,7 +126,10 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
     onCreated({
       day: Number(day), staff, start: Number(time), service: svc,
       serviceName: service?.name ?? svc,
-      name: name.trim(), prov: 'you', status: 'confirmed', channel: null,
+      // `prov: 'unknown'` even though this operator just made it: the schedule projection
+      // carries no provenance, so the server's row will claim none. Saying "Booked by you"
+      // here would make the row change its story the moment the refetch lands.
+      name: name.trim(), prov: 'unknown', status: 'confirmed', channel: null,
       dep: service?.dep ?? 0, transcript: null, dur: service?.dur ?? 60,
     });
   }, [booked, phase, attemptKey, day, staff, time, svc, service, name, onCreated]);
@@ -161,7 +165,17 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
         {
           identity,
           sessionId: `console:${identity.intentId}`,
-          identityRef: name.trim(),
+          // The OPERATOR, not the typed guest name.
+          //
+          // `Confirmation.identity` is documented as "verified identity, or the
+          // `anonymous_session` sentinel" (spec 04). A staff booking has no verified guest, and
+          // the operator is the confirming party — which is what `verification_level:
+          // "staff_confirmed"` already claims, and what cancel and reschedule already send.
+          //
+          // Sending the typed name here pushed plain-text PII into `identity_ref`, which the
+          // platform surfaces as the opaque `customer_ref` on `/api/customers` — a field spec 14
+          // minimises precisely so it cannot carry a person's name.
+          identityRef: getActor(),
           readBackVersion: `${svc}|${day}|${time}|${partySize}`,
         }
       );
@@ -244,8 +258,17 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
         </div>
       ) : (
         <fieldset className="border-none p-0 m-0">
-          {/* Customer autocomplete */}
-          <Field label="Customer">
+          {/*
+            Customer autocomplete.
+            The name is a LABEL FOR THIS SCREEN. There is no customer field on `BookingRequest`
+            and `Confirmation.identity` carries the operator, so nothing here reaches the
+            platform as guest identity. The hint says so rather than letting the operator
+            believe they have recorded who the booking is for.
+          */}
+          <Field
+            label="Customer"
+            hint="Used on this screen only. Until guest identity capture exists, the platform records this booking against you."
+          >
             <div className="relative">
               <input
                 value={customerSearch || name}
@@ -284,7 +307,7 @@ export function CreateBookingDrawer({ open, device, week, onClose, onCreated, se
                     onMouseDown={() => setShowDropdown(false)}
                     className="flex items-center gap-2 w-full px-3 py-2.5 hover:bg-wash text-left border-none border-t border-hair bg-white cursor-pointer text-[13px] text-t2 transition-colors"
                   >
-                    + New customer "{customerSearch}"
+                    + Use "{customerSearch}" as the label
                   </button>
                 </div>
               )}
