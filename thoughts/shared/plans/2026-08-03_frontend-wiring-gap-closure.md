@@ -581,3 +581,33 @@ classes of fabricated assertion removed). None weakened.
 2. `latest_offer_id` added to the console projection + api-contract regenerated (P5) — the plan
    predicted no regeneration; this branch owns the console projections and the change is additive
    with no DDL.
+
+---
+
+## Stage 5/7 — review and final verdict
+
+`/code-review xhigh` (sonnet subagents) over the 9-phase range: **15 findings, all real, all
+fixed** in `0cc7431`. Full write-up: `thoughts/shared/reviews/2026-08-04_frontend-wiring-gap-closure.md`.
+
+The two severe ones both **re-introduced the class of defect this plan set out to remove**, from
+the same root cause — a value outliving its context by one render:
+
+- Week navigation kept the previous week's bookings under the new week's dates, because the new
+  window's query starts at `data === undefined`. The `9–15 June` defect Phase 1 removed, brought
+  back by Phase 1's own navigation feature.
+- Switching conversations fired an audited sensitive read with the previous conversation's reason
+  code and another subject's grant, because the reset ran in a `useEffect` that fires *after*
+  `useTranscript` has re-subscribed (Inv-11, spec 14 §2).
+
+Both are now scoped-to-owner and compared at **render** (`features/bookings/scoped.ts`), extracted
+as pure helpers so the rule is pinned by tests rather than asserted in a comment. Four further
+findings (3, 5, 9, 11) were fresh instances of the very "asserts what the API does not record"
+class the plan existed to close.
+
+**Final state.** web **302** · api **1176** · integration **419 passed / 2 skipped / 0 failed** ·
+langgraph **1007** · all lints 0 warnings · all builds clean. 11 commits on `feat/ui-wire`, not
+pushed.
+
+**Lesson worth keeping:** a green suite said nothing about any of these — the review explicitly
+noted all 15 were behaviour the tests did not cover. Fixing a class of defect does not stop new
+instances entering through the fixes themselves.
