@@ -146,7 +146,7 @@ name — a signed context alone would still not give the console a user or a bus
 | `X-Correlation-Id` | Optional | Echoed back; else the server mints `corr_{guid}`. Must match `^[A-Za-z0-9_-]{1,64}$`. `fetchApi` always sends one. |
 | `X-Actor`, `X-Actor-Role` | Operator/staff writes | Required on operation `resume`/`resolve`, all Menu owner actions, Pre-order recovery, DLQ replay, and **all four waitlist mutations** (enrol / cancel / accept / decline — each is an `IOperatorActionRequest` with `RequiredRole = operator`). Also one of the two ways to read a transcript. |
 | `X-Reason-Code` | Audited operator actions | Required with the actor headers on `resume`/`resolve`, menu actions, **the waitlist mutations**, and the staff-role transcript read — `OperatorActionBehavior` deny-audits and 403s without all three. Never defaulted client-side — an audit row that always says the same thing records nothing. |
-| `X-Grant-Id` (or `?grant_id=`) | Sensitive reads/writes | Spec-08 verification grant for `GET /api/Bookings/{id}`, transcript reads, modify/cancel, and pre-order convert-standalone. Header wins over query. |
+| `X-Grant-Id` (or `?grant_id=`) | Sensitive reads/writes | Spec-08 verification grant for `GET /api/Bookings/{id}`, transcript reads, modify/cancel, and pre-order convert-standalone. Header wins over query. **Single-use on mutations**: a grant presented to `POST /api/Bookings` for modify/cancel/reschedule is spent when the operation is created — an idempotent retry of the *same* request replays fine, but a second, different mutation needs a fresh grant. |
 | `X-Provider-Message-Id` / `X-Provider-Call-Id` | Channel webhooks only | Provider's own correlation id, echoed when well-formed. Not used by the UI. |
 | `X-Webhook-Secret` | Notification provider webhooks only | Not used by the UI. |
 
@@ -305,7 +305,10 @@ so a reschedule without it would confirm to nobody.
   `GET /api/Bookings/{id}`.
 - **Verification grant sub-flow**: gated reads/writes return `requires_verification`.
   `features/verification/` implements `POST /api/verifications` → collect code →
-  `POST /{id}/verify` → carry the returned `grant_id` as `X-Grant-Id`.
+  `POST /{id}/verify` → carry the returned `grant_id` as `X-Grant-Id`. A grant that
+  authorizes a mutation through the acceptance door is **consumed by it** — retrying the
+  same attempt is fine (the replay hands back the winner's operation), but a new mutation
+  must step up again.
 
 ---
 
@@ -346,7 +349,7 @@ the rest are kebab/lowercase.
 |---|---|---|---|
 | GET | `/api/Bookings?phone_e164&booking_reference&email` | `FindManageableBookingsResponse` | Identity lookup, **not** a list. Candidates require a venue display name to be set — a tenant without one gets none, deliberately (§15) |
 | GET | `/api/Bookings/{bookingId}` | `GetBookingDetailsResponse` | May need `X-Grant-Id`; 403 if `requires_verification` |
-| POST | `/api/Bookings` | `OperationAcceptedResponse` (202) / 400 / 409 / 422 | Create; submit confirmed intent |
+| POST | `/api/Bookings` | `OperationAcceptedResponse` (202) / 400 / 403 / 409 / 422 | Create; submit confirmed intent. 403 on a mutation (`target_booking_id` set) without a valid grant or staff role — incl. a grant already spent by a *different* request, or an unknown target |
 | POST | `/api/Bookings/{id}/changes:validate` | `ValidateBookingChangeResponse` | Pre-flight for a change. Wired into the reschedule flow (§8). Grant **or** `X-Actor` + `X-Actor-Role` — the same door as the mutation it precedes, so the console can run it |
 | POST | `/api/Bookings/{id}/modifications` | `SubmitBookingModificationResponse` (202/400/403/409/422) | **Never wired (group C6.)** `SubmitModificationInput` is `additionalProperties: false` and carries no field for the changed data, so it cannot transport a new time — a reschedule rides `POST /api/Bookings` instead (§8) |
 | POST | `/api/Bookings/{id}/cancellations` | `SubmitBookingCancellationResponse` (202/400/403/409) | Cancel |
@@ -359,7 +362,7 @@ the rest are kebab/lowercase.
 | POST | `/api/conversation-sessions/{sessionId}/{consent\|transcript-turns}` | persisted results | Agent-lane writes |
 | GET | `/api/customers?query&limit` | `ListCustomersResponse` | Case-insensitive substring on the customer ref; `limit` 1–200. Reports `truncated` |
 | GET | `/api/reporting/funnel?from&to` | `BookingFunnelView` | Defaults to the last 24 h |
-| GET | `/api/reporting/overview?from&to` | `BookingOverviewResponse` | Defaults to the last 7 d. Per-day/channel/service aggregates; deliberately **no** agent-vs-human split (nothing records who handled a booking) |
+| GET | `/api/reporting/overview?from&to` | `BookingOverviewResponse` | Defaults to the last 7 d. Per-day/channel/service aggregates; deliberately **no** agent-vs-human split (nothing records who handled a booking). Per-day `booked` counts **create/modify/reschedule** operations only — a cancellation reaching its terminal state is not a booking made that day |
 | GET | `/api/catalog/items?query&category&max_results` | anon item list | **Published** items only. `max_results` default 20; out-of-range is a 400, not clamped |
 | GET | `/api/catalog/items/{itemId}` | anon item | 404 when absent or unpublished |
 | GET | `/api/consent-policies?channel` | `ConsentPolicyView` | `notice_text: null` is a real wire value (agent plays its default) |
@@ -786,11 +789,14 @@ the console has no way to know.
    than forwarding a value the API would reject.
 3. **The level was client-asserted.** `CheckVerificationHandlers` records a real
    `VerificationLevel` on every `VerificationGrant`, but acceptance trusted the string the caller
-   sent. It now derives the level from the grant when `confirmation.identity` names an unexpired
-   one (`IVerificationGrantRepository.GetAssuranceLevelAsync`), falling back to the asserted value
-   only when there is no grant. A lane that verified nobody can no longer record `high_assurance`
-   by saying so (Inv-11). The lookup is skipped for non-`grant_`-prefixed identities so the
-   console's operator id does not put a guaranteed-miss query on the p95<300 ms acceptance path.
+   sent. It now derives the level from **the grant that actually authorized the request** — the
+   `X-Grant-Id` header or a `grant_`-prefixed `confirmation.identity`, resolved through one shared
+   path (`ResolveGrantId`) — falling back to the asserted value only when there is no grant. On a
+   **create** (no authorization gate) a named grant's level is believed only when the grant belongs
+   to the customer the payload names (`GetAssuranceLevelForCustomerAsync`), so a caller cannot
+   borrow any live grant id to record `high_assurance` (Inv-11). The lookup is skipped for
+   non-`grant_`-prefixed identities so the console's operator id does not put a guaranteed-miss
+   query on the p95<300 ms acceptance path.
 
 ### Phone matching — normalised at both ends
 
@@ -851,7 +857,9 @@ handle"* and validated only as non-empty — so it may be a person's **name**, w
 address. The resolver therefore classifies it: an email, or an international-format phone,
 counts as deliverable; anything else does not. An enrollment identified only by a name genuinely
 has nowhere to send, and now says so rather than pretending. The stated `notification_channel` is
-also free text, so it is only honoured when it names a channel the platform can actually send on.
+also free text, so it is only honoured when it names a channel the platform can actually send on
+**and** the channel agrees with the address shape — a stated `sms` beside an email address is
+ignored rather than handing an email to the SMS adapter.
 
 **Four integration fixtures were seeding no destination at all** (`CanonicalPayload = "{}"`, and
 no offer/enrollment rows) while asserting successful delivery — they were testing delivery to
