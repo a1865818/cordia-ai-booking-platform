@@ -8,6 +8,13 @@ public interface ICapacitySlotRepository
     /// <summary>Returns the slot for the given (tenantId, slotId) pair, or null if not found. Uses AsNoTracking.</summary>
     Task<CapacitySlot?> GetAsync(string tenantId, string slotId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Slots starting within [<paramref name="from"/>, <paramref name="to"/>), ascending.
+    /// Tenant-scoped, AsNoTracking. Backs the availability read.
+    /// </summary>
+    Task<IReadOnlyList<CapacitySlot>> ListAsync(
+        string tenantId, DateTimeOffset from, DateTimeOffset to, CancellationToken ct = default);
+
     /// <summary>Inserts a new capacity slot and flushes within the ambient transaction.</summary>
     Task AddAsync(CapacitySlot slot, CancellationToken ct = default);
 }

@@ -105,15 +105,34 @@ public class ManageBookingReadEndpointTests(AcceptanceApiFixture fixture)
         var intentId = $"int-{Guid.NewGuid():N}";
         var operationId = $"op-{Guid.NewGuid():N}";
         var now = DateTimeOffset.UtcNow;
+        // Kept as close to a REAL BookingRequest as the projection allows.
+        //
+        // This fixture used to also carry `booking_id`, `booking_date` and `approx_time`, none of
+        // which the submission path can produce — so the suite was green while the endpoint did
+        // not work (see GuestIdentityOnBookingTests, which drives POST /api/bookings instead of
+        // hand-seeding). Those three are gone:
+        //   • booking_id  — the operation row below already carries it, which is where a real
+        //                   booking's id comes from.
+        //   • booking_date / approx_time — CanonicalBookingPayload derives both from `starts_at`,
+        //                   which IS a real BookingRequest field.
+        // `customer` is now a real field too (spec 04 §4.2).
+        //
+        // TWO fields remain synthetic because nothing in the platform can supply them:
+        //   • booking_reference — authoritative source is Booking.BookingReference, but
+        //                         BookingReadRepository.BaseRows never joins `bookings`.
+        //   • business_name     — has NO source at all: there is no tenant/business profile
+        //                         entity and TenantContextView carries no display name.
+        // Until spec 12 ratifies one, a candidate cannot be projected from a real payload.
         var payload = JsonSerializer.Serialize(new
         {
-            booking_id = bookingId,
-            booking_reference = bookingReference,
-            business_name = "Serenity Spa",
-            booking_date = "2026-07-10",
-            approx_time = "19:00",
+            operation = "create",
+            service_id = "svc-spa",
+            starts_at = "2026-07-10T19:00:00+00:00",
             party_size = 2,
             customer = new { phone_e164 = phoneE164 },
+            // --- not producible by the submission path; see above ---
+            booking_reference = bookingReference,
+            business_name = "Serenity Spa",
         });
 
         await using var ctx = fixture.CreateContext(tenantId);

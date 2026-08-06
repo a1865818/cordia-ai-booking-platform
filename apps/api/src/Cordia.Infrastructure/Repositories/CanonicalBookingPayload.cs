@@ -31,7 +31,14 @@ internal sealed record CanonicalBookingPayload(
     string? ContactPhone,
     string? CallerId,
     string? Email,
-    string? ContactEmail)
+    string? ContactEmail,
+    /// <summary>
+    /// Opaque handle to contact held in <c>guest_contacts</c> (owner retention ruling
+    /// 2026-08-06). New payloads carry this INSTEAD of the inline contact fields above; those
+    /// stay parsed because revisions written before the ruling are immutable and still have to be
+    /// searchable.
+    /// </summary>
+    string? ContactRef)
 {
     private static readonly string[] BookingIdNames = ["booking_id", "bookingId"];
     private static readonly string[] TargetBookingIdNames = ["target_booking_id", "targetBookingId"];
@@ -49,6 +56,7 @@ internal sealed record CanonicalBookingPayload(
     private static readonly string[] CallerIdNames = ["caller_id", "callerId"];
     private static readonly string[] EmailNames = ["email"];
     private static readonly string[] ContactEmailNames = ["contact_email", "contactEmail"];
+    private static readonly string[] ContactRefNames = ["contact_ref", "contactRef"];
 
     public static CanonicalBookingPayload? Parse(string json)
     {
@@ -77,7 +85,8 @@ internal sealed record CanonicalBookingPayload(
                 ReadString(root, ContactPhoneNames),
                 ReadString(root, CallerIdNames),
                 ReadString(root, EmailNames),
-                ReadString(root, ContactEmailNames));
+                ReadString(root, ContactEmailNames),
+                ReadString(root, ContactRefNames));
         }
         catch (JsonException)
         {

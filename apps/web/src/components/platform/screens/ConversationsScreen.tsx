@@ -2,6 +2,7 @@ import { useRef, useEffect, type ReactNode } from "react";
 import { Thread, Message, chMeta } from "../../../data/console";
 import { Chan } from "../../ui/StatusTags";
 import { Chip } from "../../ui/Chip";
+import { ConsentBadge } from "../../ui/ConsentBadge";
 import { Icon } from "../../ui/Icon";
 import { PrimaryButton } from "../../ui/Button";
 
@@ -43,17 +44,19 @@ function ThreadRow({ t, active, isDesktop, onClick }: ThreadRowProps) {
       <div className="text-[12.5px] text-t2 mt-[9px] leading-[1.4]">{t.preview}</div>
       {/* An ended session shows a status only when one is actually recorded. The session
           summary carries no outcome, so live rows previously all read "Pending". */}
-      {(t.live || t.status) && (
-        <div className="mt-[10px]">
-          {t.live
-            ? <span className="inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[3px] rounded-full"
-                style={{ color: '#2056CC', background: '#E9F0FE' }}>
-                <span className="w-[6px] h-[6px] rounded-full bg-[#2F6BEB]" />
-                Live · needs you
-              </span>
-            : t.status && <Chip status={t.status} />}
-        </div>
-      )}
+      <div className="mt-[10px] flex items-center gap-[7px] flex-wrap">
+        {t.live
+          ? <span className="inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[3px] rounded-full"
+              style={{ color: '#2056CC', background: '#E9F0FE' }}>
+              <span className="w-[6px] h-[6px] rounded-full bg-[#2F6BEB]" />
+              Live · needs you
+            </span>
+          : t.status && <Chip status={t.status} />}
+        {/* The session read has always carried `consent_state`; nothing rendered it, so whether
+            the guest had consented — the record that later proves messaging or recording was
+            permitted — was invisible. Displayed only: consent is the guest's to give. */}
+        <ConsentBadge state={t.consentState} recordingAllowed={t.recordingAllowed} />
+      </div>
     </button>
   );
 }
@@ -177,13 +180,21 @@ function ConversationThread({ device, thread, msgs, onBack, onTakeOver, notice, 
           </PrimaryButton>
         </div>
       ) : (
-        <div className="flex items-center gap-[9px] p-[12px_14px] border-t border-hair bg-white shrink-0">
-          <div className="flex-1 h-[40px] border border-cd-border rounded-[10px] flex items-center px-[13px] text-[13px] text-t3">
-            Message {thread.name}…
+        /*
+          No composer. The input and Send button implied the operator could reply to a guest from
+          here; the button had no `onClick` at all, and there is no send-message endpoint anywhere
+          in the 50-operation contract — conversations are a read surface. An affordance that
+          silently does nothing is the same false claim as a fabricated number, made about a
+          capability instead of a fact.
+        */
+        <div className="p-[12px_14px] border-t border-hair bg-white shrink-0">
+          <div className="flex items-center gap-[8px] text-[12px] text-t3 leading-[1.5]">
+            <Icon name="alert" size={14} strokeWidth={2} color="#9A9A9A" />
+            <span>
+              This conversation is read-only. Replying from the console isn’t available yet —
+              the platform has no endpoint for it.
+            </span>
           </div>
-          <button className="w-[40px] h-[40px] border-none rounded-[10px] bg-ink cursor-pointer flex items-center justify-center shrink-0">
-            <Icon name="send" size={16} strokeWidth={2.2} color="#fff" />
-          </button>
         </div>
       )}
     </div>

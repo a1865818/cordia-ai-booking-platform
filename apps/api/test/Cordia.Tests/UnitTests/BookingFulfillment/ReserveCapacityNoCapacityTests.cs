@@ -53,7 +53,7 @@ public class ReserveCapacityNoCapacityTests
             .Returns(Task.CompletedTask);
     }
 
-    private ReserveCapacityCommandHandler CreateHandler(TimeSpan? holdTtl = null)
+    private ReserveCapacityCommandHandler CreateHandler(TimeSpan? holdTtl = null, Metrics? metrics = null)
     {
         var options = Options.Create(new CapacityOptions
         {
@@ -72,7 +72,7 @@ public class ReserveCapacityNoCapacityTests
             _auditRepo.Object,
             _uow.Object,
             options,
-            new Metrics());
+            metrics ?? new Metrics());
     }
 
     private static BookingOperation MakeOp(
@@ -627,4 +627,74 @@ public class ReserveCapacityNoCapacityTests
         var options = new CapacityOptions();
         Assert.Equal(TimeSpan.FromMinutes(45), options.HoldTtl);
     }
+    // ── The untracked path must not be silent ───────────────────────────────────────────────
+
+    /// <summary>
+    /// The untracked branch is correct behaviour for an un-provisioned resource — and it was also
+    /// completely silent. `capacity_slots` had a repository read and no writer, so the table was
+    /// empty in every deployment and this branch took 100% of traffic: **no booking was ever
+    /// capacity-checked**, and nothing in logs, metrics or audit said so. It was discoverable only
+    /// by reading the handler.
+    ///
+    /// The behaviour is deliberately unchanged. What is pinned here is that the platform now says
+    /// what it is doing, and says WHICH of the two untracked cases it hit — they need different
+    /// fixes: `slot_not_declared` means the venue has not declared that slot, `no_slot_key` means
+    /// the payload had no resource/time dimension to key on at all.
+    /// </summary>
+    [Fact]
+    public async Task NotTrackedSlot_CountsTheUncheckedBooking_WithTheReasonItWasUnchecked()
+    {
+        var (tenantId, opId, intentId) = ("t-untracked-m", "op-untracked-m", "int-untracked-m");
+        var resourceId = "r9";
+        var requestedAt = new DateTimeOffset(2026, 7, 3, 14, 0, 0, TimeSpan.Zero);
+        var slotId = $"{resourceId}|{requestedAt:O}";
+
+        var op = MakeOp(tenantId, opId, OperationStatus.ReservingCapacity, version: 0, intentId: intentId);
+
+        _opRepo.SetupSequence(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(op)
+            .ReturnsAsync(op);
+        _intentRepo.Setup(r => r.GetRevisionAsync(tenantId, intentId, 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeRevision(tenantId, intentId, resourceId, requestedAt, partySize: 1));
+        _slotRepo.Setup(r => r.GetAsync(tenantId, slotId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CapacitySlot?)null);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.ReservingCapacity, OperationStatus.Held,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        using var metrics = new Metrics();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        long counted = 0;
+        string? reason = null;
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Meter == metrics.Meter
+                && instrument.Name == Cordia.Domain.Observability.MetricNames.FulfillmentCapacityUntrackedTotal)
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
+        {
+            counted += measurement;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == Cordia.Domain.Observability.MetricNames.Tags.Reason)
+                    reason = tag.Value as string;
+            }
+        });
+        listener.Start();
+
+        await CreateHandler(metrics: metrics).Handle(new ReserveCapacityCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(1, counted);
+        Assert.Equal("slot_not_declared", reason);
+
+        // The behaviour itself must NOT have changed — this is a signal, not a new gate.
+        _capacityReservation.Verify(r => r.ReserveAsync(
+            It.IsAny<ReserveRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
 }

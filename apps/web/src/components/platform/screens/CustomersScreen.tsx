@@ -103,17 +103,27 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
 
           {/* Meta */}
           <div className="bg-white border border-cd-border rounded-[14px] p-[4px_14px] mb-[14px]">
-            <div className="flex items-center justify-between py-[11px] border-b border-hair">
-              <span className="text-[12.5px] text-t2">Usual</span>
-              <span className="text-[13.5px] font-medium text-ink">{cc.fav}</span>
-            </div>
-            <div className="flex items-center justify-between py-[11px] border-b border-hair">
-              <span className="text-[12.5px] text-t2">Prefers</span>
-              <span className="inline-flex items-center gap-[5px] text-[13.5px] font-medium text-ink">
-                <span className="w-[7px] h-[7px] rounded-full" style={{ background: cm?.color }} />
-                {cm?.label}
-              </span>
-            </div>
+            {/* `Usual` is the last service the API actually reports; it is shown only when
+                there is one. */}
+            {cc.fav && (
+              <div className="flex items-center justify-between py-[11px] border-b border-hair">
+                <span className="text-[12.5px] text-t2">Usual</span>
+                <span className="text-[13.5px] font-medium text-ink">{cc.fav}</span>
+              </div>
+            )}
+            {/* `Prefers` is DEMO-ONLY. `CustomerSummary` has no channel field at all, so the
+                adapter fills `channel: "web"` for every live row — and this panel used to render
+                it ungated, telling the operator that every one of their customers prefers web
+                chat. Unlike the stats block above, it was never behind `live`. */}
+            {!live && (
+              <div className="flex items-center justify-between py-[11px] border-b border-hair">
+                <span className="text-[12.5px] text-t2">Prefers</span>
+                <span className="inline-flex items-center gap-[5px] text-[13.5px] font-medium text-ink">
+                  <span className="w-[7px] h-[7px] rounded-full" style={{ background: cm?.color }} />
+                  {cm?.label}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between py-[11px]">
               <span className="text-[12.5px] text-t2">Last visit</span>
               <span className="text-[13.5px] font-medium text-ink">{cc.lastVisit}</span>
@@ -232,9 +242,16 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-[7px]">
                 <span className="text-[14.5px] font-semibold text-ink whitespace-nowrap overflow-hidden text-ellipsis">{c.name}</span>
+                {/* Not a guest. Bookings made in the console record the operator as the
+                    confirming identity, because nothing on `BookingRequest` can carry a guest —
+                    so this row counts staff-made bookings. Unlabelled it reads as the venue's
+                    busiest customer. */}
+                {c.isOperator && <Tag>You · console bookings</Tag>}
                 {c.tags.slice(0, 2).map(t => <Tag key={t}>{t}</Tag>)}
               </div>
-              <div className="text-[12px] text-t2 mt-[3px] whitespace-nowrap overflow-hidden text-ellipsis">{c.fav}</div>
+              <div className="text-[12px] text-t2 mt-[3px] whitespace-nowrap overflow-hidden text-ellipsis">
+                {c.isOperator ? 'Bookings you made in the console — not a guest record' : c.fav}
+              </div>
               <div className="text-[11px] text-t3 mt-[1px]">{c.lastVisit}</div>
             </div>
             <div className="text-right shrink-0">

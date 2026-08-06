@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Cordia.Application.Common;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Preorder;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -35,7 +36,10 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
     Metrics metrics,
-    IConversationSessionRepository sessions)
+    IConversationSessionRepository sessions,
+    IVerificationGrantRepository grants,
+    IBookingRepository bookingRepo,
+    IGrantAuthorizationService grantAuth)
     : IRequestHandler<SubmitConfirmedIntentCommand, AcceptanceResult>
 {
     // §13.3: retain idempotency records for booking life + dispute/audit window.
@@ -71,6 +75,12 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         // no mapping needed.
         var operationType = revision.CanonicalPayload.Operation;
 
+        // --- Step 2b: authorize a mutation of an existing booking (Inv-11). ---
+        // Ahead of the idempotency pre-check on purpose: a replay hands back the winner's
+        // operation id, so an unauthorized caller must not reach it either.
+        await AuthorizeMutationAsync(
+            command, operationType, revision.CanonicalPayload.TargetBookingId, confirmation.Identity, ct);
+
         // --- Step 3: Pre-check the idempotency store (fast path, outside transaction). ---
         var existing = await idempotencyRepo.GetByKeyAsync(command.TenantId, request.IdempotencyKey, ct);
         if (existing != null)
@@ -90,6 +100,24 @@ public sealed class SubmitConfirmedIntentCommandHandler(
 
         // --- Step 4: Build the acceptance snapshot (before the transaction). ---
         var now = DateTimeOffset.UtcNow;
+
+        // R15 — the assurance level is the SERVER's to state, not the client's.
+        //
+        // `confirmation.verification_level` is a string the caller sends. The validator now
+        // rejects an off-vocabulary value, but a well-formed lie ("high_assurance" from a lane
+        // that verified nobody) would still be recorded verbatim. When `confirmation.identity`
+        // names a real, unexpired grant, the grant is the platform's own record of how well that
+        // party was verified — so it wins (Inv-11: authorization assurance is server-verified).
+        //
+        // Only looked up for a grant-shaped identity: the console sends an operator id, and a
+        // query that can never match should not sit on the p95<300ms acceptance path (§10.3).
+        var assertedLevel = ConfirmationMappings.MapVerificationLevel(confirmation.VerificationLevel);
+        var identity = confirmation.Identity;
+        var grantedLevel = !string.IsNullOrWhiteSpace(identity)
+                           && identity.StartsWith("grant_", StringComparison.Ordinal)
+            ? await grants.GetAssuranceLevelAsync(command.TenantId, identity, now, ct)
+            : null;
+        var verificationLevel = grantedLevel ?? assertedLevel;
         var snapshot = new OperationAcceptedResponse
         {
             OperationId = request.OperationId,
@@ -116,7 +144,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         };
 
         // --- Step 5: Creator election + atomic writes inside one UoW transaction. ---
-        bool won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, now, ct);
+        bool won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, now, ct);
 
         if (!won)
         {
@@ -137,7 +165,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                         $"Creator election lost for key '{request.IdempotencyKey}' but the winner record was not found after {MaxRetries + 1} attempts (retention race).");
 
                 // Key is free again — re-run the election inside a new transaction.
-                won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, now, ct);
+                won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, now, ct);
 
                 if (won)
                     return new Accepted(snapshot);
@@ -164,6 +192,114 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     // ---------------------------------------------------------------------------
 
     /// <summary>
+    /// Authorizes a mutation of an existing booking submitted through the acceptance front door
+    /// (spec 08 §12: "every mutation accept requires a valid <c>verification_grant</c> — or an
+    /// authenticated owner role — scoped to (tenant, customer, target booking, action, expiry)";
+    /// Inv-11).
+    ///
+    /// <para><b>Why this door needed it.</b> <c>POST /api/Bookings/{id}/modifications</c> and
+    /// <c>.../cancellations</c> both consume a grant, but neither carries the changed data —
+    /// <c>SubmitModificationInput</c> is <c>additionalProperties: false</c> with no field for it.
+    /// A reschedule therefore has to ride THIS door, which is the only one that transports the new
+    /// time. Until the fulfilment engine could actually move a booking that was harmless; now that
+    /// it can, an unauthenticated caller who knew a booking id could move someone else's booking.</para>
+    ///
+    /// <para><b>Two ways in, matching the two lanes.</b> The agent lane holds a platform-issued
+    /// grant (<c>verify_identity</c> obtains one before a mutation is submittable) and already
+    /// carries its id on <c>confirmation.identity</c>, which is where the assurance-level
+    /// derivation above reads it from; it may also present <c>X-Grant-Id</c>. The console acts as
+    /// authenticated staff and presents <c>X-Actor</c>/<c>X-Actor-Role</c>. Either satisfies the
+    /// ratified rule; neither is optional. A create is untouched — there is no existing booking to
+    /// authorize against.</para>
+    ///
+    /// <para>The identity fallback is not "trusting what the caller said": the id is looked up in
+    /// <c>verification_grants</c> and must be unexpired and scoped to this tenant, customer,
+    /// booking and action. An unscoped or invented id authorizes nothing.</para>
+    ///
+    /// <para>Fails closed: an unknown role, a blank actor, an absent grant, a grant scoped to
+    /// another booking/action, and an unknown target all deny. Grant denials are audited inside
+    /// <see cref="IGrantAuthorizationService"/>; the role and unknown-target branches raise the
+    /// same 403 so a caller cannot distinguish "wrong grant" from "no such booking".</para>
+    /// </summary>
+    private async Task AuthorizeMutationAsync(
+        SubmitConfirmedIntentCommand command,
+        OperationTypeEnum operationType,
+        string? targetBookingId,
+        string? confirmationIdentity,
+        CancellationToken ct)
+    {
+        var action = operationType switch
+        {
+            // Reschedule IS a modify (spec 08 §9.3) — the same action gates both.
+            OperationTypeEnum.Modify or OperationTypeEnum.Reschedule => VerificationActionEnum.Modify,
+            OperationTypeEnum.Cancel => VerificationActionEnum.Cancel,
+            // create / inquire — nothing existing is being changed.
+            _ => (VerificationActionEnum?)null,
+        };
+
+        if (action is null)
+            return;
+
+        // Staff acting under an asserted role authorize a MODIFY directly. Operator suffices:
+        // moving a booking is ordinary front-desk work, not an owner-only commercial decision
+        // (GD-1).
+        //
+        // Deliberately not extended to cancel. Cancel already has a door that transports
+        // everything it needs — `POST /api/Bookings/{id}/cancellations` — and that door consumes a
+        // guest grant with no role alternative. Accepting a role here would make this the weaker
+        // way to perform the identical operation, which is how an authorization requirement gets
+        // routed around rather than enforced. A reschedule has no such alternative: the
+        // manage-booking door cannot carry a new time, so the role path is the only one it has.
+        // The validator requires target_booking_id for exactly these operations, so a blank one
+        // here means the request never should have reached the handler — deny rather than
+        // silently accept an unauthorizable mutation.
+        var booking = string.IsNullOrWhiteSpace(targetBookingId)
+            ? null
+            : await bookingRepo.GetByIdAsync(command.TenantId, targetBookingId, ct);
+
+        if (action.Value == VerificationActionEnum.Modify
+            && !string.IsNullOrWhiteSpace(command.ActorId)
+            && StaffRole.Satisfies(command.ActorRole, StaffRole.Operator))
+        {
+            // The existence check is NOT skipped for the role path. It used to return above this
+            // lookup, so a staff-asserted reschedule naming a booking that does not exist — or one
+            // belonging to another tenant — was accepted, given an intent revision and an
+            // operation, and only came apart later inside ModifyBookingCommandHandler, by which
+            // point the caller had been told the mutation was taken. Establishing the target
+            // exists is not the grant check; both paths need it.
+            if (booking is null)
+            {
+                throw new VerificationRequiredException(
+                    command.TenantId, customerRef: string.Empty, action.Value, targetBookingId);
+            }
+
+            return;
+        }
+
+        if (booking is null || string.IsNullOrWhiteSpace(booking.CustomerId))
+        {
+            throw new VerificationRequiredException(
+                command.TenantId, customerRef: string.Empty, action.Value, targetBookingId);
+        }
+
+        var grantId = !string.IsNullOrWhiteSpace(command.GrantId)
+            ? command.GrantId
+            : confirmationIdentity is not null
+              && confirmationIdentity.StartsWith("grant_", StringComparison.Ordinal)
+                ? confirmationIdentity
+                : string.Empty;
+
+        await grantAuth.RequireGrantAsync(
+            command.TenantId,
+            grantId,
+            booking.CustomerId,
+            action.Value,
+            booking.BookingId,
+            targetType: "booking",
+            ct: ct);
+    }
+
+    /// <summary>
     /// Runs the creator-election INSERT and, if won, the full atomic acceptance write set
     /// inside one UoW transaction. Returns <c>true</c> if THIS call won the election.
     /// </summary>
@@ -175,6 +311,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         OperationTypeEnum operationType,
         SubmitConfirmedIntentRequest request,
         string payloadHash,
+        VerificationLevel verificationLevel,
         DateTimeOffset now,
         CancellationToken ct)
     {
@@ -229,7 +366,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 SourceTurnId = confirmation.SourceTurnId ?? string.Empty,
                 ReadbackVersion = confirmation.ReadBackVersion ?? string.Empty,
                 Disclosures = JsonSerializer.Serialize(confirmation.DisclosuresPresented ?? new List<string>()),
-                VerificationLevel = ConfirmationMappings.MapVerificationLevel(confirmation.VerificationLevel),
+                VerificationLevel = verificationLevel,
                 ConfirmedAt = confirmation.ConfirmedAt,
             }, ct2);
 
@@ -240,12 +377,20 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             var preorder = revision.CanonicalPayload.Preorder;
             bool isPreorder = preorder is { Lines.Count: > 0 };
 
+            // A mutation's target must be on the OPERATION row, not only inside the canonical
+            // payload. Fulfilment steps are driven from the operation, so a modify/reschedule
+            // whose BookingId was null quarantined on arrival at ModifyBookingCommandHandler —
+            // every reschedule submitted through this front door, because only the cancellation
+            // endpoint was setting it.
+            var targetBookingId = revision.CanonicalPayload.TargetBookingId;
+
             await operationRepo.AddAsync(new BookingOperation
             {
                 TenantId = command.TenantId,
                 OperationId = request.OperationId,
                 IntentId = revision.IntentId,
                 IntentRevision = (int)revision.Revision,
+                BookingId = string.IsNullOrWhiteSpace(targetBookingId) ? null : targetBookingId,
                 OperationType = operationType,
                 Status = OperationStatus.Accepted,
                 SupersededOperationId = request.ReplacesOperationId,

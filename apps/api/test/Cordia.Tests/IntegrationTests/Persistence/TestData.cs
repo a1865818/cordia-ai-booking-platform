@@ -31,7 +31,11 @@ internal static class TestData
             TenantId = tenantId,
             IntentId = intentId,
             Revision = 1,
-            CanonicalPayload = "{}",
+            // A guest, so notifications built on this operation have somewhere to go. An empty
+            // payload has no destination, and since the send path now settles that as
+            // invalid_recipient rather than pretending to deliver, "{}" would quietly turn every
+            // notification test into a test of the no-destination branch.
+            CanonicalPayload = """{"operation":"create","customer":{"phone_e164":"+61400000000"}}""",
             PayloadHash = "h",
             SchemaVersion = "1.0",
             TenantPolicyVersion = "1.0",

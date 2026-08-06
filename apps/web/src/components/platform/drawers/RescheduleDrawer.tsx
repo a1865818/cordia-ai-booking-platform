@@ -1,11 +1,9 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Booking, STAFF, fmtT, TIME_SLOTS } from "../../../data/console";
+import { Booking, fmtT, TIME_SLOTS } from "../../../data/console";
 import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
-import { ErrorState } from "../../ui/ErrorState";
-import { RESCHEDULE_FULFILMENT_SUPPORTED } from "../../../features/bookings/submit";
 
 function useRetained<T>(val: T | null, open: boolean): T | null {
   const ref = useRef<T | null>(val);
@@ -49,82 +47,50 @@ interface RescheduleDrawerProps {
   week: ConsoleWeek;
   booking: Booking | null;
   onClose: () => void;
-  onDone: (id: string, patch: { day: number; start: number; staff: string }) => void;
+  onDone: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
 }
 
 export function RescheduleDrawer({ open, device, week, booking, onClose, onDone }: RescheduleDrawerProps) {
   const b = useRetained(booking, open);
   const [day, setDay] = useState('0');
   const [time, setTime] = useState('600');
-  const [staff, setStaff] = useState('s1');
-  const [phase, setPhase] = useState<'form' | 'confirming' | 'done'>('form');
-  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (open && booking) {
       setDay(String(booking.day));
       setTime(String(booking.start));
-      setStaff(booking.staff);
-      setPhase('form');
     }
   }, [open, booking?.id]);
 
-  // Cancel a pending confirm when the drawer closes or unmounts, so onDone
-  // never fires after the user dismisses it.
-  useEffect(() => {
-    if (open) return;
-    if (confirmTimer.current) { clearTimeout(confirmTimer.current); confirmTimer.current = null; }
-  }, [open]);
-
-  useEffect(() => () => {
-    if (confirmTimer.current) clearTimeout(confirmTimer.current);
-  }, []);
-
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Reschedule">{null}</Drawer>;
 
-  const eligible = STAFF.filter(s => s.skills.includes(b.service));
-
+  // No local phase, no local timer and no local "done".
+  //
+  // The drawer hands the change to the parent, which owns the real submission and reports the
+  // server's outcome. It used to keep a `phase` and a `confirmTimer` and render its own green
+  // "Moved" panel on a fixed delay — declaring a booking moved before anything had been asked of
+  // the server. Once the submission moved out, nothing ever set those states again: the panel and
+  // the timer became unreachable code that still described the behaviour they had been removed
+  // for. Success and failure are ConsolePage's to report, via toasts on the real operation.
   function submit() {
-    if (phase !== 'form') return;
-    // No local timer and no local "done": the drawer hands the change to the parent, which
-    // owns the real submission and reports the server's outcome. Declaring success on a
-    // fixed delay claimed a booking had moved before anything had been asked of the server.
-    onDone(b!.id, { day: Number(day), start: Number(time), staff });
+    // `staff` comes from the BOOKING, not from a picker. The picker was removed (the platform
+    // models no resource) but its `useState('s1')` default was still being submitted, so every
+    // drawer reschedule quietly claimed the booking had moved to a hard-coded lane. The drag
+    // path legitimately varies this, which is why the field stays in the shared patch type.
+    //
+    // `dur` is carried through unchanged. Omitting it sent `durationMinutes: undefined`, which
+    // `toCanonicalPayload` omits entirely — so the reschedule wrote a payload with no duration and
+    // the booking came back from the projection as `duration_minutes: null`, collapsing to the
+    // grid's 60-minute default. A 90-minute service silently became a 60-minute one, durably.
+    onDone(b!.id, { day: Number(day), start: Number(time), staff: b!.staff, dur: b!.dur });
     onClose();
   }
 
-  const footer = RESCHEDULE_FULFILMENT_SUPPORTED
-    ? <PrimaryButton full onClick={submit}>Confirm new time</PrimaryButton>
-    : undefined;
+  const footer = <PrimaryButton full onClick={submit}>Confirm new time</PrimaryButton>;
 
   return (
     <Drawer open={open} onClose={onClose} device={device} eyebrow="Reschedule" title={b.name} footer={footer}>
-      {!RESCHEDULE_FULFILMENT_SUPPORTED ? (
-        <div className="py-6 px-2">
-          <ErrorState
-            error={new Error(
-              'The platform cannot move an existing booking yet — a submitted reschedule would create a ' +
-              'second booking instead of changing this one. Cancel and rebook until that lands.'
-            )}
-            title="Rescheduling isn't available yet"
-          />
-        </div>
-      ) : phase === 'done' ? (
-        <div className="text-center py-6 px-2">
-          <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
-            <Icon name="check" size={26} strokeWidth={2.4} color="#15924B" />
-          </span>
-          <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Moved</div>
-          <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
-            {b.serviceName} is now<br />
-            {shortDayLabel(week, Number(day))} at {fmtT(Number(time))}
-          </div>
-          <div className="text-[12px] text-t3 mt-3 leading-[1.5]">
-            The customer gets an SMS with the new time and a link to confirm.
-          </div>
-        </div>
-      ) : (
-        <fieldset disabled={phase === 'confirming'} className="border-none p-0 m-0" style={{ opacity: phase === 'confirming' ? 0.6 : 1 }}>
+      <fieldset className="border-none p-0 m-0">
           <div className="flex items-center gap-[9px] p-[11px_13px] rounded-[11px] mb-[15px]"
             style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
             <Icon name="clock" size={16} strokeWidth={1.9} color="#9A9A9A" />
@@ -147,11 +113,11 @@ export function RescheduleDrawer({ open, device, week, booking, onClose, onDone 
               </Field>
             </div>
           </div>
-          <Field label="With">
-            <SelectField value={staff} onChange={setStaff} options={eligible.map(s => ({ value: s.id, label: `${s.name} — ${s.role}` }))} />
-          </Field>
-        </fieldset>
-      )}
+          {/* No "With" picker. `STAFF` is invented (`data/console.ts`), the platform models no
+              resource, and the chosen value was discarded on submit — `buildSubmission` has no
+              field for it. Offering a control that silently drops its own input is worse than
+              not offering it. */}
+      </fieldset>
     </Drawer>
   );
 }

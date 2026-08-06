@@ -21,6 +21,12 @@ public class WaitlistOfferRepository(ApplicationDbContext db) : IWaitlistOfferRe
             .AsNoTracking()
             .FirstOrDefaultAsync(o => o.OfferId == offerId, ct);
 
+    public Task<WaitlistOffer?> GetByOperationIdAsync(
+        string operationId, CancellationToken ct = default)
+        => db.WaitlistOffers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.OperationId == operationId, ct);
+
     public Task<WaitlistOffer?> GetLiveByEnrollmentAsync(string enrollmentId, CancellationToken ct = default)
         => db.WaitlistOffers
             .AsNoTracking()

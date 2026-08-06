@@ -12,6 +12,11 @@ public sealed class AcceptWaitlistOfferValidator : AbstractValidator<AcceptWaitl
     {
         RuleFor(x => x.TenantId).NotEmpty();
         RuleFor(x => x.OfferId).NotEmpty();
-        RuleFor(x => x.Actor).NotEmpty();
+        // Deliberately NO rule on Actor. Accept is an operator action, so a missing actor is an
+        // AUTHORIZATION failure, not a shape problem — and `ValidationPipelineBehavior` runs
+        // BEFORE `OperatorActionBehavior`, so a NotEmpty rule here answered 400 and returned
+        // before the behavior could deny-audit the attempt (spec 14 §3.1 step 5). An
+        // unauthorized caller was therefore turned away without a record of having tried.
+        // Cancel and enrol already omit it for the same reason.
     }
 }

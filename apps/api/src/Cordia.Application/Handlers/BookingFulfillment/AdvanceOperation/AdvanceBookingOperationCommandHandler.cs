@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Cordia.Application.Handlers.BookingFulfillment.CancelBooking;
+using Cordia.Application.Handlers.BookingFulfillment.ModifyBooking;
 using Cordia.Application.Handlers.BookingFulfillment.Compensate;
 using Cordia.Application.Handlers.BookingFulfillment.Finalize;
 using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
@@ -94,20 +95,16 @@ public sealed class AdvanceBookingOperationCommandHandler(
                     // the driver is type-aware; everything else stays status-driven.
                     OperationStatus.Finalizing when op.OperationType == Domain.Generated.OperationTypeEnum.Cancel
                         => new CancelBookingCommand(command.TenantId, command.OperationId),
-                    // FinalizeBookingCommandHandler calls CreateBookingAsync unconditionally, so
-                    // letting a modify/reschedule through here puts a SECOND, disconnected booking
-                    // into the venue's system while the original stays pending — and the operation
-                    // reports `booked`, so nothing surfaces it. Refuse loudly instead: this
-                    // dead-letters into the operator's work-item queue. The web console also guards
-                    // this (RESCHEDULE_FULFILMENT_SUPPORTED), but that protects one client — the
-                    // HTTP endpoints and the LangGraph lane reach this path too.
+                    // Modify/reschedule has its own fulfilment step: FinalizeBookingCommandHandler
+                    // calls CreateBookingAsync unconditionally, so routing one there would put a
+                    // SECOND, disconnected booking into the venue's system while the original
+                    // stayed pending — and report `booked` for it. ModifyBookingCommandHandler
+                    // amends the existing booking in one provider call instead, preserving the
+                    // original reservation (§9.4.8).
                     OperationStatus.Finalizing when op.OperationType
                         is Domain.Generated.OperationTypeEnum.Modify
                         or Domain.Generated.OperationTypeEnum.Reschedule
-                        => throw new PoisonMessageException(
-                            $"Operation '{command.OperationId}' is a {op.OperationType} reaching Finalizing, " +
-                            "but the fulfilment engine can only create and cancel. Refusing rather than " +
-                            "creating a duplicate booking."),
+                        => new ModifyBookingCommand(command.TenantId, command.OperationId),
                     OperationStatus.Finalizing
                         => new FinalizeBookingCommand(command.TenantId, command.OperationId),
                     OperationStatus.Reconciling

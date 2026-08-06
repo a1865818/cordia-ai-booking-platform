@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { canonicalHash } from "../../api/canonicalHash";
-import { buildSubmission, toCanonicalPayload, toIsoInstant } from "./buildSubmission";
+import { buildSubmission, customerFromRef, toCanonicalPayload, toIsoInstant } from "./buildSubmission";
 import { getOrCreateAttempt, resetAttempt, supersedeAttempt } from "./identity";
 import { nextInterval, normalizedStatusLabel, isBooked, isTerminal, MAX_INTERVAL_MS } from "./useOperationStatus";
 import { isRetryableWithNewAttempt, writeFailureMessage } from "./mutations";
@@ -258,19 +258,150 @@ describe("who the confirmation identifies (spec 04 / spec 14)", () => {
     expect(asOperator.confirmation.intent_payload_hash).toBe(asOperator.revision.payload_hash);
   });
 
-  it("carries no guest name in the canonical payload — there is no field for one", async () => {
-    // BookingRequest models operation/service/time/party/duration/target only. Any guest
-    // identity the console collected would have had nowhere to go.
+  it("carries no guest NAME in the canonical payload, even when a guest is attached", async () => {
+    // The payload now has a `customer` slot, but the name deliberately does not go in it: the
+    // revision is immutable, replayed, and outside the retention sweep, so a name written here
+    // could never be erased. A phone is the minimum that makes the booking reachable.
+    const request = await buildSubmission(
+      { ...draft, customer: { phoneE164: "+61400111222", customerId: "cust-7" } },
+      { ...context, identityRef: "console-operator" }
+    );
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+
+    expect(JSON.stringify(payload)).not.toContain("Sarah");
+    expect(JSON.stringify(payload)).not.toContain("display_name");
+  });
+
+  it("omits `customer` entirely when no guest was captured", async () => {
+    // Backward compatibility: a guest-less booking must hash exactly as it did before the field
+    // existed. canon.v1 drops null and {} alike, but omitting keeps the stored payload clean too.
     const request = await buildSubmission(draft, { ...context, identityRef: "console-operator" });
     const payload = request.revision.canonical_payload as Record<string, unknown>;
 
-    expect(Object.keys(payload)).not.toContain("customer_ref");
-    expect(Object.keys(payload)).not.toContain("customer_name");
-    expect(JSON.stringify(payload)).not.toContain("Sarah");
+    expect(Object.keys(payload)).not.toContain("customer");
+  });
+
+  it("leaves the hash identical to the pre-guest payload when no guest is captured", async () => {
+    // Pins the property the golden corpus asserts (guest_absent_matches_minimal_create): adding
+    // an optional field must not move any existing payload's hash, or every stored idempotency
+    // record would stop replaying (Inv-2/3).
+    const withoutGuest = await buildSubmission(draft, { ...context, identityRef: "op" });
+    const withEmptyGuest = await buildSubmission(
+      { ...draft, customer: {} },
+      { ...context, identityRef: "op" }
+    );
+
+    expect(withEmptyGuest.revision.payload_hash).toBe(withoutGuest.revision.payload_hash);
+  });
+
+  it("changes the hash once a guest IS attached", async () => {
+    // The converse: the guest is genuinely material, so attaching one forces a new revision.
+    const withoutGuest = await buildSubmission(draft, { ...context, identityRef: "op" });
+    const withGuest = await buildSubmission(
+      { ...draft, customer: { phoneE164: "+61400111222" } },
+      { ...context, identityRef: "op" }
+    );
+
+    expect(withGuest.revision.payload_hash).not.toBe(withoutGuest.revision.payload_hash);
+    // Both fields the server cross-checks still come from one computation.
+    expect(withGuest.confirmation.intent_payload_hash).toBe(withGuest.revision.payload_hash);
+  });
+
+  it("normalises the phone BEFORE hashing, so a formatted number is still findable", async () => {
+    // The payload is immutable once written, so this is the only place a canonical form can be
+    // established — and the server's PhoneMatching.Normalise must agree with it.
+    const request = await buildSubmission(
+      { ...draft, customer: { phoneE164: "  +61 400 111 222  " } },
+      { ...context, identityRef: "op" }
+    );
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+    expect(payload.customer).toEqual({ phone_e164: "+61400111222" });
+  });
+
+  it("does NOT guess a country code — that needs a tenant country the platform lacks", async () => {
+    const request = await buildSubmission(
+      { ...draft, customer: { phoneE164: "0400 111 222" } },
+      { ...context, identityRef: "op" }
+    );
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+    // Formatting stripped, country untouched. Guessing +61 would attach this booking to a
+    // stranger's number in any country whose national format collides.
+    expect(payload.customer).toEqual({ phone_e164: "0400111222" });
+  });
+
+  it("omits a phone that carries no digits at all", async () => {
+    const request = await buildSubmission(
+      { ...draft, customer: { phoneE164: "  ( ) - " } },
+      { ...context, identityRef: "op" }
+    );
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+    expect(Object.keys(payload)).not.toContain("customer");
+  });
+
+  it("puts the phone where the server actually looks for it", async () => {
+    // CanonicalBookingPayload.PhoneNames is ["phone_e164","phoneE164","phone"] and it descends
+    // into nested objects — so the key name here is load-bearing, not cosmetic.
+    const request = await buildSubmission(
+      { ...draft, customer: { phoneE164: "+61400111222" } },
+      { ...context, identityRef: "op" }
+    );
+    const payload = request.revision.canonical_payload as Record<string, unknown>;
+
+    expect(payload.customer).toEqual({ phone_e164: "+61400111222" });
   });
 
   it("puts exactly what the caller passed into confirmation.identity", async () => {
     const request = await buildSubmission(draft, { ...context, identityRef: "console-operator" });
     expect(request.confirmation.identity).toBe("console-operator");
+  });
+
+  describe("customerFromRef — carrying a guest onto a follow-up submission", () => {
+    // A reschedule writes a NEW canonical payload, and NotificationRecipientResolver reads the
+    // destination from THAT operation's revision — not from the booking it targets. So a
+    // follow-up that drops the guest emits a confirmation with nowhere to send, silently.
+
+    it("routes a gc_ handle to contact_ref so the server dereferences it", () => {
+      const payload = toCanonicalPayload({
+        ...draft,
+        operation: "reschedule",
+        customer: customerFromRef("gc_2f8ac1"),
+      });
+
+      expect(payload.customer).toEqual({ contact_ref: "gc_2f8ac1" });
+    });
+
+    it("routes a legacy inline phone to phone_e164, never to contact_ref", () => {
+      // Putting a phone in contact_ref would send the resolver looking up a handle that does not
+      // exist, and the notification would settle undeliverable — worse than the omission it was
+      // meant to fix.
+      const payload = toCanonicalPayload({
+        ...draft,
+        operation: "reschedule",
+        customer: customerFromRef("+61400111222"),
+      });
+
+      expect(payload.customer).toEqual({ phone_e164: "+61400111222" });
+    });
+
+    it("carries an opaque operator handle as customer_id without claiming it is a destination", () => {
+      const payload = toCanonicalPayload({
+        ...draft,
+        operation: "reschedule",
+        customer: customerFromRef("console-operator"),
+      });
+
+      expect(payload.customer).toEqual({ customer_id: "console-operator" });
+    });
+
+    it("omits the customer node entirely when the booking records no ref", () => {
+      for (const ref of [null, undefined, "", "   "]) {
+        const payload = toCanonicalPayload({
+          ...draft,
+          operation: "reschedule",
+          customer: customerFromRef(ref),
+        });
+        expect(Object.keys(payload)).not.toContain("customer");
+      }
+    });
   });
 });

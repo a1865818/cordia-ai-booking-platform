@@ -18,14 +18,21 @@ public static class RetentionPolicy
 {
     /// <summary>
     /// Terminal operation statuses: no open work or dispute window → safe to prune (Inv-14).
+    ///
+    /// <para>An ARRAY rather than only a set because callers building EF queries need it: an
+    /// array's <c>Contains</c> translates to a SQL <c>= ANY</c>, so the terminal filter runs in
+    /// the database instead of after every candidate row has been dragged into memory.
+    /// <see cref="Terminal"/> below keeps the O(1) membership test for the in-memory callers.</para>
     /// </summary>
-    private static readonly HashSet<OperationStatus> Terminal = new()
-    {
+    public static readonly OperationStatus[] TerminalStatuses =
+    [
         OperationStatus.Booked,
         OperationStatus.Rejected,
         OperationStatus.Expired,
         OperationStatus.FailedFinal,
-    };
+    ];
+
+    private static readonly HashSet<OperationStatus> Terminal = [.. TerminalStatuses];
 
     /// <summary>
     /// Returns <c>true</c> when the record is eligible for physical deletion:

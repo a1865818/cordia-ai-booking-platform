@@ -20,6 +20,7 @@ vi.mock("../waitlist/api", () => ({
   cancelEnrollment: vi.fn(),
   acceptOffer: vi.fn(),
   declineOffer: vi.fn(),
+  enrollGuest: vi.fn(),
 }));
 vi.mock("./api", () => ({
   getBookingDetails: vi.fn(),

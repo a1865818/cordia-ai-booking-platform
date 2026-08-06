@@ -3,6 +3,7 @@ using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Observability;
 using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Services;
 using MediatR;
@@ -204,6 +205,24 @@ public sealed class ReserveCapacityCommandHandler(
                 //     dimension in the payload). Transition → Held without a durable hold.
                 //     This preserves the current always-available behavior for un-provisioned
                 //     resources (availability mode = live).
+                //
+                // Counted, because this branch used to be completely silent. `capacity_slots` had
+                // a repository read and no writer, so the table was empty in every deployment and
+                // this path took 100% of traffic: no booking was ever capacity-checked, and
+                // nothing in logs, metrics or audit said so — it was discoverable only by reading
+                // this handler. The behaviour is unchanged and still correct for an
+                // un-provisioned resource; what changes is that "capacity is not being enforced"
+                // is now a number a venue can see instead of an assumption.
+                //
+                // The reason distinguishes the two ways to land here, because they need different
+                // fixes: no key at all means the payload lacks a resource/time dimension, while a
+                // key with no row means the venue simply has not declared that slot.
+                metrics.FulfillmentCapacityUntrackedTotal.Add(
+                    1,
+                    new KeyValuePair<string, object?>(
+                        MetricNames.Tags.Reason,
+                        slotId is null ? "no_slot_key" : "slot_not_declared"));
+
                 _ = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, current.Version,
                     OperationStatus.ReservingCapacity, OperationStatus.Held,

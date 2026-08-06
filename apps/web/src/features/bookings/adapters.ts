@@ -11,11 +11,13 @@
  *          `dur`, `staff`, `serviceName`, `name`
  *
  * Anything the API does not model is filled honestly rather than invented: there is no
- * staff/resource concept server-side, so every booking lands on the first resource lane.
+ * staff/resource concept server-side, so every booking lands on the single unnamed lane and
+ * no resource name is ever rendered beside it.
  */
 
 import type { Booking, BookingStatus } from "../../data/console";
-import { SERVICES, STAFF } from "../../data/console";
+import { SERVICES } from "../../data/console";
+import { UNASSIGNED_RESOURCE_ID } from "./resources";
 import type { ScheduledBooking } from "./api";
 
 /** Monday 00:00 local time for the week containing `date`. */
@@ -129,14 +131,21 @@ export function toBooking(
     id: bookingId ?? row.operation_id ?? "",
     isBooking: bookingId !== null,
     day,
-    // No staff/resource concept exists server-side, so everything lands on lane one.
-    staff: STAFF[0]?.id ?? "s1",
+    // No staff/resource concept exists server-side, so everything lands on the single
+    // unnamed lane. This is a grid coordinate, not an assignment (see ./resources.ts).
+    staff: UNASSIGNED_RESOURCE_ID,
     start,
     dur: row.duration_minutes ?? service?.dur ?? 60,
     service: serviceKey,
     // Fall back to the raw id rather than inventing a display name for an unknown service.
     serviceName: service?.name ?? serviceKey ?? "Booking",
     name: row.customer_ref ?? row.booking_reference ?? "Guest",
+    // Kept RAW as well as rendered into `name`. A reschedule has to put the guest back on the
+    // new revision's canonical payload — the notification resolver reads the destination from
+    // the operation's OWN revision, so a payload without it produces a confirmation with nowhere
+    // to send. `name` is lossy for that (it falls back to the booking reference), so the ref is
+    // carried separately.
+    customerRef: row.customer_ref ?? null,
     // The schedule projection carries no provenance; claiming "Booked by AI" would
     // fabricate the very fact the API deliberately does not record.
     prov: "unknown",

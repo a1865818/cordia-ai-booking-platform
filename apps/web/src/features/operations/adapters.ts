@@ -74,6 +74,9 @@ export function toQueueItem(operation: OperationSummary): QueueItem {
     // The raw status, not the label: a dismissal is keyed to it, so it must change exactly when
     // the platform moves the operation (e.g. manual_review -> compensation_required).
     status: operation.status ?? undefined,
+    // The server refuses to waitlist a pre-order (spec 11 §21.4) — the flag decides
+    // whether that answer may be offered at all.
+    isPreorder: operation.is_preorder === true,
     transcript: null,
   };
 }
@@ -97,4 +100,68 @@ export function relativeAge(iso: string, now: number = Date.now()): string {
 
 export function toQueueItems(operations: readonly OperationSummary[] | null | undefined): QueueItem[] {
   return (operations ?? []).map(toQueueItem);
+}
+
+/**
+ * The five terminal members of the ratified 16-value set (D1). A follow-up on any of them
+ * is a certain 409 — the server computes `Terminal` from exactly this set.
+ */
+export const TERMINAL_OPERATION_STATUSES: ReadonlySet<string> = new Set([
+  "booked",
+  "rejected",
+  "expired",
+  "waitlisted",
+  "failed_final",
+]);
+
+export interface OperationActions {
+  /** Cancellation may be requested from any known non-terminal status. */
+  canRequestCancellation: boolean;
+  /** Resume and resolve are `manual_review`-only (server-guarded; 409 otherwise). */
+  canResume: boolean;
+  canResolve: boolean;
+  /** Waitlist/decline answers are `alternatives_required`-only. */
+  canRespondAlternatives: boolean;
+  /**
+   * The waitlist answer specifically. Narrower than `canRespondAlternatives`: the server
+   * unconditionally refuses to route a **pre-order** operation to the waitlist
+   * (spec 11 §21.4 — only re-confirm or decline apply), so on a pre-order row that button
+   * would be a certain 409 and must not be offered. Decline stays available.
+   */
+  canWaitlistAlternatives: boolean;
+}
+
+const NO_OPERATION_ACTIONS: OperationActions = {
+  canRequestCancellation: false,
+  canResume: false,
+  canResolve: false,
+  canRespondAlternatives: false,
+  canWaitlistAlternatives: false,
+};
+
+/**
+ * Which follow-ups the row's CURRENT status permits (docs §10) — so the board never
+ * offers a button whose call is certain to fail. Decided from the list's raw 16-value
+ * status plus its pre-order flag; the polling endpoint's normalized projection collapses
+ * `manual_review` into `in_progress` and cannot drive this. An absent status permits
+ * nothing: eligibility is a claim about the operation, and with no status there is nothing
+ * to claim it from. The server re-checks every guard regardless — this only removes
+ * certain failures.
+ */
+export function operationActions(
+  status: string | null | undefined,
+  isPreorder = false
+): OperationActions {
+  if (typeof status !== "string" || status.length === 0) {
+    return NO_OPERATION_ACTIONS;
+  }
+
+  const alternatives = status === "alternatives_required";
+  return {
+    canRequestCancellation: !TERMINAL_OPERATION_STATUSES.has(status),
+    canResume: status === "manual_review",
+    canResolve: status === "manual_review",
+    canRespondAlternatives: alternatives,
+    canWaitlistAlternatives: alternatives && !isPreorder,
+  };
 }

@@ -82,7 +82,10 @@ public class AlertSignalTests : IDisposable
             Mock.Of<IOutboxRepository>(),
             Mock.Of<IAuditEventRepository>(),
             _metrics,
-            Mock.Of<IConversationSessionRepository>());
+            Mock.Of<IConversationSessionRepository>(),
+            Mock.Of<IVerificationGrantRepository>(),
+            Mock.Of<IBookingRepository>(),
+            Mock.Of<Cordia.Application.Common.Authorization.IGrantAuthorizationService>());
 
         var command = BuildCommand(tenantId, idemKey, confirmationHash: "HASH_NEW");
 
@@ -125,7 +128,10 @@ public class AlertSignalTests : IDisposable
             Mock.Of<IOutboxRepository>(),
             Mock.Of<IAuditEventRepository>(),
             _metrics,
-            Mock.Of<IConversationSessionRepository>());
+            Mock.Of<IConversationSessionRepository>(),
+            Mock.Of<IVerificationGrantRepository>(),
+            Mock.Of<IBookingRepository>(),
+            Mock.Of<Cordia.Application.Common.Authorization.IGrantAuthorizationService>());
 
         var command = BuildCommand(tenantId, idemKey, confirmationHash: "HASH_SAME");
 

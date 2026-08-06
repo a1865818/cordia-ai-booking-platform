@@ -132,7 +132,20 @@ public sealed class SendNotificationCommandHandler(
         metrics.NotificationPendingStatusTotal.Add(1);
 
         // 7. Guard: no valid destination.
-        if (recipient is null)
+        //
+        // Checks the DESTINATION, not just the recipient.
+        //
+        // The resolver always returns a handle so the notification row has a stable ref, which
+        // meant `recipient is null` never fired and a booking with nowhere to send still settled
+        // as delivered — the platform telling an operator a guest was notified when there was no
+        // address at all (Inv-16).
+        //
+        // This was tried once before and reverted, because the resolver only knew the booking
+        // lane: waitlist offer/expiry notifications carry an `op_wl_*` id with no
+        // booking_operations row, so every one of them looked destination-less and the guard
+        // terminal-failed a working lane. The resolver now reads the waitlist enrollment too, so
+        // a null destination finally means what it says.
+        if (recipient is null || recipient.Destination is null)
         {
             var noDestRows = await repo.MarkFailedAsync(
                 tenantId, notificationId, expectedVersion: 0,
@@ -238,7 +251,10 @@ public sealed class SendNotificationCommandHandler(
             channel,
             locale,
             Body: body,
-            MinimizedRecipient: recipientRef);
+            MinimizedRecipient: recipientRef,
+            // The real address stays off the notification row and out of the logs; it is carried
+            // only as far as the adapter. Retry/reconcile re-resolve it rather than persisting it.
+            Destination: recipient?.Destination);
 
         // 10. Settle Pending(v0) → Sending(v1).
         // Row was inserted at version=0, state=Pending. After this settle version becomes 1.

@@ -19,6 +19,8 @@ export const queryKeys = {
     detail: (bookingId: string) => [...root(), "bookings", "detail", bookingId] as const,
     find: (hints: Record<string, string | undefined>) =>
       [...root(), "bookings", "find", stableFilter(hints)] as const,
+    availability: (from: string, to: string) =>
+      [...root(), "bookings", "availability", from, to] as const,
   },
 
   operations: {
@@ -42,6 +44,8 @@ export const queryKeys = {
 
   waitlist: {
     all: () => [...root(), "waitlist"] as const,
+    /** The tenant's declared locations — a usage list, cached longer than the board. */
+    locations: () => [...root(), "waitlist", "locations"] as const,
     enrollments: (filters: Record<string, string | number | undefined>) =>
       [...root(), "waitlist", "enrollments", stableFilter(filters)] as const,
   },
@@ -61,6 +65,12 @@ export const queryKeys = {
     all: () => [...root(), "settings"] as const,
     consentPolicy: (channel: string) => [...root(), "settings", "consent-policy", channel] as const,
     catalogItems: (query: string) => [...root(), "settings", "catalog-items", query] as const,
+    /** The tenant's guest-facing venue name — the source for spec 08's `business_name`. */
+    venueName: () => [...root(), "settings", "venue-name"] as const,
+    /** Catalog discovery — owner-gated and audited, so keyed once and never focus-refetched. */
+    catalogList: () => [...root(), "settings", "catalog-list"] as const,
+    /** A single catalog's DRAFT items — owner-gated and audited, so keyed per catalog. */
+    catalogDraft: (catalogId: string) => [...root(), "settings", "catalog-draft", catalogId] as const,
   },
 } as const;
 

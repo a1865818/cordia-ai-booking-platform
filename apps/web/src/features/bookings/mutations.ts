@@ -1,5 +1,5 @@
 /**
- * The console's write flows as TanStack mutations (`docs/frontend-api-wiring.md` §6).
+ * The console's write flows as TanStack mutations (`docs/frontend-api-wiring.md` §8).
  *
  * Booking writes are `202 Accepted` + poll-to-terminal, not simple POSTs, so the whole
  * submit→poll sequence lives inside `mutationFn`: the mutation is only "settled" once the
@@ -23,10 +23,11 @@ import {
 } from "../../api/problem";
 import { getBookingDetails, getOperationStatus, type OperationStatusView } from "./api";
 import { getOrCreateAttempt, resetAttempt } from "./identity";
-import { submitBooking, submitCancellation } from "./submit";
-import { buildSubmission, type BookingDraft } from "./buildSubmission";
+import { submitCancellation } from "./submit";
 import { POLL_TIMEOUT_MS, nextInterval } from "./useOperationStatus";
-import { acceptOffer, cancelEnrollment, declineOffer } from "../waitlist/api";
+import {
+  acceptOffer, cancelEnrollment, declineOffer, enrollGuest, type EnrollGuestInput,
+} from "../waitlist/api";
 import type { WaitlistItem } from "../../data/console";
 
 /**
@@ -90,56 +91,6 @@ export function writeFailureMessage(error: unknown, action: string): string {
     return "This booking changed while you were looking — reloading";
   }
   return error instanceof Error ? error.message : `Could not ${action}`;
-}
-
-// ---------------------------------------------------------------------------
-// Create
-// ---------------------------------------------------------------------------
-
-export interface CreateBookingVariables {
-  draft: BookingDraft;
-  /** Stable per attempt: the key is minted once and reused on retry (Inv-2). */
-  attemptKey: string;
-  identityRef: string;
-  readBackVersion: string;
-}
-
-/**
- * Submits a confirmed booking intent.
- *
- * Deliberately returns as soon as the server has *accepted* (202): the drawer then watches
- * the operation with `useOperationStatus`, which is what drives its progress UI. Folding the
- * poll in here would hide the intermediate states the operator is meant to see.
- */
-export function useCreateBooking() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async (variables: CreateBookingVariables) => {
-      const identity = getOrCreateAttempt(variables.attemptKey);
-
-      const request = await buildSubmission(variables.draft, {
-        identity,
-        sessionId: `console:${identity.intentId}`,
-        identityRef: variables.identityRef,
-        readBackVersion: variables.readBackVersion,
-        // Stable across retries — see AttemptIdentity.confirmedAt (Inv-2).
-        confirmedAt: identity.confirmedAt,
-      });
-
-      return submitBooking(request);
-    },
-    onError: (error, variables) => {
-      // A conflict can never be replayed with the same key — free it so the next attempt
-      // mints a fresh identity rather than failing forever. Any 409 counts, not just the
-      // typed idempotency body: a bare 409 spends the attempt just as surely.
-      if (isRetryableWithNewAttempt(error)) resetAttempt(variables.attemptKey);
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.bookings.all() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.operations.all() });
-    },
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +248,39 @@ export function useRemoveFromWaitlist(applyRows: Dispatch<SetStateAction<Waitlis
       void queryClient.invalidateQueries({ queryKey: queryKeys.waitlist.all() });
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Waitlist enrolment
+// ---------------------------------------------------------------------------
+
+/**
+ * Enrols a guest on the waitlist.
+ *
+ * Not optimistic: the server is the only party that can accept an enrolment, and only the
+ * refetched list can say what was recorded — `onSettled` refetches on both outcomes.
+ *
+ * `retry: false` is still inherited, but the reason changed. The drawer now mints a key for the
+ * attempt and sends it, so an automatic replay could no longer duplicate the guest; it is left
+ * off because a retry should be the operator's decision when the outcome is unknown, not the
+ * client's.
+ */
+export function useEnrollGuest() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: EnrollGuestInput) => enrollGuest(input),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.waitlist.all() });
+    },
+  });
+}
+
+/** Operator-facing message for a failed enrolment. */
+export function enrollFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "Could not add this guest to the waitlist";
 }
 
 // ---------------------------------------------------------------------------

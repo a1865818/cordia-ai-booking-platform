@@ -31,6 +31,7 @@ public class RetryNotificationTests
     private readonly Mock<INotificationRepository> _retryNotifRepo = new();
     private readonly Mock<IAuditEventRepository> _retryAuditRepo = new();
     private readonly Mock<INotificationTemplateResolver> _templateResolver = new();
+    private readonly Mock<INotificationRecipientResolver> _recipientResolver = new();
 
     public RetryNotificationTests()
     {
@@ -44,6 +45,14 @@ public class RetryNotificationTests
                 It.IsAny<NotificationEvent>(), It.IsAny<NotificationChannel>(),
                 It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new NotificationTemplate("v1", "stub-body"));
+
+        // Default: the operation's revision carries a guest, so a resend has somewhere to go.
+        // Without a Destination the handler settles InvalidRecipient instead of calling the
+        // adapter — deliberately, so a resend can never claim a delivery it did not attempt.
+        _recipientResolver.Setup(r => r.ResolveAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_abc123", NotificationChannel.Sms, "en", Destination: "+61400000000"));
     }
 
     private NotificationRetryScheduler BuildScheduler() =>
@@ -52,6 +61,7 @@ public class RetryNotificationTests
 
     private RetryNotificationCommandHandler BuildHandler() =>
         new(
+            _recipientResolver.Object,
             _repo.Object,
             new[] { _smsAdapter.Object },
             _auditRepo.Object,
@@ -236,6 +246,7 @@ public class RetryNotificationTests
 
         // Build handler with NO adapters
         var handler = new RetryNotificationCommandHandler(
+            _recipientResolver.Object,
             _repo.Object,
             Array.Empty<INotificationProviderAdapter>(),
             _auditRepo.Object,

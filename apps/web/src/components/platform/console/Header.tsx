@@ -2,6 +2,7 @@ import React from "react";
 import { Icon } from "../../ui/Icon";
 import { PrimaryButton } from "../../ui/Button";
 import { IconName } from "../../ui/Icon";
+import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
 
 const SCREEN_TITLES: Record<string, [string, string]> = {
   today:         ['Today',              'Today'],
@@ -13,7 +14,7 @@ const SCREEN_TITLES: Record<string, [string, string]> = {
   campaigns:     ['Approval required',  'Campaigns'],
   analytics:     ['Last 7 days',        'Analytics'],
   settings:      ['Workspace',          'Settings'],
-  more:          ['Owner console',      'More'],
+  more:          ['Console',            'More'],
 };
 
 interface HeaderProps {
@@ -58,18 +59,33 @@ function GlobalSearch({ onOpen }: { onOpen?: () => void }) {
   );
 }
 
-function WorkspaceBtn() {
+/**
+ * The tenant this console is reading and writing.
+ *
+ * Shows the value actually sent as `X-Tenant-Id`, not a name — the previous literal
+ * ("Bella Nails") named a business that is not the tenant.
+ *
+ * A venue display name IS now retrievable (`GET /api/tenant-profile/display-name`, set from
+ * Settings), so the identifier shown here is a deliberate choice rather than a missing endpoint:
+ * this label's job is to say which tenant the console is reading and writing, and a friendly name
+ * would hide exactly the value that answers that question.
+ *
+ * Not a button, and no chevron: there is no workspace switcher, and an affordance that opens
+ * nothing is a claim about a capability the console does not have.
+ */
+function WorkspaceLabel() {
+  const session = sessionIdentity();
   return (
-    <button
-      type="button"
-      aria-label="Switch workspace"
-      className="flex items-center gap-2 h-[36px] px-3 border border-cd-border rounded-[9px] bg-white cursor-pointer text-[13px] font-medium text-ink whitespace-nowrap transition-all duration-150 hover:bg-[#FAFAF9]"
+    <div
+      className="flex items-center gap-2 h-[36px] px-3 border border-cd-border rounded-[9px] bg-white text-[13px] font-medium text-ink whitespace-nowrap"
       style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+      title={SESSION_IDENTITY_HINT}
     >
-      <span className="w-5 h-5 rounded-[6px] bg-ink text-white flex items-center justify-center text-[10px] font-bold">B</span>
-      Bella Nails
-      <Icon name="chevD" size={12} strokeWidth={2.4} color="#9A9A9A" />
-    </button>
+      <span className="w-5 h-5 rounded-[6px] bg-ink text-white flex items-center justify-center text-[10px] font-bold">
+        {session.tenantInitial}
+      </span>
+      {session.tenant}
+    </div>
   );
 }
 
@@ -100,7 +116,7 @@ export function Header({ device, screen, primaryLabel, onPrimary, extra, scrolle
       <div className="flex items-center gap-[9px] shrink-0">
         {!isPhone && extra}
         {!isPhone && <GlobalSearch onOpen={onOpenSearch} />}
-        {!isPhone && <WorkspaceBtn />}
+        {!isPhone && <WorkspaceLabel />}
         {primaryLabel && (
           <PrimaryButton icon={'plus' as IconName} onClick={onPrimary}>{primaryLabel}</PrimaryButton>
         )}

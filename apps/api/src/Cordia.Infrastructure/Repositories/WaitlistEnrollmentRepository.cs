@@ -20,6 +20,18 @@ public class WaitlistEnrollmentRepository(ApplicationDbContext db) : IWaitlistEn
         await db.SaveChangesAsync(ct);
     }
 
+    public async Task<IReadOnlyList<string>> ListLocationsInUseAsync(
+        string tenantId, CancellationToken ct = default)
+        // Explicit tenant predicate, matching every sibling read: the global filter is a backstop,
+        // not the scope statement (Inv-13).
+        => await db.WaitlistEnrollments
+            .AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.LocationId != "")
+            .Select(e => e.LocationId)
+            .Distinct()
+            .OrderBy(l => l)
+            .ToListAsync(ct);
+
     public Task<WaitlistEnrollment?> GetAsync(string enrollmentId, CancellationToken ct = default)
         => db.WaitlistEnrollments
             .AsNoTracking()

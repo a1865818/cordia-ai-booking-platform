@@ -29,19 +29,49 @@ public static class CapacitySlotKey
         string? locationId,
         DateTimeOffset startsAt)
     {
-        var resource = FirstNonEmpty(resourceId, serviceId, locationId);
+        var resource = ResolveResource(resourceId, serviceId, locationId);
         if (resource is null)
             return null;
 
-        return $"{resource}|{startsAt:O}";
+        // NORMALISED TO UTC before formatting. The "O" round-trip format prints the offset the
+        // caller happened to carry, so the same instant expressed two ways produces two different
+        // keys: the console declares slots with `toISOString()` (always `+00:00`) while a payload
+        // from the agent lane can carry the venue's local offset. The declared slot and the
+        // booking that should match it then key differently, `GetAsync` misses, the operation
+        // takes the untracked path, and the venue's declared capacity is silently unenforced with
+        // no error anywhere.
+        //
+        // Backward compatible: a value already in UTC formats identically either way, so slots
+        // declared through the console keep the keys they were stored under.
+        return $"{resource}|{startsAt.ToUniversalTime():O}";
     }
 
+    /// <summary>
+    /// The resource dimension the key is built from, in preference order, or <see langword="null"/>
+    /// when none is present. Exposed so a caller that needs to STORE the dimension alongside the
+    /// key resolves it the same way the key does — picking it independently (e.g. with a plain
+    /// <c>??</c> chain, which treats <c>"  "</c> as a value) is how the stored dimension and the
+    /// key it is supposed to describe drift apart.
+    /// </summary>
+    public static string? ResolveResource(string? resourceId, string? serviceId, string? locationId)
+        => FirstNonEmpty(resourceId, serviceId, locationId);
+
+    /// <summary>
+    /// Whitespace-only is treated as absent, and the winner is trimmed.
+    ///
+    /// <para>This has to agree with <c>CreateCapacitySlotValidator</c>, which admits a slot when
+    /// any dimension is non-WHITESPACE. Using <c>IsNullOrEmpty</c> here let <c>"  "</c> through as
+    /// a real dimension, so a declared slot got the key <c>"  |{startsAt}"</c> while the booking
+    /// path — deriving from a canonical payload that carries the meaningful dimension — derived a
+    /// different key. The slot was stored and reported as declared capacity, and never matched or
+    /// enforced by anything: precisely the silent no-op this type exists to prevent.</para>
+    /// </summary>
     private static string? FirstNonEmpty(params string?[] candidates)
     {
         foreach (var candidate in candidates)
         {
-            if (!string.IsNullOrEmpty(candidate))
-                return candidate;
+            if (!string.IsNullOrWhiteSpace(candidate))
+                return candidate.Trim();
         }
 
         return null;

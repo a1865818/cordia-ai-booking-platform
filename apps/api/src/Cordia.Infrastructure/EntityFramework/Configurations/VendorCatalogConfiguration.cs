@@ -18,6 +18,11 @@ public class VendorCatalogConfiguration : IEntityTypeConfiguration<VendorCatalog
 
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
 
+        // Defaulted in SQL like CreatedAt, so an insert that does not set it still starts the
+        // staleness clock at row birth rather than at DateTimeOffset.MinValue — which would make
+        // every freshly uploaded catalog instantly eligible for extract_failed.
+        builder.Property(e => e.StatusChangedAt).HasDefaultValueSql("now()");
+
         builder.Property(e => e.Version)
             .IsConcurrencyToken()
             .HasDefaultValue(0L);

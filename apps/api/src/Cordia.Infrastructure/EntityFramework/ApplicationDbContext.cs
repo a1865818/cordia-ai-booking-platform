@@ -83,6 +83,14 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<TenantChannelEndpoint> TenantChannelEndpoints => Set<TenantChannelEndpoint>();
 
+    public DbSet<TenantDisplayName> TenantDisplayNames => Set<TenantDisplayName>();
+
+    /// <summary>
+    /// Guest contact held out of the immutable canonical payload so it can actually be erased
+    /// (spec 12/14 retention ruling, owner decision 2026-08-06).
+    /// </summary>
+    public DbSet<GuestContact> GuestContacts => Set<GuestContact>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema("public");

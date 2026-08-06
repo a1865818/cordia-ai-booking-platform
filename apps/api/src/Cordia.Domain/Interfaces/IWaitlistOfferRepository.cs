@@ -16,6 +16,15 @@ public interface IWaitlistOfferRepository
     /// <c>null</c> when none is live (Inv-1 guarantees at most one). Used by enrollment cancel.
     /// </summary>
     Task<WaitlistOffer?> GetLiveByEnrollmentAsync(string enrollmentId, CancellationToken ct = default);
+    /// <summary>
+    /// The offer that owns an <c>op_wl_*</c> operation id, or null.
+    ///
+    /// A waitlist offer's notification carries that id even though no <c>booking_operations</c>
+    /// row exists for it until accept — so this is the only way to get from a notification back
+    /// to the enrollment that knows where to send it (spec 10 §13).
+    /// </summary>
+    Task<WaitlistOffer?> GetByOperationIdAsync(string operationId, CancellationToken ct = default);
+
 
     /// <summary>
     /// Version-token conditional transition (§6.2): sets <paramref name="next"/> status only when

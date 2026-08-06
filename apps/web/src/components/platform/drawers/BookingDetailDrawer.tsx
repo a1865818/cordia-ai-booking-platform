@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect, useState, useRef } from "react";
-import { Booking, staffById, chMeta, fmtRange, idemKey } from "../../../data/console";
+import { Booking, chMeta, fmtRange } from "../../../data/console";
 import { dayLabel as weekDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { Chip } from "../../ui/Chip";
@@ -61,7 +61,6 @@ export function BookingDetailDrawer({
 
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Booking">{null}</Drawer>;
 
-  const st = staffById(b.staff);
   const dayLabel = weekDayLabel(week, b.day);
   // `isBooking === false` means the platform has accepted the request but not finalised it, so
   // `b.id` is an OPERATION id. Cancel and reschedule both address a booking; sending an operation
@@ -121,10 +120,11 @@ export function BookingDetailDrawer({
       {verificationGate && <div className="mb-[14px]">{verificationGate}</div>}
       <div className="rounded-[13px] p-[4px_14px] mb-[14px]" style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
         <MetaRow label="Service">{b.serviceName}</MetaRow>
-        <MetaRow label="With">
-          {st.name}
-          <div className="font-mono text-[10px] text-t3 tracking-[0.06em]">{st.role}</div>
-        </MetaRow>
+        {/* No "With" row. `Booking.staff` is a grid lane, not an assignment: the platform models
+            no resource, so `adapters.ts` sets every live booking to `UNASSIGNED_RESOURCE_ID`
+            ("s1") — and `staffById("s1")` matched the mock `STAFF[0]`, so this row read
+            "With: Linh Pham · Technician · Bay 1" for EVERY real booking, naming an invented
+            person as the one who handled it. Same defect as the grid's fabricated lanes. */}
         <MetaRow label="When">
           {dayLabel}
           <div className="font-mono text-[11px] text-ink">{fmtRange(b.start, b.dur)}</div>
@@ -145,10 +145,11 @@ export function BookingDetailDrawer({
             </span>
           </MetaRow>
         )}
-        <div className="flex items-center justify-between gap-3 py-[11px]">
-          <span className="text-[12.5px] text-t2">Idempotency key</span>
-          <span className="font-mono text-[11px] text-t3">{idemKey(b.id)}</span>
-        </div>
+        {/* No "Idempotency key" row. `idemKey()` derived a plausible-looking key from a
+            character sum of the booking's DISPLAY id — it had no relationship to the key the
+            request was actually submitted under (`AttemptIdentity`, `features/bookings/identity.ts`),
+            and the schedule projection does not return one. An invented technical fact is
+            worse than a missing one: it is the field an engineer would quote in an incident. */}
       </div>
 
       {b.prov === 'ai' && (

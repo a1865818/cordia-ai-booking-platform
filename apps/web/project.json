@@ -3,7 +3,11 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
   "sourceRoot": "apps/web/src",
-  "tags": ["scope:web", "type:app", "lang:typescript"],
+  "tags": [
+    "scope:web",
+    "type:app",
+    "lang:typescript"
+  ],
   "targets": {
     "install": {
       "executor": "nx:run-commands",
@@ -24,23 +28,32 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/web",
-        "command": "mkdir -p ../../.tmp && bunx vite 2>&1 | tee ../../.tmp/web-dev.log"
+        "command": "node ../../tools/scripts/serve-log.mjs web bunx vite"
       }
     },
     "build": {
       "executor": "nx:run-commands",
       "dependsOn": [],
-      "inputs": ["typescript", { "env": "VITE_BASE_PATH" }],
+      "inputs": [
+        "typescript",
+        {
+          "env": "VITE_BASE_PATH"
+        }
+      ],
       "cache": true,
       "options": {
         "cwd": "apps/web",
         "command": "bunx tsc -b && bunx vite build"
       },
-      "outputs": ["{workspaceRoot}/dist/apps/web"]
+      "outputs": [
+        "{workspaceRoot}/dist/apps/web"
+      ]
     },
     "preview": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "cwd": "apps/web",
         "command": "bunx vite preview"
@@ -49,7 +62,9 @@
     "test": {
       "executor": "nx:run-commands",
       "dependsOn": [],
-      "inputs": ["typescript"],
+      "inputs": [
+        "typescript"
+      ],
       "cache": true,
       "options": {
         "cwd": "apps/web",
@@ -59,13 +74,17 @@
     "test-coverage": {
       "executor": "nx:run-commands",
       "dependsOn": [],
-      "inputs": ["typescript"],
+      "inputs": [
+        "typescript"
+      ],
       "cache": true,
       "options": {
         "cwd": "apps/web",
         "command": "bunx vitest run --coverage"
       },
-      "outputs": ["{projectRoot}/coverage"]
+      "outputs": [
+        "{projectRoot}/coverage"
+      ]
     },
     "lint": {
       "executor": "nx:run-commands",
@@ -81,7 +100,9 @@
     },
     "typecheck": {
       "executor": "nx:run-commands",
-      "inputs": ["typescript"],
+      "inputs": [
+        "typescript"
+      ],
       "cache": true,
       "metadata": {
         "description": "tsc -b, NOT plain tsc: apps/web/tsconfig.json is solution-style ({ files: [], references: [...] }), so `tsc --noEmit` compiled zero files and exited 0 on any type error. Errors only surfaced at build time."

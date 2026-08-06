@@ -64,6 +64,35 @@ public sealed class StubBookingProviderAdapter : IBookingProviderAdapter
     }
 
     /// <summary>
+    /// Amends an existing booking in place. The reference is PRESERVED — the booking moved, it
+    /// was not replaced — and the request key makes a redelivery idempotent. An unknown
+    /// reference returns NotFound so the caller settles from current state rather than
+    /// reconciling a booking this stub never held.
+    /// </summary>
+    public Task<ProviderResult> ModifyBookingAsync(
+        string providerAccount,
+        string providerReference,
+        ProviderBookingRequest request,
+        CancellationToken ct = default)
+    {
+        // Unknown reference: nothing to amend. NotFound (not an error) so the caller can settle
+        // from current state rather than reconciling a booking the provider never had.
+        if (!_byReference.ContainsKey((providerAccount, providerReference)))
+            return Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+        // Idempotent by the request key: a redelivery of the SAME amendment must not apply it
+        // twice, and must report the same outcome it did the first time.
+        if (_byKey.TryGetValue((providerAccount, request.ProviderIdempotencyKey), out var existing))
+            return Task.FromResult(new ProviderResult(ProviderResultKind.AlreadyExists, existing));
+
+        _byKey[(providerAccount, request.ProviderIdempotencyKey)] = providerReference;
+
+        // The reference is PRESERVED across an amendment — the booking moved, it was not
+        // replaced. A new reference here would strand every record pointing at the old one.
+        return Task.FromResult(new ProviderResult(ProviderResultKind.Created, providerReference));
+    }
+
+    /// <summary>
     ///   Cancel a booking. If the reference is known, removes it from both stores and returns
     ///   <see cref="ProviderResultKind.Created"/> (treated as "cancel acknowledged"). If unknown, returns
     ///   <see cref="ProviderResultKind.NotFound"/>.

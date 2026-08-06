@@ -1,4 +1,5 @@
 ﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 
 namespace Cordia.Domain.Interfaces;
@@ -33,6 +34,21 @@ public interface IVerificationGrantRepository
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
+        DateTimeOffset now,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The assurance level recorded on a grant, or <c>null</c> when no unexpired grant with that
+    /// id exists for the tenant.
+    ///
+    /// Narrower than <see cref="FindValidGrantByIdAsync"/> on purpose: this answers "how well was
+    /// this party verified", not "may this party perform this action". Acceptance needs the
+    /// former and has none of the customer-ref / action / target inputs the authorization gate
+    /// requires, so reusing that method would mean inventing them.
+    /// </summary>
+    Task<VerificationLevel?> GetAssuranceLevelAsync(
+        string tenantId,
+        string grantId,
         DateTimeOffset now,
         CancellationToken ct = default);
 

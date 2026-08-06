@@ -27,7 +27,7 @@ public class BookingReadRepositoryTests(PostgresFixture fixture)
             await SeedBookedOperationAsync(ctx, tenantB, "bk-b", "CORD-B", "Other Spa", phone);
 
         await using var readCtx = fixture.CreateContext(tenantA);
-        var repo = new BookingReadRepository(readCtx);
+        var repo = new BookingReadRepository(readCtx, new TenantDisplayNameRepository(readCtx), new GuestContactRepository(readCtx));
 
         var candidates = await repo.FindManageBookingCandidatesAsync(
             tenantA,
@@ -49,7 +49,7 @@ public class BookingReadRepositoryTests(PostgresFixture fixture)
             await SeedBookedOperationAsync(ctx, tenantA, "bk-owned-by-a", "CORD-A-DETAIL", "Serenity Spa", "+61400000001");
 
         await using var readCtx = fixture.CreateContext(tenantB);
-        var repo = new BookingReadRepository(readCtx);
+        var repo = new BookingReadRepository(readCtx, new TenantDisplayNameRepository(readCtx), new GuestContactRepository(readCtx));
 
         var projection = await repo.GetBookingProjectionByBookingIdAsync(tenantB, "bk-owned-by-a");
 
@@ -94,7 +94,7 @@ public class BookingReadRepositoryTests(PostgresFixture fixture)
         }
 
         await using var readCtx = fixture.CreateContext(tenantId);
-        var repo = new BookingReadRepository(readCtx);
+        var repo = new BookingReadRepository(readCtx, new TenantDisplayNameRepository(readCtx), new GuestContactRepository(readCtx));
 
         var candidates = await repo.FindManageBookingCandidatesAsync(
             tenantId,
@@ -127,18 +127,24 @@ public class BookingReadRepositoryTests(PostgresFixture fixture)
         var operationId = $"op-{Guid.NewGuid():N}";
         var now = DateTimeOffset.UtcNow;
 
+        // Shaped like a real BookingRequest wherever the projection allows it: `booking_id` comes
+        // from the operation row, and `booking_date`/`approx_time` are derived from `starts_at`,
+        // so none of the three belongs in a payload. `booking_reference` and `business_name` are
+        // the two the platform still cannot supply — see the note in
+        // ManageBookingReadEndpointTests.SeedManageableBookingAsync.
         canonicalPayload ??= JsonSerializer.Serialize(new
         {
-            booking_id = bookingId,
-            booking_reference = bookingReference,
-            business_name = businessName,
-            booking_date = "2026-07-10",
-            approx_time = "19:00",
+            operation = "create",
+            service_id = "svc-spa",
+            starts_at = "2026-07-10T19:00:00+00:00",
             party_size = 2,
             customer = new
             {
                 phone_e164 = phoneE164,
             },
+            // --- not producible by the submission path ---
+            booking_reference = bookingReference,
+            business_name = businessName,
         });
 
         var intent = new BookingIntent

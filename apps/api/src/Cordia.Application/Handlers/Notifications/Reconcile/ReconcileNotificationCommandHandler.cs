@@ -31,6 +31,7 @@ namespace Cordia.Application.Handlers.Notifications.Reconcile;
 /// <c>IUnitOfWork.ExecuteInTransactionAsync</c>.</para>
 /// </summary>
 public sealed class ReconcileNotificationCommandHandler(
+    INotificationRecipientResolver recipientResolver,
     INotificationRepository repo,
     IEnumerable<INotificationProviderAdapter> adapters,
     IAuditEventRepository auditRepo,
@@ -168,14 +169,27 @@ public sealed class ReconcileNotificationCommandHandler(
             // NOTE: reconcile resends always use the original provider_idempotency_key so that
             //       providers with send-idempotency can deduplicate the re-attempt correctly.
             var reconcileTemplate = await templateResolver.ResolveAsync(n.EventType, n.Channel, "en", ct2);
+            // As in the retry path: the destination is never persisted, so a reconcile resend
+            // re-resolves it through the same resolver instead of sending with nowhere to deliver.
+            var reconcileRecipient = n.OperationId is null
+                ? null
+                : await recipientResolver.ResolveAsync(n.TenantId, n.OperationId, ct2);
             var rendered = new RenderedMessage(
                 TemplateVersion: n.TemplateVersion,
                 Channel: n.Channel,
                 Locale: "en",
                 Body: reconcileTemplate.BodyTemplate,
-                MinimizedRecipient: n.RecipientRef);
+                MinimizedRecipient: n.RecipientRef,
+                Destination: reconcileRecipient?.Destination);
 
-            var result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct2);
+            // Same guard as the send and retry paths: a resend with nowhere to deliver must not
+            // report a delivery it did not make (Inv-16).
+            var result = reconcileRecipient?.Destination is null
+                ? new NotificationSendResult(
+                    NotificationSendOutcome.InvalidRecipient,
+                    ProviderMessageId: null,
+                    FailureCategory: "no_destination")
+                : await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct2);
 
             switch (result.Outcome)
             {

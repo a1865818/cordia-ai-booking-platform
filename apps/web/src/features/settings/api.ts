@@ -42,10 +42,25 @@ const CatalogResponseSchema = z.union([
 
 export type CatalogItem = z.infer<typeof CatalogItemSchema>;
 
-/** Returns `[]` for a body that does not match, rather than crashing the settings screen. */
+/**
+ * Parses a catalog response, THROWING on a shape it does not recognise.
+ *
+ * It used to return `[]` instead. That turned "we could not read the answer" into "the venue
+ * has no published items" — a confident claim, made to the operator, on the strength of a
+ * failed parse. The create drawer then said the venue had nothing bookable and removed the
+ * confirm button, indistinguishable from a genuinely empty catalog.
+ *
+ * Throwing puts the query into `isError`, where the drawer's existing three-state handling
+ * (failed / loading / empty) can tell the operator the truth and offer a retry. An empty array
+ * remains a perfectly good answer — but only when the server actually said so.
+ */
 export function parseCatalogItems(body: unknown): CatalogItem[] {
   const parsed = CatalogResponseSchema.safeParse(body);
-  if (!parsed.success) return [];
+  if (!parsed.success) {
+    throw new Error(
+      "The catalog response was not in a shape this console recognises, so its contents are unknown."
+    );
+  }
   return Array.isArray(parsed.data) ? parsed.data : parsed.data.items;
 }
 

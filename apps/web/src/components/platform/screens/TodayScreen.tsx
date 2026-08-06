@@ -1,14 +1,60 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Booking, STAFF, dayBounds, statusMeta, fmtT, fmtRange } from "../../../data/console";
+import { Booking, statusMeta, fmtT, fmtRange } from "../../../data/console";
+import type { GridResource } from "../../../features/bookings/resources";
 import { dayLabel, type ConsoleWeek } from "../../../features/bookings/week";
+import { useTickingNow } from "../../../hooks/useTickingNow";
 import { Icon } from "../../ui/Icon";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const COL_W    = 68;           // px per 15-min slot (fixed layout unit)
 const ROW_H    = 40;           // px per resource row
 const LABEL_W  = 148;          // px for resource labels column
-const NOW_MINS = 13 * 60 + 15; // demo "now" = 1:15 PM
-// DAY_START / DAY_END / COLS are derived per-day from dayBounds() inside DiagramView
+// The visible time window. Derived from the bookings on screen (see `dayWindow`), NOT from
+// operating hours: `dayBounds()` read the hand-written `SETTINGS.hours`, which SettingsScreen
+// itself badges "no operating-hours endpoint yet". Two things followed from that. A live Sunday
+// was labelled "Closed" on the strength of a constant, and — worse — the grid framed only
+// 9am-6pm, so a real booking at 08:00 or 20:30 was positioned outside the rendered columns and
+// simply could not be seen.
+const DEFAULT_WINDOW = { start: 8 * 60, end: 20 * 60 };
+const WINDOW_PAD = 60;
+/**
+ * How far past midnight the window may extend.
+ *
+ * NOT 24:00. `toDayAndStart` gives a start in 0..1439, but `dur` comes straight from the API with
+ * no upper bound, so a 23:20 booking of 90 minutes ends at 1490 — past midnight. Clamping the
+ * window at 1440 left its bar drawn beyond the last column, gridline and row stripe, in blank
+ * background with no time reference: the very "positioned outside the rendered columns" defect
+ * this window exists to prevent. The cap is generous enough to frame any real overnight booking
+ * and still bounds a corrupt `duration_minutes` to a grid that can be scrolled.
+ */
+const MAX_WINDOW_END = 36 * 60;
+
+/** Minutes since local midnight, for a given instant. */
+function minutesOfDay(at: number): number {
+  const when = new Date(at);
+  return when.getHours() * 60 + when.getMinutes();
+}
+
+/**
+ * The window the grid frames for a day: wide enough to contain every booking it must show.
+ *
+ * Every booking is guaranteed to be inside it, which is the property that matters — a schedule
+ * that silently omits a booking is the double-booking defect this console has already had once.
+ */
+export function dayWindow(bookings: Booking[], selDay: number): { start: number; end: number } {
+  const onDay = bookings.filter(b => b.day === selDay && isActive(b.status));
+  if (onDay.length === 0) return { ...DEFAULT_WINDOW };
+
+  const earliest = Math.min(...onDay.map(b => b.start));
+  const latest = Math.max(...onDay.map(b => b.start + b.dur));
+  return {
+    start: Math.max(0, Math.min(DEFAULT_WINDOW.start, snap15(earliest - WINDOW_PAD))),
+    // `min` against the cap is applied to the PADDED requirement, then `max` against the default
+    // — in that order, so the cap can shrink the padding but can never pull `end` below `latest`
+    // for any booking inside the cap.
+    end: Math.max(DEFAULT_WINDOW.end, Math.min(MAX_WINDOW_END, snap15(latest + WINDOW_PAD))),
+  };
+}
 
 function snap15(v: number) { return Math.round(v / 15) * 15; }
 
@@ -36,8 +82,9 @@ function hasConflict(
   );
 }
 
-function yToStaffIdx(y: number): number {
-  return Math.max(0, Math.min(Math.floor(y / ROW_H), STAFF.length - 1));
+/** Which lane a pointer y-offset falls in, clamped to the lanes that exist. */
+function yToResourceIdx(y: number, laneCount: number): number {
+  return Math.max(0, Math.min(Math.floor(y / ROW_H), Math.max(0, laneCount - 1)));
 }
 
 // ── Drag state ────────────────────────────────────────────────────────────
@@ -95,10 +142,18 @@ function SegRow({
 }
 
 // ── Stats card ────────────────────────────────────────────────────────────
-function StatsCard({ bookings, selDay }: { bookings: Booking[]; selDay: number }) {
+function StatsCard(
+  { bookings, selDay, isToday, now }:
+  { bookings: Booking[]; selDay: number; isToday: boolean; now: number }
+) {
+  // `now` is TICKING, not read once — without it the count freezes at whatever moment last
+  // triggered a render and quietly stops being true as the day goes on. It arrives as a prop
+  // rather than from a second `useTickingNow()`: see the one clock in TodayScreen.
   const day = bookings.filter(b => b.day === selDay && isActive(b.status));
   const total = day.length;
-  const remaining = day.filter(b => b.start >= NOW_MINS).length;
+  // "Remaining" is only meaningful for today, and only against the REAL clock. It used to count
+  // against `NOW_MINS`, a hard-coded 1:15 PM, on every day of the week.
+  const remaining = isToday ? day.filter(b => b.start >= minutesOfDay(now)).length : null;
   const segCounts = {
     morning: day.filter(b => segOf(b.start) === 'morning').length,
     lunch:   day.filter(b => segOf(b.start) === 'lunch').length,
@@ -112,10 +167,16 @@ function StatsCard({ bookings, selDay }: { bookings: Booking[]; selDay: number }
       style={{ border: '1px solid #ECEEF1' }}
     >
       <div className="flex gap-2 mb-[10px]">
+        {/*
+          No "clients" tile. It rendered `String(total)` — the booking count under a different
+          name — so it asserted a distinct fact (how many separate guests) that was never
+          computed, sitting next to two correct figures which made it read as trustworthy.
+          The projection's `customer_ref` cannot be deduplicated reliably either: an unfinalised
+          operation has none, and every one of those falls back to the same "Guest" label.
+        */}
         {([
           ['bookings',  String(total)],
-          ['remaining', String(remaining)],
-          ['clients',   String(total)],
+          ...(remaining === null ? [] : [['remaining', String(remaining)] as const]),
         ] as const).map(([lbl, val], i) => (
           <div
             key={lbl}
@@ -160,12 +221,14 @@ function StatsCard({ bookings, selDay }: { bookings: Booking[]; selDay: number }
 
 // ── Side booking list ─────────────────────────────────────────────────────
 function SideList({
-  bookings, selDay, timeFilter, openBooking,
+  bookings, selDay, timeFilter, openBooking, resources, loaded,
 }: {
   bookings: Booking[];
   selDay: number;
   timeFilter: string;
   openBooking: (id: string) => void;
+  resources: readonly GridResource[];
+  loaded: boolean;
 }) {
   const items = bookings
     .filter(b => b.day === selDay && isActive(b.status) && inTimeFilter(b.start, timeFilter))
@@ -181,7 +244,9 @@ function SideList({
 
   if (groups.length === 0) {
     return (
-      <div className="py-6 text-center text-[12px]" style={{ color: '#9A9A9A' }}>No bookings</div>
+      <div className="py-6 text-center text-[12px]" style={{ color: '#9A9A9A' }}>
+        {loaded ? 'No bookings' : 'Not loaded yet'}
+      </div>
     );
   }
 
@@ -194,7 +259,7 @@ function SideList({
           </div>
           {g.items.map(b => {
             const m = statusMeta(b.status);
-            const stf = STAFF.find(s => s.id === b.staff);
+            const stf = resources.find(s => s.id === b.staff);
             return (
               <button
                 key={b.id}
@@ -213,7 +278,7 @@ function SideList({
                   {b.name}
                 </span>
                 <span className="text-[10.5px] shrink-0 truncate max-w-[80px]" style={{ color: '#9A9A9A' }}>
-                  {b.serviceName.split(' ')[0]} · {stf?.name.split(' ')[0]}
+                  {b.serviceName.split(' ')[0]}{stf?.name ? ` · ${stf.name.split(' ')[0]}` : ''}
                 </span>
               </button>
             );
@@ -226,7 +291,8 @@ function SideList({
 
 // ── Diagram view ──────────────────────────────────────────────────────────
 function DiagramView({
-  bookings, selDay, timeFilter, openBooking, onDragReschedule, resourceLabel,
+  bookings, selDay, timeFilter, openBooking, onDragReschedule, resourceLabel, resources, isToday,
+  now,
 }: {
   bookings: Booking[];
   selDay: number;
@@ -234,8 +300,13 @@ function DiagramView({
   openBooking: (id: string) => void;
   onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
   resourceLabel: string;
+  resources: readonly GridResource[];
+  /** True only when the selected column is the real current day. Gates the now-line. */
+  isToday: boolean;
+  /** The screen's single ticking clock — see TodayScreen. */
+  now: number;
 }) {
-  const { start: dayStart, end: dayEnd } = dayBounds(selDay);
+  const { start: dayStart, end: dayEnd } = dayWindow(bookings, selDay);
   const cols = (dayEnd - dayStart) / 15;
 
   const gridRef    = useRef<HTMLDivElement>(null);
@@ -243,11 +314,12 @@ function DiagramView({
   const [drag, setDrag]   = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
+  const tickingNow = now;
   const gridW = cols * COL_W;
-  const gridH = STAFF.length * ROW_H;
+  const gridH = resources.length * ROW_H;
 
   const staffY: Record<string, number> = {};
-  STAFF.forEach((s, i) => { staffY[s.id] = i * ROW_H; });
+  resources.forEach((s, i) => { staffY[s.id] = i * ROW_H; });
 
   const visible = bookings.filter(
     b => b.day === selDay && isActive(b.status) && inTimeFilter(b.start, timeFilter),
@@ -302,7 +374,7 @@ function DiagramView({
         nd   = d.origDur;
         if (gridRef.current) {
           const r = gridRef.current.getBoundingClientRect();
-          nstf = STAFF[yToStaffIdx(e.clientY - r.top)].id;
+          nstf = resources[yToResourceIdx(e.clientY - r.top, resources.length)]?.id ?? d.origStaff;
         }
       } else if (d.mode === 'resize-r') {
         nd   = snap15(d.origDur + (dx / COL_W) * 15);
@@ -355,8 +427,11 @@ function DiagramView({
     });
   }
 
-  const showNow = NOW_MINS >= dayStart && NOW_MINS <= dayEnd;
-  const nowLeft = (NOW_MINS - dayStart) / 15 * COL_W;
+  // The now-line marks the present moment. It may only appear on the day that IS today, and at
+  // the actual time — it used to be drawn on every day at a hard-coded 1:15 PM.
+  const nowMins = minutesOfDay(tickingNow);
+  const showNow = isToday && nowMins >= dayStart && nowMins <= dayEnd;
+  const nowLeft = (nowMins - dayStart) / 15 * COL_W;
 
   // Build bars
   const bars = visible.map(b => {
@@ -398,11 +473,11 @@ function DiagramView({
             className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase"
             style={{ color: '#9A9A9A' }}
           >
-            {resourceLabel}
+            {resources.some(r => r.name) ? resourceLabel : 'Bookings'}
           </span>
           {showNow && (
             <span className="font-mono text-[10.5px] font-medium mt-[2px]" style={{ color: '#0A0A0A' }}>
-              ● {fmtT(NOW_MINS)}
+              ● {fmtT(nowMins)}
             </span>
           )}
         </div>
@@ -446,7 +521,7 @@ function DiagramView({
           className="shrink-0 overflow-hidden border-r bg-white"
           style={{ width: LABEL_W, borderColor: '#EAEAEA' }}
         >
-          {STAFF.map(st => (
+          {resources.map(st => (
             <div
               key={st.id}
               className="flex items-center gap-[8px] px-[11px] border-b"
@@ -463,7 +538,7 @@ function DiagramView({
                   {st.name}
                 </div>
                 <div className="text-[9.5px] truncate" style={{ color: '#9A9A9A' }}>
-                  {st.role.split(' · ')[0]}
+                  {st.role ? st.role.split(' · ')[0] : ''}
                 </div>
               </div>
             </div>
@@ -482,7 +557,7 @@ function DiagramView({
             style={{ width: gridW, height: gridH }}
           >
             {/* Row stripes */}
-            {STAFF.map((_, i) => (
+            {resources.map((_, i) => (
               <div
                 key={i}
                 style={{
@@ -612,12 +687,14 @@ function DiagramView({
 
 // ── List view ─────────────────────────────────────────────────────────────
 function ListView({
-  bookings, selDay, timeFilter, openBooking,
+  bookings, selDay, timeFilter, openBooking, resources, loaded,
 }: {
   bookings: Booking[];
   selDay: number;
   timeFilter: string;
   openBooking: (id: string) => void;
+  resources: readonly GridResource[];
+  loaded: boolean;
 }) {
   const items = bookings
     .filter(b => b.day === selDay && isActive(b.status) && inTimeFilter(b.start, timeFilter))
@@ -639,10 +716,10 @@ function ListView({
       >
         <div className="text-center">
           <div className="text-[14px] font-medium mb-1" style={{ color: '#9A9A9A' }}>
-            No bookings
+            {loaded ? 'No bookings' : 'Not loaded yet'}
           </div>
           <div className="text-[12px]" style={{ color: '#C5C9D0' }}>
-            Try changing the time filter
+            {loaded ? 'Try changing the time filter' : 'The schedule has not answered yet.'}
           </div>
         </div>
       </div>
@@ -663,7 +740,7 @@ function ListView({
             <div className="rounded-[10px] overflow-hidden" style={{ background: '#fff', border: '1px solid #ECEEF1' }}>
               {g.items.map((b, i) => {
                 const m = statusMeta(b.status);
-                const stf = STAFF.find(s => s.id === b.staff);
+                const stf = resources.find(s => s.id === b.staff);
                 return (
                   <button
                     key={b.id}
@@ -685,7 +762,7 @@ function ListView({
                         {b.name}
                       </div>
                       <div className="text-[12px] mt-[1px]" style={{ color: '#9A9A9A' }}>
-                        {b.serviceName} · {stf?.name} · {fmtRange(b.start, b.dur)}
+                        {b.serviceName}{stf?.name ? ` · ${stf.name}` : ''} · {fmtRange(b.start, b.dur)}
                       </div>
                     </div>
                     <span
@@ -721,6 +798,16 @@ export interface TodayScreenProps {
   bookings: Booking[];
   onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
   resourceLabel: string;
+  /**
+   * The lanes to draw. One unnamed lane while the platform models no resource — see
+   * `features/bookings/resources.ts`.
+   */
+  resources: readonly GridResource[];
+  /**
+   * True once the schedule has answered for this week. `false` means "not yet known" — which
+   * must not render as "No bookings", the same rule Queue and Waitlist hold.
+   */
+  loaded?: boolean;
 }
 
 const VIEW_OPTS   = [{ value: 'diagram', label: 'Diagram' }, { value: 'list', label: 'List' }];
@@ -734,11 +821,22 @@ const TIME_OPTS   = [
 export function TodayScreen({
   device, week, onPrevWeek, onNextWeek, onGoToToday, selDay, setSelDay,
   openBooking, goQueue, queueCount,
-  bookings, onDragReschedule, resourceLabel,
+  bookings, onDragReschedule, resourceLabel, resources, loaded = true,
 }: TodayScreenProps) {
   const isPhone = device === 'phone';
   const [calView,    setCalView]    = useState<'diagram' | 'list'>('diagram');
   const [timeFilter, setTimeFilter] = useState('all');
+
+  /**
+   * ONE clock for the screen, passed down.
+   *
+   * `StatsCard` and `DiagramView` each used to call `useTickingNow()`, which starts an interval
+   * at mount — so the two ticked out of phase by however long apart they mounted, and the
+   * "remaining today" tile could disagree with the grid's now-line about the current minute for
+   * up to a full interval. That is the drift `Countdown` documents its one-clock-per-screen rule
+   * to prevent, and `WaitlistScreen` already follows.
+   */
+  const now = useTickingNow();
 
   const selectedDayLabel = dayLabel(week, selDay);
 
@@ -749,18 +847,12 @@ export function TodayScreen({
     if (next > 6) { onNextWeek(); setSelDay(0); return; }
     setSelDay(next);
   }
-  const dayClosed = dayBounds(selDay).closed;
+  // No "Closed" pill. `dayBounds().closed` came from `SETTINGS.hours` — a hand-written constant
+  // that SettingsScreen renders under a "no operating-hours endpoint yet" badge. Telling an
+  // operator their venue is closed on the strength of that is the same fabrication, unbadged,
+  // on the live schedule.
+  const isToday = week.todayIndex === selDay;
   const dayBookings = bookings.filter(b => b.day === selDay && isActive(b.status));
-
-  const closedPill = dayClosed ? (
-    <span
-      className="inline-flex items-center gap-[5px] shrink-0 text-[10.5px] font-semibold px-[9px] py-[3px] rounded-full"
-      style={{ background: '#F5F5F5', color: '#6B6B6B' }}
-    >
-      <span className="w-[6px] h-[6px] rounded-full" style={{ background: '#9A9A9A' }} />
-      Closed
-    </span>
-  ) : null;
 
   // ── Phone: simplified card list ──────────────────────────────────────────
   if (isPhone) {
@@ -781,7 +873,6 @@ export function TodayScreen({
           </button>
           <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
             <span className="text-[14px] font-semibold truncate" style={{ color: '#0A0A0A' }}>{selectedDayLabel}</span>
-            {closedPill}
           </div>
           <button
             aria-label="Next day"
@@ -808,12 +899,14 @@ export function TodayScreen({
           ))}
         </div>
         {filtered.length === 0 ? (
-          <div className="py-12 text-center text-[13px]" style={{ color: '#9A9A9A' }}>No bookings</div>
+          <div className="py-12 text-center text-[13px]" style={{ color: '#9A9A9A' }}>
+            {loaded ? 'No bookings' : 'Not loaded yet'}
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
             {filtered.map(b => {
               const m = statusMeta(b.status);
-              const stf = STAFF.find(s => s.id === b.staff);
+              const stf = resources.find(s => s.id === b.staff);
               return (
                 <button
                   key={b.id}
@@ -834,7 +927,7 @@ export function TodayScreen({
                     {b.name}
                   </div>
                   <div className="text-[12.5px] mt-[1px]" style={{ color: '#9A9A9A' }}>
-                    {b.serviceName} · {stf?.name}
+                    {b.serviceName}{stf?.name ? ` · ${stf.name}` : ''}
                   </div>
                 </button>
               );
@@ -885,7 +978,6 @@ export function TodayScreen({
           <h2 className="text-[16px] font-semibold tracking-[-0.02em] m-0" style={{ color: '#0A0A0A' }}>
             {selectedDayLabel}
           </h2>
-          {closedPill}
           {queueCount > 0 && (
             <button
               onClick={goQueue}
@@ -953,7 +1045,7 @@ export function TodayScreen({
                 const sel     = i === selDay;
                 // Null in any week that isn't the current one — nothing is marked "today"
                 // in a week that does not contain today.
-                const isToday = i === week.todayIndex;
+                const isTodayColumn = i === week.todayIndex;
                 return (
                   <button
                     key={i}
@@ -962,8 +1054,8 @@ export function TodayScreen({
                     style={{
                       fontFamily: 'inherit',
                       background: sel ? '#0A0A0A' : 'transparent',
-                      color: sel ? '#fff' : isToday ? '#0A0A0A' : '#55554F',
-                      boxShadow: isToday && !sel ? 'inset 0 0 0 1.5px #0A0A0A' : 'none',
+                      color: sel ? '#fff' : isTodayColumn ? '#0A0A0A' : '#55554F',
+                      boxShadow: isTodayColumn && !sel ? 'inset 0 0 0 1.5px #0A0A0A' : 'none',
                     }}
                   >
                     <span className="font-mono text-[9px] font-medium tracking-[0.04em]" style={{ opacity: 0.75 }}>
@@ -977,7 +1069,7 @@ export function TodayScreen({
           </div>
 
           {/* Stats */}
-          <StatsCard bookings={bookings} selDay={selDay} />
+          <StatsCard bookings={bookings} selDay={selDay} isToday={isToday} now={now} />
 
           {/* Bookings list label */}
           <div
@@ -991,6 +1083,8 @@ export function TodayScreen({
             selDay={selDay}
             timeFilter={timeFilter}
             openBooking={openBooking}
+            resources={resources}
+            loaded={loaded}
           />
         </aside>
 
@@ -1007,6 +1101,9 @@ export function TodayScreen({
               openBooking={openBooking}
               onDragReschedule={onDragReschedule}
               resourceLabel={resourceLabel}
+              resources={resources}
+              isToday={isToday}
+              now={now}
             />
           ) : (
             <ListView
@@ -1014,6 +1111,8 @@ export function TodayScreen({
               selDay={selDay}
               timeFilter={timeFilter}
               openBooking={openBooking}
+              resources={resources}
+              loaded={loaded}
             />
           )}
         </main>
@@ -1021,3 +1120,12 @@ export function TodayScreen({
     </div>
   );
 }
+
+/**
+ * Test-only alias.
+ *
+ * `dayWindow` is the one piece of this file with a stated invariant ("every booking is inside the
+ * window"), and it is the piece whose previous version hid real bookings — so it is tested
+ * directly rather than through the grid's layout maths.
+ */
+export { dayWindow as dayWindowForTest };

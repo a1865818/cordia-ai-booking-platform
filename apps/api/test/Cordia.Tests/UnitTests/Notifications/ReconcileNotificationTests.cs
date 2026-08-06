@@ -25,6 +25,7 @@ public class ReconcileNotificationTests
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
     private readonly Mock<INotificationTemplateResolver> _templateResolver = new();
+    private readonly Mock<INotificationRecipientResolver> _recipientResolver = new();
 
     // T5a: retry scheduler deps (no-op mocks for tests that don't exercise the transient path)
     private readonly Mock<IScheduledJobRepository> _jobs = new();
@@ -56,6 +57,14 @@ public class ReconcileNotificationTests
                 It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new NotificationTemplate("v1", "stub-body"));
 
+        // Default: the operation's revision carries a guest, so a resend has somewhere to go.
+        // Without a Destination the handler settles InvalidRecipient instead of calling the
+        // adapter — deliberately, so a resend can never claim a delivery it did not attempt.
+        _recipientResolver.Setup(r => r.ResolveAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_abc123", NotificationChannel.Sms, "en", Destination: "+61400000000"));
+
         // Default: policy returns a next time so transient calls don't crash (used only in
         // TransientOnResend test; other tests never hit this path).
         _retryPolicy.Setup(p => p.NextEligibleAt(
@@ -82,6 +91,7 @@ public class ReconcileNotificationTests
     private ReconcileNotificationCommandHandler BuildHandler(
         params INotificationProviderAdapter[] adapters)
         => new(
+            _recipientResolver.Object,
             _repo.Object,
             adapters,
             _auditRepo.Object,

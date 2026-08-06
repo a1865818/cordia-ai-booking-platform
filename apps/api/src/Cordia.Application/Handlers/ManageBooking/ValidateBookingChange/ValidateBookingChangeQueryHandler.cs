@@ -22,14 +22,30 @@ public sealed class ValidateBookingChangeQueryHandler(
         var booking = await bookings.GetByIdAsync(request.TenantId, request.TargetBookingId, ct)
             ?? throw new OperationConflictException(request.TargetBookingId, "Booking was not found.");
 
-        await grants.RequireGrantAsync(
-            request.TenantId,
-            request.GrantId,
-            booking.CustomerId,
-            VerificationActionEnum.Modify,
-            request.TargetBookingId,
-            targetType: "booking",
-            ct: ct);
+        // A grant OR an authenticated staff role — the SAME door spec 08 §12 opens for the
+        // mutation this call precedes (see SubmitConfirmedIntentCommandHandler.AuthorizeMutationAsync).
+        //
+        // Requiring a grant here while the acceptance path accepts an operator role made the
+        // PRE-FLIGHT stricter than the change it is meant to de-risk: the console, which has no
+        // grant, was 403'd from asking "may I?" and could only find out by submitting. A check
+        // that only the caller who does not need it can run is not a check. Nothing here is
+        // widened by the role: this returns validation flags for a booking the same actor may
+        // already modify, discloses no guest data, and writes nothing.
+        var staffAuthorized =
+            !string.IsNullOrWhiteSpace(request.ActorId)
+            && StaffRole.Satisfies(request.ActorRole, StaffRole.Operator);
+
+        if (!staffAuthorized)
+        {
+            await grants.RequireGrantAsync(
+                request.TenantId,
+                request.GrantId,
+                booking.CustomerId,
+                VerificationActionEnum.Modify,
+                request.TargetBookingId,
+                targetType: "booking",
+                ct: ct);
+        }
 
         if (booking.Version != request.ExpectedBookingVersion)
         {
@@ -92,6 +108,11 @@ public sealed class ValidateBookingChangeQueryHandler(
         "booking_date",
         "booking_time",
         "approx_time",
+        // A reschedule legitimately moves the length as well as the time — the console's drawer
+        // and drag handler both carry `dur`, and `toCanonicalPayload` emits `duration_minutes`.
+        // Omitting it here made the pre-flight answer `policy_failed` for the single most common
+        // change the console actually submits.
+        "duration_minutes",
         "party_size",
         "special_requests",
     };

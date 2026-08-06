@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { ANALYTICS_BY_RANGE, SERVICES, WEEK } from "../../../data/console";
+import { useMemo } from "react";
+import { ANALYTICS_BY_RANGE, SERVICES } from "../../../data/console";
 import { KpiCard } from "../../ui/KpiCard";
 import { Panel } from "../../ui/Panel";
 import { SectionLabel } from "../../ui/SectionLabel";
@@ -10,8 +10,17 @@ import { ErrorState } from "../../ui/ErrorState";
 import { rangeToWindow } from "../../../features/reporting/api";
 import { useBookingFunnel, useBookingOverview } from "../../../features/reporting/hooks";
 
+export type AnalyticsRange = '7d' | '30d' | '90d';
+
 interface AnalyticsScreenProps {
   device: 'phone' | 'desktop';
+  /**
+   * Lifted so the page header can label the window truthfully. It used to be local state while
+   * the header's eyebrow was the static literal "Last 7 days", so choosing 30 or 90 days left
+   * the chrome contradicting the live figures beneath it.
+   */
+  range: AnalyticsRange;
+  onRangeChange: (range: AnalyticsRange) => void;
 }
 
 /** Operator-facing labels for the API's channel vocabulary. */
@@ -34,9 +43,8 @@ const FUNNEL_STAGES: { key: 'accepted' | 'confirmed' | 'notified'; label: string
   { key: 'notified',  label: 'Guest notified',    sub: 'Delivery confirmed' },
 ];
 
-export function AnalyticsScreen({ device }: AnalyticsScreenProps) {
+export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScreenProps) {
   const isPhone = device === 'phone';
-  const [range, setRange] = useState<'7d' | '30d' | '90d'>('7d');
 
   // Anchor the window to the selected range so the query key is stable across renders.
   const window = useMemo(() => rangeToWindow(range), [range]);
@@ -73,7 +81,7 @@ export function AnalyticsScreen({ device }: AnalyticsScreenProps) {
       <div className="mb-4">
         <Segmented
           value={range}
-          onChange={(v) => setRange(v as '7d' | '30d' | '90d')}
+          onChange={(v) => onRangeChange(v as AnalyticsRange)}
           size="sm"
           options={[
             { value: '7d',  label: '7 days' },
@@ -144,9 +152,10 @@ export function AnalyticsScreen({ device }: AnalyticsScreenProps) {
       <Panel style={{ padding: '18px 16px 14px', marginBottom: 18 }}>
         <div className="flex items-end gap-2 md:gap-4" style={{ height: 160 }}>
           {chartDays.map((d, i) => {
-            const accent = perDay.length > 0
-              ? i === chartDays.length - 1
-              : (range === '7d' ? i === WEEK.today : i === chartDays.length - 1);
+            // The most recent bucket, always. It used to be `WEEK.today` for the 7-day mock
+            // series — an index into the frozen `9-15 June` literal, which highlighted a
+            // Thursday whatever day it actually was.
+            const accent = i === chartDays.length - 1;
             return (
               <div key={d.d} className="flex-1 flex flex-col items-center gap-[9px] h-full justify-end">
                 <span className="font-mono text-[11px] font-semibold text-t3">{d.v}</span>

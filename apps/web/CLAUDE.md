@@ -33,8 +33,11 @@ Per-request extras: `{ grantId }` → `X-Grant-Id` (spec-08 verification),
 DLQ / operation resume-resolve), `{ reasonCode }` → `X-Reason-Code`.
 
 Dev identity comes from `src/api/config.ts` (`VITE_DEV_*`, see `.env.example`). The
-`X-Tenant-Id` header is a **dev shim** — when the spec-15 signed `X-Tenant-Context` lands,
-only `config.ts`/`client.ts` change.
+`X-Tenant-Id` header is a **dev shim**, and the API now gates it to Development
+(`Tenancy:AllowHeaderShim`). Spec-15's signed `X-Tenant-Context` is verified by the API but is
+only ever *issued* at channel ingress, so there is no web-origin context to send yet — see
+`docs/frontend-api-wiring.md` §4 and §12 gap 1. When that issuance exists, only
+`config.ts`/`client.ts` change.
 
 Booking writes are **not** plain POSTs: they return `202 Accepted` with an operation id
 that you poll via `GET /api/booking-operations/{id}` until `terminal`. See

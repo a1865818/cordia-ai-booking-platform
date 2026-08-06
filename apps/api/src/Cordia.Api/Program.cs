@@ -190,10 +190,35 @@ var allowTenantHeaderShim = app.Configuration.GetValue(
 if (allowTenantHeaderShim)
 {
     app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
+
+    // Say so once at startup — and say it LOUDLY when it is dangerous.
+    //
+    // Only the disabled branch announced itself, so the one configuration that actually needs
+    // announcing was the silent one: a deployment that switched `Tenancy:AllowHeaderShim` on
+    // outside Development accepted a client-named tenant with nothing in the log to show for it.
+    // "Disabled" is the safe state and barely worth a line; "enabled in Production" is
+    // unauthenticated cross-tenant access (Inv-13) and is the thing an operator must be able to
+    // find by grepping startup.
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "X-Tenant-Id header shim is ENABLED ({Environment}); callers name their own tenant. "
+            + "Expected on a developer machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "X-Tenant-Id header shim is ENABLED OUTSIDE DEVELOPMENT ({Environment}) because "
+            + "Tenancy:AllowHeaderShim was set explicitly. Any caller can name the tenant whose "
+            + "data they receive — this is unauthenticated cross-tenant access (Inv-13). Turn it "
+            + "off unless a signed X-Tenant-Context issuer is genuinely unavailable.",
+            app.Environment.EnvironmentName);
+    }
 }
 else
 {
-    // Say so once at startup: a silently absent shim looks exactly like a broken tenant lookup.
+    // A silently absent shim looks exactly like a broken tenant lookup.
     app.Logger.LogInformation(
         "X-Tenant-Id header shim is disabled ({Environment}); tenant must come from a verified X-Tenant-Context.",
         app.Environment.EnvironmentName);

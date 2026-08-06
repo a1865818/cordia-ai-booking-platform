@@ -54,6 +54,52 @@ public class SubmitConfirmedIntentValidatorTests
                 },
             });
 
+    private static SubmitConfirmedIntentCommand WithVerificationLevel(string level)
+    {
+        var command = ValidCommand();
+        command.Request.Confirmation.VerificationLevel = level;
+        return command;
+    }
+
+    // ------------------------------------------------------------------
+    // verification_level vocabulary (R15)
+    //
+    // The rule this pins: an off-vocabulary assurance level must be REJECTED, not silently
+    // downgraded. `MapVerificationLevel` falls through to `Unverified` for anything it does
+    // not recognise, so without a validator the platform would record "unverified" for a
+    // customer the agent had actually identity-verified — and nothing anywhere would say so.
+    // `ConfirmationMappings.IsKnownVerificationLevel` exists for exactly this and the waitlist
+    // enrol validator already uses it; the submit path did not.
+    // ------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("unverified")]
+    [InlineData("channel_verified")]
+    [InlineData("identity_verified")]
+    [InlineData("high_assurance")]
+    public async Task Accepts_every_ratified_verification_level(string level)
+    {
+        var result = await _validator.TestValidateAsync(
+            WithVerificationLevel(level), cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldNotHaveValidationErrorFor(x => x.Request.Confirmation.VerificationLevel);
+    }
+
+    [Theory]
+    // "none" is what the agent lane actually sent — not a member of the vocabulary, so every
+    // agent submission was silently recorded as unverified.
+    [InlineData("none")]
+    [InlineData("staff_confirmed")]
+    [InlineData("verified")]
+    [InlineData("IDENTITY-VERIFIED")]
+    public async Task Rejects_an_off_vocabulary_verification_level_instead_of_downgrading_it(string level)
+    {
+        var result = await _validator.TestValidateAsync(
+            WithVerificationLevel(level), cancellationToken: TestContext.Current.CancellationToken);
+
+        result.ShouldHaveValidationErrorFor(x => x.Request.Confirmation.VerificationLevel);
+    }
+
     // ------------------------------------------------------------------
     // Happy path
     // ------------------------------------------------------------------

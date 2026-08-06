@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
 import { WaitlistItem } from "../../../data/console";
-import { isOfferActionable, offerExpiryLabel } from "../../../features/waitlist/adapters";
+import { isOfferActionable } from "../../../features/waitlist/adapters";
 import { Avatar } from "../../ui/Avatar";
+import { Countdown } from "../../ui/Countdown";
 import { Icon } from "../../ui/Icon";
 import { Toggle } from "../../ui/Toggle";
 import { DemoBadge } from "../../ui/DemoBadge";
+import { useTickingNow } from "../../../hooks/useTickingNow";
 import { SectionLabel } from "../../ui/SectionLabel";
 
 interface WaitlistScreenProps {
@@ -13,6 +14,8 @@ interface WaitlistScreenProps {
   toggleAutoBook: () => void;
   waitlist: WaitlistItem[];
   onToggleAuto: (id: string) => void;
+  /** True once the enrolments list has answered at least once; `false` means "not yet known". */
+  loaded?: boolean;
   onRemove: (id: string) => void;
   onBookNow: (id: string) => void;
   /** Answers a live offer. Absent on the demo-only rendering, which has no offers. */
@@ -29,17 +32,8 @@ interface WaitlistScreenProps {
  * have to be re-evaluated over time. Without this a row kept a live Accept button and a frozen
  * "expires in 3 min" indefinitely, and clicking it 409'd.
  */
-function useTickingNow(intervalMs = 30_000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
 export function WaitlistScreen({
-  autoBook, toggleAutoBook, waitlist, onToggleAuto, onRemove, onBookNow,
+  autoBook, toggleAutoBook, waitlist, onToggleAuto, onRemove, onBookNow, loaded = true,
   onAcceptOffer, onDeclineOffer, offerBusyId,
 }: WaitlistScreenProps) {
   const now = useTickingNow();
@@ -68,14 +62,20 @@ export function WaitlistScreen({
         <Toggle on={autoBook} onClick={toggleAutoBook} />
       </div>
 
-      <SectionLabel>{waitlist.length} waiting</SectionLabel>
+      {/* A count is a claim. Until the list has answered there is no count to state. */}
+      <SectionLabel>{loaded ? `${waitlist.length} waiting` : 'Waitlist'}</SectionLabel>
 
       {waitlist.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-14 px-4 text-center bg-white border border-cd-border rounded-[14px]">
           <span className="w-12 h-12 rounded-full bg-wash2 flex items-center justify-center mb-3">
             <Icon name="clock" size={22} strokeWidth={1.8} color="#9A9A9A" />
           </span>
-          <div className="text-[14.5px] font-semibold text-ink">No one waiting</div>
+          {/* "No one waiting" states a fact about the venue. Before the list has loaded — or
+              after it failed, where the page's error banner sits right above this panel — the
+              app does not know that. */}
+          <div className="text-[14.5px] font-semibold text-ink">
+            {loaded ? 'No one waiting' : 'The waitlist hasn’t loaded'}
+          </div>
           <div className="text-[12.5px] text-t2 mt-[4px] max-w-[220px] leading-[1.5]">
             Customers will appear here when they join the waitlist.
           </div>
@@ -92,7 +92,6 @@ export function WaitlistScreen({
             // actions and its countdown at the same moment.
             const offerActionable =
               Boolean(w.offerId) && isOfferActionable(w.offerStatus, w.offerExpiresAt, now);
-            const offerExpiry = offerExpiryLabel(w.offerExpiresAt, now);
             return (
               <div
                 key={w.id}
@@ -106,7 +105,10 @@ export function WaitlistScreen({
                       expired shows its state but carries no `offerId`, so no action appears. */}
                   {w.offerStatus && (
                     <div className="text-[11.5px] mt-[3px]" style={{ color: offerActionable ? '#7E5606' : '#9A9A9A' }}>
-                      Offer {w.offerStatus}{offerExpiry ? ` · ${offerExpiry}` : ''}
+                      {/* `now` comes from the screen's single clock, so the countdown and the
+                          accept/decline gate above can never disagree about the same instant. */}
+                      Offer {w.offerStatus}
+                      <Countdown expiresAt={w.offerExpiresAt} now={now} prefix=" · " />
                     </div>
                   )}
                 </div>

@@ -7,6 +7,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Observability;
 using Cordia.Infrastructure.Observability;
 using MediatR;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 
@@ -75,6 +76,8 @@ public sealed class FinalizeBookingCommandHandler(
     RetryScheduler retryScheduler,
     IUnitOfWork uow,
     ICapacityReservation capacityReservation,
+    IGuestContactRepository guestContacts,
+    ILogger<FinalizeBookingCommandHandler> logger,
     Metrics metrics)
     : IRequestHandler<FinalizeBookingCommand, StepOutcome>
 {
@@ -178,6 +181,7 @@ public sealed class FinalizeBookingCommandHandler(
                 if (recoveryHoldExpired)
                     return StepOutcome.Continue;
             }
+            await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
             return StepOutcome.Terminal;
         }
 
@@ -591,6 +595,12 @@ public sealed class FinalizeBookingCommandHandler(
             if (postTxnOp?.Status is OperationStatus.CompensationRequired or OperationStatus.Reconciling)
                 return StepOutcome.Continue;
 
+            // The booking is committed; hold the guest's contact until the booking has actually
+            // happened. Outside the transaction on purpose — it is a retention nicety, not part of
+            // the atomic write set, and must never be able to roll a confirmed booking back.
+            if (postTxnOp?.Status == OperationStatus.Booked)
+                await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
+
             return StepOutcome.Terminal;
         }
 
@@ -787,6 +797,47 @@ public sealed class FinalizeBookingCommandHandler(
         return StepOutcome.Continue;
     }
 
+    /// <summary>
+    /// Extends the guest contact's retention window to cover the booking that was just confirmed.
+    ///
+    /// <para>`LastUsedAt` is set when the contact is CAPTURED, and nothing touches it again between
+    /// then and the booking date. A booking taken further ahead than the retention window therefore
+    /// had its contact erased before the guest ever arrived: the confirmation and every reminder
+    /// settled with no destination, and nothing surfaced it. Pushing the clock to the booking's own
+    /// start instant means the window is measured from when the contact stops being needed.</para>
+    ///
+    /// <para>Best-effort and non-fatal: the booking is already committed at this point, and failing
+    /// a confirmed booking because a retention clock could not be nudged would be strictly worse
+    /// than holding the contact for the shorter window.</para>
+    /// </summary>
+    private async Task ExtendContactRetentionAsync(
+        string tenantId, string canonicalPayload, CancellationToken ct)
+    {
+        var contactRef = ReadFirstString(canonicalPayload, "contact_ref", "contactRef");
+        if (string.IsNullOrWhiteSpace(contactRef))
+            return;
+
+        var startsAtRaw = ReadFirstString(canonicalPayload, "starts_at", "startsAt", "requested_at");
+        if (!DateTimeOffset.TryParse(
+                startsAtRaw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var startsAt))
+        {
+            return;
+        }
+
+        try
+        {
+            await guestContacts.TouchAsync(tenantId, contactRef, startsAt, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not extend guest-contact retention for tenant={TenantId}; the booking stands "
+                + "and the contact keeps its capture-time window.",
+                tenantId);
+        }
+    }
+
     private static Booking BuildBookingAggregate(
         string tenantId,
         BookingOperation operation,
@@ -796,10 +847,19 @@ public sealed class FinalizeBookingCommandHandler(
     {
         var bookingReference = ReadFirstString(canonicalPayload, "booking_reference", "bookingReference", "reference")
             ?? providerReference;
+        // `contact_ref` ranks directly behind an explicit customer_id and AHEAD of the legacy
+        // value-carrying keys. Under the out-of-band contact shape the payload deliberately holds
+        // no phone or email, so without it every guest-bearing booking falls through to
+        // `?? providerReference` — which then becomes the CustomerId that AuthorizeMutationAsync
+        // compares a verification grant against, locking the guest out of their own booking, and
+        // the opaque id the console renders where the guest should be. Legacy payloads carry no
+        // contact_ref, so their resolution is unchanged.
         var customerRef = ReadFirstString(
                 canonicalPayload,
                 "customer_id",
                 "customerId",
+                "contact_ref",
+                "contactRef",
                 "caller_id",
                 "callerId",
                 "phone_e164",

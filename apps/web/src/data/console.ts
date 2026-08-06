@@ -1,7 +1,7 @@
 // Cordia console — types and mock data
 
 export type BookingStatus = 'confirmed' | 'pending' | 'confirming' | 'retrying' | 'failed' | 'cancelled' | 'waitlisted';
-export type Channel = 'phone' | 'sms' | 'web' | 'instagram' | 'whatsapp';
+export type Channel = 'phone' | 'sms' | 'email' | 'web' | 'instagram' | 'whatsapp';
 
 export interface Booking {
   id: string;
@@ -12,6 +12,12 @@ export interface Booking {
   service: string;
   serviceName: string;
   name: string;
+  /**
+   * The projection's raw `customer_ref`, unrendered. Needed when submitting a change against
+   * this booking: the new revision must carry the guest forward or the resulting notification
+   * has no destination. Null on rows the API returned without one, and absent on demo rows.
+   */
+  customerRef?: string | null;
   /** Who made the booking. `unknown` when the source does not record it (the API does not). */
   prov: 'ai' | 'you' | 'unknown';
   status: BookingStatus;
@@ -46,6 +52,12 @@ export interface QueueItem {
    * Absent on demo rows.
    */
   status?: string;
+  /**
+   * True when the operation carries a pre-order. Carried because the follow-up surface
+   * needs it: the server refuses to route a pre-order to the waitlist (spec 11 §21.4), so
+   * that answer must not be offered on such a row. Absent on demo rows.
+   */
+  isPreorder?: boolean;
 }
 
 export interface Thread {
@@ -62,6 +74,14 @@ export interface Thread {
   prov?: string;
   ago: string;
   live?: boolean;
+  /**
+   * `consent_state` as the session read returned it — the ratified `ConsentState` vocabulary,
+   * or `null` when the platform recorded none. Consent is the guest's and is captured
+   * in-channel; the console only ever displays what was recorded.
+   */
+  consentState?: string | null;
+  /** `recording_allowed`; meaningful only alongside a granted consent. */
+  recordingAllowed?: boolean | null;
 }
 
 export interface Message {
@@ -101,6 +121,11 @@ export interface WaitlistItem {
 export interface Customer {
   id: string;
   name: string;
+  /**
+   * True when this row is the console operator rather than a guest — see
+   * `features/customers/adapters.ts`. Absent on demo rows.
+   */
+  isOperator?: boolean;
   phone: string;
   channel: Channel;
   visits: number;
@@ -163,13 +188,6 @@ export interface PayoutInfo {
   account: string;
 }
 
-export interface Staff {
-  id: string;
-  name: string;
-  role: string;
-  skills: string[];
-}
-
 export interface Service {
   key: string;
   name: string;
@@ -216,6 +234,7 @@ export function chMeta(ch: string) {
   const m: Record<string, { label: string; short: string; color: string }> = {
     phone:     { label: 'Phone call', short: 'Phone',     color: '#15924B' },
     sms:       { label: 'SMS',        short: 'SMS',       color: '#2F6BEB' },
+    email:     { label: 'Email',      short: 'Email',     color: '#6B5BD2' },
     web:       { label: 'Web chat',   short: 'Web',       color: '#C98A09' },
     instagram: { label: 'Instagram',  short: 'Instagram', color: '#BC2A8D' },
     whatsapp:  { label: 'WhatsApp',   short: 'WhatsApp',  color: '#1FA855' },
@@ -301,17 +320,6 @@ export const TENANT: TenantConfig = {
   resourceLabelPlural: 'Technicians',
 };
 
-// ---- WEEK ----
-
-export const WEEK = {
-  dows: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'],
-  doms: [9, 10, 11, 12, 13, 14, 15],
-  month: 'June',
-  today: 3,
-  attnDays: { 4: true, 5: true } as Record<number, boolean>,
-  rangeLabel: 'Week of June 9–15',
-};
-
 export const SERVICES: Record<string, { name: string; dur: number; dep: number }> = {
   gel:     { name: 'Gel manicure',       dur: 45,  dep: 20 },
   sns:     { name: 'SNS dipping powder', dur: 60,  dep: 25 },
@@ -321,15 +329,6 @@ export const SERVICES: Record<string, { name: string; dur: number; dep: number }
 };
 
 export const SERVICE_LIST: Service[] = Object.entries(SERVICES).map(([key, s]) => ({ key, ...s }));
-
-export const STAFF: Staff[] = [
-  { id: 's1', name: 'Linh Pham', role: 'Technician · Bay 1', skills: ['gel', 'sns', 'acrylic', 'pedi'] },
-  { id: 's2', name: 'Trang Vo',  role: 'Technician · Bay 2', skills: ['gel', 'sns', 'acrylic', 'pedi'] },
-  { id: 's3', name: 'Mai Dang',  role: 'Specialist · Bay 3',  skills: ['lash', 'pedi'] },
-  { id: 's4', name: 'Tony Bui',  role: 'Technician · Bay 4', skills: ['gel', 'acrylic', 'lash'] },
-];
-
-export const staffById = (id: string): Staff => STAFF.find(s => s.id === id) || STAFF[0];
 
 let _bid = 0;
 function bk(day: number, staff: string, start: number, svc: string, name: string, prov: 'ai'|'you', status: BookingStatus, channel: Channel|null, dep: number|null, transcript?: string): Booking {
@@ -620,8 +619,3 @@ export const TIME_SLOTS = (() => {
   for (let m = 540; m <= 1050; m += 30) o.push({ value: String(m), label: fmtT(m) });
   return o;
 })();
-
-export const DAY_OPTS = WEEK.dows.map((d, i) => ({
-  value: String(i),
-  label: d.charAt(0) + d.slice(1).toLowerCase() + ' ' + WEEK.doms[i],
-}));

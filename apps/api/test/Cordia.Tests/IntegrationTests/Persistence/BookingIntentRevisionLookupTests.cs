@@ -37,7 +37,11 @@ public class BookingIntentRevisionLookupTests(PostgresFixture fixture)
         Assert.Equal(intentId, revision.IntentId);
         Assert.Equal(1, revision.Revision);
         Assert.Equal("h", revision.PayloadHash);
-        Assert.Equal("{}", revision.CanonicalPayload);
+        // The point of this test is that the lookup returns the row it seeded — not the exact
+        // shape of the shared fixture's payload, which is now a realistic one carrying a guest
+        // (an empty payload has no notification destination, so it silently turned every
+        // notification test into a test of the no-destination branch).
+        Assert.Contains("\"operation\"", revision.CanonicalPayload);
     }
 
     // (2) GetRevisionAsync returns null for an intentId that does not exist

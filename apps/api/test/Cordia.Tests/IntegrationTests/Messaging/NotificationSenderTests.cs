@@ -54,6 +54,43 @@ public class NotificationSenderTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
+    /// <summary>A canonical payload carrying a guest — i.e. somewhere to actually send.</summary>
+    private const string GuestPayload =
+        """{"operation":"create","customer":{"phone_e164":"+61400000000"}}""";
+
+    /// <summary>
+    /// Seeds the offer → enrollment chain a waitlist notification's destination is read from.
+    /// The CustomerRef is a real E.164 handle: the field is captured as "name or contact handle",
+    /// and a name is not deliverable.
+    /// </summary>
+    private static void SeedWaitlistDestination(
+        ApplicationDbContext ctx, string tenantId, string operationId)
+    {
+        var enrollmentId = $"wle-{Guid.NewGuid():N}";
+        ctx.WaitlistEnrollments.Add(new WaitlistEnrollment
+        {
+            TenantId = tenantId,
+            EnrollmentId = enrollmentId,
+            CustomerRef = "+61400555111",
+            NotificationChannel = "sms",
+            ServiceId = "svc-1",
+            LocationId = "loc-1",
+            PartySize = 2,
+            OfferLifetimeSeconds = 900,
+            AcceptableFrom = DateTimeOffset.UtcNow,
+            AcceptableTo = DateTimeOffset.UtcNow.AddDays(1),
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        ctx.WaitlistOffers.Add(new WaitlistOffer
+        {
+            TenantId = tenantId,
+            OfferId = $"wlo-{Guid.NewGuid():N}",
+            EnrollmentId = enrollmentId,
+            OperationId = operationId,
+            Status = WaitlistOfferStatus.Offered,
+        });
+    }
+
     private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "t10-ntf-cleanup")
     {
         await using var ctx = fixture.CreateContext(cleanupTenant);
@@ -156,6 +193,11 @@ public class NotificationSenderTests(PostgresFixture fixture)
                 Payload = $"{{\"offer_id\":\"wlo-1\",\"offer_expires_at\":\"2026-07-03T10:00:00Z\"}}",
                 OccurredAt = DateTimeOffset.UtcNow,
             });
+            // A waitlist notification's destination lives on the ENROLLMENT, reached via the
+            // offer that owns this op_wl_* id. Without these rows there is genuinely nowhere to
+            // send, and the notification correctly settles invalid_recipient instead of
+            // pretending to deliver.
+            SeedWaitlistDestination(seedCtx, tenantId, operationId);
             await seedCtx.SaveChangesAsync();
         }
 
@@ -216,6 +258,8 @@ public class NotificationSenderTests(PostgresFixture fixture)
                 Payload = $"{{\"offer_id\":\"wlo-1\"}}",
                 OccurredAt = DateTimeOffset.UtcNow,
             });
+            // Same reason as the offer test: the expiry notice needs the enrollment's address.
+            SeedWaitlistDestination(seedCtx, tenantId, operationId);
             await seedCtx.SaveChangesAsync();
         }
 
@@ -433,7 +477,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
                 TenantId = tenantId,
                 IntentId = op.IntentId,
                 Revision = 2,
-                CanonicalPayload = "{}",
+                CanonicalPayload = GuestPayload,
                 PayloadHash = "h2",
                 SchemaVersion = "1.0",
                 TenantPolicyVersion = "1.0",

@@ -4,6 +4,7 @@
 
 import type { WaitlistItem } from "../../data/console";
 import { SERVICES } from "../../data/console";
+import { remainingLabel } from "../../components/ui/Countdown";
 import type { WaitlistEnrollmentSummary } from "./api";
 
 /** "Wants" phrasing from the acceptable window the guest enrolled with. */
@@ -54,16 +55,10 @@ export function isOfferActionable(
  * but never overstate it.
  */
 export function offerExpiryLabel(expiresAt: string | null | undefined, now = Date.now()): string {
-  if (!expiresAt) return "";
-  const expiry = new Date(expiresAt).getTime();
-  if (Number.isNaN(expiry)) return "";
-
-  if (expiry <= now) return "expired";
-
-  const minutes = Math.floor((expiry - now) / 60_000);
-  if (minutes < 1) return "expires in under a minute";
-  if (minutes < 60) return `expires in ${minutes} min`;
-  return `expires in ${Math.floor(minutes / 60)} hr`;
+  // Delegates to the shared rule so the label the row renders and the label this returns can
+  // never drift apart — that drift is exactly what once put "expired" beside a live Accept
+  // button. The threshold and the flooring both live in `remainingLabel` now.
+  return remainingLabel(expiresAt, now);
 }
 
 export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistItem {

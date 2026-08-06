@@ -105,8 +105,13 @@ describe("conversation adapters", () => {
     expect(toChannel("voice")).toBe("phone");
     expect(toChannel("messaging")).toBe("sms");
     expect(toChannel("web")).toBe("web");
-    expect(toChannel("email")).toBe("web");
+    // `email` is its own channel, not "web chat". This previously asserted `"web"`, pinning a
+    // defect: an email conversation wore a Website badge because the console's `Channel` union
+    // had no member for a channel the API's vocabulary has always had.
+    expect(toChannel("email")).toBe("email");
+    // An unknown or absent channel still falls back to `web` rather than guessing.
     expect(toChannel(null)).toBe("web");
+    expect(toChannel("carrier-pigeon")).toBe("web");
   });
 
   it("treats a session with no end time as live", () => {
@@ -218,10 +223,18 @@ describe("parseCatalogItems", () => {
     expect(parseCatalogItems({ items: [{ item_id: "i1" }] })).toHaveLength(1);
   });
 
-  it("returns an empty list for a shape it cannot vouch for, rather than crashing", () => {
-    expect(parseCatalogItems(null)).toEqual([]);
-    expect(parseCatalogItems("nope")).toEqual([]);
-    expect(parseCatalogItems({ unexpected: true })).toEqual([]);
+  it("throws on a shape it cannot vouch for, rather than claiming the catalog is empty", () => {
+    // Returning [] here read as "this venue has no published items" — a confident claim made
+    // to the operator on the strength of a failed parse, which then removed the confirm button
+    // from the create drawer. An error routes to the drawer's failed state, which offers a retry.
+    for (const body of [null, "nope", { unexpected: true }, { items: "not-an-array" }]) {
+      expect(() => parseCatalogItems(body)).toThrow(/not in a shape this console recognises/);
+    }
+  });
+
+  it("still treats a genuinely empty catalog as a real answer", () => {
+    expect(parseCatalogItems([])).toEqual([]);
+    expect(parseCatalogItems({ items: [] })).toEqual([]);
   });
 });
 

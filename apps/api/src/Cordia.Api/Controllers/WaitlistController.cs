@@ -23,7 +23,11 @@ namespace Cordia.Api.Controllers;
 ///
 /// Thin by design: resolves tenant (X-Tenant-Id) + actor (X-Actor), sends a MediatR command, and
 /// maps typed domain exceptions via the GlobalExceptionHandler (offer/enrollment not found → 404,
-/// illegal offer transition → 409). Authorization is a TODO; every action is audited with the actor.
+/// illegal offer transition → 409).
+///
+/// Every mutation is an operator action (spec 14 §24.5, GD-1): it requires X-Actor, X-Actor-Role
+/// (operator or owner) and X-Reason-Code, and `OperatorActionBehavior` deny-audits and 403s
+/// without them. The reads are not gated — an operator needs the list to work from.
 /// </summary>
 [ApiController]
 [Route("api/waitlist")]
@@ -31,6 +35,29 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
+
+    /// <summary>
+    /// The location ids this venue has already enrolled against.
+    ///
+    /// Not a registry — the platform has none, and inventing one is spec 12's call. It is the
+    /// only un-invented source of truth available: the values actually in use. The matcher
+    /// compares locations by exact string, so a typo yields an enrolment nothing can ever match
+    /// and no error is raised anywhere (docs §12 gap 7); offering the real values is what stops
+    /// that happening, and the console warns rather than blocks on an unrecognised one — a new
+    /// venue legitimately has no locations yet.
+    /// </summary>
+    [HttpGet("locations")]
+    [ProducesResponseType(typeof(WaitlistLocationsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<WaitlistLocationsResponse>> ListLocations(
+        [FromServices] IWaitlistEnrollmentRepository enrollments,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var locations = await enrollments.ListLocationsInUseAsync(tenant.TenantId, ct);
+        return Ok(new WaitlistLocationsResponse(locations));
+    }
 
     /// <summary>
     /// Lists waitlist enrollments with their latest offer state, newest first.
@@ -77,6 +104,8 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
     public async Task<IActionResult> Enroll(
         [FromBody] EnrollWaitlistRequest body,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -90,11 +119,12 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
 
         var enrollmentId = await mediator.Send(
             new EnrollWaitlistCommand(
-                tenant.TenantId, ResolveActor(actor), body.CustomerRef,
+                tenant.TenantId, actor ?? string.Empty, body.CustomerRef,
                 body.AcceptableFrom, body.AcceptableTo, body.PartySize,
                 body.LocationId, body.ServiceId, body.OfferLifetimeSeconds,
                 deposit, body.NotificationChannel, autoBook,
-                body.IdentityRef, body.VerificationLevel), ct);
+                body.IdentityRef, body.VerificationLevel, body.IdempotencyKey,
+                actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
 
         return Created($"/api/waitlist/enrollments/{enrollmentId}",
             new { enrollment_id = enrollmentId, status = "enrolled" });
@@ -108,11 +138,15 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
     public async Task<IActionResult> Cancel(
         string enrollmentId,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new CancelWaitlistEnrollmentCommand(tenant.TenantId, enrollmentId, ResolveActor(actor)), ct);
+        await mediator.Send(new CancelWaitlistEnrollmentCommand(
+            tenant.TenantId, enrollmentId, actor ?? string.Empty,
+            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
         return Ok(new { enrollment_id = enrollmentId, status = "cancelled" });
     }
 
@@ -125,11 +159,15 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
     public async Task<IActionResult> Accept(
         string offerId,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new AcceptWaitlistOfferCommand(tenant.TenantId, offerId, ResolveActor(actor)), ct);
+        await mediator.Send(new AcceptWaitlistOfferCommand(
+            tenant.TenantId, offerId, actor ?? string.Empty,
+            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
         return Ok(new { offer_id = offerId, status = "accepted" });
     }
 
@@ -142,16 +180,21 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
     public async Task<IActionResult> Decline(
         string offerId,
         [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        await mediator.Send(new DeclineWaitlistOfferCommand(tenant.TenantId, offerId, ResolveActor(actor)), ct);
+        await mediator.Send(new DeclineWaitlistOfferCommand(
+            tenant.TenantId, offerId, actor ?? string.Empty,
+            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
         return Ok(new { offer_id = offerId, status = "declined" });
     }
 
-    private static string ResolveActor(string? actor)
-        => string.IsNullOrWhiteSpace(actor) ? "customer" : actor;
+    // `ResolveActor` used to live here, turning a MISSING X-Actor into the literal "customer".
+    // That fabricated an identity the request never established and wrote it into the audit
+    // trail. The actor now flows through unchanged and OperatorActionBehavior refuses a blank one.
 }
 
 /// <summary>Body for POST /api/waitlist/enrollments.</summary>
@@ -170,7 +213,15 @@ public sealed record EnrollWaitlistRequest(
     // accept's confirmation. Without these the enrollment is stamped unverified — the DTO
     // previously had no way to carry them (review 2026-07-03, C9).
     [property: JsonPropertyName("identity_ref")] string? IdentityRef = null,
-    [property: JsonPropertyName("verification_level")] string? VerificationLevel = null)
+    [property: JsonPropertyName("verification_level")] string? VerificationLevel = null,
+    /// <summary>
+    /// Optional caller-minted idempotency key (§13.2). Supplying one is strictly better than
+    /// relying on the server's derived fallback: the derived key is a hash of the enrolment's
+    /// own details, so it cannot tell a retry apart from a deliberate second enrolment carrying
+    /// the same details. A caller key is minted per attempt, so it says "this is the same
+    /// attempt" rather than "these details look alike".
+    /// </summary>
+    [property: JsonPropertyName("idempotency_key")] string? IdempotencyKey = null)
 {
     public EnrollWaitlistRequest() : this(
         string.Empty, default, default, 0, string.Empty, string.Empty, 0, string.Empty, null, null)
@@ -216,3 +267,10 @@ public sealed record WaitlistEnrollmentView(
 
 public sealed record ListWaitlistEnrollmentsResponse(
     [property: JsonPropertyName("enrollments")] IReadOnlyList<WaitlistEnrollmentView> Enrollments);
+
+/// <summary>
+/// Locations this venue has enrolled against. A usage list, deliberately not called a registry —
+/// the platform has no locations table and this does not pretend to be one.
+/// </summary>
+public sealed record WaitlistLocationsResponse(
+    [property: JsonPropertyName("locations")] IReadOnlyList<string> Locations);

@@ -41,6 +41,11 @@ file sealed class CancelFakeAdapter : IBookingProviderAdapter
     public Task<ProviderResult> GetStatusAsync(string providerAccount, string providerReference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
 
+    public Task<ProviderResult> ModifyBookingAsync(
+        string providerAccount, string providerReference, ProviderBookingRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.Created, providerReference));
+
     public Task<ProviderResult> CancelBookingAsync(string providerAccount, string providerReference, CancellationToken ct = default)
     {
         CancelCallCount++;

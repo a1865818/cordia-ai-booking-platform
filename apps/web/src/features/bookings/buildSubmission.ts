@@ -35,6 +35,32 @@ export interface BookingDraft {
   specialRequests?: string[];
   targetBookingId?: string;
   targetBookingVersion?: number;
+  /**
+   * The guest this booking is for (spec 04 §4.2).
+   *
+   * Without it a console booking has no notification destination and
+   * `GET /api/bookings?phone_e164=` cannot find it — the server reads both out of the
+   * canonical payload.
+   *
+   * Deliberately no `displayName`. `CustomerRef` has the field, but this payload lands in
+   * `booking_intent_revisions`, which is immutable, replayed, and NOT reached by the retention
+   * sweep (that only anonymises `ConversationSession.customer_ref`). A phone is the minimum that
+   * makes the booking reachable; a name would be permanent with no operational purpose.
+   */
+  customer?: {
+    /**
+     * Opaque handle from `POST /api/guest-contacts`. **Preferred over `phoneE164`**: the contact
+     * stays out of the hashed, immutable payload, so it can actually be erased later.
+     */
+    contactRef?: string;
+    /**
+     * Legacy inline shape. Kept for callers that have not minted a ref, and for the historical
+     * revisions that already carry it — but a new booking submitted this way is permanently
+     * un-erasable, which is the problem `contactRef` exists to solve.
+     */
+    phoneE164?: string;
+    customerId?: string;
+  };
 }
 
 export interface SubmissionContext {
@@ -45,8 +71,49 @@ export interface SubmissionContext {
   identityRef: string;
   /** Deterministic id for the read-back the operator confirmed against. */
   readBackVersion: string;
-  /** ISO instant of confirmation; defaults to now. */
-  confirmedAt?: string;
+  /**
+   * ISO instant of confirmation. **Required, and taken from `AttemptIdentity.confirmedAt`** —
+   * never minted here.
+   *
+   * It was optional with a `?? new Date().toISOString()` fallback, and both production call sites
+   * duly forgot it: every retry then re-stamped the wall clock, so the durable record of WHEN the
+   * operator confirmed became the instant of the last attempt rather than of the confirmation
+   * (Inv-16). On the ManageBooking doors, which hash the whole request body, the same omission is
+   * a hard 409. Making it required means the compiler catches the next caller that forgets, which
+   * is the only reliable way to stop a silent, timing-dependent defect recurring.
+   */
+  confirmedAt: string;
+}
+
+/**
+ * Routes a booking's existing `customer_ref` back into the right slot of a follow-up submission.
+ *
+ * A change to an existing booking (reschedule today, modify later) writes a NEW canonical payload,
+ * and the notification resolver reads the destination from that operation's own revision — not
+ * from the booking it targets. So a follow-up that drops the guest produces a confirmation with
+ * nowhere to send, silently.
+ *
+ * The slot matters as much as the value. `customer_ref` is whatever identified the guest when the
+ * booking was made, and the three cases resolve differently server-side: a `gc_` handle is
+ * dereferenced against `guest_contacts`, an inline phone is read straight off the payload, and
+ * anything else is an opaque customer id that is not a destination at all. Putting a phone in
+ * `contact_ref` would send the resolver looking up a handle that does not exist and settle the
+ * notification as undeliverable — worse than the omission it was meant to fix.
+ */
+export function customerFromRef(ref: string | null | undefined): BookingDraft["customer"] {
+  const value = ref?.trim();
+  if (!value) return undefined;
+
+  // Minted by `POST /api/guest-contacts` as `gc_{guid:N}`; see GuestContactRepository.
+  if (value.startsWith("gc_")) return { contactRef: value };
+
+  // Legacy inline shape: bookings made before contact moved out of the payload carry the number
+  // itself as the ref. Normalised on the way in by `toCanonicalPayload`.
+  if (value.startsWith("+")) return { phoneE164: value };
+
+  // An operator handle or provider reference. Carried so the booking keeps its identity, but it
+  // is explicitly NOT claimed as a destination.
+  return { customerId: value };
 }
 
 /**
@@ -71,7 +138,55 @@ export function toCanonicalPayload(draft: BookingDraft): BookingRequest {
     payload.target_booking_version = draft.targetBookingVersion;
   }
 
+  // Emitted only when it carries something. canon.v1 drops null and `{}` alike, so an empty
+  // customer could not change the hash — but omitting it keeps the stored, immutable payload
+  // free of a meaningless key, and keeps a guest-less booking hashing exactly as it did before
+  // this field existed.
+  const customer: Record<string, unknown> = {};
+  if (draft.customer?.customerId) customer.customer_id = draft.customer.customerId;
+  // Formatting is stripped BEFORE the payload is hashed. The payload is immutable once written,
+  // so a number stored as "+61 400 111 222" could never be tidied afterwards without
+  // invalidating payload_hash — capture is the only place a canonical form can be established.
+  // The server also normalises both sides when matching, so an untidied historical booking is
+  // still findable; this just stops new ones being created untidy.
+  // Preferred: an opaque handle minted by `POST /api/guest-contacts`. The contact itself stays
+  // out of this payload, which is hashed and immutable — anything inline here can never be
+  // erased without invalidating `payload_hash` (owner retention ruling 2026-08-06).
+  if (draft.customer?.contactRef) {
+    customer.contact_ref = draft.customer.contactRef;
+  } else {
+    // Fallback for a caller that has not minted a ref. Formatting is stripped BEFORE hashing:
+    // the payload is immutable once written, so a number stored as "+61 400 111 222" could never
+    // be tidied afterwards without invalidating payload_hash.
+    const phone = normalisePhone(draft.customer?.phoneE164);
+    if (phone) customer.phone_e164 = phone;
+  }
+  if (Object.keys(customer).length > 0) payload.customer = customer;
+
   return payload as BookingRequest;
+}
+
+/**
+ * Strips separators from a phone number, keeping digits and a leading `+`.
+ *
+ * Formatting only, and deliberately so: it does NOT turn `0400111222` into `+61400111222`.
+ * That needs the tenant's country, which the platform records nowhere, and guessing it would
+ * silently attach one guest's booking to another guest's number in any country whose national
+ * format collides. The drawer warns when a number is not already E.164 instead.
+ *
+ * Mirrors `PhoneMatching.Normalise` on the server — the two must agree or a booking created
+ * here would not be found by the lookup there.
+ */
+export function normalisePhone(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  // A '+' counts as the international prefix only before any digit.
+  const firstDigit = trimmed.search(/\d/);
+  const plusIdx = trimmed.indexOf("+");
+  const hasPlus = plusIdx >= 0 && (firstDigit < 0 || plusIdx < firstDigit);
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 0) return undefined;
+  return hasPlus ? `+${digits}` : digits;
 }
 
 export async function buildSubmission(
@@ -83,8 +198,7 @@ export async function buildSubmission(
   // One computation, used for both fields the server cross-checks.
   const { value: payloadHash } = await canonicalHash(canonicalPayload);
 
-  const confirmedAt = context.confirmedAt ?? new Date().toISOString();
-  const { identity } = context;
+  const { identity, confirmedAt } = context;
 
   return {
     operation_id: identity.operationId,
@@ -110,7 +224,17 @@ export async function buildSubmission(
       identity: context.identityRef,
       source_turn_id: `console:${identity.operationId}`,
       read_back_version: context.readBackVersion,
-      verification_level: "staff_confirmed",
+      // A member of the RATIFIED vocabulary, not a word that reads well.
+      //
+      // The platform's vocabulary is `unverified | channel_verified | identity_verified |
+      // high_assurance` (`ConfirmationMappings.MapVerificationLevel`), and the submit validator
+      // only checks the field is non-empty — so `"staff_confirmed"` fell through to
+      // `_ => VerificationLevel.Unverified` and was stored as `unverified` anyway. The console
+      // was asserting an assurance level the platform discarded.
+      //
+      // `unverified` is also the truthful answer: a staff-made booking has no verified guest.
+      // Whether a staff-confirmed level should exist at all is spec 04's call — see R15.
+      verification_level: "unverified",
       confirmation_channel: "web",
       confirmed_at: confirmedAt,
       disclosures_presented: [],

@@ -55,8 +55,12 @@ public class SubmitBookingCancellationEndpointTests(AcceptanceApiFixture fixture
         var outbox = await ctx.OutboxMessages.AsNoTracking().SingleAsync(o => o.OperationId == "op-can");
         Assert.Equal("booking.command.requested.v1", outbox.MessageType);
 
-        var audit = await ctx.AuditEvents.AsNoTracking().SingleAsync(a => a.OperationId == "op-can");
-        Assert.Equal("booking_cancellation_accepted", audit.EventType);
+        // `Any`, not `Single`: this asserts the ACCEPTANCE audit exists, and the acceptance is not
+        // the only thing that can audit this operation. The outbox row written above is real, so a
+        // background consumer may legitimately pick the cancellation up and add its own row before
+        // this line runs — which made the assertion fail intermittently on a correct system.
+        Assert.True(await ctx.AuditEvents.AsNoTracking()
+            .AnyAsync(a => a.OperationId == "op-can" && a.EventType == "booking_cancellation_accepted"));
     }
 
     [Fact]

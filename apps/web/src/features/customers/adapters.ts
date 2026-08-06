@@ -12,6 +12,7 @@
 
 import type { Customer } from "../../data/console";
 import { SERVICES } from "../../data/console";
+import { getActor } from "../../api/config";
 import type { CustomerSummary } from "./api";
 
 /** Coarse "last seen" phrasing matching the mock's `lastVisit` strings. */
@@ -29,9 +30,27 @@ export function lastSeenLabel(iso: string | null | undefined, now = Date.now()):
   return `${Math.floor(days / 30)} months ago`;
 }
 
+/**
+ * True when this row is the console operator, not a guest.
+ *
+ * `/api/customers` is a projection over booking operations that falls back to the
+ * confirmation's `identity_ref` when no booking row carries a `customer_id`
+ * (`ConsoleReadModel.BuildCustomerResolverAsync`, spec 04 §8.8). A console-made booking has no
+ * guest — `BookingRequest` models none — so `identity_ref` is the **operator**, and every such
+ * booking collapses into one row whose `booking_count` is "how many bookings staff made".
+ *
+ * That is a real, correct row about a real thing. It is just not a customer, and the screen
+ * must not present it as one: unlabelled, the venue's busiest "customer" is the console itself.
+ * The durable fix is a ratified way to attach a guest to a staff-made booking (spec 04/08/12).
+ */
+export function isOperatorRef(customerRef: string | null | undefined): boolean {
+  return !!customerRef && customerRef === getActor();
+}
+
 export function toCustomer(summary: CustomerSummary, now = Date.now()): Customer {
   const serviceId = summary.last_service_id ?? "";
   return {
+    isOperator: isOperatorRef(summary.customer_ref),
     id: summary.customer_ref ?? "",
     // The reference IS the identity the API exposes; no name is available.
     name: summary.customer_ref ?? "Guest",

@@ -76,6 +76,26 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
             .ToListAsync(ct);
     }
 
+    public async Task<IReadOnlyList<VendorCatalogItem>> GetDraftItemsAsync(
+        string catalogId, CancellationToken ct = default)
+        // Deliberately NOT joined to a published-status filter: the whole point is to read a
+        // catalog that has not been published. Tenant isolation comes from the global query
+        // filter, as everywhere else in this repository.
+        => await db.VendorCatalogItems
+            .AsNoTracking()
+            .Where(i => i.CatalogId == catalogId)
+            .OrderBy(i => i.ItemId)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<VendorCatalog>> ListAsync(
+        int limit = 50, CancellationToken ct = default)
+        => await db.VendorCatalogs
+            .AsNoTracking()
+            .OrderByDescending(c => c.CreatedAt)
+            .ThenByDescending(c => c.CatalogId)
+            .Take(limit <= 0 ? 1 : limit)
+            .ToListAsync(ct);
+
     public Task<VendorCatalog?> GetAsync(string catalogId, CancellationToken ct = default)
         => db.VendorCatalogs
             .AsNoTracking()
@@ -92,7 +112,11 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
             db,
             expectedVersion,
             e => e.TenantId == tenantId && e.CatalogId == catalogId && e.Status == expectedStatus,
-            s => s.SetProperty(x => x.Status, next),
+            // StatusChangedAt moves with Status, in the same guarded UPDATE. Set anywhere else it
+            // could disagree with the status it is supposed to be timing.
+            s => s
+                .SetProperty(x => x.Status, next)
+                .SetProperty(x => x.StatusChangedAt, DateTimeOffset.UtcNow),
             ct);
 
     public async Task AddCatalogAsync(VendorCatalog catalog, CancellationToken ct = default)
@@ -126,6 +150,7 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
             e => e.TenantId == tenantId && e.CatalogId == catalogId && e.Status == CatalogStatus.InReview,
             s => s
                 .SetProperty(x => x.Status, CatalogStatus.Approved)
+                .SetProperty(x => x.StatusChangedAt, approvedAt)
                 .SetProperty(x => x.ApprovedBy, approvedBy)
                 .SetProperty(x => x.ApprovedAt, approvedAt),
             ct);

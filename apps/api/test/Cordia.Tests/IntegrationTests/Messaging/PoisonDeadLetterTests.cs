@@ -38,6 +38,11 @@ file sealed class PoisonThrowingAdapter : IBookingProviderAdapter
     public Task<ProviderResult> GetStatusAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
 
+    public Task<ProviderResult> ModifyBookingAsync(
+        string providerAccount, string providerReference, ProviderBookingRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.Created, providerReference));
+
     public Task<ProviderResult> CancelBookingAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
 }

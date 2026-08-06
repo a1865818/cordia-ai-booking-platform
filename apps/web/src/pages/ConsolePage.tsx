@@ -6,22 +6,32 @@ import {
 } from "../data/console";
 
 import {
-  useBookingSchedule, useCustomers, useOperations, useSessions, useTranscript,
-  useWaitlistEnrollments,
+  useAvailability, useBookingSchedule, useCatalogItems, useCustomers, useOperations, useSessions,
+  useTranscript, useWaitlistEnrollments,
 } from "../features/hooks";
+import { toAvailableSlots } from "../features/bookings/availability";
+import { toBookableServices } from "../features/bookings/services";
+import { UNASSIGNED_RESOURCES } from "../features/bookings/resources";
 import { toBookings, weekWindow } from "../features/bookings/adapters";
 import { updateForKey, valueForKey, type ScopedTo } from "../features/bookings/scoped";
 import { buildWeek, dayLabel, shiftWeekWindow } from "../features/bookings/week";
-import { buildSubmission, toIsoInstant } from "../features/bookings/buildSubmission";
+import { buildSubmission, customerFromRef, toIsoInstant } from "../features/bookings/buildSubmission";
 import { getOrCreateAttempt, resetAttempt } from "../features/bookings/identity";
 import { toQueueItems } from "../features/operations/adapters";
+import { statusFromResponse } from "../features/operations/api";
+import {
+  operationActionFailureMessage, useRequestOperationCancellation, useResolveOperation,
+  useRespondToAlternatives, useResumeOperation,
+} from "../features/operations/mutations";
 import { toMessages, toThreads } from "../features/conversations/adapters";
 import { toCustomers } from "../features/customers/adapters";
 import { toWaitlistItems } from "../features/waitlist/adapters";
 import { prefillFromWaitlist, type CreatePrefill } from "../features/waitlist/prefill";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBookingDetails } from "../features/bookings/api";
-import { RESCHEDULE_FULFILMENT_SUPPORTED, submitBooking } from "../features/bookings/submit";
+import { submitBooking } from "../features/bookings/submit";
+import { preflightReschedule } from "../features/bookings/preflight";
+import { listWaitlistLocations } from "../features/waitlist/api";
 import {
   isRetryableWithNewAttempt, offerFailureMessage, pollToTerminal, useAcceptOffer,
   useCancelBooking, useDeclineOffer, useRemoveFromWaitlist, writeFailureMessage,
@@ -49,12 +59,13 @@ import { WaitlistScreen } from "../components/platform/screens/WaitlistScreen";
 import { CustomersScreen } from "../components/platform/screens/CustomersScreen";
 import { DepositsScreen } from "../components/platform/screens/DepositsScreen";
 import { CampaignsScreen } from "../components/platform/screens/CampaignsScreen";
-import { AnalyticsScreen } from "../components/platform/screens/AnalyticsScreen";
+import { AnalyticsScreen, type AnalyticsRange } from "../components/platform/screens/AnalyticsScreen";
 import { SettingsScreen } from "../components/platform/screens/SettingsScreen";
 import { MoreScreen } from "../components/platform/screens/MoreScreen";
 
 import { BookingDetailDrawer } from "../components/platform/drawers/BookingDetailDrawer";
 import { CreateBookingDrawer } from "../components/platform/drawers/CreateBookingDrawer";
+import { EnrollWaitlistDrawer } from "../components/platform/drawers/EnrollWaitlistDrawer";
 import { RescheduleDrawer } from "../components/platform/drawers/RescheduleDrawer";
 
 import { ToastContainer } from "../components/ui/Toast";
@@ -111,6 +122,11 @@ interface TranscriptAuth {
 }
 const NO_TRANSCRIPT_AUTH: TranscriptAuth = { purpose: null, grant: null };
 
+/** What the header eyebrow says while Analytics is open — must match the selected window. */
+const ANALYTICS_RANGE_LABEL: Record<AnalyticsRange, string> = {
+  '7d': 'Last 7 days', '30d': 'Last 30 days', '90d': 'Last 90 days',
+};
+
 /** "a", "a and b", "a, b and c" — so the banner names exactly what failed. */
 function listLabels(labels: string[]): string {
   if (labels.length <= 1) return labels[0] ?? '';
@@ -141,6 +157,9 @@ export function ConsolePage() {
 
   // Command palette
   const [cmdOpen, setCmdOpen] = useState(false);
+
+  /** The analytics window, held here so the page header can label it truthfully. */
+  const [analyticsRange, setAnalyticsRange] = useState<AnalyticsRange>('7d');
 
   // When viewport grows to desktop, 'more' isn't a real screen — reset to today
   useEffect(() => {
@@ -237,9 +256,10 @@ export function ConsolePage() {
   const [tenantCfg, setTenantCfg] = useState<TenantConfig>(() => ({ ...TENANT }));
 
   // ---- Live server state -------------------------------------------------
-  // Every list below comes from the API and falls back to demo data only when the API
-  // genuinely has nothing to show (a fresh tenant) — never to paper over an error, which
-  // surfaces on the screen instead.
+  // Bookings, the queue and the waitlist are seeded EMPTY and only ever show server rows.
+  // Conversations and customers fall back to LABELLED demo rows while their query has not
+  // produced data — which includes a failure, so the fallback always arrives with the named
+  // load error and a DemoBadge beside it, never presented as the venue's own data.
   const queryClient = useQueryClient();
   // The displayed week is state, not a constant: the grid can move week to week, and every
   // date on screen is derived from THIS window rather than from a hard-coded literal. The
@@ -251,10 +271,34 @@ export function ConsolePage() {
   const scheduleWindowRef = useRef(scheduleWindow.from);
   scheduleWindowRef.current = scheduleWindow.from;
   const scheduleQuery = useBookingSchedule(scheduleWindow);
+
+  /**
+   * The capacity the venue has declared for the displayed week (docs §12 gap 10 — closed
+   * 2026-08-06). Advisory only: it holds nothing, so it informs the create drawer rather than
+   * gating it, and an empty answer means "no slots declared", never "fully booked".
+   */
+  const availabilityQuery = useAvailability(scheduleWindow.from, scheduleWindow.to);
+  const availableSlots = useMemo(
+    () => (availabilityQuery.data ? toAvailableSlots(availabilityQuery.data) : undefined),
+    [availabilityQuery.data]
+  );
   const operationsQuery = useOperations({ needsAttention: true, limit: 100 });
   const sessionsQuery = useSessions(50);
   const waitlistQuery = useWaitlistEnrollments(true, 100);
   const customersQuery = useCustomers("", 50);
+  /**
+   * The venue's bookable services.
+   *
+   * Shares its query key with the Settings screen's catalog list, so this is the same cached
+   * request rather than a second one. The create drawer submits these ids verbatim as
+   * `service_id`, which is the point: it previously submitted keys from the hand-written
+   * `SERVICE_LIST`, none of which exists on the server.
+   */
+  const catalogQuery = useCatalogItems();
+  const bookableServices = useMemo(
+    () => (catalogQuery.data ? toBookableServices(catalogQuery.data) : undefined),
+    [catalogQuery.data]
+  );
 
   const liveBookings = useMemo(
     () => toBookings(scheduleQuery.data?.bookings, { weekStart: week.start }),
@@ -389,7 +433,7 @@ export function ConsolePage() {
 
   // Drawers
   const [drawer, setDrawer] = useState<{
-    kind: 'detail' | 'create' | 'reschedule' | null;
+    kind: 'detail' | 'create' | 'reschedule' | 'enroll' | null;
     bookingId: string | null;
   }>({ kind: null, bookingId: null });
 
@@ -419,10 +463,25 @@ export function ConsolePage() {
   }, []);
 
   const queueCount = queue.length;
-  const campCount = 1;
+  // No campaign badge. A nav badge is a claim that something needs the operator's attention, and
+  // campaigns are entirely demo data — no endpoint and no spec owns them, so nothing is awaiting
+  // approval. This was a hard-coded `1`, painted amber on the sidebar and duplicated as a second
+  // literal inside MoreScreen.
+  const campCount = 0;
   // A thread only counts as "live" until it's taken over by a human.
-  const hasLive = (sessionsQuery.data === undefined ? THREADS : liveThreads)
-    .some(t => t.live && !takenOver.has(t.id));
+  //
+  // Computed from SERVER threads only — never from the demo fallback. This drives a dot in the
+  // persistent nav (Sidebar and BottomNav), which is on screen for every screen, and a dot has
+  // nowhere to put a DemoBadge. The fallback condition here is `sessionsQuery.data === undefined`,
+  // which covers the initial load AND every failure, and `THREADS[0]` is hard-coded `live: true` —
+  // so the console asserted "an AI conversation is happening right now" to an operator who had
+  // never opened Conversations, on the strength of a mock row, most confidently at exactly the
+  // moment it had failed to reach the server.
+  //
+  // The Conversations screen may still show demo threads, because there the fallback is labelled
+  // and badged. Unbadgeable chrome gets the truthful answer instead: we do not know, so we do not
+  // claim.
+  const hasLive = liveThreads.some(t => t.live && !takenOver.has(t.id));
 
   function go(next: string) {
     const n = next as Screen;
@@ -443,6 +502,7 @@ export function ConsolePage() {
     setCreatePrefill(undefined);
     setDrawer({ kind: 'create', bookingId: null });
   };
+  const openEnroll = () => setDrawer({ kind: 'enroll', bookingId: null });
 
   /**
    * Books a waitlisted guest.
@@ -564,7 +624,11 @@ export function ConsolePage() {
    * is submitted as a durable modification and the grid is refreshed from the server when
    * the operation settles — server truth always wins (Inv-16).
    */
-  function onRescheduleDone(id: string, patch: { day: number; start: number; staff: string; dur?: number }) {
+  // `dur` is REQUIRED, not optional. Both callers (the drag handler and the reschedule drawer)
+  // have the booking's duration in hand, and an absent one is not "unchanged" — it omits
+  // `duration_minutes` from the canonical payload and durably resets the booking to the grid's
+  // 60-minute default.
+  function onRescheduleDone(id: string, patch: { day: number; start: number; staff: string; dur: number }) {
     // `id` is an OPERATION id while the platform is still finalising: there is no booking to
     // move, and `submitReschedule` would only discover that after a network round trip — moving
     // the row optimistically and snapping it back. Refuse before touching the grid.
@@ -576,16 +640,6 @@ export function ConsolePage() {
       return;
     }
 
-    if (!RESCHEDULE_FULFILMENT_SUPPORTED) {
-      // Do not move the row either: the booking has not changed, and showing it in the new
-      // slot would be exactly the fabricated success this guard exists to prevent.
-      toast({
-        message: 'Rescheduling is not available yet — the platform cannot move an existing booking.',
-        duration: 6000,
-      });
-      return;
-    }
-
     // Two drags of the same booking must not overlap: the second would reuse the first's
     // still-live attempt identity against a different time (Inv-3).
     if (rescheduleInFlight.current.has(id)) {
@@ -593,30 +647,45 @@ export function ConsolePage() {
       return;
     }
 
+    // Snapshot BEFORE the optimistic move, so a refusal can put the row back where it was.
+    // `invalidateBookingViews()` alone is not a revert: it marks the query stale and the refetch
+    // replaces local state only once it lands, so a refused move stayed on the grid until then —
+    // and stayed indefinitely if the refetch failed. The operator would be looking at a booking
+    // in a slot the platform had just refused to move it to.
+    const before = bookings.find(b => b.id === id);
     setBookings(bs => bs.map(b => b.id === id ? { ...b, ...patch } : b));
-    void submitReschedule(id, patch);
+    void submitReschedule(id, patch, before);
   }
 
   async function submitReschedule(
     id: string,
-    patch: { day: number; start: number; staff: string; dur?: number }
+    patch: { day: number; start: number; staff: string; dur: number },
+    /** The row as it was before the optimistic move, for putting back on a refusal. */
+    before?: Booking
   ) {
     // Anchored to the DISPLAYED week, not the current one: dragging a booking while viewing
     // next week must submit next week's date.
     const startsAt = toIsoInstant(week.start, patch.day, patch.start);
     // Scoped by the payload it will be bound to, not just the booking: an idempotency key
     // must never carry two different canonical payloads (Inv-3).
-    const attemptKey = `modify:${id}|${startsAt}|${patch.dur ?? ''}`;
+    const attemptKey = `modify:${id}|${startsAt}|${patch.dur}`;
     rescheduleInFlight.current.add(id);
     const controller = new AbortController();
     pollAbort.current = controller;
     try {
-      // No grant is held for a reschedule, and no gate is mounted for one either: the drawer's
-      // `verificationGate` is driven solely by `cancelAwaitingGrant`. A gated booking therefore
-      // surfaces `verification_required` as a message the operator cannot act on from here.
-      // Acceptable only because reschedule is disabled (RESCHEDULE_FULFILMENT_SUPPORTED); wiring
-      // a gate for a flow that cannot be reached would be untestable dead code. When the
-      // fulfilment engine lands, this needs the same treatment cancel got.
+      // No VerificationGate here, and that is now deliberate rather than a gap.
+      //
+      // Spec 08 §12 authorizes a mutation by a verification grant OR an authenticated staff
+      // role. Cancel takes the grant path because `POST .../cancellations` consumes one
+      // structurally. A reschedule cannot use that door — `SubmitModificationInput` carries no
+      // field for the new time — so it rides the acceptance door, which as of this change
+      // requires one of the two and 403s without either (`submitBooking` sends X-Actor and
+      // X-Actor-Role). The operator IS the authorization, so asking them to step up a guest
+      // would be a gate that authorizes nothing.
+      //
+      // What this leans on: the console's staff identity is the documented X-Actor shim, which
+      // is only trustworthy in Development. That is the known console-authentication exception,
+      // not a second one.
       const details = await getBookingDetails(id);
       const version = details.booking?.version;
       if (version === null || version === undefined) {
@@ -628,29 +697,68 @@ export function ConsolePage() {
         return;
       }
 
-      const identity = getOrCreateAttempt(attemptKey);
       // The booking's real party size — sending 0 would durably record a reschedule for
       // nobody, and the canonical payload is the persisted intent.
       const partySize = details.booking?.party_size ?? 1;
 
+      // Pre-flight (N5 — prevent the error rather than report it).
+      //
+      // Asked BEFORE an attempt identity is minted, so a refused change costs no operation id and
+      // no idempotency key: the operator corrects and tries again as a genuinely new attempt
+      // rather than being told to abandon a booking.
+      //
+      // What it actually catches TODAY is the stale version — the booking moved underneath the
+      // grid between the read and the submit. `ValidateBookingChangeQueryHandler` takes only a
+      // booking repository and a grant service, so `capacity_unavailable` is a code it can return
+      // in principle and never does, and `policy_failed` only fires on a field the server does not
+      // model. Handling all three is deliberate: the console must not silently proceed past a
+      // refusal it does not recognise, and the handler is where capacity and policy would be added.
+      //
+      // A pre-flight that FAILS TO ANSWER is not a refusal. If this endpoint is unreachable the
+      // reschedule proceeds: blocking on it would let an outage on an advisory read take down a
+      // working mutation, and the acceptance door re-checks everything authoritatively anyway.
+      const refusal = await preflightReschedule(id, version, startsAt, patch.dur, partySize);
+      if (refusal) {
+        toast({ message: refusal, duration: 7000 });
+        // Put the row back immediately, then reconcile with the server. Leaving the optimistic
+        // move on screen would show the booking in a slot the platform just declined.
+        if (before) setBookings(bs => bs.map(b => b.id === id ? before : b));
+        invalidateBookingViews();
+        return;
+      }
+
+      const identity = getOrCreateAttempt(attemptKey);
+
       // Reschedule rides the acceptance front door so the new time is actually carried
       // (D7 / Inv-1). `expected_booking_version` travels on the canonical payload as
       // `target_booking_version`, keeping optimistic concurrency intact.
+      const target = bookings.find(b => b.id === id);
+
       const request = await buildSubmission(
         {
           operation: 'reschedule',
-          serviceId: bookings.find(b => b.id === id)?.service ?? '',
+          serviceId: target?.service ?? '',
           startsAt,
           partySize,
           durationMinutes: patch.dur,
           targetBookingId: id,
           targetBookingVersion: version,
+          // The guest has to travel with the change. `NotificationRecipientResolver` reads the
+          // destination from the revision THIS operation writes, not from the booking being
+          // moved, so a reschedule submitted without a customer node emits a
+          // `cancel_confirmed` notification that can never resolve anywhere — the guest is
+          // simply never told their booking moved.
+          customer: customerFromRef(target?.customerRef),
         },
         {
           identity,
           sessionId: `console:${identity.intentId}`,
           identityRef: getActor(),
           readBackVersion: `reschedule|${id}|${startsAt}`,
+          // Same reasoning as the create drawer and `submitCancellation`: taken from the stored
+          // attempt, so every re-attempt of this reschedule describes the same confirmation
+          // rather than re-stamping the clock (Inv-2/3).
+          confirmedAt: identity.confirmedAt,
         }
       );
 
@@ -676,11 +784,99 @@ export function ConsolePage() {
 
       toast({ message: writeFailureMessage(error, 'change this booking'), duration: 6000 });
       if (isRetryableWithNewAttempt(error)) resetAttempt(attemptKey);
-      // Drop the optimistic move either way: refetch so the grid shows the server's placement.
+      // Put the row back, THEN refetch — the same revert the pre-flight refusal does, and for the
+      // same reason. `invalidateBookingViews()` is not a revert: it marks the query stale and
+      // local state changes only when the refetch lands, so on the commonest failures (network
+      // drop, 409, 403, poll timeout) the bar sat in its new slot while the toast said the change
+      // had failed — and stayed there indefinitely if the refetch failed too. This path is far
+      // more likely than the refusal path, so it needed the revert more, not less.
+      if (before) setBookings(bs => bs.map(b => b.id === id ? before : b));
       invalidateBookingViews();
     } finally {
       rescheduleInFlight.current.delete(id);
     }
+  }
+
+  // ---- Server follow-ups on operations (docs §10) --------------------------
+  // Distinct from the local clear/dismiss below: these round-trip the API, report only
+  // what the server answered, and let the refetch move the row (Inv-16).
+  const cancelOperationMutation = useRequestOperationCancellation();
+  const resumeOperationMutation = useResumeOperation();
+  const resolveOperationMutation = useResolveOperation();
+  const alternativesMutation = useRespondToAlternatives();
+
+  const serverBusyId =
+    cancelOperationMutation.isPending ? cancelOperationMutation.variables?.operationId ?? null
+    : resumeOperationMutation.isPending ? resumeOperationMutation.variables?.operationId ?? null
+    : resolveOperationMutation.isPending ? resolveOperationMutation.variables?.operationId ?? null
+    : alternativesMutation.isPending ? alternativesMutation.variables?.operationId ?? null
+    : null;
+
+  const operationActionFailed = (action: string) => (error: unknown) =>
+    toast({ message: operationActionFailureMessage(error, action), duration: 6000 });
+
+  function requestOperationCancel(id: string) {
+    if (cancelOperationMutation.isPending) return;
+    cancelOperationMutation.mutate({ operationId: id }, {
+      // 202 `cancellation_pending`: a request, not a result — say exactly that.
+      onSuccess: () => toast({
+        message: 'Cancellation requested — the platform will stop this operation at its next safe point.',
+        duration: 5000,
+      }),
+      onError: operationActionFailed('request cancellation'),
+    });
+  }
+
+  function resumeOperationAction(id: string, reason: string) {
+    if (resumeOperationMutation.isPending) return;
+    resumeOperationMutation.mutate({ operationId: id, reasonCode: reason }, {
+      onSuccess: () => toast({
+        message: 'Sent back to the platform — it will re-check what happened.',
+        duration: 5000,
+      }),
+      onError: operationActionFailed('send this back for checks'),
+    });
+  }
+
+  function resolveOperationAction(
+    id: string,
+    resolution: 'booked' | 'failed_final',
+    providerRef: string | undefined,
+    reason: string
+  ) {
+    if (resolveOperationMutation.isPending) return;
+    resolveOperationMutation.mutate(
+      { operationId: id, resolution, providerRef, reasonCode: reason },
+      {
+        onSuccess: (body) => {
+          // Echo the server's answer, not the operator's intent, when the body carries one.
+          const settled = statusFromResponse(body) ?? resolution;
+          toast({
+            message: settled === 'booked'
+              ? 'Recorded as booked — the provider reference is now the booking id.'
+              : 'Recorded as failed — the operation is closed.',
+            duration: 5000,
+          });
+        },
+        onError: operationActionFailed('record this outcome'),
+      }
+    );
+  }
+
+  function respondAlternativesAction(id: string, response: 'waitlist' | 'decline') {
+    if (alternativesMutation.isPending) return;
+    alternativesMutation.mutate({ operationId: id, response }, {
+      onSuccess: (body) => {
+        const settled = statusFromResponse(body) ?? (response === 'waitlist' ? 'waitlisted' : 'failed_final');
+        toast({
+          message: settled === 'waitlisted'
+            ? 'The guest is on the waitlist — they’ll be offered the next matching slot.'
+            : 'Closed — the request was declined.',
+          duration: 5000,
+        });
+      },
+      onError: operationActionFailed('answer this request'),
+    });
   }
 
   /**
@@ -750,11 +946,47 @@ export function ConsolePage() {
   };
 
   const activeBooking = bookings.find(b => b.id === drawer.bookingId) ?? null;
-  const primaryLabel = screen === 'today' ? 'New booking' : undefined;
-  const onPrimary = screen === 'today' ? openCreate : undefined;
+  const primaryLabel =
+    screen === 'today' ? 'New booking'
+    : screen === 'waitlist' ? 'Add to waitlist'
+    : undefined;
+  const onPrimary =
+    screen === 'today' ? openCreate
+    : screen === 'waitlist' ? openEnroll
+    : undefined;
+
+  /**
+   * The `location_id`s this venue has actually enrolled against, from the dedicated endpoint
+   * (`GET /api/waitlist/locations`, docs §12 gap 7 — closed 2026-08-06) rather than scraped out
+   * of the enrollments list: that list is capped, so a location used only by older enrolments
+   * would never be suggested, which is exactly how a typo'd location gets created.
+   *
+   * It is a usage list, not a registry — the platform has no locations table — so the drawer
+   * warns on an unrecognised value rather than refusing it.
+   */
+  const locationsQuery = useQuery({
+    queryKey: queryKeys.waitlist.locations(),
+    queryFn: ({ signal }) => listWaitlistLocations(signal),
+    staleTime: 5 * 60_000,
+  });
+
+  const knownLocations = useMemo(() => {
+    const declared = locationsQuery.data?.locations ?? [];
+    if (declared.length > 0) return declared;
+    // Fallback while the read is loading or unavailable: better a partial list than none.
+    const ids = (waitlistQuery.data?.enrollments ?? [])
+      .map(e => e.location_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return [...new Set(ids)].sort();
+  }, [locationsQuery.data, waitlistQuery.data]);
 
   // Dynamic header subtitle for Today — the real date of the selected column.
+  //
+  // Analytics gets one too: its eyebrow was the static literal "Last 7 days", so selecting
+  // 30 or 90 days left the chrome above the (live) figures disagreeing with them — the same
+  // label-contradicts-the-data-underneath defect as the frozen `WEEK` literal.
   const todaySub = screen === 'today' ? dayLabel(week, selDay) : undefined;
+  const headerSub = screen === 'analytics' ? ANALYTICS_RANGE_LABEL[analyticsRange] : todaySub;
 
   /**
    * Load failures, named.
@@ -804,11 +1036,28 @@ export function ConsolePage() {
               bookings={bookings}
               onDragReschedule={onRescheduleDone}
               resourceLabel={tenantCfg.resourceLabel}
+              // One unnamed lane: the platform models no resource, so the grid names none.
+              resources={UNASSIGNED_RESOURCES}
+              // "No bookings" is a claim about the day; it may only be made once the schedule
+              // has answered for THIS week.
+              loaded={scheduleQuery.data !== undefined}
             />
             </>
           );
         case 'queue':
-          return <QueueScreen device={device} queue={queue} busy={busy} onFinish={finishQueue} onDismiss={dismissQueue} />;
+          return (
+            <QueueScreen
+              device={device} queue={queue} busy={busy}
+              onFinish={finishQueue} onDismiss={dismissQueue}
+              // "Nothing needs you right now" may only be said once the platform has answered.
+              loaded={operationsQuery.data !== undefined}
+              onRequestCancellation={requestOperationCancel}
+              onResume={resumeOperationAction}
+              onResolve={resolveOperationAction}
+              onRespondAlternatives={respondAlternativesAction}
+              serverBusyId={serverBusyId}
+            />
+          );
         case 'conversations': {
           // Fall back to demo threads only while the session list has never loaded — a
           // successful-but-empty result is a real answer ("no conversations yet") and must
@@ -903,6 +1152,7 @@ export function ConsolePage() {
               onAcceptOffer={(offerId, name) => answerOffer('accept', offerId, name)}
               onDeclineOffer={(offerId, name) => answerOffer('decline', offerId, name)}
               offerBusyId={offerBusyId}
+              loaded={waitlistQuery.data !== undefined}
             />
           );
         case 'customers':
@@ -928,7 +1178,7 @@ export function ConsolePage() {
         case 'campaigns':
           return <CampaignsScreen />;
         case 'analytics':
-          return <AnalyticsScreen device={device} />;
+          return <AnalyticsScreen device={device} range={analyticsRange} onRangeChange={setAnalyticsRange} />;
         case 'settings':
           return (
             <SettingsScreen
@@ -940,7 +1190,16 @@ export function ConsolePage() {
             />
           );
         case 'more':
-          return <MoreScreen go={go} autoText={autoBook ? 'on' : 'off'} onSignOut={handleSignOut} />;
+          return (
+            <MoreScreen
+              go={go}
+              autoText={autoBook ? 'on' : 'off'}
+              onSignOut={handleSignOut}
+              // Undefined until the waitlist has loaded, so the row says "guests waiting" rather
+              // than claiming a count it does not have (a successful-but-empty answer is 0).
+              waitlistCount={waitlistQuery.data ? waitlist.length : undefined}
+            />
+          );
         default:
           return null;
       }
@@ -995,7 +1254,7 @@ export function ConsolePage() {
           primaryLabel={primaryLabel}
           onPrimary={onPrimary}
           scrolled={scrolled}
-          sub={todaySub}
+          sub={headerSub}
           onOpenSearch={() => setCmdOpen(true)}
         />
 
@@ -1049,8 +1308,11 @@ export function ConsolePage() {
         week={week}
         onClose={closeDrawer}
         onCreated={onCreated}
-        services={services}
+        services={bookableServices}
+        servicesFailed={catalogQuery.isError}
+        onRetryServices={() => void catalogQuery.refetch()}
         customers={customersQuery.data ? liveCustomers : undefined}
+        availability={availableSlots}
         prefill={createPrefill}
       />
       <RescheduleDrawer
@@ -1060,6 +1322,20 @@ export function ConsolePage() {
         booking={activeBooking}
         onClose={closeDrawer}
         onDone={onRescheduleDone}
+      />
+      <EnrollWaitlistDrawer
+        open={drawer.kind === 'enroll'}
+        device={device}
+        onClose={closeDrawer}
+        onEnrolled={(guestRef) => {
+          closeDrawer();
+          // The toast reports what the server did (201); the refetched list shows the row.
+          toast({ message: `${guestRef} added to the waitlist`, duration: 4000 });
+        }}
+        services={bookableServices}
+        servicesFailed={catalogQuery.isError}
+        onRetryServices={() => void catalogQuery.refetch()}
+        knownLocations={knownLocations}
       />
 
       {/* Toast notifications */}

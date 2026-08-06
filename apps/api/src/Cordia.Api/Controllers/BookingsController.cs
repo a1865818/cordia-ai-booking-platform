@@ -125,6 +125,11 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
     public async Task<ActionResult<ValidateBookingChangeResponse>> ValidateChange(
         string bookingId,
         [FromBody] ValidateBookingChangeRequest request,
+        // Same pair the acceptance door reads for a Modify (spec 08 §12): a grant OR an
+        // authenticated staff role authorizes this pre-flight. Without them the console, which
+        // holds no grant, could not ask whether a change was valid before submitting it.
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
@@ -140,7 +145,9 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
                 targetBookingId,
                 request.ExpectedBookingVersion,
                 request.RequestedFields,
-                request.GrantId),
+                request.GrantId,
+                actor ?? string.Empty,
+                actorRole ?? string.Empty),
             ct);
 
         return Ok(new ValidateBookingChangeResponse(result.Status, result.Validation));
@@ -200,19 +207,30 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
     /// <summary>
     /// Durably accepts a confirmed booking intent.
     /// Returns 202 with a <c>Location</c> header pointing to the status URL (spec 04 §10.4).
+    ///
+    /// <para>A <b>create</b> needs no authorization headers. A <b>mutation of an existing
+    /// booking</b> (modify / reschedule / cancel, which the validator requires to carry a
+    /// <c>target_booking_id</c>) requires either a verification grant via <c>X-Grant-Id</c> or an
+    /// authenticated staff role via <c>X-Actor</c> + <c>X-Actor-Role</c> — spec 08 §12, Inv-11.
+    /// Neither present, or either out of scope, is a 403.</para>
     /// </summary>
     [HttpPost]
     [ProducesResponseType(typeof(OperationAcceptedResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
     [ProducesResponseType(typeof(IdempotencyConflict), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Submit(
         [FromBody] SubmitConfirmedIntentRequest request,
+        [FromHeader(Name = "X-Grant-Id")] string? grantId,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
 
-        var result = await mediator.Send(new SubmitConfirmedIntentCommand(tenant.TenantId, request), ct);
+        var result = await mediator.Send(
+            new SubmitConfirmedIntentCommand(tenant.TenantId, request, grantId, actor, actorRole), ct);
 
         return result switch
         {

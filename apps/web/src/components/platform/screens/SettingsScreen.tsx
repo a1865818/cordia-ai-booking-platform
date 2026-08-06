@@ -7,7 +7,15 @@ import { Icon, IconName } from "../../ui/Icon";
 import { DemoBadge } from "../../ui/DemoBadge";
 import { ErrorState } from "../../ui/ErrorState";
 import { Skeleton } from "../../ui/Skeleton";
+import { MoneyAmount } from "../../ui/MoneyAmount";
 import { useCatalogItems, useConsentPolicy } from "../../../features/hooks";
+import { MenuCatalogPanel } from "../settings/MenuCatalogPanel";
+import { VenueNamePanel } from "../settings/VenueNamePanel";
+import { CapacitySlotPanel } from "../settings/CapacitySlotPanel";
+import { BookingLookupPanel } from "../operations/BookingLookupPanel";
+import { DeadLetterReplayPanel } from "../operations/DeadLetterReplayPanel";
+import { ModelTraceViewerPanel } from "../operations/ModelTraceViewerPanel";
+import { PreorderRecoveryPanel } from "../operations/PreorderRecoveryPanel";
 
 // ---- Business setup ----
 
@@ -342,14 +350,25 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
 
   return (
     <div>
-      {/* Business setup — local state only; no endpoint accepts a tenant profile. */}
+      {/* Business setup — local state only. `api/tenant-profile` exposes the display NAME (and
+          the panel below saves it for real); nothing there accepts a business type, so these
+          choices are not persisted. Saying "no tenant-profile endpoint" was false, and was
+          disproved nine lines further down by the venue-name panel. */}
       <div className="flex items-center gap-[8px]">
         <SectionLabel>Business setup</SectionLabel>
-        <DemoBadge reason="no tenant-profile endpoint — changes are not saved" />
+        <DemoBadge reason="no endpoint accepts a business type — this choice is not saved (the venue name below is)" />
       </div>
       <BusinessSetup tenantCfg={tenantCfg} onUpdateTenant={onUpdateTenant} device={device} />
 
       {/* Consent policy — live (spec 14). Read-only: no editing endpoint exists yet. */}
+      {/* First, because leaving it unset silently breaks booking lookup by phone. */}
+      <SectionLabel>Venue name</SectionLabel>
+      <VenueNamePanel />
+
+      {/* Ships with the availability read it feeds — a read over a table nothing fills would
+          report "nothing available" for every venue that has not used this panel. */}
+      <CapacitySlotPanel />
+
       <SectionLabel>Consent policy</SectionLabel>
       <Panel style={{ marginBottom: 18 }}>
         {consentPolicy.isPending && <div className="py-3"><Skeleton h={52} /></div>}
@@ -412,19 +431,38 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
               <div className="text-[13.5px] text-ink font-medium truncate">{item.name ?? item.item_id}</div>
               {item.category && <div className="text-[11.5px] text-t3 mt-[1px]">{item.category}</div>}
             </div>
-            {typeof item.price_minor === 'number' && (
-              <span className="font-mono text-[12px] text-t2">
-                {(item.price_minor / 100).toFixed(2)} {item.currency ?? ''}
-              </span>
-            )}
+            {/* Rendered unconditionally: an item the catalog records no price for says so,
+                rather than leaving a blank that reads as a failed load. */}
+            <MoneyAmount minor={item.price_minor} currency={item.currency} />
           </div>
         ))}
       </Panel>
 
-      {/* Services */}
+      {/* Menu catalog management — the owner upload→review→approve→publish flow (spec 11
+          §21, D4). Live writes; the read-only published list above is its outcome. */}
+      <SectionLabel>Menu catalog management</SectionLabel>
+      <MenuCatalogPanel />
+
+      {/* Operator recovery (docs §13 group A). Three endpoints that were live with no surface:
+          dead-letter replay, the audited model-trace read, and pre-order manual resolution.
+          Each is driven by an id the operator arrived with — none of the three has a list
+          endpoint, and none of these panels invents one. */}
+      {/* Identity-first lookup: the endpoint has worked all along with no screen calling it. */}
+      <SectionLabel>Find a booking</SectionLabel>
+      <BookingLookupPanel />
+
+      <SectionLabel>Operator recovery</SectionLabel>
+      <DeadLetterReplayPanel />
+      <ModelTraceViewerPanel />
+      <PreorderRecoveryPanel />
+
+      {/* Services — a local sketch, and now explicitly not what bookings are made against.
+          The create drawer books against the published Menu catalog above, so this list no
+          longer reaches any durable record at all. The badge has to say so: otherwise an
+          operator edits a service here and reasonably expects the booking form to follow. */}
       <div className="flex items-center gap-[8px]">
         <SectionLabel>Services</SectionLabel>
-        <DemoBadge reason="no services endpoint — changes are not saved" />
+        <DemoBadge reason="no services endpoint — this list is not saved and is not what bookings are made against; the Menu catalog above is" />
       </div>
       <ServicesManagement services={services} onUpdateServices={onUpdateServices} />
 

@@ -1,4 +1,5 @@
 ﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
@@ -52,6 +53,22 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
                 && now < g.ExpiresAt
                 && g.ConsumedAt == null)
             .FirstOrDefaultAsync(ct);
+
+    public async Task<VerificationLevel?> GetAssuranceLevelAsync(
+        string tenantId,
+        string grantId,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+    {
+        // Expiry matters, consumption does not: a grant that has been spent still records how
+        // well the party was verified at the time they confirmed. An EXPIRED one does not — the
+        // assurance it attests to has lapsed.
+        return await db.VerificationGrants
+            .AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.GrantId == grantId && g.ExpiresAt > now)
+            .Select(g => (VerificationLevel?)g.VerificationLevel)
+            .FirstOrDefaultAsync(ct);
+    }
 
     public Task<int> ConsumeAsync(
         string tenantId,

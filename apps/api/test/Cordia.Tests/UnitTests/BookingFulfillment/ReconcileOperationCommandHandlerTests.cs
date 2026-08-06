@@ -321,6 +321,55 @@ public class ReconcileOperationCommandHandlerTests
 
     // ── No effect proven → transition to Held + CreateBooking NEVER called ───────────────────
 
+    /// <summary>
+    /// Modify and Reschedule need the same escape as Cancel, and for the same reasons.
+    ///
+    /// <para>`Created`/`AlreadyExists` prove a booking EXISTS — true of a modified booking and an
+    /// unmodified one alike — so the create-shaped lookup cannot establish whether the amendment
+    /// landed, and the not-proven path re-creates. A modify writes a "modify" step, never
+    /// "finalize", so `step` and `latest` are always null: every redelivery reads attempt 1 of 4
+    /// with 0 elapsed, the retry budget never exhausts, and the provider is re-invoked blind
+    /// forever with no route to ManualReview. This became reachable when
+    /// `ModifyBookingCommandHandler` started routing ambiguous outcomes here.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(OperationTypeEnum.Modify)]
+    [InlineData(OperationTypeEnum.Reschedule)]
+    public async Task Handle_ModifyOrReschedule_EscalatesToAHumanInsteadOfRunningTheCreateLookup(
+        OperationTypeEnum operationType)
+    {
+        var (tenantId, opId) = ("t-modify", "op-modify");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, operationType: operationType));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.ManualReview,
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var outcome = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, outcome);
+
+        // No provider lookup at all, and above all no re-create.
+        _adapter.Verify(a => a.LookupByIdempotencyKeyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // A human, not another blind pass through Held.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Held,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task Handle_CancelOperation_EscalatesToAHumanInsteadOfRunningTheCreateLookup()
     {

@@ -96,6 +96,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
         services.AddScoped<IWaitlistEnrollmentRepository, WaitlistEnrollmentRepository>();
         services.AddScoped<IVendorCatalogRepository, VendorCatalogRepository>();
+        services.AddScoped<IGuestContactRepository, GuestContactRepository>();
+        services.AddScoped<ITenantDisplayNameRepository, TenantDisplayNameRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
         services.AddScoped<IPreorderSagaRepository, PreorderSagaRepository>();
 
@@ -120,6 +122,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<RetentionSweepHandler>();
         // Spec 14 §24.3 — cross-tenant retention driver consumed by RetentionSweepHostedService.
         services.AddScoped<IRetentionSweeper, RetentionSweeper>();
+        services.AddScoped<IMenuIngestionMonitor, Services.Menu.MenuIngestionMonitor>();
 
         // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
         services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();

@@ -17,10 +17,9 @@ namespace Cordia.Application.Handlers.Menu.IngestVendorMenu;
 ///
 /// <para><b>Fails securely.</b> A malware hit settles to <c>Quarantined</c> (no extraction ever
 /// runs — Inv prompt-injection/§27.6 + FM#4); an extraction failure is caught and the catalog is
-/// left in <c>Extracting</c> (there is no <c>extract_failed</c> value in the frozen D4
-/// <c>catalog_status</c> enum) and surfaced via an audit event (Inv-14). The handler never throws
-/// for an expected failure, so the inbox transaction commits and the message is not redelivered
-/// into a poison loop.</para>
+/// settled to <c>ExtractFailed</c> (the tenth D4 value, owner ruling 2026-08-06) — version-guarded,
+/// so a concurrent completion wins. The handler never throws for an expected failure, so the inbox
+/// transaction commits and the message is not redelivered into a poison loop.</para>
 /// </summary>
 public sealed class IngestVendorMenuCommandHandler(
     IVendorCatalogRepository repo,
@@ -34,7 +33,7 @@ public sealed class IngestVendorMenuCommandHandler(
     /// <summary>Owner-facing alert emitted when an artifact is quarantined by the malware scan (Inv-14, §8).</summary>
     public const string QuarantinedEventType = "menu.catalog.quarantined.v1";
 
-    /// <summary>Owner-facing alert emitted when extraction fails (catalog stuck in Extracting; Inv-14, §8).</summary>
+    /// <summary>Owner-facing alert emitted when extraction fails and the catalog is settled to <c>ExtractFailed</c> (Inv-14, §8). A terminal status the owner never looks at is not a notification.</summary>
     public const string ExtractionFailedEventType = "menu.catalog.extraction_failed.v1";
 
 
@@ -113,12 +112,43 @@ public sealed class IngestVendorMenuCommandHandler(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // No 'extract_failed' state (frozen D4): leave the catalog in Extracting (never Published)
-            // and surface the failure via audit + the stuck state (Inv-14).
-            logger.LogWarning(ex, "IngestVendorMenu: extraction failed for {CatalogId}; left in Extracting.", command.CatalogId);
+            // Settled HERE, not left for the sweeper.
+            //
+            // The D4 amendment (owner ruling 2026-08-06) added `extract_failed`, and this is the
+            // one place that already KNOWS the extraction failed. Leaving the row in Extracting
+            // for MenuIngestionMonitor to infer from a staleness threshold meant the console told
+            // the operator "being read" for up to StalenessSeconds after the platform had a
+            // definite answer — a confident falsehood on a fact already in hand (Inv-16). The
+            // monitor stays as the backstop for the case it is actually for: a worker that died
+            // mid-extraction and will never reach this catch at all.
+            //
+            // Fail-secure: never throw inside the inbox txn, or the rollback un-admits the message
+            // and it comes back as poison (Inv-5). A lost race is not an error — the monitor or a
+            // concurrent completion already moved the row, and that writer wins.
+            CatalogStateMachine.EnsureAllowed(CatalogStatus.Extracting, CatalogStatus.ExtractFailed);
+            var failed = await repo.TryTransitionStatusAsync(
+                command.TenantId, command.CatalogId, version,
+                CatalogStatus.Extracting, CatalogStatus.ExtractFailed, ct);
+
+            if (failed > 0)
+            {
+                logger.LogWarning(
+                    ex,
+                    "IngestVendorMenu: extraction failed for {CatalogId}; settled as extract_failed. "
+                    + "Recovery is a fresh upload, which supersedes it.",
+                    command.CatalogId);
+            }
+            else
+            {
+                logger.LogWarning(
+                    ex,
+                    "IngestVendorMenu: extraction failed for {CatalogId} but the row had already moved; "
+                    + "leaving it where the winner put it.",
+                    command.CatalogId);
+            }
+
             await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
-            // Surface the failure to the owner (Inv-14): there is no extract_failed state (frozen D4), so the
-            // owner alert + the stuck Extracting status + the audit row are how a failed extraction is made visible.
+            // Still alerted (Inv-14): a terminal status the owner never looks at is not a notification.
             await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             return Unit.Value;
         }

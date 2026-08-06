@@ -9,6 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "../api/queryKeys";
 import { getBookingSchedule, type ScheduleWindow } from "./bookings/api";
+import { getAvailability } from "./bookings/availability";
 import { listOperations, type OperationFilters } from "./operations/api";
 import { listSessions, getTranscript } from "./conversations/api";
 import type { SensitiveReadPurpose } from "./conversations/purposes";
@@ -21,6 +22,21 @@ export function useBookingSchedule(window: ScheduleWindow, enabled = true) {
     queryKey: queryKeys.bookings.schedule(window.from, window.to),
     queryFn: ({ signal }) => getBookingSchedule(window, signal),
     enabled,
+  });
+}
+
+/**
+ * The slots a venue has declared for a window.
+ *
+ * Advisory by nature (spec 07 `informational`): it takes no hold, so it informs the operator's
+ * choice rather than constraining it. `enabled` is how callers avoid firing it before there is
+ * a window worth asking about.
+ */
+export function useAvailability(from: string, to: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.bookings.availability(from, to),
+    queryFn: ({ signal }) => getAvailability(from, to, signal),
+    enabled: enabled && from !== "" && to !== "",
   });
 }
 

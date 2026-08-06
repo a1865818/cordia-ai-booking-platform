@@ -84,7 +84,7 @@ def _minimal_confirmation() -> Confirmation:
         confirmed_at=datetime.datetime(2026, 6, 25, 10, 0, tzinfo=datetime.UTC),
         source_turn_id="turn_001",
         read_back_version="v1",
-        verification_level="none",
+        verification_level="unverified",
     )
 
 

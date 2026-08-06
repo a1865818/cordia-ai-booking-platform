@@ -20,17 +20,34 @@ export type CancellationResponse =
 export type ValidateChangeResponse =
   paths["/api/Bookings/{bookingId}/changes:validate"]["post"]["responses"][200]["content"]["application/json"];
 
-/** Durably accepts a confirmed create intent. Returns the operation to poll. */
+/**
+ * Durably accepts a confirmed intent. Returns the operation to poll.
+ *
+ * A **create** needs no authorization. A **mutation of an existing booking** (reschedule /
+ * modify / cancel, which carry a `target_booking_id`) does: the server requires either a
+ * verification grant or an authenticated staff role, and refuses with 403 otherwise
+ * (spec 08 §12, Inv-11). The console is the staff caller, so it sends `X-Actor` +
+ * `X-Actor-Role`; the agent lane sends the grant it already holds.
+ *
+ * The headers ride on every call rather than only on mutations: they are inert for a create,
+ * and a conditional here would be one more place to get the condition wrong.
+ */
 export function submitBooking(request: SubmitConfirmedIntentRequest) {
   return fetchApi<OperationAccepted>("/api/Bookings", {
     method: "POST",
+    actor: true,
     body: JSON.stringify(request),
   });
 }
 
 /**
- * Pre-flight for a change: surfaces `requires_confirmation` / `requires_payment` / fees
+ * Pre-flight for a change: surfaces `stale_version` / `capacity_unavailable` / `policy_failed`
  * *before* the operator commits (N5 — prevent the error rather than report it).
+ *
+ * `actor: true` for the same reason `submitBooking` sends it: the console holds no verification
+ * grant, and this endpoint takes a grant OR an authenticated staff role (spec 08 §12). Without
+ * the headers the caller that most needs the pre-flight is the one that gets 403'd from running
+ * it, and could only discover an invalid change by submitting it.
  */
 export function validateChange(
   bookingId: string,
@@ -40,6 +57,8 @@ export function validateChange(
     `/api/Bookings/${encodeURIComponent(bookingId)}/changes:validate`,
     {
       method: "POST",
+      actor: true,
+      grantId: input.grantId,
       body: JSON.stringify({
         target_booking_id: bookingId,
         expected_booking_version: input.expectedBookingVersion,
@@ -103,7 +122,9 @@ export async function submitCancellation(input: CancellationInput) {
           identity: input.identityRef,
           source_turn_id: `console:${input.identity.operationId}`,
           read_back_version: input.readBackVersion,
-          verification_level: "staff_confirmed",
+          // Ratified vocabulary only — see the note in `buildSubmission.ts`. `staff_confirmed`
+          // is not a member and was silently stored as `unverified`.
+          verification_level: "unverified",
           confirmation_channel: "web",
           confirmed_at: confirmedAt,
           disclosures_presented: [],
@@ -114,21 +135,3 @@ export async function submitCancellation(input: CancellationInput) {
 }
 
 export { SCHEMA_VERSION, TENANT_POLICY_VERSION };
-
-/**
- * Whether the platform can actually fulfil a reschedule.
- *
- * **Verified false today.** The acceptance endpoint accepts `operation: "reschedule"` (202),
- * but the fulfilment pipeline is create-only: nothing in
- * `Handlers/BookingFulfillment/**` branches on `OperationTypeEnum`, and
- * `revision.canonical_payload.target_booking_id` is never read by any handler
- * (`FinalizeBookingCommandHandler` calls `adapter.CreateBookingAsync` unconditionally).
- * A submitted reschedule therefore creates a **second, disconnected booking** rather than
- * moving the existing one.
- *
- * Submitting under those conditions would put a duplicate booking in the venue's system, so
- * the console does not submit. Everything else — payload construction, canonical hashing,
- * idempotency identity, polling — is built and tested; flip this constant when the
- * fulfilment engine handles operation types (spec 06/08) and the flow activates.
- */
-export const RESCHEDULE_FULFILMENT_SUPPORTED = false;

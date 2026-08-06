@@ -22,9 +22,13 @@ export interface AttemptIdentity {
   /**
    * Confirmation timestamp, minted with the attempt and reused on every retry.
    *
-   * The server hashes the WHOLE request — `confirmed_at` included — to decide whether a
-   * replayed idempotency key is the same request. A fresh timestamp per attempt therefore
-   * turns the intended safe replay into an idempotency conflict, defeating Inv-2.
+   * `SubmitBookingCancellation` and `SubmitBookingModification` hash the WHOLE request —
+   * `confirmed_at` included — to decide whether a replayed idempotency key is the same request, so
+   * a fresh timestamp per attempt turns the intended safe replay into an idempotency conflict
+   * (Inv-2). The acceptance door (`SubmitConfirmedIntent`) hashes only
+   * `revision.canonical_payload`, so there the cost is different but not smaller: the stored
+   * `confirmed_at`/`created_at` would record the instant of the last retry rather than the
+   * confirmation the operator actually gave. One stable value per attempt is right on both.
    */
   confirmedAt: string;
 }
@@ -35,6 +39,18 @@ function randomId(prefix: string): string {
       ? crypto.randomUUID().split("-").join("")
       : Math.random().toString(36).slice(2) + Date.now().toString(36);
   return `${prefix}_${raw}`;
+}
+
+/**
+ * Mints a standalone idempotency key for a write that needs one but has no full
+ * {@link AttemptIdentity} behind it (the waitlist enrolment is the only such path today —
+ * it carries no intent, revision or confirmation, just a key).
+ *
+ * Shares `randomId`'s crypto-with-fallback so every key the console mints comes from one
+ * implementation rather than each call site rolling its own.
+ */
+export function mintIdempotencyKey(): string {
+  return randomId("idem");
 }
 
 function readStored(key: string): AttemptIdentity | null {

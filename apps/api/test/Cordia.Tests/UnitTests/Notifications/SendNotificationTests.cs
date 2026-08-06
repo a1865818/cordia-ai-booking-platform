@@ -65,8 +65,11 @@ public class SendNotificationTests
         Version = 0,
     };
 
+    // A Destination is required for a send to be attempted: a resolved handle with nowhere to
+    // deliver now settles InvalidRecipient/no_destination rather than reporting a delivery that
+    // never happened. The ref stays the opaque token — the address is never persisted.
     private static ResolvedRecipient DefaultRecipient() =>
-        new("recip_abc123", NotificationChannel.Sms, "en");
+        new("recip_abc123", NotificationChannel.Sms, "en", Destination: "+61400000000");
 
     private static NotificationTemplate DefaultTemplate() =>
         new("booking_confirmed.sms.v1", "Your booking is confirmed.");
@@ -195,6 +198,66 @@ public class SendNotificationTests
 
         // SendAsync NEVER called
         _smsAdapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A resolved handle with NO destination settles InvalidRecipient and never sends.
+    ///
+    /// This is the case the real resolver produces for a booking whose confirmed revision
+    /// carries no guest. The resolver always returns a handle so the notification row has a
+    /// stable ref, so `recipient is null` never fires — and until the guard checked the
+    /// DESTINATION, such a booking sailed through to SendAsync and settled as delivered. The
+    /// operator was told the guest had been notified when there was no address at all.
+    ///
+    /// This assertion previously ran the other way, as a characterization test recording the
+    /// gap: an earlier attempt at the guard was reverted because the resolver only knew the
+    /// booking lane and so terminal-failed every waitlist offer. It now reads the waitlist
+    /// enrollment too, which is what makes a null destination mean what it says.
+    /// </summary>
+    [Fact]
+    public async Task NoDestination_SettlesInvalidRecipient_AndNeverSends()
+    {
+        SetupHappyPath();
+        _recipientResolver.Setup(r => r.ResolveAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient("recip_abc123", NotificationChannel.Sms, "en", Destination: null));
+        _repo.Setup(r => r.MarkFailedAsync(TenantId, It.IsAny<string>(), 0L, NotificationState.Pending,
+            NotificationState.InvalidRecipient, "no_destination", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        _repo.Verify(r => r.MarkFailedAsync(TenantId, It.IsAny<string>(), 0L, NotificationState.Pending,
+            NotificationState.InvalidRecipient, "no_destination", It.IsAny<CancellationToken>()), Times.Once);
+
+        // The whole point: nothing is sent, so nothing can report a delivery.
+        _smsAdapter.Verify(a => a.SendAsync(
+            It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _auditRepo.Verify(a => a.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "notification.invalid_recipient"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>The adapter carries the real address, and never the tokenised handle, as its target.</summary>
+    [Fact]
+    public async Task TheAdapterReceivesTheRealDestinationButTheRowKeepsTheToken()
+    {
+        SetupHappyPath();
+        RenderedMessage? sent = null;
+        _smsAdapter.Setup(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .Callback<string, RenderedMessage, CancellationToken>((_, m, _) => sent = m)
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_abc", null));
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, It.IsAny<string>(), 1L, NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        Assert.NotNull(sent);
+        Assert.Equal("+61400000000", sent.Destination);
+        // The persisted/logged handle stays opaque — the two must not be conflated (Inv-12 hygiene).
+        Assert.Equal("recip_abc123", sent.MinimizedRecipient);
+        _repo.Verify(r => r.TryInsertAsync(
+            It.Is<Notification>(n => n.RecipientRef == "recip_abc123"), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // ── 4. Consent: Withdrawn → InvalidRecipient; Suppressed → SuppressedDuplicate ───────────────
@@ -348,7 +411,7 @@ public class SendNotificationTests
         _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(DefaultOp(TenantId, OperationId));
         _recipientResolver.Setup(r => r.ResolveAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ResolvedRecipient("recip_email", NotificationChannel.Email, "en"));
+            .ReturnsAsync(new ResolvedRecipient("recip_email", NotificationChannel.Email, "en", Destination: "guest@example.com"));
         _consentGate.Setup(c => c.CheckAsync(TenantId, It.IsAny<string>(), It.IsAny<NotificationChannel>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConsentDecision.Allowed);
         _templateResolver.Setup(t => t.ResolveAsync(It.IsAny<NotificationEvent>(), It.IsAny<NotificationChannel>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))

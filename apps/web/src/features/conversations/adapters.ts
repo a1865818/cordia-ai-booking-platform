@@ -7,10 +7,13 @@ import type { Channel, Message, Thread } from "../../data/console";
 import type { ConversationSessionSummary, TranscriptView } from "./api";
 
 /**
- * The API's channel vocabulary is `email | messaging | voice | web`; the mock's is
- * `phone | sms | web | instagram | whatsapp`. They overlap only partly, so the mapping is
- * explicit and lossy in one direction: `messaging` covers every chat provider and is shown
- * as `sms` rather than guessing a specific one.
+ * The API's channel vocabulary is `email | messaging | voice | web`. The mapping is explicit
+ * and lossy in exactly one direction: `messaging` covers every chat provider and is shown as
+ * `sms` rather than guessing a specific one.
+ *
+ * `email` maps to `email`, not to `web`. It used to collapse into `web`, so an email
+ * conversation wore a "Web chat" badge — a small, confident, wrong statement about how the
+ * guest reached the venue.
  */
 export function toChannel(apiChannel: string | null | undefined): Channel {
   switch (apiChannel) {
@@ -19,6 +22,7 @@ export function toChannel(apiChannel: string | null | undefined): Channel {
     case "messaging":
       return "sms";
     case "email":
+      return "email";
     case "web":
       return "web";
     default:
@@ -55,6 +59,11 @@ export function toThread(session: ConversationSessionSummary, now = Date.now()):
     ago: timeAgo(session.started_at, now),
     // A session with no end time is still open.
     live: !session.ended_at,
+    // Carried through verbatim, including `null`. The session read has always returned these
+    // two and nothing rendered them, so whether a guest had consented — the record that later
+    // proves messaging or recording was permitted — was invisible to the operator.
+    consentState: session.consent_state ?? null,
+    recordingAllowed: session.recording_allowed ?? null,
   };
 }
 

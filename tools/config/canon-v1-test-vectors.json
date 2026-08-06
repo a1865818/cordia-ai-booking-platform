@@ -511,6 +511,69 @@
       "payload": "{\"k\":\"2026-06-15T18:00:00+14:00\"}",
       "expected": "6145cce5ee9d07487373622c0591a0684550757e3d537de1753eaf87f6c2a0ce",
       "note": "+14:00 is the inclusive limit and DOES parse - guards against an off-by-one in the bound."
+    },
+    {
+      "name": "guest_absent_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "BACKWARD COMPATIBILITY: BookingRequest.customer is optional, so a payload predating it must keep its original hash. Same equivalence label as minimal_create - if adding the field ever changed this, the whole corpus would fail."
+    },
+    {
+      "name": "guest_null_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":null}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "A serializer that writes \"customer\": null (the generated C# type has no WhenWritingNull on this property) must hash identically to omitting it."
+    },
+    {
+      "name": "guest_empty_object_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{}}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "An all-absent CustomerRef canonicalizes to {} and is then omitted, so it also cannot change an existing hash."
+    },
+    {
+      "name": "guest_all_null_fields_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":null,\"display_name\":null,\"phone_e164\":null}}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "Nested nulls are dropped, leaving {}, which is then dropped - the recursive form of the case above."
+    },
+    {
+      "name": "guest_with_phone",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"phone_e164\":\"+61400111222\"}}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "A payload that USES the guest field hashes differently from one that does not - the field is genuinely material (Inv-2/Inv-3)."
+    },
+    {
+      "name": "guest_with_phone_key_order_reversed",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"customer\":{\"phone_e164\":\"+61400111222\"},\"party_size\":2,\"service_id\":\"gel\",\"operation\":\"create\"}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "Key order at both levels is irrelevant - the nested object is sorted too."
+    },
+    {
+      "name": "guest_with_phone_nested_nulls_omitted",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":null,\"display_name\":null,\"phone_e164\":\"+61400111222\"}}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "Explicit nulls beside a real value are dropped, so the console omitting display_name and a serializer nulling it agree."
+    },
+    {
+      "name": "guest_full_ref",
+      "equivalence": "guest_full_ref",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":\"cust-7\",\"display_name\":\"Ada Lovelace\",\"phone_e164\":\"+61400111222\"}}",
+      "expected": "4c05c6300e524623927de6a2fc9c9dc30b71f7efdac72d8e7c8ae2c1ca7e6b9b",
+      "note": "All three CustomerRef fields populated. Distinct from guest_with_phone - adding identifying fields is a material change that forces a new revision."
+    },
+    {
+      "name": "guest_phone_whitespace_collapsed",
+      "equivalence": "guest_with_phone_spaced",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"phone_e164\":\"  +61 400  111 222  \"}}",
+      "expected": "dd5be9afe04cf6d76572a6cf219d64a77f8e5893e770a03d970cb9789a03bd4d",
+      "note": "String canonicalization trims and collapses internal whitespace, so a spaced phone is NOT equal to the compact one - it normalises to '+61 400 111 222'. Pins that the hasher does not strip spaces entirely."
     }
   ]
 }

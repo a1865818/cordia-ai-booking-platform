@@ -1071,6 +1071,18 @@
           "default": null,
           "description": "Immutable pre-order reference, or None when no pre-order."
         },
+        "customer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CustomerRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Guest reference (spec 04 \u00a74.2); None when the guest is unknown."
+        },
         "target_booking_id": {
           "anyOf": [
             {
@@ -1673,6 +1685,19 @@
           "default": null,
           "description": "E.164 phone; plain str (no pattern).",
           "title": "Phone E164"
+        },
+        "contact_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opaque handle to contact details held out-of-band in `guest_contacts`. Preferred over the inline fields on the canonical payload: the payload is hashed and immutable, so anything inline can never be erased without breaking the idempotency chain (Inv-2/3). A ref is erasable by deleting one row.",
+          "title": "Contact Ref"
         }
       },
       "title": "CustomerRef",
