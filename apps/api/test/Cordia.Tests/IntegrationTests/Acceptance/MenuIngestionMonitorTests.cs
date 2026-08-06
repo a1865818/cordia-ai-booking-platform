@@ -3,6 +3,7 @@ using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Services.Menu;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cordia.Tests.IntegrationTests.Acceptance;
@@ -61,6 +62,8 @@ public class MenuIngestionMonitorTests(AcceptanceApiFixture fixture)
             ctx,
             new Cordia.Infrastructure.Repositories.VendorCatalogRepository(ctx),
             new Cordia.Infrastructure.Repositories.AuditEventRepository(ctx),
+            new Cordia.Infrastructure.Repositories.OutboxRepository(ctx),
+            new Cordia.Infrastructure.Services.UnitOfWork(ctx),
             new Metrics(),
             NullLogger<MenuIngestionMonitor>.Instance);
         return await monitor.SettleStalledAsync(stalledBefore, tenantId);
@@ -114,6 +117,33 @@ public class MenuIngestionMonitorTests(AcceptanceApiFixture fixture)
         await RunAsync(tenantId, Now.AddMinutes(-15));
 
         Assert.Equal(CatalogStatus.Extracting, await ReadStatusAsync(tenantId, catalogId));
+    }
+
+    /// <summary>
+    /// The owner is TOLD. This route exists for the case the ingest handler cannot cover — a
+    /// worker that died mid-extraction — so it is the one an operator has no other way of
+    /// learning about. Settling the row silently would leave a terminally failed catalog sitting
+    /// in the console unremarked (Inv-14).
+    /// </summary>
+    [Fact]
+    public async Task SettlingAStalledCatalogAlertsTheOwnerAndAudits()
+    {
+        var tenantId = TestIds.New("menu-stall-alert");
+        var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.Extracting, Now.AddHours(-2));
+
+        Assert.Equal(1, await RunAsync(tenantId, Now.AddMinutes(-15)));
+
+        await using var ctx = fixture.CreateContext(tenantId);
+
+        Assert.True(await ctx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId
+                && m.MessageType == "menu.catalog.extraction_failed.v1"
+                && m.CorrelationId == catalogId));
+
+        Assert.True(await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(e => e.TenantId == tenantId
+                && e.EventType == "catalog.extraction_failed"
+                && e.SubjectRef == catalogId));
     }
 
     /// <summary>

@@ -59,8 +59,26 @@ public sealed class ReserveCapacityCommandHandler(
         // Parse canonical payload BEFORE the transaction: stateless + no DB write.
         // Any missing/unparseable field is treated as "non-tracked" (see below).
         var rev = await intentRepo.GetRevisionAsync(tenantId, op.IntentId, op.IntentRevision, ct);
-        var (requestedCapacity, slotId) = ParseCanonicalPayload(rev?.CanonicalPayload);
+        var (requestedCapacity, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(rev?.CanonicalPayload);
 
+        // KNOWN GAP — a same-slot amendment transiently reserves the booking's own seat twice.
+        //
+        // `ValidateOperationCommandHandler` routes every non-Cancel type through here, and the slot
+        // key deliberately excludes party size, so a modify that changes only the party size
+        // derives the SAME slot the booking already occupies and reserves a second, full hold
+        // against it. The END state is correct — the commit finalizes this hold and releases the
+        // previous owner's, netting out to exactly the new size — but between the two the slot must
+        // carry both bookings, and a slot with no spare room cannot: the reserve answers NoCapacity
+        // and the operation lands in AlternativesRequired, telling the guest there is no space for a
+        // table they are already sitting at.
+        //
+        // Deliberately NOT patched by reserving only the delta. That fixes the refusal and breaks
+        // something worse: the previous owner's finalized hold would have to stay, so the booking
+        // would end up holding TWO finalized holds, and a later cancellation releases only the
+        // newest booked operation's — permanently leaking the rest of the seat. Closing this
+        // properly needs a spec 07 primitive that does not exist yet: an atomic transfer of a
+        // FINALIZED hold from one operation to another at a new size, which is the only shape that
+        // both avoids the transient double-count and leaves exactly one hold to release later.
         var expiresAt = DateTimeOffset.UtcNow + capacityOptions.Value.HoldTtl;
 
         StepOutcome result = StepOutcome.Continue;
@@ -235,90 +253,4 @@ public sealed class ReserveCapacityCommandHandler(
         return result;
     }
 
-    /// <summary>
-    /// Parses the canonical payload JSON to extract capacity-reservation fields.
-    /// Any missing or unparseable field defaults to a safe value (capacity=1, slotId=null).
-    /// A null slotId signals "not first-party-tracked" → non-tracked path.
-    /// </summary>
-    /// <remarks>
-    /// Field extraction rules (from spec 07 / FIX 1 — canonical agent payloads use starts_at):
-    ///   party_size (int)     → requestedCapacity; defaults to 1 if absent/invalid (a booking always needs ≥1).
-    ///   resource_id          → preferred resource dimension (first non-empty wins over service_id/location_id).
-    ///   service_id           → second choice resource dimension.
-    ///   location_id          → fallback resource dimension.
-    ///   starts_at (ISO-8601 DateTimeOffset) → slot start time (canonical field; read first).
-    ///   requested_at (ISO-8601 DateTimeOffset) → back-compat fallback when starts_at is absent.
-    ///   slotId = CapacitySlotKey.Derive(resource, service, location, startsAt);
-    ///            null when any required dimension is missing → not tracked.
-    /// </remarks>
-    private static (int requestedCapacity, string? slotId) ParseCanonicalPayload(string? json)
-    {
-        if (string.IsNullOrEmpty(json) || json == "{}")
-            return (1, null);
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            // party_size — default 1 (a booking always needs ≥1 unit).
-            // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
-            // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS
-            // (InvalidOperationException, not JsonException) on a non-Number element.
-            var requestedCapacity = 1;
-            if (root.TryGetProperty("party_size", out var partySizeEl)
-                && partySizeEl.ValueKind == JsonValueKind.Number
-                && partySizeEl.TryGetInt32(out var ps)
-                && ps > 0)
-            {
-                requestedCapacity = ps;
-            }
-
-            // Resource dimension: first non-empty of resource_id, service_id, location_id.
-            var resourceId = TryGetString(root, "resource_id");
-            var serviceId = TryGetString(root, "service_id");
-            var locationId = TryGetString(root, "location_id");
-
-            // FIX 1: read starts_at first (canonical agent field); fall back to requested_at for
-            // back-compat with payloads produced before the agent was updated.
-            DateTimeOffset startsAt;
-            if (root.TryGetProperty("starts_at", out var startsAtEl)
-                && startsAtEl.ValueKind == JsonValueKind.String
-                && DateTimeOffset.TryParse(startsAtEl.GetString(), out var parsedStartsAt))
-            {
-                startsAt = parsedStartsAt;
-            }
-            else if (root.TryGetProperty("requested_at", out var requestedAtEl)
-                && requestedAtEl.ValueKind == JsonValueKind.String
-                && DateTimeOffset.TryParse(requestedAtEl.GetString(), out var parsedRequestedAt))
-            {
-                startsAt = parsedRequestedAt;
-            }
-            else
-            {
-                // Neither starts_at nor requested_at is parseable → cannot derive a slot key.
-                return (requestedCapacity, null);
-            }
-
-            var slotId = CapacitySlotKey.Derive(resourceId, serviceId, locationId, startsAt);
-            return (requestedCapacity, slotId);
-        }
-        catch (JsonException)
-        {
-            // Malformed JSON → treat as non-tracked.
-            return (1, null);
-        }
-    }
-
-    private static string? TryGetString(JsonElement root, string property)
-    {
-        if (root.TryGetProperty(property, out var el)
-            && el.ValueKind == JsonValueKind.String)
-        {
-            var val = el.GetString();
-            return string.IsNullOrEmpty(val) ? null : val;
-        }
-
-        return null;
-    }
 }

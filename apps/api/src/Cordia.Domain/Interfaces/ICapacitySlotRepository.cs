@@ -17,4 +17,11 @@ public interface ICapacitySlotRepository
 
     /// <summary>Inserts a new capacity slot and flushes within the ambient transaction.</summary>
     Task AddAsync(CapacitySlot slot, CancellationToken ct = default);
+
+    /// <summary>
+    /// Inserts the slot, or returns <c>false</c> when another writer already created it. Makes the
+    /// declaration endpoint's promised idempotency hold under a genuine race, where a pre-read plus
+    /// insert cannot.
+    /// </summary>
+    Task<bool> TryAddAsync(CapacitySlot slot, CancellationToken ct = default);
 }

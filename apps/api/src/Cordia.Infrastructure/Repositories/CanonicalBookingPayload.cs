@@ -46,7 +46,7 @@ internal sealed record CanonicalBookingPayload(
     private static readonly string[] BusinessNames = ["business_name", "businessName", "business", "venue_name", "restaurant_name"];
     private static readonly string[] BookingDateNames = ["booking_date", "bookingDate", "date"];
     private static readonly string[] ApproxTimeNames = ["approx_time", "approxTime", "time", "booking_time", "bookingTime"];
-    private static readonly string[] StartsAtNames = ["starts_at", "startsAt", "start_at", "startAt", "scheduled_at"];
+    private static readonly string[] StartsAtNames = ["starts_at", "startsAt", "start_at", "startAt", "scheduled_at", "requested_at", "requestedAt"];
     private static readonly string[] PartySizeNames = ["party_size", "partySize", "guest_count", "guestCount", "guests", "people"];
     private static readonly string[] DurationNames = ["duration_minutes", "durationMinutes", "duration"];
     private static readonly string[] ServiceIdNames = ["service_id", "serviceId", "service"];

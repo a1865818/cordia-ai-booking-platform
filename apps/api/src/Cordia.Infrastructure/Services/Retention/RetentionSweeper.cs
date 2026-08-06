@@ -64,12 +64,10 @@ public sealed class RetentionSweeper(
                 // shape made structurally impossible. The canonical payload keeps its
                 // `contact_ref`, so every hash still verifies; the ref simply stops
                 // dereferencing, which is exactly what erasure should look like from outside.
+                var contactCutoff = now - RetentionPolicy.DefaultSessionAnonymizationWindow;
                 var erasedContacts = await scope.ServiceProvider
                     .GetRequiredService<IGuestContactRepository>()
-                    .EraseOlderThanAsync(
-                        tenantId,
-                        now - RetentionPolicy.DefaultSessionAnonymizationWindow,
-                        ct);
+                    .EraseOlderThanAsync(tenantId, contactCutoff, ct);
 
                 if (erasedContacts > 0)
                 {
@@ -77,6 +75,33 @@ public sealed class RetentionSweeper(
                     logger.LogInformation(
                         "Retention sweep tenant={TenantId}: erased {Count} guest contact row(s).",
                         tenantId, erasedContacts);
+
+                    // The trail for the one sweep that had none. Every other sweep appends a
+                    // `privacy.retention.*` row and the mint path audits `guest_contact.minted`, so
+                    // the only table the platform can truly erase from was the only one whose
+                    // erasures existed nowhere but a log line — leaving a mint with no matching
+                    // deletion and no way to answer "was this guest's contact removed, and when?".
+                    //
+                    // AGGREGATE, not per-row: `ExecuteDeleteAsync` is a set-based delete that
+                    // cannot return the refs it removed, and re-reading them first would mean
+                    // holding the very identifiers this is erasing. Count plus cutoff is what can
+                    // be recorded truthfully, and it is enough to reconcile against the mints.
+                    var auditDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    auditDb.AuditEvents.Add(new AuditEvent
+                    {
+                        TenantId = tenantId,
+                        EventId = $"audit-{Guid.NewGuid():N}",
+                        EventType = "privacy.retention.contact_erased",
+                        Actor = "system",
+                        SubjectRef = "guest_contacts",
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            erased = erasedContacts,
+                            cutoff = contactCutoff,
+                        }),
+                        OccurredAt = now,
+                    });
+                    await auditDb.SaveChangesAsync(ct);
                 }
 
                 var pruned = idempotency.Pruned + sessions.Pruned + grants.Pruned;
@@ -207,9 +232,24 @@ public sealed class RetentionSweeper(
         var grantTenants = await db.VerificationGrants
             .IgnoreQueryFilters().Select(g => g.TenantId).Distinct().ToListAsync(ct);
 
+        // The table the guest-contact erasure actually reads. Without it, a console-only tenant
+        // whose idempotency records, sessions and grants have all already been pruned on their
+        // shorter deadlines is never enumerated again — so its guest contacts are retained past
+        // the window indefinitely, which is the permanent-PII outcome the erasure exists to remove.
+        //
+        // `booking_operations` is deliberately NOT unioned in, though it would also widen the set.
+        // It is the largest table in the schema and is never pruned, and an unqualified
+        // SELECT DISTINCT over it has no index-only path — so every sweep tick would pay a full,
+        // monotonically growing scan to discover a handful of tenant ids. What that would add is
+        // the un-erasable-contact SURVEY (a metric) for a tenant with nothing else left; a missing
+        // metric reading is worth far less than a table scan on every cycle.
+        var guestContactTenants = await db.GuestContacts
+            .IgnoreQueryFilters().Select(g => g.TenantId).Distinct().ToListAsync(ct);
+
         return idempotencyTenants
             .Union(sessionTenants)
             .Union(grantTenants)
+            .Union(guestContactTenants)
             .OrderBy(t => t)
             .ToList();
     }

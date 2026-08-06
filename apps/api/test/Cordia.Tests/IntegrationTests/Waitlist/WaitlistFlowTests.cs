@@ -1,6 +1,5 @@
 ﻿#pragma warning disable xUnit1051 // Use TestContext.Current.CancellationToken
 using Cordia.Application.Handlers.Waitlist;
-using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Application.Handlers.Waitlist.Cancel;
 using Cordia.Application.Handlers.Waitlist.Decline;
@@ -8,6 +7,7 @@ using Cordia.Application.Handlers.Waitlist.Enroll;
 using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -53,16 +53,6 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     // mediator wired to the 04 handler + capacity/06 stack — the Phase-6 integration rewrite. The only
     // remaining caller of this builder is the (skipped) obsolete accept test; the null! mediator is never
     // dereferenced until that test is re-authored.
-    private static AcceptWaitlistOfferCommandHandler BuildAccept(ApplicationDbContext ctx)
-        => new(
-            new WaitlistOfferRepository(ctx),
-            new WaitlistEnrollmentRepository(ctx),
-            new CanonicalRequestHasher(),
-            null!, // IMediator — Phase 6 (04→06 wiring)
-            new AuditEventRepository(ctx),
-            new WaitlistAcceptReconcileScheduler(new ScheduledJobRepository(ctx)),
-            new UnitOfWork(ctx));
-
     private static DeclineWaitlistOfferCommandHandler BuildDecline(ApplicationDbContext ctx)
         => new(
             new WaitlistOfferRepository(ctx),
@@ -70,6 +60,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
+            new AuditWriter(new AuditEventRepository(ctx)),
             new UnitOfWork(ctx));
 
     private static ExpireWaitlistOfferCommandHandler BuildExpire(ApplicationDbContext ctx)
@@ -84,6 +75,8 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     private static EnrollWaitlistCommandHandler BuildEnroll(ApplicationDbContext ctx)
         => new(
             new WaitlistEnrollmentRepository(ctx),
+            new WaitlistOfferRepository(ctx),
+            new BookingOperationRepository(ctx),
             new AuditEventRepository(ctx),
             new IdempotencyRepository(ctx),
             new CanonicalRequestHasher(),
@@ -96,7 +89,50 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
+            new AuditWriter(new AuditEventRepository(ctx)),
             new UnitOfWork(ctx));
+
+
+    /// <summary>
+    /// Seeds a booking operation at <paramref name="status"/>, with the intent + revision its
+    /// foreign key requires. Used to stand in for the booking a waitlist accept minted.
+    /// </summary>
+    private static void SeedOperation(
+        ApplicationDbContext ctx, string tenantId, string operationId, OperationStatus status)
+    {
+        var intentId = TestIds.New("int");
+        var now = DateTimeOffset.UtcNow;
+
+        ctx.BookingIntents.Add(new BookingIntent
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            OperationType = Cordia.Domain.Generated.OperationTypeEnum.Create,
+            CreatedAt = now,
+        });
+        ctx.BookingIntentRevisions.Add(new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload = "{}",
+            PayloadHash = TestIds.New("h"),
+            SchemaVersion = "v1",
+            TenantPolicyVersion = "v1",
+            CreatedAt = now,
+        });
+        ctx.BookingOperations.Add(new BookingOperation
+        {
+            TenantId = tenantId,
+            OperationId = operationId,
+            IntentId = intentId,
+            IntentRevision = 1,
+            OperationType = Cordia.Domain.Generated.OperationTypeEnum.Create,
+            Status = status,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+    }
 
     // ── Seeding helpers ────────────────────────────────────────────────────────────────────────
 
@@ -619,6 +655,106 @@ public class WaitlistFlowTests(PostgresFixture fixture)
 
         Assert.NotEqual(first, second);
 
+        var live = ctx.WaitlistEnrollments
+            .Where(e => e.TenantId == tenantId && e.CancelledAt == null)
+            .ToList();
+        Assert.Single(live);
+        Assert.Equal(second, live[0].EnrollmentId);
+    }
+
+    /// <summary>
+    /// A retry of an enrolment whose guest is now BOOKED must not put them back on the waitlist.
+    ///
+    /// <para>Fulfilment and withdrawal are recorded the same way — both stamp
+    /// <c>CancelledAt</c>, because the accept-reconcile path uses it to make a booked enrollee
+    /// ineligible for another offer. Treating that as a spent fence re-elected a fresh
+    /// <c>wle_*</c> row, so an identical retry left a guest who already has a table waiting for a
+    /// second one: eligible for another offer, or under an AutoBookGrant a silent second booking.
+    /// The accepted offer is the evidence that tells the two apart — a withdrawal RELEASES its live
+    /// offer, it never accepts one.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RetryingAnEnrolmentThatWasFulfilledReturnsItRatherThanWaitlistingTheGuestAgain()
+    {
+        var tenantId = TestIds.New("wl-fulfilled");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // The enrollee accepted an offer and was booked: the offer is Accepted, the operation it
+        // minted reached Booked, and the reconcile path has marked the enrollment terminal so it is
+        // never re-offered. The BOOKED operation is the load-bearing part — an accepted offer alone
+        // is not fulfilment, because an accept whose booking later failed leaves the enrollee
+        // correctly eligible.
+        var bookedOperationId = TestIds.New("op_wl");
+        ctx.WaitlistOffers.Add(new WaitlistOffer
+        {
+            TenantId = tenantId,
+            OfferId = TestIds.New("wlo"),
+            EnrollmentId = first,
+            OperationId = bookedOperationId,
+            Status = WaitlistOfferStatus.Accepted,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        SeedOperation(ctx, tenantId, bookedOperationId, OperationStatus.Booked);
+        var enrollment = ctx.WaitlistEnrollments.Single(e => e.EnrollmentId == first);
+        enrollment.CancelledAt = DateTimeOffset.UtcNow;
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // The recorded enrolment comes back — no second row, so no second offer and no second book.
+        Assert.Equal(first, second);
+        Assert.Single(ctx.WaitlistEnrollments.Where(e => e.TenantId == tenantId).ToList());
+    }
+
+    /// <summary>
+    /// The converse, and the reason the fulfilment test above needs a BOOKED operation: an offer
+    /// that was accepted but whose booking then failed is NOT a fulfilment.
+    ///
+    /// <para>An offer is claimed <c>Accepted</c> before the booking is confirmed and has no
+    /// transition out again, so it lingers accepted after a terminal failure — where
+    /// <c>ReconcileWaitlistAcceptCommandHandler</c> deliberately leaves the enrollee eligible. If
+    /// the guest then withdraws and re-enrols, treating the stale accepted offer as fulfilment
+    /// would hand back the CANCELLED id and report "added to the waitlist" for a guest on no list.
+    /// </para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AnAcceptedOfferWhoseBookingFailedDoesNotCountAsFulfilment()
+    {
+        var tenantId = TestIds.New("wl-acc-failed");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-acc-failed" };
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        var failedOperationId = TestIds.New("op_wl");
+        ctx.WaitlistOffers.Add(new WaitlistOffer
+        {
+            TenantId = tenantId,
+            OfferId = TestIds.New("wlo"),
+            EnrollmentId = first,
+            OperationId = failedOperationId,
+            Status = WaitlistOfferStatus.Accepted,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        SeedOperation(ctx, tenantId, failedOperationId, OperationStatus.FailedFinal);
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        // The guest gives up and withdraws, then changes their mind and re-enrols identically.
+        await BuildCancel(ctx).Handle(
+            new CancelWaitlistEnrollmentCommand(tenantId, first, "operator@venue", "operator", "waitlist test"),
+            TestContext.Current.CancellationToken);
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // A genuine withdrawal, so the fence is voided and they really are back on the list.
+        Assert.NotEqual(first, second);
         var live = ctx.WaitlistEnrollments
             .Where(e => e.TenantId == tenantId && e.CancelledAt == null)
             .ToList();

@@ -61,13 +61,20 @@ export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScree
   const perDay = liveDays.length > 0
     ? liveDays.map(d => ({ d: (d.date ?? '').slice(5), v: d.accepted ?? 0 }))
     : [];
-  const chartDays = perDay.length > 0 ? perDay : a.perDay;
+  const overviewLoaded = overview.data !== undefined;
+
+  // Keyed on WHETHER THE OVERVIEW ANSWERED, never on whether it was empty.
+  //
+  // An answered-but-empty window is a real answer — a genuinely quiet week — and substituting the
+  // frozen demo series for it told the operator a fabricated story about their own venue, while
+  // the badge beside it called that real response "demo data". Emptiness is the thing this screen
+  // most needs to be able to say.
+  const chartDays = overviewLoaded ? perDay : a.perDay;
   const maxDay = Math.max(1, ...chartDays.map(d => d.v));
 
   // A failed overview leaves every series empty, which is indistinguishable from a genuinely
   // quiet week. Saying "no activity in this window" in that case states as fact something the
   // app does not know, because the request never answered.
-  const overviewLoaded = overview.data !== undefined;
   const emptyReason = overviewLoaded
     ? 'no activity in this window'
     : 'this data could not be loaded';
@@ -144,12 +151,21 @@ export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScree
         </div>
       )}
 
-      {/* Bar chart */}
+      {/* Bar chart — badged like the two breakdowns below: on whether the overview ANSWERED,
+          never on whether it was empty. An answered-but-empty window shows a real empty state,
+          not the demo series with a badge calling the venue's own quiet week "demo data". */}
       <div className="flex items-center gap-[8px]">
-        <SectionLabel>{perDay.length > 0 ? 'Requests accepted per day' : CHART_LABEL[range]}</SectionLabel>
-        {perDay.length === 0 && !overview.isPending && <DemoBadge reason={emptyReason} />}
+        <SectionLabel>{overviewLoaded ? 'Requests accepted per day' : CHART_LABEL[range]}</SectionLabel>
+        {!overviewLoaded && !overview.isPending && <DemoBadge reason={emptyReason} />}
       </div>
       <Panel style={{ padding: '18px 16px 14px', marginBottom: 18 }}>
+        {overviewLoaded && chartDays.length === 0 && (
+          <div className="text-[12.5px] text-t3 leading-[1.5]">
+            No requests were accepted in this window. That is the platform's answer, not a
+            gap in it.
+          </div>
+        )}
+        {chartDays.length > 0 && (
         <div className="flex items-end gap-2 md:gap-4" style={{ height: 160 }}>
           {chartDays.map((d, i) => {
             // The most recent bucket, always. It used to be `WEEK.today` for the 7-day mock
@@ -173,6 +189,7 @@ export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScree
             );
           })}
         </div>
+        )}
       </Panel>
 
       {/* Channels + Top services */}
@@ -180,11 +197,17 @@ export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScree
         <div className={`flex-1 min-w-0 ${isPhone ? 'mb-[18px]' : ''}`}>
           <div className="flex items-center gap-[8px]">
             <SectionLabel>Where bookings came from</SectionLabel>
-            {liveChannels.length === 0 && !overview.isPending && <DemoBadge reason={emptyReason} />}
+            {!overviewLoaded && !overview.isPending && <DemoBadge reason={emptyReason} />}
             {overview.data?.breakdown_truncated && <PartialBadge reason="too many operations in this window to break down fully" />}
           </div>
           <Panel style={{ padding: '15px 16px' }}>
-            {liveChannels.length > 0
+            {overviewLoaded && liveChannels.length === 0 && (
+              <div className="text-[12.5px] text-t3 leading-[1.5]">
+                No conversations were recorded in this window. That is the platform's answer, not a
+                gap in it.
+              </div>
+            )}
+            {overviewLoaded
               ? liveChannels.map(c => {
                   const total = Math.max(1, liveChannels.reduce((sum, x) => sum + (x.count ?? 0), 0));
                   const value = c.count ?? 0;
@@ -220,11 +243,16 @@ export function AnalyticsScreen({ device, range, onRangeChange }: AnalyticsScree
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-[8px]">
             <SectionLabel>Top services</SectionLabel>
-            {liveServices.length === 0 && !overview.isPending && <DemoBadge reason={emptyReason} />}
+            {!overviewLoaded && !overview.isPending && <DemoBadge reason={emptyReason} />}
             {overview.data?.breakdown_truncated && <PartialBadge reason="too many operations in this window to break down fully" />}
           </div>
           <Panel style={{ padding: '15px 16px' }}>
-            {liveServices.length > 0
+            {overviewLoaded && liveServices.length === 0 && (
+              <div className="text-[12.5px] text-t3 leading-[1.5]">
+                No services were booked in this window.
+              </div>
+            )}
+            {overviewLoaded
               ? liveServices.map((s, i) => {
                   const max = Math.max(1, ...liveServices.map(x => x.count ?? 0));
                   const value = s.count ?? 0;

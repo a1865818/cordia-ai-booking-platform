@@ -92,6 +92,22 @@ export function PreorderRecoveryPanel() {
     }
   }
 
+  /**
+   * A grant is issued for ONE (saga, customer) pair, so changing either invalidates it.
+   *
+   * Only the saga field used to reset, and only partially: it cleared the grant but left an open
+   * VerificationGate mid-challenge, so a challenge started for one identity could resolve and hand
+   * its grant to whatever was typed afterwards. Changing only the CUSTOMER reset nothing at all —
+   * and since the convert payload carries `{ sagaId, grantId }` and no customer id, an
+   * already-issued grant stayed usable under a completely different identity while the panel
+   * still showed "the customer has agreed".
+   */
+  function resetIdentity() {
+    setGrantId(null);
+    setVerifying(false);
+    reset();
+  }
+
   return (
     <Panel style={{ marginBottom: 18, padding: '15px' }}>
       <div className="flex items-start gap-[11px] mb-[13px]">
@@ -113,7 +129,7 @@ export function PreorderRecoveryPanel() {
         <div className="text-[12px] font-semibold mb-[5px]" style={{ color: '#55554F' }}>Saga id</div>
         <input
           value={sagaId}
-          onChange={e => { setSagaId(e.target.value); setGrantId(null); reset(); }}
+          onChange={e => { setSagaId(e.target.value); resetIdentity(); }}
           placeholder="pos_…"
           className="w-full h-[38px] border border-cd-border rounded-[9px] px-3 text-[13px] text-ink outline-none focus:border-[#2F6BEB] transition-colors font-mono"
         />
@@ -125,7 +141,7 @@ export function PreorderRecoveryPanel() {
         </div>
         <input
           value={customerId}
-          onChange={e => setCustomerId(e.target.value)}
+          onChange={e => { setCustomerId(e.target.value); resetIdentity(); }}
           placeholder="cust_…"
           className="w-full h-[38px] border border-cd-border rounded-[9px] px-3 text-[13px] text-ink outline-none focus:border-[#2F6BEB] transition-colors font-mono"
         />

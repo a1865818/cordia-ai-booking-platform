@@ -37,6 +37,17 @@ public class WaitlistOfferRepository(ApplicationDbContext db) : IWaitlistOfferRe
             .OrderByDescending(o => o.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
+    public async Task<IReadOnlyList<string>> GetAcceptedOfferOperationIdsAsync(
+        string tenantId, string enrollmentId, CancellationToken ct = default)
+        => await db.WaitlistOffers
+            .AsNoTracking()
+            .Where(o => o.TenantId == tenantId
+                        && o.EnrollmentId == enrollmentId
+                        && o.Status == WaitlistOfferStatus.Accepted
+                        && o.OperationId != null)
+            .Select(o => o.OperationId!)
+            .ToListAsync(ct);
+
     public Task<int> TryTransitionStatusAsync(
         string tenantId,
         string offerId,

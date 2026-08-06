@@ -308,7 +308,12 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             {
                 Date = g.Key,
                 Accepted = g.Count(),
-                Booked = g.Count(o => o.Status == OperationStatus.Booked),
+                // A successful CANCELLATION also settles as `Booked` — D1 gives cancel no terminal
+                // state of its own — so counting it here made every cancellation look like a new
+                // booking and inflated the chart the moment an operator cancelled one.
+                // BookingFunnelReadModel already excludes it; this aggregate did not.
+                Booked = g.Count(o => o.Status == OperationStatus.Booked
+                    && o.OperationType != OperationTypeEnum.Cancel),
             })
             .ToListAsync(ct);
 

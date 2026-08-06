@@ -60,6 +60,21 @@ export function DeadLetterReplayPanel() {
     });
   }
 
+  /**
+   * Both identity fields clear the previous outcome AND the previous failure.
+   *
+   * Two things were wrong without this. A stale success/error banner sat above a form the
+   * operator had already changed, describing a different message. Worse, `failure.retry` closes
+   * over the `input` of the call that failed — so after editing the fields, "Try again" replayed
+   * the OLD message id against the OLD consumer while the form showed the new ones. Replay has no
+   * idempotency key, so that mistaken re-admission is a real and irreversible side effect.
+   */
+  function retarget(set: (v: string) => void, value: string) {
+    set(value);
+    setResult(null);
+    setFailure(null);
+  }
+
   function run(reasonCode: string, note: string) {
     setConfirming(false);
     submit({
@@ -92,7 +107,7 @@ export function DeadLetterReplayPanel() {
         <div className="text-[12px] font-semibold mb-[5px]" style={{ color: '#55554F' }}>Message id</div>
         <input
           value={messageId}
-          onChange={e => setMessageId(e.target.value)}
+          onChange={e => retarget(setMessageId, e.target.value)}
           placeholder="obx_…"
           className="w-full h-[38px] border border-cd-border rounded-[9px] px-3 text-[13px] text-ink outline-none focus:border-[#2F6BEB] transition-colors font-mono"
         />
@@ -102,7 +117,7 @@ export function DeadLetterReplayPanel() {
         <div className="text-[12px] font-semibold mb-[5px]" style={{ color: '#55554F' }}>Consumer</div>
         <input
           value={consumerName}
-          onChange={e => setConsumerName(e.target.value)}
+          onChange={e => retarget(setConsumerName, e.target.value)}
           placeholder="booking-command-consumer"
           className="w-full h-[38px] border border-cd-border rounded-[9px] px-3 text-[13px] text-ink outline-none focus:border-[#2F6BEB] transition-colors"
         />

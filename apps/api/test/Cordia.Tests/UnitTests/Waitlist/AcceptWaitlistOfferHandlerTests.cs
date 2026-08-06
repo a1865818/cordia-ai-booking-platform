@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -60,7 +61,8 @@ public class AcceptWaitlistOfferHandlerTests
     private AcceptWaitlistOfferCommandHandler CreateHandler() => new(
         _offerRepo.Object, _enrollmentRepo.Object, _hasher.Object,
         _mediator.Object, _auditRepo.Object,
-        new WaitlistAcceptReconcileScheduler(_jobs.Object), _uow.Object);
+        new WaitlistAcceptReconcileScheduler(_jobs.Object),
+        new AuditWriter(_auditRepo.Object), _uow.Object);
 
     [Fact]
     public async Task Accept_Submits_HashMatching_Confirmed_Intent_Under_Offer_Operation_And_Claims()

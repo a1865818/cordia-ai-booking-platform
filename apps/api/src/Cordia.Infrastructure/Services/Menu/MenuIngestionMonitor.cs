@@ -32,9 +32,20 @@ public sealed class MenuIngestionMonitor(
     ApplicationDbContext db,
     IVendorCatalogRepository catalogs,
     IAuditEventRepository auditRepo,
+    IOutboxRepository outboxRepo,
+    IUnitOfWork uow,
     Metrics metrics,
     ILogger<MenuIngestionMonitor> logger) : IMenuIngestionMonitor
 {
+    /// <summary>
+    /// The owner-facing alert, bound to the SAME Domain constant
+    /// <c>IngestVendorMenuCommandHandler</c>'s synchronous failure path uses — one message type
+    /// for one meaning, whichever route settled it. It was a duplicated literal held together only
+    /// by a comment, which the compiler could not check; an unregistered type dead-letters, so a
+    /// version bump on one side would have silently stopped these alerts reaching anyone.
+    /// </summary>
+    private const string ExtractionFailedEventType = Cordia.Domain.Menu.MenuMessageTypes.ExtractionFailed;
+
     /// <summary>The two statuses that are supposed to be transient. Anything else is a resting state.</summary>
     private static readonly CatalogStatus[] InProgress =
         [CatalogStatus.Scanning, CatalogStatus.Extracting];
@@ -73,8 +84,26 @@ public sealed class MenuIngestionMonitor(
             // win. Losing here is the intended outcome in that case, not an error.
             CatalogStateMachine.EnsureAllowed(c.Status, CatalogStatus.ExtractFailed);
 
-            var rows = await catalogs.TryTransitionStatusAsync(
-                c.TenantId, c.CatalogId, c.Version, c.Status, CatalogStatus.ExtractFailed, ct);
+            // The status write, the owner alert and the audit row commit TOGETHER.
+            //
+            // They were three separate commits: the version-guarded status update goes straight to
+            // the database, and the outbox/audit inserts came after. A failure between them left a
+            // catalog terminally `extract_failed` with nobody told and nothing recorded — and the
+            // row is terminal, so no later sweep selects it again to finish the job. One
+            // transaction makes the settlement all-or-nothing; a failure simply leaves the catalog
+            // where it was, for the next tick to settle properly.
+            var rows = 0;
+
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                rows = await catalogs.TryTransitionStatusAsync(
+                    c.TenantId, c.CatalogId, c.Version, c.Status, CatalogStatus.ExtractFailed, ct2);
+
+                if (rows == 0)
+                    return;
+
+                await WriteSettlementRecordsAsync(c.TenantId, c.CatalogId, c.Status, c.StatusChangedAt, ct2);
+            }, ct);
 
             if (rows == 0)
             {
@@ -85,29 +114,6 @@ public sealed class MenuIngestionMonitor(
             }
 
             settled++;
-
-            // The SAME audit event IngestVendorMenuCommandHandler writes when it settles a
-            // failure it caught itself. Both routes into `extract_failed` must leave the same
-            // trail: without this, a catalog failed by the sweeper had a terminal status, a log
-            // line and a metric, but nothing in `audit_events` — so the one route an operator
-            // cannot have witnessed was also the one with no record to reconstruct it from.
-            await auditRepo.AddAsync(new AuditEvent
-            {
-                TenantId = c.TenantId,
-                EventId = $"evt_{Guid.NewGuid():N}",
-                EventType = "catalog.extraction_failed",
-                Actor = "system",
-                SubjectRef = c.CatalogId,
-                CorrelationId = c.CatalogId,
-                Metadata = JsonSerializer.Serialize(new
-                {
-                    catalog_id = c.CatalogId,
-                    reason = "stalled",
-                    stuck_in = c.Status.ToString().ToLowerInvariant(),
-                    stuck_since = c.StatusChangedAt,
-                }),
-                OccurredAt = DateTimeOffset.UtcNow,
-            }, ct);
 
             metrics.MenuIngestionStalledTotal.Add(
                 1,
@@ -124,5 +130,48 @@ public sealed class MenuIngestionMonitor(
         }
 
         return settled;
+    }
+
+    /// <summary>
+    /// The owner alert and the audit row that accompany a settled catalog — the SAME pair
+    /// <c>IngestVendorMenuCommandHandler</c> writes when it settles a failure it caught itself.
+    /// Both routes into <c>extract_failed</c> must leave the same trail and make the same noise;
+    /// this route is the one an operator has no other way of learning about, because it exists for
+    /// the worker that died before it could report anything (Inv-14).
+    /// </summary>
+    private async Task WriteSettlementRecordsAsync(
+        string tenantId,
+        string catalogId,
+        CatalogStatus stuckIn,
+        DateTimeOffset stuckSince,
+        CancellationToken ct)
+    {
+        await outboxRepo.AddAsync(new OutboxMessage
+        {
+            TenantId = tenantId,
+            MessageId = $"obx_{Guid.NewGuid():N}",
+            MessageType = ExtractionFailedEventType,
+            CorrelationId = catalogId,
+            Payload = JsonSerializer.Serialize(new { catalog_id = catalogId, reason = "stalled" }),
+            OccurredAt = DateTimeOffset.UtcNow,
+        }, ct);
+
+        await auditRepo.AddAsync(new AuditEvent
+        {
+            TenantId = tenantId,
+            EventId = $"evt_{Guid.NewGuid():N}",
+            EventType = "catalog.extraction_failed",
+            Actor = "system",
+            SubjectRef = catalogId,
+            CorrelationId = catalogId,
+            Metadata = JsonSerializer.Serialize(new
+            {
+                catalog_id = catalogId,
+                reason = "stalled",
+                stuck_in = stuckIn.ToString().ToLowerInvariant(),
+                stuck_since = stuckSince,
+            }),
+            OccurredAt = DateTimeOffset.UtcNow,
+        }, ct);
     }
 }

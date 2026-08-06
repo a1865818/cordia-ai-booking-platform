@@ -41,10 +41,6 @@ export function useVerification(options: {
 }) {
   const [state, setState] = useState<VerificationState>(INITIAL);
   const [verificationId, setVerificationId] = useState<string | null>(null);
-  // A key per *send*, not per component. The server returns the original challenge
-  // verbatim for a repeated key without checking the channel, so reusing one key would
-  // make "email instead" silently re-report the SMS challenge.
-  const [idempotencyKey, setIdempotencyKey] = useState(randomKey);
 
   const start = useCallback(
     async (channel: VerificationChannel) => {
@@ -52,12 +48,24 @@ export function useVerification(options: {
 
       setState({ ...INITIAL, phase: "sending" });
       try {
+        // A key per *send*, not per component — which is what the old comment here claimed
+        // and the code did not do. The key was minted once at mount and only re-minted by
+        // `reset()`, so every `start()` reused it; the server returns the original challenge
+        // verbatim for a repeated key WITHOUT checking the channel. After a failed or
+        // rate-limited SMS the operator is still shown both buttons, and pressing
+        // "Email instead" replayed the SMS challenge and reported it as sent while no email
+        // ever went out. The enroll drawer folds the channel into its key for the same reason.
+        //
+        // Minted here rather than derived from the channel so a genuine second attempt on the
+        // SAME channel is a new challenge too — a code that never arrived is not a request the
+        // guest wants deduplicated. The `sending`/`verifying` guard above is what stops a
+        // double-click becoming two sends.
         const response = await requestVerification({
           action: options.action,
           channel,
           customerId: options.customerId,
           targetBookingId: options.targetBookingId,
-          idempotencyKey,
+          idempotencyKey: randomKey(),
         });
 
         const status = response.status;
@@ -96,7 +104,7 @@ export function useVerification(options: {
         setState({ phase: "failed", grant: null, error, message: null });
       }
     },
-    [idempotencyKey, state.phase, options.action, options.customerId, options.targetBookingId]
+    [state.phase, options.action, options.customerId, options.targetBookingId]
   );
 
   const submitCode = useCallback(
@@ -141,8 +149,6 @@ export function useVerification(options: {
   const reset = useCallback(() => {
     setState(INITIAL);
     setVerificationId(null);
-    // A fresh key, or the next send would replay the challenge just abandoned.
-    setIdempotencyKey(randomKey());
   }, []);
 
   return { ...state, start, submitCode, reset };

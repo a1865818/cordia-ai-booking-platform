@@ -563,9 +563,20 @@ export function ConsolePage() {
    * Created per submission, never up-front: StrictMode double-invokes effects, so a controller
    * allocated here would be aborted by the first cleanup and its signal would be dead for the
    * rest of the session — every later poll would reject instantly.
+   *
+   * A SET, not a single ref. Reschedules of different bookings legitimately overlap (only the
+   * same booking is serialised, by `rescheduleInFlight`), and a single ref was simply overwritten
+   * by the second drag — orphaning the first controller, so unmount aborted only the most recent
+   * poll and the earlier one ran to its full 60s budget against a component that no longer exists.
    */
-  const pollAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => pollAbort.current?.abort(), []);
+  const pollAbort = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const controllers = pollAbort.current;
+    return () => {
+      controllers.forEach(c => c.abort());
+      controllers.clear();
+    };
+  }, []);
 
   /**
    * The booking awaiting step-up before its cancellation can be submitted.
@@ -671,7 +682,7 @@ export function ConsolePage() {
     const attemptKey = `modify:${id}|${startsAt}|${patch.dur}`;
     rescheduleInFlight.current.add(id);
     const controller = new AbortController();
-    pollAbort.current = controller;
+    pollAbort.current.add(controller);
     try {
       // No VerificationGate here, and that is now deliberate rather than a gap.
       //
@@ -794,6 +805,8 @@ export function ConsolePage() {
       invalidateBookingViews();
     } finally {
       rescheduleInFlight.current.delete(id);
+      // Settled — stop tracking it, or the set grows for the lifetime of the page.
+      pollAbort.current.delete(controller);
     }
   }
 

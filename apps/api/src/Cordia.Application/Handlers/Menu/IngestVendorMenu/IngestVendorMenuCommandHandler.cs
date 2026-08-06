@@ -33,8 +33,16 @@ public sealed class IngestVendorMenuCommandHandler(
     /// <summary>Owner-facing alert emitted when an artifact is quarantined by the malware scan (Inv-14, §8).</summary>
     public const string QuarantinedEventType = "menu.catalog.quarantined.v1";
 
-    /// <summary>Owner-facing alert emitted when extraction fails and the catalog is settled to <c>ExtractFailed</c> (Inv-14, §8). A terminal status the owner never looks at is not a notification.</summary>
-    public const string ExtractionFailedEventType = "menu.catalog.extraction_failed.v1";
+    /// <summary>
+    /// Owner-facing alert emitted when extraction fails and the catalog is settled to
+    /// <c>ExtractFailed</c> (Inv-14, §8). A terminal status the owner never looks at is not a
+    /// notification.
+    ///
+    /// <para>Bound to the Domain constant rather than repeating the literal:
+    /// <c>MenuIngestionMonitor</c> emits the same alert from Infrastructure, which cannot
+    /// reference Application, so the two had separate copies that only a comment held together.</para>
+    /// </summary>
+    public const string ExtractionFailedEventType = Cordia.Domain.Menu.MenuMessageTypes.ExtractionFailed;
 
 
     public async Task<Unit> Handle(IngestVendorMenuCommand command, CancellationToken ct)
@@ -137,6 +145,18 @@ public sealed class IngestVendorMenuCommandHandler(
                     "IngestVendorMenu: extraction failed for {CatalogId}; settled as extract_failed. "
                     + "Recovery is a fresh upload, which supersedes it.",
                     command.CatalogId);
+
+                // Gated on winning the CAS, exactly like the quarantine and draft-ready paths.
+                //
+                // Emitted unconditionally, these two spoke for a transition this call did not make.
+                // `MenuIngestionMonitor` writes the same `catalog.extraction_failed` audit when it
+                // settles a row stalled in Extracting, so a slow-then-failed extraction — the
+                // monitor settles it, then this catch finally runs — wrote the audit twice and sent
+                // the owner a second alert for one failure. Losing the race means another writer
+                // owns the outcome and has already said so.
+                await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
+                // Still alerted (Inv-14): a terminal status the owner never looks at is not a notification.
+                await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             }
             else
             {
@@ -147,9 +167,6 @@ public sealed class IngestVendorMenuCommandHandler(
                     command.CatalogId);
             }
 
-            await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
-            // Still alerted (Inv-14): a terminal status the owner never looks at is not a notification.
-            await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             return Unit.Value;
         }
 

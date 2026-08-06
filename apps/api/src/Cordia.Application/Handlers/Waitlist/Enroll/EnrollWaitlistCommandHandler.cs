@@ -16,6 +16,8 @@ namespace Cordia.Application.Handlers.Waitlist.Enroll;
 /// </summary>
 public sealed class EnrollWaitlistCommandHandler(
     IWaitlistEnrollmentRepository repo,
+    IWaitlistOfferRepository offerRepo,
+    IBookingOperationRepository opRepo,
     IAuditEventRepository auditRepo,
     IIdempotencyRepository idempotency,
     ICanonicalRequestHasher hasher,
@@ -161,6 +163,31 @@ public sealed class EnrollWaitlistCommandHandler(
             if (recorded is not null && recorded.CancelledAt is null)
                 return existing.OperationId; // live replay: spec 04's disposition, unchanged
 
+            // A terminal enrollment is not automatically a SPENT one. `CancelledAt` carries two
+            // outcomes that could not be more different: the guest withdrew, or the guest was
+            // BOOKED — the accept-reconcile path stamps the same column to make a fulfilled
+            // enrollee ineligible for a second offer.
+            //
+            // Treating fulfilment as a spent fence re-elected a fresh `wle_*` row on an identical
+            // retry, so a guest who already has a table was put back on the waitlist: eligible for
+            // another offer, or under an AutoBookGrant a silent second booking. An explicit key
+            // makes that reachable for a year.
+            //
+            // An accepted offer whose booking actually LANDED is the evidence — the offer alone is
+            // not. An offer is claimed Accepted before the booking is confirmed and has no
+            // transition out again, so an accept whose booking then failed terminally leaves the
+            // enrollee correctly eligible; treating that as fulfilment would answer a later genuine
+            // withdraw-and-re-enrol with the CANCELLED id, reporting "added to the waitlist" for a
+            // guest on no list — the same Inv-16 outcome this whole block exists to prevent.
+            //
+            // Fulfilled → answer with the recorded enrollment (the replay disposition) rather than
+            // creating a second; anything else voids the fence and re-enrols.
+            if (recorded is not null
+                && await WasFulfilledAsync(command.TenantId, existing.OperationId, ct))
+            {
+                return existing.OperationId;
+            }
+
             spentKeyOperationId = existing.OperationId;
         }
 
@@ -251,5 +278,26 @@ public sealed class EnrollWaitlistCommandHandler(
                 idempotencyKey,
                 enrollmentId,
                 "Lost the enrolment creator election but the winning record could not be read.");
+    }
+
+    /// <summary>
+    /// Whether a terminal enrollment ended because the enrollee was BOOKED, rather than because
+    /// they withdrew. True only when an accepted offer's operation actually reached
+    /// <see cref="OperationStatus.Booked"/> — which is the same condition
+    /// <c>ReconcileWaitlistAcceptCommandHandler</c> uses before marking the enrollment fulfilled.
+    /// </summary>
+    private async Task<bool> WasFulfilledAsync(
+        string tenantId, string enrollmentId, CancellationToken ct)
+    {
+        var operationIds = await offerRepo.GetAcceptedOfferOperationIdsAsync(tenantId, enrollmentId, ct);
+
+        foreach (var operationId in operationIds)
+        {
+            var op = await opRepo.GetAsync(operationId, ct);
+            if (op is not null && op.TenantId == tenantId && op.Status == OperationStatus.Booked)
+                return true;
+        }
+
+        return false;
     }
 }

@@ -55,6 +55,28 @@ public sealed class ResumeWorkflowStepCommandHandler(
                 throw new OperationConflictException(command.OperationId,
                     "Operation is not in ManualReview; cannot resume.");
 
+            // A mutation cannot be resumed into reconciliation, and offering it would be a loop,
+            // not a recovery.
+            //
+            // Resume means ManualReview → Reconciling, and `ReconcileOperationCommandHandler`
+            // escalates Cancel/Modify/Reschedule straight back to ManualReview on sight — because
+            // its lookup is create-shaped and cannot establish whether a cancellation landed or an
+            // amendment applied. So the operator would press Resume, watch the row leave
+            // ManualReview, and watch it come straight back, forever, with nothing changed.
+            //
+            // Refused with a message that names the door that DOES work: Resolve, where a human
+            // supplies the outcome the platform cannot determine for itself.
+            if (opInTxn.OperationType is Domain.Generated.OperationTypeEnum.Cancel
+                or Domain.Generated.OperationTypeEnum.Modify
+                or Domain.Generated.OperationTypeEnum.Reschedule)
+            {
+                throw new OperationConflictException(
+                    command.OperationId,
+                    "A cancel, modify or reschedule cannot be resumed: reconciliation cannot "
+                    + "establish whether the provider applied it, so it would return to manual "
+                    + "review unchanged. Resolve it instead, supplying the outcome you verified.");
+            }
+
             // Version-guarded ManualReview → Reconciling (§11 "controlled retry" edge).
             var rows = await opRepo.TryTransitionStatusAsync(
                 command.TenantId,

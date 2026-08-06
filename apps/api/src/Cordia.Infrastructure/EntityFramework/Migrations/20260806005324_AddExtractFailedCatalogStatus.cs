@@ -73,7 +73,12 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             migrationBuilder.AlterDatabase()
                 .Annotation("Npgsql:Enum:attempt_outcome_enum", "abandoned,ambiguous,dispatching,planned,reconciled,rejected,succeeded,transient_failure")
                 .Annotation("Npgsql:Enum:booking_lifecycle_status_enum", "cancellation_pending,cancelled,confirmed,modification_pending")
-                .Annotation("Npgsql:Enum:catalog_status_enum", "approved,draft_ready,extracting,in_review,published,quarantined,scanning,superseded,uploaded")
+                // KEEPS `extract_failed`. PostgreSQL cannot remove an enum label, so asking
+                // Npgsql to drop it fails before any SQL is even generated — the whole rollback
+                // aborts, taking every other change in this migration with it. Leaving the label
+                // in place is the honest and safe rollback: an unused enum value costs nothing,
+                // and a rollback that cannot run is worse than one that leaves a spare label.
+                .Annotation("Npgsql:Enum:catalog_status_enum", "approved,draft_ready,extract_failed,extracting,in_review,published,quarantined,scanning,superseded,uploaded")
                 .Annotation("Npgsql:Enum:channel_enum", "email,messaging,voice,web")
                 .Annotation("Npgsql:Enum:consent_state", "alternative_offered,declined,granted,not_required")
                 .Annotation("Npgsql:Enum:deposit_status_enum", "created,expired,link_sent,paid")

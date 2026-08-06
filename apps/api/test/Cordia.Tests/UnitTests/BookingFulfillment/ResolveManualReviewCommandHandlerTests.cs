@@ -32,8 +32,13 @@ public class ResolveManualReviewCommandHandlerTests
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
 
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
+    private readonly Mock<ICapacityReservation> _capacity = new();
+
     private ResolveManualReviewCommandHandler CreateHandler() =>
-        new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, new AuditWriter(_auditRepo.Object), _uow.Object);
+        new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object,
+            _bookingRepo.Object, _capacity.Object,
+            new AuditWriter(_auditRepo.Object), _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
         new()
@@ -44,7 +49,121 @@ public class ResolveManualReviewCommandHandlerTests
             IntentRevision = 1,
             Status = status,
             Version = version,
+            // EXPLICIT. `OperationTypeEnum.Cancel` is the zero value, so leaving this unset made
+            // every one of these tests silently exercise a cancellation while reading as a
+            // generic operation — which matters now that cancel/modify/reschedule take a
+            // different manual-recovery path from a create.
+            OperationType = Domain.Generated.OperationTypeEnum.Create,
         };
+
+    // ── A resolved mutation must release the booking's pending state, either way ─────────────
+
+    /// <summary>
+    /// A modify/cancel resolved as FAILED still has to un-park the booking.
+    ///
+    /// <para>`POST .../modifications` parks the booking at ModificationPending and
+    /// `.../cancellations` at CancellationPending. An ambiguous provider outcome routes
+    /// Finalizing→Reconciling, the reconciler escalates modify/cancel straight to ManualReview, and
+    /// this handler is the only way out — so when the operator resolved it as failed, the operation
+    /// read `failed_final` while the booking row told every reader a change was still outstanding,
+    /// permanently. Failed means nothing happened, so the booking reverts to Confirmed.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(Domain.Generated.OperationTypeEnum.Modify, BookingLifecycleStatus.ModificationPending)]
+    [InlineData(Domain.Generated.OperationTypeEnum.Reschedule, BookingLifecycleStatus.ModificationPending)]
+    [InlineData(Domain.Generated.OperationTypeEnum.Cancel, BookingLifecycleStatus.CancellationPending)]
+    public async Task Handle_FailedFinal_RevertsThePendingLifecycleOfTheBookingItWasActingOn(
+        Domain.Generated.OperationTypeEnum type, BookingLifecycleStatus parked)
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-1";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 2);
+        op.OperationType = type;
+        op.BookingId = bookingId;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 2,
+                OperationStatus.ManualReview, OperationStatus.FailedFinal,
+                "manual_resolved_failed", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = parked,
+                Version = 9,
+            });
+
+        BookingLifecycleStatus? settledTo = null;
+        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
+                tenantId, bookingId, 9, It.IsAny<BookingLifecycleStatus>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, long, BookingLifecycleStatus, DateTimeOffset, CancellationToken>(
+                (_, _, _, next, _, _) => settledTo = next)
+            .ReturnsAsync(1);
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        Assert.Equal(BookingLifecycleStatus.Confirmed, settledTo);
+
+        // Nothing happened, so no seat changes hands either.
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ReleaseReason>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A booking already Cancelled underneath us keeps that outcome — a writer that knew decided it.</summary>
+    [Fact]
+    public async Task Handle_FailedFinal_LeavesABookingThatIsNoLongerPendingAlone()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-1";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 2);
+        op.OperationType = Domain.Generated.OperationTypeEnum.Cancel;
+        op.BookingId = bookingId;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 2,
+                OperationStatus.ManualReview, OperationStatus.FailedFinal,
+                "manual_resolved_failed", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.Cancelled,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
 
     // ── Booked: requires ProviderRef ─────────────────────────────────────────────────────────
 

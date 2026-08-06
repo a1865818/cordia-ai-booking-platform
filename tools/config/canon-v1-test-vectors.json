@@ -506,6 +506,13 @@
       "note": "TryParse REJECTS offsets past +/-14:00, so the value stays raw text. A regex with unbounded two-digit offset groups would normalise it to UTC and diverge."
     },
     {
+      "name": "iso_offset_minute_overflow_is_a_plain_string",
+      "equivalence": "iso_offset_minute_overflow_is_a_plain_string",
+      "payload": "{\"k\":\"2026-06-15T18:00:00+05:75\"}",
+      "expected": "ff9b8706f1e99c88bc8d8dc96bc8aee3bee8228c29fd65185c87de79430dc6c6",
+      "note": "TryParse rejects an offset whose minutes exceed 59, so the value stays raw text. A regex whose offset-minute group accepts \\d\\d would normalise +05:75 to UTC and diverge."
+    },
+    {
       "name": "iso_offset_at_14h_boundary_parses",
       "equivalence": "iso_offset_at_14h_boundary_parses",
       "payload": "{\"k\":\"2026-06-15T18:00:00+14:00\"}",

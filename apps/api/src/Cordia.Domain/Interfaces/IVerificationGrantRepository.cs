@@ -38,6 +38,27 @@ public interface IVerificationGrantRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Identical scope check to <see cref="FindValidGrantByIdAsync"/> — same tenant, customer,
+    /// action, target and expiry — but it does NOT require the grant to be unconsumed.
+    ///
+    /// <para>For a caller that consumes the grant LATER, at the moment it commits. Such a caller
+    /// cannot pre-check with the unconsumed variant: its own successful first attempt spends the
+    /// grant, so an honest retry of that same request would then be refused, turning an
+    /// idempotent replay into a 403. Consumption is still enforced — by
+    /// <see cref="ConsumeAsync"/>'s conditional update, which is the atomic single-use fence — this
+    /// only stops the pre-check from double-counting it. A caller that does not consume must use
+    /// <see cref="FindValidGrantByIdAsync"/>.</para>
+    /// </summary>
+    Task<VerificationGrant?> FindGrantByIdIgnoringConsumptionAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        DateTimeOffset now,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// The assurance level recorded on a grant, or <c>null</c> when no unexpired grant with that
     /// id exists for the tenant.
     ///
@@ -49,6 +70,23 @@ public interface IVerificationGrantRepository
     Task<VerificationLevel?> GetAssuranceLevelAsync(
         string tenantId,
         string grantId,
+        DateTimeOffset now,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The assurance level recorded on a grant, but only when that grant was issued to
+    /// <paramref name="customerRef"/> — otherwise <c>null</c>.
+    ///
+    /// <para>For a caller that has a customer to bind against but no authorization gate to lean
+    /// on. <see cref="GetAssuranceLevelAsync"/> scopes to tenant + id + expiry, which is all it
+    /// can do; on a path with no gate that lets a caller name ANY unexpired grant in the tenant
+    /// and have its level recorded as their own. Action and target stay unconstrained on purpose:
+    /// the question is "how well was this party verified", not "may this party act".</para>
+    /// </summary>
+    Task<VerificationLevel?> GetAssuranceLevelForCustomerAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
         DateTimeOffset now,
         CancellationToken ct = default);
 

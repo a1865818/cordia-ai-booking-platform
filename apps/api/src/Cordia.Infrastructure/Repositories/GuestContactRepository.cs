@@ -31,12 +31,17 @@ public class GuestContactRepository(ApplicationDbContext db) : IGuestContactRepo
             .FirstOrDefaultAsync(g => g.TenantId == tenantId && g.ContactFingerprint == fingerprint, ct);
         if (existing is not null)
         {
-            // Touch the retention clock. This call means a booking is being made against this
-            // contact RIGHT NOW, so the row is needed for at least another full window — without
-            // this, a returning guest is erased on the age of their first-ever booking and the
-            // booking they just made loses its only notification destination.
-            existing.LastUsedAt = now;
-            await db.SaveChangesAsync(ct);
+            // Touch the retention clock — MONOTONICALLY. This call means a booking is being made
+            // against this contact right now, so the row is needed for at least another full
+            // window; without it, a returning guest is erased on the age of their first-ever
+            // booking and the booking they just made loses its only notification destination.
+            //
+            // Never assigned unconditionally: `TouchAsync` pushes the clock out to a FUTURE
+            // booking's start instant, and a plain `= now` would drag it back. A guest with a
+            // booking six months out who books again today would have had their retention window
+            // silently shortened to today — erasing the contact months before the booking it was
+            // being held for.
+            await TouchAsync(tenantId, existing.ContactRef, now, ct);
             return existing;
         }
 
@@ -70,10 +75,8 @@ public class GuestContactRepository(ApplicationDbContext db) : IGuestContactRepo
                 .FirstOrDefaultAsync(g => g.TenantId == tenantId && g.ContactFingerprint == fingerprint, ct);
             if (winner is null) throw;
 
-            // Same reasoning as the hit above: we lost the race but a booking is still being made
-            // against this contact now, so the winner's retention clock is ours to advance too.
-            winner.LastUsedAt = now;
-            await db.SaveChangesAsync(ct);
+            // Same reasoning as the hit above, and monotonic for the same reason.
+            await TouchAsync(tenantId, winner.ContactRef, now, ct);
             return winner;
         }
 

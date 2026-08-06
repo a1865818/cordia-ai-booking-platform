@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
@@ -132,6 +133,7 @@ public sealed class CreateCapacitySlotValidator : AbstractValidator<CreateCapaci
 
 public sealed class CreateCapacitySlotCommandHandler(
     ICapacitySlotRepository slots,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<CreateCapacitySlotCommand, AvailableSlot>
 {
@@ -179,9 +181,46 @@ public sealed class CreateCapacitySlotCommandHandler(
             Version = 0,
         };
 
-        await uow.ExecuteInTransactionAsync(async ct2 => await slots.AddAsync(slot, ct2), ct);
+        var won = false;
 
-        return ToView(slot);
+        await uow.ExecuteInTransactionAsync(async ct2 =>
+        {
+            // Conflict-tolerant: the pre-read above is a fast path, not a lock. Two operators
+            // declaring the same slot both pass it, and the loser used to get a primary-key
+            // violation surfaced as a 500 — for an endpoint documented as idempotent by the
+            // derived key. The loser now simply reads the winner back.
+            won = await slots.TryAddAsync(slot, ct2);
+
+            if (!won)
+                return;
+
+            // The ALLOW audit, in the same transaction as the effect it describes.
+            // `OperatorActionBehavior` records only denials, so an owner-only commercial action —
+            // declaring the capacity the venue can be booked against — had no trail of ever having
+            // succeeded. Written only when the insert actually won, so a losing racer does not
+            // claim to have declared anything.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: request.TenantId,
+                    ActorType: StaffRole.IsKnown(request.ActorRole) ? request.ActorRole : "owner",
+                    ActorId: string.IsNullOrWhiteSpace(request.Actor) ? "unknown" : request.Actor,
+                    Action: "capacity.slot_created",
+                    TargetType: "capacity_slot",
+                    TargetId: slotId,
+                    Decision: "allow",
+                    DataClasses: ["operations"],
+                    ReasonCode: string.IsNullOrWhiteSpace(request.ReasonCode) ? null : request.ReasonCode,
+                    CorrelationId: slotId,
+                    Extra: new { total_capacity = request.TotalCapacity, starts_at = request.StartsAt }),
+                ct2);
+        }, ct);
+
+        if (won)
+            return ToView(slot);
+
+        // Lost the race — return what the winner actually stored, never our unsaved instance.
+        var winner = await slots.GetAsync(request.TenantId, slotId, ct);
+        return winner is not null ? ToView(winner) : ToView(slot);
     }
 
     private static AvailableSlot ToView(CapacitySlot s) => new(

@@ -1,4 +1,6 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Common.Audit;
+using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
 using Cordia.Domain.Enums;
@@ -50,6 +52,7 @@ public sealed class AcceptWaitlistOfferCommandHandler(
     IMediator mediator,
     IAuditEventRepository auditRepo,
     WaitlistAcceptReconcileScheduler reconcileScheduler,
+    IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<AcceptWaitlistOfferCommand, Unit>
 {
@@ -131,6 +134,28 @@ public sealed class AcceptWaitlistOfferCommandHandler(
             // auto-books) the enrollee a second table; on terminal failure they stay eligible.
             await reconcileScheduler.ScheduleAsync(
                 command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2);
+            // The spec-14 operator-action ALLOW envelope.
+            //
+            // `OperatorActionBehavior` records only DENIALS, so without this the trail could prove
+            // who was refused and not who succeeded — and the business event below carries no
+            // asserted role, reason code or decision, which are exactly the fields the operator
+            // contract is written in. Both rows are kept: one is the business fact, this one is the
+            // authorization decision. Inside the effect's transaction, so a rolled-back action can
+            // never leave an allow behind (spec 14 §3.1 step 5).
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: command.TenantId,
+                    ActorType: StaffRole.IsKnown(command.ActorRole) ? command.ActorRole : "operator",
+                    ActorId: string.IsNullOrWhiteSpace(command.Actor) ? "unknown" : command.Actor,
+                    Action: "waitlist.offer_accepted",
+                    TargetType: "waitlist_offer",
+                    TargetId: command.OfferId,
+                    Decision: "allow",
+                    DataClasses: ["operations"],
+                    ReasonCode: string.IsNullOrWhiteSpace(command.ReasonCode) ? null : command.ReasonCode,
+                    CorrelationId: command.OfferId),
+                ct2);
+
             await auditRepo.AddAsync(new AuditEvent
             {
                 TenantId = command.TenantId,

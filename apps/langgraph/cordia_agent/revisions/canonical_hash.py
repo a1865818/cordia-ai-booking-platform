@@ -169,6 +169,14 @@ def _try_normalize_timestamp(raw: str) -> str | None:
     if sign is not None and int(off_h) * 60 + int(off_m or 0) > _MAX_OFFSET_MINUTES:
         return None
 
+    # .NET also rejects an offset whose MINUTE component exceeds 59, even when the total is
+    # inside +/-14:00 — "+05:75" is 375 minutes but TryParse still fails. timedelta would
+    # happily carry the overflow into hours, so without this guard Python normalises to UTC
+    # while the server keeps the raw string (corpus vector
+    # iso_offset_minute_overflow_is_a_plain_string).
+    if sign is not None and int(off_m or 0) > 59:
+        return None
+
     # Truncate (floor) sub-millisecond precision.  Rounding could cross a second
     # boundary and silently merge two distinct instants.
     millis = int((fraction + "000")[:3]) if fraction else 0

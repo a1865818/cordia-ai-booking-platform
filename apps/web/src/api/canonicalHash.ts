@@ -130,7 +130,7 @@ function encodeString(value: string): string {
  * to the server and must be one here too.
  */
 const ISO_WITH_OFFSET =
-  /^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:([Zz])|([+-])(\d{2})(?::?(\d{2}))?)$/;
+  /^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:([Zz])|([+-])(\d{2})(?::?([0-5]\d))?)$/;
 
 /** .NET's DateTimeOffset offset range is +/-14:00 inclusive; beyond that TryParse fails. */
 const MAX_OFFSET_MINUTES = 14 * 60;

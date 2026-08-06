@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -112,10 +113,22 @@ public sealed class ModifyBookingCommandHandler(
 
         // A cancelled booking cannot be moved. This is a business outcome, not a failure to
         // retry: the guest must make a new booking.
+        //
+        // Routed to CompensationRequired, NOT Rejected. §11 gives Finalizing exactly three
+        // successors — Booked, Reconciling, CompensationRequired — and `TryTransitionStatusAsync`
+        // guards status+version without consulting the edge set, so the illegal Finalizing→Rejected
+        // edge simply succeeded and left OperationStateMachine no longer describing what the code
+        // does. It also stranded capacity: this operation is holding an Active hold on the NEW slot
+        // (every non-Cancel type reserves before Finalizing) and a terminal Rejected has no path
+        // that gives it back, so the seat sat reserved until the expiry sweeper noticed.
+        // CompensationRequired routes to CompensateOperationCommandHandler, which finds no
+        // provider effect to undo (nothing was called yet), releases the hold, and terminalizes as
+        // FailedFinal with the guest told the change did not happen — the outcome this branch
+        // always intended.
         if (booking.LifecycleStatus == BookingLifecycleStatus.Cancelled)
         {
             return await RouteToTerminalAsync(
-                tenantId, operationId, OperationStatus.Rejected, "target_booking_cancelled", ct);
+                tenantId, operationId, OperationStatus.CompensationRequired, "target_booking_cancelled", ct);
         }
 
         var step = await CreateOrLoadStepAsync(tenantId, operationId, ct);
@@ -260,6 +273,65 @@ public sealed class ModifyBookingCommandHandler(
             if (freshOp is null || freshOp.Status != OperationStatus.Finalizing)
                 return;
 
+            // ── Capacity is decided BEFORE anything is settled (spec 07 §6.1/§6.2). ──
+            //
+            // A reschedule reserves capacity like any other operation: ValidateOperationCommandHandler
+            // routes every non-Cancel type through ReservingCapacity, so this operation already holds
+            // an Active hold on the NEW slot. `FinalizeAgainstOperationAsync` is the SINGLE decision
+            // point for that hold — the same role it plays in FinalizeBookingCommandHandler — and its
+            // answer has to be known before the operation is called Booked, before the old slot is
+            // given up, and before the guest is told anything.
+            //
+            // The previous owner is resolved while this op is still Finalizing. Once it is Booked,
+            // `GetBookedOperationForBookingAsync` (newest Booked wins) returns THIS operation, the
+            // identity guard below skips, and the old slot leaks forever.
+            var previousOwner = await opRepo.GetBookedOperationForBookingAsync(
+                tenantId, booking.BookingId, ct2);
+
+            var finalizeOutcome = await capacityReservation.FinalizeAgainstOperationAsync(
+                tenantId, operationId, "create", ct2);
+
+            if (finalizeOutcome == FinalizeOutcome.HoldNoLongerValid)
+            {
+                // The new slot is gone — the hold expired or was released before we got here — but
+                // the provider has ALREADY been asked to move the booking. There is an external
+                // effect that outlived its capacity, and no automatic rule resolves that: honouring
+                // the move overbooks the new slot, undoing it takes a seat back from a guest who
+                // was already moved.
+                //
+                // Routed to Reconciling, NOT CompensationRequired. CompensateOperationCommandHandler
+                // resolves the provider reference from the "finalize" step, and this lane writes
+                // "modify" — so it would find no reference, take its no-effect branch, terminalize
+                // as `failed_no_effect` and tell the guest the change did not happen while the
+                // venue had already applied it. Reconciling is the §11-legal edge that reaches a
+                // human: ReconcileOperationCommandHandler escalates every modify/reschedule to
+                // ManualReview, and ResolveManualReviewCommandHandler settles the booking's
+                // ModificationPending either way the operator decides.
+                //
+                // Do NOT release the old slot: the guest must not end up holding neither seat.
+                await opRepo.TryTransitionStatusAsync(
+                    tenantId, operationId, freshOp.Version,
+                    OperationStatus.Finalizing, OperationStatus.Reconciling,
+                    reason: "modify_hold_no_longer_valid", ct: ct2);
+
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "booking.modify_hold_no_longer_valid",
+                    Actor = "system",
+                    SubjectRef = booking.BookingId,
+                    CorrelationId = operationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new { reason = "hold_no_longer_valid" }),
+                    OccurredAt = now,
+                }, ct2);
+
+                return;
+            }
+
+            // Finalized, or NotTracked for a venue that has declared no slots — capacity is
+            // unenforced there by decision, not by accident. Either way the amendment stands.
             var rows = await opRepo.TryTransitionStatusAsync(
                 tenantId, operationId, freshOp.Version,
                 OperationStatus.Finalizing, OperationStatus.Booked,
@@ -267,33 +339,30 @@ public sealed class ModifyBookingCommandHandler(
 
             // Lost the race — another delivery is settling it. Do no dependent writes.
             if (rows == 0)
-                return;
+            {
+                // But the finalize above already ran, and this transaction is about to COMMIT it.
+                //
+                // Deciding capacity before the transition is deliberate (the hold's validity has to
+                // be known before the guest is told anything), and it is safe when the winner also
+                // booked: their finalize is the identical idempotent write. It is NOT safe when the
+                // winner routed the operation somewhere else — a concurrent delivery whose provider
+                // call came back ambiguous moves it to Reconciling — because compensation and
+                // release paths only ever touch ACTIVE holds, so a hold this loser flipped to
+                // Finalized would never be given back.
+                //
+                // Only undo what this call actually did: a hold that was ALREADY Finalized before
+                // we ran belongs to the winner and must be left alone.
+                var settled = await opRepo.GetAsync(operationId, ct2);
+                if (finalizeOutcome == FinalizeOutcome.Finalized
+                    && settled is not null
+                    && settled.Status != OperationStatus.Booked)
+                {
+                    await capacityReservation.ReleaseFinalizedByOperationAsync(
+                        tenantId, operationId, ReleaseReason.Compensated, ct2);
+                }
 
-            // --- Capacity ownership transfers to THIS operation (spec 07 §6.1/§6.2). ---
-            //
-            // A reschedule reserves capacity like any other operation: ValidateOperationCommandHandler
-            // routes every non-Cancel type through ReservingCapacity, so this operation already
-            // holds an Active hold on the NEW slot. But `FinalizeAgainstOperationAsync` — the only
-            // Active→Finalized transition — is called exclusively from FinalizeBookingCommandHandler,
-            // which the modify lane deliberately bypasses. Nothing settled it, and nothing released
-            // the ORIGINAL slot either, so a reschedule used to leave the ledger wrong in both
-            // directions at once:
-            //
-            //   * the old slot stayed booked forever, for a booking that had moved away from it;
-            //   * the new slot's hold sat Active until the expiry sweeper released it, after which
-            //     the slot read FREE while a confirmed booking occupied it — so the venue could be
-            //     handed a second booking for the same seat.
-            //
-            // It also broke cancellation: `GetBookedOperationForBookingAsync` returns the NEWEST
-            // Booked op for the booking, which after a reschedule is this one — and releasing
-            // against an operation with no Finalized hold silently released nothing, so cancelling
-            // a rescheduled booking never gave the seat back.
-            //
-            // Ordered old-then-new and both inside this transaction: the release is what makes the
-            // seat we are giving up available again, and if either write fails the whole settlement
-            // rolls back with the operation, rather than leaving capacity half-moved.
-            var previousOwner = await opRepo.GetBookedOperationForBookingAsync(
-                tenantId, booking.BookingId, ct2);
+                return;
+            }
 
             if (previousOwner is not null && previousOwner.OperationId != operationId)
             {
@@ -303,10 +372,6 @@ public sealed class ModifyBookingCommandHandler(
                 await capacityReservation.ReleaseFinalizedByOperationAsync(
                     tenantId, previousOwner.OperationId, ReleaseReason.Superseded, ct2);
             }
-
-            // NotTracked is the normal answer for a venue that has declared no slots — capacity is
-            // unenforced there by decision, not by accident, so it is not an error.
-            await capacityReservation.FinalizeAgainstOperationAsync(tenantId, operationId, "create", ct2);
 
             // A modification accepted through `POST /api/Bookings/{id}/modifications` parks the
             // booking at ModificationPending so concurrent writers see the change in flight. That
@@ -338,7 +403,14 @@ public sealed class ModifyBookingCommandHandler(
                 TenantId = tenantId,
                 MessageId = $"obx_{Guid.NewGuid():N}",
                 OperationId = operationId,
-                MessageType = ModifyConfirmedEventType,
+                // A pre-order operation signals its SAGA, which owns the combined outcome and the
+                // item compensation; a direct guest notification here would skip both and tell the
+                // guest the booking moved while its items were never committed (spec 11 §5.3).
+                // FinalizeBookingCommandHandler and ReconcileOperationCommandHandler branch the
+                // same way; this lane was the only one that did not.
+                MessageType = freshOp.IsPreorder
+                    ? Cordia.Application.Handlers.Preorder.PreorderSagaMessages.BookingCommitted
+                    : ModifyConfirmedEventType,
                 CorrelationId = operationId,
                 Payload = JsonSerializer.Serialize(new
                 {
@@ -394,6 +466,13 @@ public sealed class ModifyBookingCommandHandler(
     private async Task<StepOutcome> RouteToTerminalAsync(
         string tenantId, string operationId, OperationStatus next, string reason, CancellationToken ct)
     {
+        // Assert the edge against the §11 set before writing it. `TryTransitionStatusAsync` checks
+        // status + version, never legality, so an illegal target silently succeeds and the state
+        // machine stops being the authoritative description of what the engine does — which is how
+        // Finalizing→Rejected got written here in the first place. Every route out of this handler
+        // funnels through here, so one assertion covers them all.
+        OperationStateMachine.EnsureAllowed(OperationStatus.Finalizing, next);
+
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
             var fresh = await opRepo.GetAsync(operationId, ct2);

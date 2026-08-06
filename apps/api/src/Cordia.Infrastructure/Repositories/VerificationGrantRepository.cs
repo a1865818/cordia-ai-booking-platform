@@ -54,6 +54,27 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
                 && g.ConsumedAt == null)
             .FirstOrDefaultAsync(ct);
 
+    public Task<VerificationGrant?> FindGrantByIdIgnoringConsumptionAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+        // Every scope predicate of FindValidGrantByIdAsync except `ConsumedAt == null`. The single-
+        // use fence for this caller is ConsumeAsync's conditional update, not this read.
+        => db.VerificationGrants
+            .AsNoTracking()
+            .Where(g =>
+                g.TenantId == tenantId
+                && g.GrantId == grantId
+                && g.CustomerRef == customerRef
+                && g.AllowedAction == action
+                && (g.TargetBookingId == null || g.TargetBookingId == targetBookingId)
+                && now < g.ExpiresAt)
+            .FirstOrDefaultAsync(ct);
+
     public async Task<VerificationLevel?> GetAssuranceLevelAsync(
         string tenantId,
         string grantId,
@@ -66,6 +87,25 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
         return await db.VerificationGrants
             .AsNoTracking()
             .Where(g => g.TenantId == tenantId && g.GrantId == grantId && g.ExpiresAt > now)
+            .Select(g => (VerificationLevel?)g.VerificationLevel)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<VerificationLevel?> GetAssuranceLevelForCustomerAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+    {
+        // Same consumption stance as GetAssuranceLevelAsync — a spent grant still attests to how
+        // well the party was verified — plus the customer binding the unscoped read cannot make.
+        return await db.VerificationGrants
+            .AsNoTracking()
+            .Where(g => g.TenantId == tenantId
+                        && g.GrantId == grantId
+                        && g.CustomerRef == customerRef
+                        && g.ExpiresAt > now)
             .Select(g => (VerificationLevel?)g.VerificationLevel)
             .FirstOrDefaultAsync(ct);
     }

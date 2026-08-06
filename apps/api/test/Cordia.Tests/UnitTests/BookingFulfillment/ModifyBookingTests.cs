@@ -295,8 +295,19 @@ public class ModifyBookingTests
         Assert.Equal("modified_no_provider_effect", _settledReason);
     }
 
+    /// <summary>
+    /// A cancelled target settles through a §11-LEGAL edge, and one that gives the seat back.
+    ///
+    /// <para>It used to write Finalizing→Rejected, which is not in
+    /// <c>OperationStateMachine</c>'s edge set at all — <c>TryTransitionStatusAsync</c> guards
+    /// status and version, never legality, so the illegal edge simply succeeded and the state
+    /// machine stopped describing the engine. Worse, this operation is holding an Active hold on
+    /// the slot it was moving TO (every non-Cancel type reserves before Finalizing) and a terminal
+    /// Rejected has no path that releases it, so the seat sat reserved until the expiry sweeper.
+    /// CompensationRequired is legal, and its handler releases the hold and terminalizes.</para>
+    /// </summary>
     [Fact]
-    public async Task ACancelledBookingIsRejectedRatherThanRetriedForever()
+    public async Task ACancelledBookingSettlesThroughCompensationRatherThanAnIllegalEdge()
     {
         GivenOperation();
         GivenBooking(BookingLifecycleStatus.Cancelled);
@@ -305,11 +316,13 @@ public class ModifyBookingTests
 
         // A business outcome, not a transient failure: no retry can make a cancelled booking
         // movable, and the provider must never be called.
-        Assert.Equal(OperationStatus.Rejected, _settledTo);
+        Assert.Equal(OperationStatus.CompensationRequired, _settledTo);
+        Assert.True(OperationStateMachine.IsAllowed(OperationStatus.Finalizing, _settledTo!.Value));
         _adapter.Verify(a => a.ModifyBookingAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ProviderBookingRequest>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
+
 
     [Fact]
     public async Task RefusesAModifyWithNoTargetRatherThanLooping()

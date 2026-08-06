@@ -2,6 +2,7 @@
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
+using Cordia.Application.Common.Audit;
 using FluentValidation;
 using MediatR;
 
@@ -66,7 +67,8 @@ public sealed class SetTenantDisplayNameValidator : AbstractValidator<SetTenantD
 }
 
 public sealed class SetTenantDisplayNameCommandHandler(
-    ITenantDisplayNameRepository repository)
+    ITenantDisplayNameRepository repository,
+    IAuditWriter audit)
     : IRequestHandler<SetTenantDisplayNameCommand, TenantDisplayNameResult>
 {
     public async Task<TenantDisplayNameResult> Handle(
@@ -77,6 +79,24 @@ public sealed class SetTenantDisplayNameCommandHandler(
         await repository.UpsertAsync(
             new TenantDisplayName { TenantId = request.TenantId, DisplayName = trimmed },
             ct);
+
+        // OperatorActionBehavior writes only the DENY record; the ALLOW is the handler's job.
+        // Without it this owner-only action left the audit trail able to prove who was REFUSED and
+        // unable to prove who succeeded — which is the half that matters when reconstructing what
+        // actually changed a venue's configuration.
+        await audit.WriteAsync(
+            new AuditRecord(
+                TenantId: request.TenantId,
+                ActorType: StaffRole.IsKnown(request.ActorRole) ? request.ActorRole : "owner",
+                ActorId: string.IsNullOrWhiteSpace(request.Actor) ? "unknown" : request.Actor,
+                Action: "tenant.display_name_set",
+                TargetType: "tenant",
+                TargetId: request.TenantId,
+                Decision: "allow",
+                DataClasses: ["tenant_profile"],
+                ReasonCode: string.IsNullOrWhiteSpace(request.ReasonCode) ? null : request.ReasonCode,
+                CorrelationId: request.TenantId),
+            CancellationToken.None);
 
         return new TenantDisplayNameResult(request.TenantId, trimmed);
     }

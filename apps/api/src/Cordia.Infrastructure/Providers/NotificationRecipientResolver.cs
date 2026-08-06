@@ -131,16 +131,28 @@ public sealed class NotificationRecipientResolver(
     }
 
     /// <summary>
-    /// The enrollment's stated channel when it is one the platform can send on, else the channel
-    /// implied by the address shape. The stored value is free text validated only as non-empty,
-    /// so it cannot be trusted to name a real channel.
+    /// The channel the DESTINATION can actually be reached on, which is the only one worth
+    /// attempting.
+    ///
+    /// <para>This used to prefer the enrollment's stated channel and fall back to the address
+    /// shape. But the stated value is free text validated only as non-empty, while
+    /// <c>AsDeliverable</c> has already classified the real destination — so when the two
+    /// disagreed the resolver handed an email address to the SMS adapter, or a phone number to the
+    /// email adapter. That send cannot succeed; it can only fail in a way that looks like a
+    /// provider problem.</para>
+    ///
+    /// <para>The stated channel still wins where it is <em>compatible</em>: <c>channel</c> means
+    /// "reply on the conversation channel" and carries no address shape of its own, so it is
+    /// honoured as given. Where the operator's stated preference genuinely conflicts with the only
+    /// address on file, the address wins — the console now refuses to record that combination in
+    /// the first place, so a stored conflict is legacy data, not a new choice.</para>
     /// </summary>
     private static NotificationChannel ChannelFor(string? stated, NotificationChannel implied)
         => stated?.Trim().ToLowerInvariant() switch
         {
-            "sms" => NotificationChannel.Sms,
-            "email" => NotificationChannel.Email,
             "channel" => NotificationChannel.Channel,
+            "sms" when implied == NotificationChannel.Sms => NotificationChannel.Sms,
+            "email" when implied == NotificationChannel.Email => NotificationChannel.Email,
             _ => implied,
         };
 

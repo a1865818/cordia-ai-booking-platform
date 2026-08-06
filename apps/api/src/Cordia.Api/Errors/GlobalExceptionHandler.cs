@@ -144,8 +144,15 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                 // permit this" — no amount of guest verification fixes that.
                 // `customer_ref` is intentionally omitted: it is the identity the caller has not
                 // yet proven a right to see, and this body is returned before that proof exists.
+                // FIXED detail, never `ex.Message`. The exception message interpolates the
+                // `customer_ref` for the server's own logs, and putting it in the response handed
+                // the caller back the very identity they have not yet proven a right to see —
+                // turning a 403 into an identity oracle. The machine-readable extensions below
+                // carry everything a client legitimately needs to resolve the challenge.
                 await WriteProblemAsync(httpContext, StatusCodes.Status403Forbidden,
-                    "Verification required", ex.Message, cancellationToken,
+                    "Verification required",
+                    "Verification is required before this action can be performed.",
+                    cancellationToken,
                     new Dictionary<string, object?>
                     {
                         ["code"] = VerificationRequiredCode,

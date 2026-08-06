@@ -817,7 +817,14 @@ public sealed class FinalizeBookingCommandHandler(
         if (string.IsNullOrWhiteSpace(contactRef))
             return;
 
-        var startsAtRaw = ReadFirstString(canonicalPayload, "starts_at", "startsAt", "requested_at");
+        // The same spellings the read projection accepts (CanonicalBookingPayload.StartsAtNames).
+        // A narrower list here meant a payload using one of the others silently skipped the
+        // retention extension: the contact kept its capture-time window and could be erased before
+        // a far-future booking was honoured — the exact failure this method exists to prevent,
+        // reintroduced by a list that had merely drifted.
+        var startsAtRaw = ReadFirstString(
+            canonicalPayload,
+            "starts_at", "startsAt", "start_at", "startAt", "scheduled_at", "requested_at", "requestedAt");
         if (!DateTimeOffset.TryParse(
                 startsAtRaw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var startsAt))
         {
@@ -885,12 +892,33 @@ public sealed class FinalizeBookingCommandHandler(
         };
     }
 
+    /// <summary>
+    /// The first of <paramref name="propertyNames"/> that the payload actually carries, in the
+    /// order the CALLER listed them.
+    ///
+    /// <para>That order is the point. Every call site here passes a deliberate preference chain —
+    /// an explicit <c>customer_id</c> outranks a <c>contact_ref</c>, which outranks the legacy
+    /// value-carrying keys — but the search used to walk the DOCUMENT and return whichever listed
+    /// name it happened to meet first, descending into a property's whole subtree before even
+    /// looking at the next top-level key. The stated precedence held only because current producers
+    /// happen to emit keys in a convenient order; a nested <c>phone_e164</c> under an earlier
+    /// property would beat a top-level <c>customer_id</c>, and the resulting value becomes the
+    /// booking's <c>CustomerId</c> — the identity a verification grant is later matched against.
+    /// One name at a time makes the precedence real instead of incidental.</para>
+    /// </summary>
     private static string? ReadFirstString(string json, params string[] propertyNames)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
-            return ReadFirstString(doc.RootElement, propertyNames);
+            foreach (var name in propertyNames)
+            {
+                var value = FindNamed(doc.RootElement, name);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return null;
         }
         catch (JsonException)
         {
@@ -898,27 +926,52 @@ public sealed class FinalizeBookingCommandHandler(
         }
     }
 
-    private static string? ReadFirstString(JsonElement element, IReadOnlyCollection<string> propertyNames)
+    /// <summary>
+    /// Searches the document for ONE property name, shallowest match first.
+    ///
+    /// <para>A true level-order walk, not a depth-first descent with the current level checked
+    /// early. Depth-first meant a match buried under an earlier property still beat a shallow one
+    /// under a later property — so for
+    /// <c>{"preorder":{"items":[{"meta":{"customer_id":"stale"}}]},"customer":{"customer_id":"real"}}</c>
+    /// the whole <c>preorder</c> subtree was exhausted first and "stale" won. That value becomes
+    /// the booking's <c>CustomerId</c>, which a verification grant is later matched against —
+    /// locking the real guest out of their own booking.</para>
+    /// </summary>
+    private static string? FindNamed(JsonElement root, string propertyName)
     {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (propertyNames.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
-                    return StringValue(property.Value);
+        var queue = new Queue<JsonElement>();
+        queue.Enqueue(root);
 
-                var nested = ReadFirstString(property.Value, propertyNames);
-                if (!string.IsNullOrWhiteSpace(nested))
-                    return nested;
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
+        while (queue.Count > 0)
         {
-            foreach (var item in element.EnumerateArray())
+            var element = queue.Dequeue();
+
+            if (element.ValueKind == JsonValueKind.Object)
             {
-                var nested = ReadFirstString(item, propertyNames);
-                if (!string.IsNullOrWhiteSpace(nested))
-                    return nested;
+                // Every key at this depth before anything deeper.
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var value = StringValue(property.Value);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value;
+                    }
+                }
+
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        queue.Enqueue(property.Value);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (item.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        queue.Enqueue(item);
+                }
             }
         }
 

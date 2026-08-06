@@ -174,6 +174,14 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
   const [customerFilter, setCustomerFilter] = useState<'all' | 'vip' | 'at-risk' | 'new'>('all');
   const [sort, setSort] = useState<'default' | 'visits' | 'noshows'>('default');
 
+  // A selection made against demo rows must not survive into live data, where it would silently
+  // filter everything out or sort by a field the API never sends.
+  useEffect(() => {
+    if (!live) return;
+    if (customerFilter === 'at-risk' || customerFilter === 'new') setCustomerFilter('all');
+    if (sort === 'noshows') setSort('default');
+  }, [live, customerFilter, sort]);
+
   let list = source.filter(c => c.name.toLowerCase().includes(q.toLowerCase()));
   if (customerFilter === 'vip') list = list.filter(c => c.visits >= 5);
   if (customerFilter === 'at-risk') list = list.filter(c => c.noShows >= 2);
@@ -210,11 +218,17 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
         <Pills
           value={customerFilter}
           onChange={(v) => setCustomerFilter(v as 'all' | 'vip' | 'at-risk' | 'new')}
+          // At-risk and New are hidden on LIVE rows. They filter on `noShows` and a `New` tag,
+          // neither of which the customers read returns — so on real data they always matched
+          // nothing and reported "no at-risk customers", which is an answer the console does not
+          // have. An option that can only ever say "none" is worse than no option.
           options={[
             { value: 'all',     label: 'All' },
             { value: 'vip',     label: 'VIP' },
-            { value: 'at-risk', label: 'At-risk' },
-            { value: 'new',     label: 'New' },
+            ...(live ? [] : [
+              { value: 'at-risk', label: 'At-risk' },
+              { value: 'new',     label: 'New' },
+            ]),
           ]}
         />
         <select
@@ -225,7 +239,9 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
         >
           <option value="default">Default</option>
           <option value="visits">Most visits</option>
-          <option value="noshows">Most no-shows</option>
+          {/* Demo only: the API returns no no-show count, so on live rows this sorted every
+              customer by a constant and did nothing at all. */}
+          {!live && <option value="noshows">Most no-shows</option>}
         </select>
       </div>
 

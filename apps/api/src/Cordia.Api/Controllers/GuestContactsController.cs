@@ -1,6 +1,7 @@
 ﻿using System.Text.Json.Serialization;
 using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
+using Cordia.Domain.Bookings;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using Microsoft.AspNetCore.Mvc;
@@ -63,13 +64,23 @@ public class GuestContactsController(
         // A ref that dereferences to nothing is worse than no ref: the booking would carry a
         // handle implying a destination exists when none does, and Inv-16 forbids asserting what
         // was never recorded.
-        if (string.IsNullOrWhiteSpace(body.PhoneE164)
-            && string.IsNullOrWhiteSpace(body.Email))
+        //
+        // Validated against the NORMALISED phone, not the raw string. `PhoneMatching.Normalise`
+        // returns null for input that survives to nothing — punctuation only — and for anything
+        // over its raw-length ceiling, so a request like "()-" or a very long formatted number
+        // passed the non-blank check and minted a ref whose contact row held no number at all.
+        // The caller got a 200 and a handle that could never be notified, which is precisely the
+        // outcome the paragraph above forbids. A loud 400 is the honest answer.
+        var normalisedPhone = PhoneMatching.Normalise(body.PhoneE164);
+
+        if (normalisedPhone is null && string.IsNullOrWhiteSpace(body.Email))
         {
             return Problem(
                 statusCode: 400,
-                title: "No contact supplied",
-                detail: "At least one of phone_e164 or email is required — a name is not a destination.");
+                title: "No usable contact supplied",
+                detail: "At least one of phone_e164 (in international form, e.g. +61400111222) or "
+                    + "email is required — a name is not a destination, and a number the platform "
+                    + "cannot normalise cannot be dialled.");
         }
 
         var contact = await contacts.GetOrCreateAsync(
@@ -91,7 +102,12 @@ public class GuestContactsController(
                 ReasonCode: string.IsNullOrWhiteSpace(reasonCode) ? null : reasonCode,
                 Extra: new
                 {
-                    has_phone = !string.IsNullOrWhiteSpace(body.PhoneE164),
+                    // The NORMALISED phone, matching what `GetOrCreateAsync` actually stored.
+                    // Keyed on the raw string this claimed a phone destination existed for input
+                    // that normalises to nothing — punctuation only, or past the length ceiling —
+                    // so the one immutable record of the write asserted a destination the contact
+                    // row does not hold. Inv-16 forbids exactly that.
+                    has_phone = normalisedPhone is not null,
                     has_email = !string.IsNullOrWhiteSpace(body.Email),
                     has_display_name = !string.IsNullOrWhiteSpace(body.DisplayName),
                 }),

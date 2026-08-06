@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Panel } from "../../ui/Panel";
 import { Icon } from "../../ui/Icon";
 import { ErrorState } from "../../ui/ErrorState";
@@ -52,17 +52,38 @@ export function BookingLookupPanel() {
   // the same number could be warned about on one screen and not the other.
   const phoneLooksLocal = kind === "phone" && looksUnnormalisedPhone(value);
 
+  /**
+   * One in-flight lookup at a time, and only the LATEST one may write to the screen.
+   *
+   * Two lookups race independently, so whichever resolved last won — which is not necessarily the
+   * one the operator is looking at. A slow answer for a previous phone number could overwrite a
+   * fast answer for the current one, and the panel would show candidates for an identifier that is
+   * no longer in the box. On a surface whose entire job is deciding WHICH booking a caller means,
+   * that is the worst thing it can do.
+   *
+   * Every state setter is guarded by the token check, including the `finally` — a superseded
+   * request must not clear the spinner belonging to the request that replaced it.
+   */
+  const inFlight = useRef<AbortController | null>(null);
+
   async function run() {
+    inFlight.current?.abort();
+    const controller = new AbortController();
+    inFlight.current = controller;
+
     setLoading(true);
     setFailure(null);
     setResult(null);
     setSearched(trimmed);
     try {
-      setResult(await findBookings({ kind, value: trimmed }));
+      const response = await findBookings({ kind, value: trimmed }, controller.signal);
+      if (inFlight.current === controller) setResult(response);
     } catch (error) {
-      setFailure({ error, retry: () => { void run(); } });
+      // An abort is this component superseding itself, not a failure to report.
+      if (controller.signal.aborted) return;
+      if (inFlight.current === controller) setFailure({ error, retry: () => { void run(); } });
     } finally {
-      setLoading(false);
+      if (inFlight.current === controller) setLoading(false);
     }
   }
 

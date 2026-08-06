@@ -1,4 +1,6 @@
-﻿namespace Cordia.Domain.Capacity;
+﻿using System.Text.Json;
+
+namespace Cordia.Domain.Capacity;
 
 /// <summary>
 /// Pure helper that derives a deterministic first-party slot key from canonical payload fields
@@ -72,6 +74,88 @@ public static class CapacitySlotKey
         {
             if (!string.IsNullOrWhiteSpace(candidate))
                 return candidate.Trim();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The capacity request a confirmed intent revision's canonical payload describes: how many
+    /// units it wants, and which first-party slot they are wanted against (<see langword="null"/>
+    /// when the payload carries no resource/time dimension — i.e. not first-party-tracked).
+    ///
+    /// <para>Lives here, beside <see cref="Derive"/>, because more than one handler has to answer
+    /// "which slot is this operation for?" from the same payload and they MUST agree. The reserve
+    /// lane derives the slot it reserves against; the modify lane derives the slot it is moving TO,
+    /// so it can tell a genuine reschedule (release the old seat) from a same-slot amendment (keep
+    /// it). Two private copies of this parse drifting apart would put those two decisions on
+    /// different keys, which is the failure this type already exists to prevent for declare-vs-reserve.</para>
+    ///
+    /// <para>Every field is optional and every failure is soft: an unparseable payload is
+    /// "not tracked", never an exception. A read of a historical revision must not be able to fail
+    /// an operation.</para>
+    /// </summary>
+    public static (int RequestedCapacity, string? SlotId) DeriveFromCanonicalPayload(string? json)
+    {
+        if (string.IsNullOrEmpty(json) || json == "{}")
+            return (1, null);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // party_size — default 1 (a booking always needs >= 1 unit).
+            // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
+            // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS
+            // (InvalidOperationException, not JsonException) on a non-Number element.
+            var requestedCapacity = 1;
+            if (root.TryGetProperty("party_size", out var partySizeEl)
+                && partySizeEl.ValueKind == JsonValueKind.Number
+                && partySizeEl.TryGetInt32(out var ps)
+                && ps > 0)
+            {
+                requestedCapacity = ps;
+            }
+
+            var resourceId = TryGetString(root, "resource_id");
+            var serviceId = TryGetString(root, "service_id");
+            var locationId = TryGetString(root, "location_id");
+
+            // starts_at is the canonical agent field; requested_at is the back-compat fallback for
+            // payloads written before the agent was updated.
+            DateTimeOffset startsAt;
+            if (root.TryGetProperty("starts_at", out var startsAtEl)
+                && startsAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(startsAtEl.GetString(), out var parsedStartsAt))
+            {
+                startsAt = parsedStartsAt;
+            }
+            else if (root.TryGetProperty("requested_at", out var requestedAtEl)
+                && requestedAtEl.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(requestedAtEl.GetString(), out var parsedRequestedAt))
+            {
+                startsAt = parsedRequestedAt;
+            }
+            else
+            {
+                return (requestedCapacity, null);
+            }
+
+            return (requestedCapacity, Derive(resourceId, serviceId, locationId, startsAt));
+        }
+        catch (JsonException)
+        {
+            return (1, null);
+        }
+    }
+
+    private static string? TryGetString(JsonElement root, string property)
+    {
+        if (root.TryGetProperty(property, out var el) && el.ValueKind == JsonValueKind.String)
+        {
+            var val = el.GetString();
+            return string.IsNullOrEmpty(val) ? null : val;
         }
 
         return null;

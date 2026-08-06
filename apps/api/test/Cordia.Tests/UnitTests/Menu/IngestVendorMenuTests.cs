@@ -159,9 +159,16 @@ public class IngestVendorMenuTests
     /// Losing the settle race is not an error: the monitor or a concurrent writer already moved
     /// the row, and that writer wins. The handler must still not throw — a throw here rolls back
     /// the inbox admission and the message returns as poison (Inv-5).
+    ///
+    /// <para>And it must stay SILENT, like the quarantine and draft-ready paths, which gate their
+    /// side effects on the CAS. These two were emitted unconditionally, so they spoke for a
+    /// transition this call did not make: <c>MenuIngestionMonitor</c> writes the same
+    /// <c>catalog.extraction_failed</c> audit when it settles a row stalled in Extracting, so a
+    /// slow-then-failed extraction — monitor settles it, then this catch finally runs — wrote the
+    /// audit twice and sent the owner a second alert for one failure.</para>
     /// </summary>
     [Fact]
-    public async Task ExtractionThrows_LostSettleRace_StillDoesNotThrow()
+    public async Task ExtractionThrows_LostSettleRace_DoesNotThrowAndLeavesTheOutcomeToTheWinner()
     {
         SetupCatalog(CatalogStatus.Uploaded);
         _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
@@ -173,11 +180,10 @@ public class IngestVendorMenuTests
 
         await BuildHandler().Handle(Command(), CancellationToken.None);
 
-        // The failure is still recorded and still surfaced, whoever won the status write.
-        _audit.Verify(a => a.AddAsync(It.Is<AuditEvent>(e => e.EventType == "catalog.extraction_failed"), It.IsAny<CancellationToken>()), Times.Once);
+        _audit.Verify(a => a.AddAsync(It.Is<AuditEvent>(e => e.EventType == "catalog.extraction_failed"), It.IsAny<CancellationToken>()), Times.Never);
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.ExtractionFailedEventType),
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

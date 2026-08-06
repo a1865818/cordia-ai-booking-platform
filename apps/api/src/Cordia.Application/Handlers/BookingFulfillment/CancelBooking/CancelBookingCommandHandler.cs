@@ -311,10 +311,19 @@ public sealed class CancelBookingCommandHandler(
                 }),
                 OccurredAt = now,
             }, ct2);
+        }, ct);
 
+        // Emitted AFTER the transaction returns, not inside it — the same reason the modify lane
+        // moved it out. A counter increment is not transactional: if the commit failed after the
+        // delegate ran (an outbox or audit unique violation, a dropped connection), the operation
+        // would stay Finalizing while the counter had already recorded a terminal `booked`, and the
+        // redelivery that follows would count it again. `committed` is only set on the path that
+        // actually wrote, so a lost race (rows == 0) contributes nothing either.
+        if (committed)
+        {
             metrics.FulfillmentOperationTerminalTotal.Add(
                 1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "booked"));
-        }, ct);
+        }
 
         return committed ? StepOutcome.Terminal : StepOutcome.Continue;
     }

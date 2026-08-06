@@ -246,8 +246,16 @@ export function CreateBookingDrawer({
     // reading "SNS dipping powder" submitted a durable booking for "Gel manicure", with the
     // rest of the form prefilled and equally trustworthy-looking.
     const prefilledService = options.find(s => s.id === prefill?.serviceId)?.id;
-    setUnmatchedService(prefill?.serviceId && !prefilledService ? prefill.serviceId : null);
-    setSvc(prefilledService ?? options[0]?.id ?? '');
+    const unmatched = Boolean(prefill?.serviceId) && !prefilledService;
+    setUnmatchedService(unmatched ? prefill!.serviceId! : null);
+
+    // An unmatched prefill leaves the picker EMPTY — it does not fall through to options[0].
+    //
+    // The warning says the requested service is not in the catalog and nothing was chosen; the
+    // code was quietly choosing the first item anyway, so an operator who trusted the warning and
+    // pressed Confirm booked a service the guest never asked for. The submit gate requires a
+    // service, so an empty pick forces the deliberate choice the warning claims is needed.
+    setSvc(unmatched ? '' : (prefilledService ?? options[0]?.id ?? ''));
   }, [prefill]);
 
   // Reset on open. Deliberately NOT keyed on `services` — see `servicesRef` above.

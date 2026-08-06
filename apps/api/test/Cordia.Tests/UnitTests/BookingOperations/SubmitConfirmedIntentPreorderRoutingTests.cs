@@ -146,6 +146,54 @@ public class SubmitConfirmedIntentPreorderRoutingTests
         Assert.Equal(VerificationLevel.Unverified, _capturedConfirmation!.VerificationLevel);
     }
 
+    /// <summary>
+    /// A create cannot borrow a stranger's grant to record a higher assurance than it earned.
+    ///
+    /// <para>There is no authorization gate on a create — nothing existing is being changed — so
+    /// the level used to come from an unscoped `tenant + grant_id + unexpired` lookup, and
+    /// `confirmation.identity` is caller-controlled. Naming any live grant in the tenant recorded
+    /// its level. When the payload says who the booking is for, that is the binding: a grant issued
+    /// to someone else attests nothing about this customer.</para>
+    /// </summary>
+    [Fact]
+    public async Task ACreateDoesNotTakeItsAssuranceFromAGrantIssuedToSomeoneElse()
+    {
+        // Scoped lookup finds nothing: the grant is not this customer's.
+        _grants.Setup(g => g.GetAssuranceLevelForCustomerAsync(
+                It.IsAny<string>(), "grant_of_someone_else", "cust_9",
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationLevel?)null);
+
+        var command = BuildCommand(identity: "grant_of_someone_else", assertedLevel: "unverified");
+        command.Request.Revision.CanonicalPayload.Customer = new CustomerRef { CustomerId = "cust_9" };
+
+        await CreateHandler().Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.Unverified, _capturedConfirmation!.VerificationLevel);
+
+        // And the UNSCOPED read is not consulted at all once there is a customer to bind to.
+        _grants.Verify(g => g.GetAssuranceLevelAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>The converse: a grant that IS this customer's still supplies the level.</summary>
+    [Fact]
+    public async Task ACreateStillTakesItsAssuranceFromTheCustomersOwnGrant()
+    {
+        _grants.Setup(g => g.GetAssuranceLevelForCustomerAsync(
+                It.IsAny<string>(), "grant_abc", "cust_9",
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(VerificationLevel.IdentityVerified);
+
+        var command = BuildCommand(identity: "grant_abc", assertedLevel: "unverified");
+        command.Request.Revision.CanonicalPayload.Customer = new CustomerRef { CustomerId = "cust_9" };
+
+        await CreateHandler().Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.IdentityVerified, _capturedConfirmation!.VerificationLevel);
+    }
+
     [Fact]
     public async Task Preorder_Routes_To_Saga_Start_And_Marks_Operation()
     {

@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Cordia.Application.Common;
+using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Preorder;
 using Cordia.Domain.Entities;
@@ -78,7 +79,12 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         // --- Step 2b: authorize a mutation of an existing booking (Inv-11). ---
         // Ahead of the idempotency pre-check on purpose: a replay hands back the winner's
         // operation id, so an unauthorized caller must not reach it either.
-        await AuthorizeMutationAsync(
+        //
+        // Returns the grant that authorized this request, when one did. Non-null means the grant
+        // was checked against the full spec 08 scope (tenant, customer, action, target, expiry) —
+        // which is what makes it safe to derive the recorded assurance level from it below, and
+        // what has to be SPENT if this request goes on to create a new operation.
+        var authorizingGrant = await AuthorizeMutationAsync(
             command, operationType, revision.CanonicalPayload.TargetBookingId, confirmation.Identity, ct);
 
         // --- Step 3: Pre-check the idempotency store (fast path, outside transaction). ---
@@ -112,11 +118,51 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         // Only looked up for a grant-shaped identity: the console sends an operator id, and a
         // query that can never match should not sit on the p95<300ms acceptance path (§10.3).
         var assertedLevel = ConfirmationMappings.MapVerificationLevel(confirmation.VerificationLevel);
-        var identity = confirmation.Identity;
-        var grantedLevel = !string.IsNullOrWhiteSpace(identity)
-                           && identity.StartsWith("grant_", StringComparison.Ordinal)
-            ? await grants.GetAssuranceLevelAsync(command.TenantId, identity, now, ct)
-            : null;
+
+        // The level is derived from the grant that ACTUALLY AUTHORIZED this request.
+        //
+        // The lookup used to consider only a `grant_`-prefixed `confirmation.identity`, so a
+        // caller who authorized with `X-Grant-Id` — the normal way an agent-lane mutation is
+        // authorized — fell straight through to the level they had ASSERTED in the body. The one
+        // request carrying real server-side proof of assurance was the one that ignored it, and
+        // `unverified`/`high_assurance` was whatever the client typed (Inv-11).
+        //
+        // `ResolveGrantId` is the same resolution `AuthorizeMutationAsync` performs, so the level
+        // recorded and the grant relied upon can never come from different places. The
+        // identity-prefix path is retained as the fast path for callers who put the grant there.
+        var effectiveGrantId = ResolveGrantId(command.GrantId, confirmation.Identity);
+
+        // The grant must belong to THIS request's customer before its level is believed.
+        //
+        // A mutation is already bound: `AuthorizeMutationAsync` checked the grant against the
+        // booking's customer, action and target, so a non-null `authorizingGrant` is proof.
+        //
+        // A create has no authorization gate — nothing existing is being changed — so nothing
+        // stopped a caller putting SOMEONE ELSE'S unexpired grant id in `confirmation.identity`
+        // and having its (higher) level recorded as though the platform had verified them to it.
+        // The canonical payload names the customer the booking is for, so when it does, that is
+        // the binding: a grant issued to a different customer says nothing about this one and its
+        // level is ignored. When the payload names nobody there is nothing to contradict, and the
+        // grant remains the best evidence available — which is the case the derivation was added
+        // for (an agent-lane customer who verified and then under-claims in the body must not be
+        // recorded as unverified and re-challenged later).
+        VerificationLevel? grantedLevel = null;
+        if (!string.IsNullOrWhiteSpace(effectiveGrantId))
+        {
+            grantedLevel = authorizingGrant?.GrantId == effectiveGrantId
+                // This grant was scope-checked against the booking's customer, action and target.
+                ? await grants.GetAssuranceLevelAsync(command.TenantId, effectiveGrantId, now, ct)
+                // Merely named. Bind it to the mutation's customer when there is one (the staff-role
+                // path lands here), otherwise to the customer the create's payload names.
+                : await GetLevelForNamedGrantAsync(
+                    command.TenantId,
+                    effectiveGrantId,
+                    authorizingGrant?.CustomerRef,
+                    revision.CanonicalPayload.Customer,
+                    now,
+                    ct);
+        }
+
         var verificationLevel = grantedLevel ?? assertedLevel;
         var snapshot = new OperationAcceptedResponse
         {
@@ -144,7 +190,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         };
 
         // --- Step 5: Creator election + atomic writes inside one UoW transaction. ---
-        bool won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, now, ct);
+        bool won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, authorizingGrant, now, ct);
 
         if (!won)
         {
@@ -165,7 +211,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                         $"Creator election lost for key '{request.IdempotencyKey}' but the winner record was not found after {MaxRetries + 1} attempts (retention race).");
 
                 // Key is free again — re-run the election inside a new transaction.
-                won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, now, ct);
+                won = await TryElectAndWriteAsync(record, command, revision, confirmation, operationType, request, H.Value, verificationLevel, authorizingGrant, now, ct);
 
                 if (won)
                     return new Accepted(snapshot);
@@ -221,7 +267,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     /// <see cref="IGrantAuthorizationService"/>; the role and unknown-target branches raise the
     /// same 403 so a caller cannot distinguish "wrong grant" from "no such booking".</para>
     /// </summary>
-    private async Task AuthorizeMutationAsync(
+    private async Task<AuthorizingGrant?> AuthorizeMutationAsync(
         SubmitConfirmedIntentCommand command,
         OperationTypeEnum operationType,
         string? targetBookingId,
@@ -238,7 +284,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         };
 
         if (action is null)
-            return;
+            return null;
 
         // Staff acting under an asserted role authorize a MODIFY directly. Operator suffices:
         // moving a booking is ordinary front-desk work, not an owner-only commercial decision
@@ -269,27 +315,41 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             // exists is not the grant check; both paths need it.
             if (booking is null)
             {
+                await grantAuth.WriteDenyAsync(
+                    command.TenantId, command.GrantId, customerRef: string.Empty, action.Value,
+                    targetBookingId, targetType: "booking", reason: "unknown_target_booking",
+                    actorId: command.ActorId, actorRole: command.ActorRole);
                 throw new VerificationRequiredException(
                     command.TenantId, customerRef: string.Empty, action.Value, targetBookingId);
             }
 
-            return;
+            // The staff-role path authorizes on the ASSERTED ROLE, so there is no grant to spend —
+            // but the booking's customer is still the binding for any grant the caller happens to
+            // name. Returning null here left `effectiveGrantId` non-empty with nothing to check it
+            // against, so a role-asserted caller could put any live grant id in `X-Grant-Id` and
+            // have its level recorded: the same hole this change closes for creates, on the path
+            // with the weakest authorization of the two.
+            return new AuthorizingGrant(
+                GrantId: null, booking.CustomerId, action.Value, booking.BookingId);
         }
 
         if (booking is null || string.IsNullOrWhiteSpace(booking.CustomerId))
         {
+            await grantAuth.WriteDenyAsync(
+                command.TenantId, command.GrantId, customerRef: string.Empty, action.Value,
+                targetBookingId, targetType: "booking",
+                reason: booking is null ? "unknown_target_booking" : "booking_has_no_customer",
+                actorId: command.ActorId, actorRole: command.ActorRole);
             throw new VerificationRequiredException(
                 command.TenantId, customerRef: string.Empty, action.Value, targetBookingId);
         }
 
-        var grantId = !string.IsNullOrWhiteSpace(command.GrantId)
-            ? command.GrantId
-            : confirmationIdentity is not null
-              && confirmationIdentity.StartsWith("grant_", StringComparison.Ordinal)
-                ? confirmationIdentity
-                : string.Empty;
+        var grantId = ResolveGrantId(command.GrantId, confirmationIdentity);
 
-        await grantAuth.RequireGrantAsync(
+        // Scope-checked now; SPENT at commit (see TryElectAndWriteAsync). Consuming here would
+        // refuse the caller's own idempotent retry, because the first attempt's success is what
+        // spent the grant — so the fence has to sit where the new operation is actually created.
+        await grantAuth.RequireGrantScopeAsync(
             command.TenantId,
             grantId,
             booking.CustomerId,
@@ -297,7 +357,81 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             booking.BookingId,
             targetType: "booking",
             ct: ct);
+
+        return new AuthorizingGrant(grantId, booking.CustomerId, action.Value, booking.BookingId);
     }
+
+    /// <summary>
+    /// The assurance level of a grant that the confirmation merely NAMES (no authorization gate
+    /// ran), accepted only when the grant belongs to the customer the payload names.
+    ///
+    /// <para>Returns <see langword="null"/> — meaning "fall back to what the caller asserted" —
+    /// when the grant is unknown/expired or was issued to a different customer.</para>
+    /// </summary>
+    private async Task<VerificationLevel?> GetLevelForNamedGrantAsync(
+        string tenantId,
+        string grantId,
+        string? mutationCustomerRef,
+        CustomerRef? customer,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        // A mutation's binding is the BOOKING's customer — authoritative, and already loaded.
+        // A create has no booking, so the payload's own customer is the best available.
+        var payloadCustomerRef = FirstNonBlank(
+            mutationCustomerRef, customer?.CustomerId, customer?.ContactRef, customer?.PhoneE164);
+
+        if (payloadCustomerRef is null)
+        {
+            // Nothing to bind against, so nothing to contradict the grant either.
+            return await grants.GetAssuranceLevelAsync(tenantId, grantId, now, ct);
+        }
+
+        // Scoped read: same tenant, same customer, unexpired. Action and target are deliberately
+        // NOT constrained — this asks "how well was this party verified", not "may they do this",
+        // and a create has no target to scope to.
+        return await grants.GetAssuranceLevelForCustomerAsync(
+            tenantId, grantId, payloadCustomerRef, now, ct);
+    }
+
+    private static string? FirstNonBlank(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The authorization a mutation passed, carried from the pre-check to the commit.
+    ///
+    /// <para><see cref="GrantId"/> is the grant to SPEND — non-null only on the grant path, since
+    /// the staff-role path authorizes on the asserted role and has nothing to consume.
+    /// <see cref="CustomerRef"/> is present either way: it is the binding that decides whether a
+    /// grant the caller merely NAMES may supply the recorded assurance level.</para>
+    /// </summary>
+    private sealed record AuthorizingGrant(
+        string? GrantId, string CustomerRef, VerificationActionEnum Action, string BookingId);
+
+    /// <summary>
+    /// The grant this request is authorized by: the explicit header first, then a
+    /// <c>grant_</c>-prefixed confirmation identity, else none.
+    ///
+    /// <para>ONE resolution, used by both the authorization check and the assurance-level lookup.
+    /// They were computed separately and disagreed: authorization honoured the header while the
+    /// level did not, so a header-authorized request was authorized by a real grant and then
+    /// recorded with a level the caller had simply asserted.</para>
+    /// </summary>
+    private static string ResolveGrantId(string? headerGrantId, string? confirmationIdentity)
+        => !string.IsNullOrWhiteSpace(headerGrantId)
+            ? headerGrantId
+            : confirmationIdentity is not null
+              && confirmationIdentity.StartsWith("grant_", StringComparison.Ordinal)
+                ? confirmationIdentity
+                : string.Empty;
 
     /// <summary>
     /// Runs the creator-election INSERT and, if won, the full atomic acceptance write set
@@ -312,6 +446,7 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         SubmitConfirmedIntentRequest request,
         string payloadHash,
         VerificationLevel verificationLevel,
+        AuthorizingGrant? authorizingGrant,
         DateTimeOffset now,
         CancellationToken ct)
     {
@@ -321,6 +456,32 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             won = await idempotencyRepo.ElectCreatorAsync(record, ct2);
             if (!won)
                 return; // concurrent loser — nothing else written in this transaction
+
+            // Spend the grant (§9.3 / Inv-11 single-use), gated on having WON the election.
+            //
+            // This door validated the grant and never consumed it, while every dedicated door does
+            // — so a modify/reschedule grant stayed reusable for its whole validity window, and a
+            // reschedule can ONLY be submitted here (the manage-booking door carries no field for
+            // the new time). The single-use property the other doors enforce was simply absent from
+            // the one path that needed it most.
+            //
+            // Gated on the election because that is exactly the line between "the same request
+            // again" and "a new one". A replay never reaches this code — it returns from the
+            // pre-check or the lost-election path — so a retry stays idempotent, while a second,
+            // DIFFERENT operation presenting the same spent grant lands here, affects zero rows,
+            // and is denied. Inside the acceptance transaction, so a rolled-back acceptance can
+            // never leave a grant spent on an operation that does not exist.
+            if (authorizingGrant?.GrantId is not null)
+            {
+                await grantAuth.ConsumeGrantAsync(
+                    command.TenantId,
+                    authorizingGrant.GrantId,
+                    authorizingGrant.CustomerRef,
+                    authorizingGrant.Action,
+                    authorizingGrant.BookingId,
+                    targetType: "booking",
+                    ct: ct2);
+            }
 
             // Idempotent intent insert: only write the BookingIntent row if it is new.
             // A revision can arrive for an existing intent (e.g. same intent, new operation).

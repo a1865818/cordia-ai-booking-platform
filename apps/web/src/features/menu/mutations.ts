@@ -22,10 +22,11 @@ export function useUploadMenuCatalog() {
   return useMutation({
     mutationFn: ({ sourceArtifactRef, versionLabel }: UploadMenuVariables) =>
       uploadMenuCatalog(sourceArtifactRef, versionLabel),
-    onSuccess: () => {
-      // A new catalog exists; the discovery list predates it. Without this the row shows only
-      // because the session tracked it locally, and disappears from the merged list the moment
-      // sessionStorage is cleared.
+    // `onSettled`, not `onSuccess`. A new catalog exists and the discovery list predates it —
+    // but the upload can COMMIT and still fail here, if the 202 is lost in transit. On that path
+    // `onSuccess` never runs, the list is never refreshed, and the catalog the server did create
+    // is invisible: the operator sees a failure, uploads again, and the venue ends up with two.
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.settings.catalogList() });
     },
   });

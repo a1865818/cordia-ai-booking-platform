@@ -51,6 +51,33 @@ public sealed class GrantAuthorizationService(
         return grant;
     }
 
+    public async Task<VerificationGrant> RequireGrantScopeAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        string targetType,
+        CancellationToken ct = default)
+    {
+        var grant = await grants.FindGrantByIdIgnoringConsumptionAsync(
+            tenantId,
+            grantId,
+            customerRef,
+            action,
+            targetBookingId,
+            DateTimeOffset.UtcNow,
+            ct);
+
+        if (grant is null)
+        {
+            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
+        }
+
+        return grant;
+    }
+
     public async Task ConsumeGrantAsync(
         string tenantId,
         string grantId,
@@ -75,13 +102,30 @@ public sealed class GrantAuthorizationService(
         }
     }
 
+    public Task WriteDenyAsync(
+        string tenantId,
+        string? grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        string targetType,
+        string reason,
+        string? actorId = null,
+        string? actorRole = null)
+        => WriteDenyAuditAsync(
+            tenantId, grantId ?? string.Empty, customerRef, action, targetBookingId, targetType,
+            reason, actorId, actorRole);
+
     private async Task WriteDenyAuditAsync(
         string tenantId,
         string grantId,
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
-        string targetType)
+        string targetType,
+        string? reason = null,
+        string? actorId = null,
+        string? actorRole = null)
     {
         // The deny audit is best-effort relative to the DENIAL ITSELF: both callers write it
         // immediately BEFORE throwing VerificationRequiredException (the 403). If the audit store
@@ -97,8 +141,11 @@ public sealed class GrantAuthorizationService(
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: tenantId,
-                    ActorType: "customer",
-                    ActorId: customerRef,
+                    // A staff-asserted caller is recorded as staff. Attributing an operator's
+                    // refused attempt to "customer" would put it under the guest's name in the one
+                    // record that answers who tried.
+                    ActorType: StaffRole.IsKnown(actorRole) ? actorRole! : "customer",
+                    ActorId: string.IsNullOrWhiteSpace(actorId) ? customerRef : actorId,
                     Action: "verification.grant_denied",
                     // The resource type the grant authorizes — "booking" by default, but a transcript
                     // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
@@ -117,6 +164,7 @@ public sealed class GrantAuthorizationService(
                     {
                         requested_action = action.ToString(),
                         grant_id = grantId,
+                        reason,
                     }),
                 // CancellationToken.None (B2): the denial record must survive both the caller's
                 // transaction rollback AND a client disconnect that cancels the request token.
