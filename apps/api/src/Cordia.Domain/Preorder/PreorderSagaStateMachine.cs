@@ -142,4 +142,42 @@ public static class PreorderSagaStateMachine
     /// </summary>
     public static bool IsInFlightForwardStep(PreorderSagaState state)
         => _inFlightForwardSteps.Contains(state);
+
+    /// <summary>
+    /// The saga's terminal states — <b>listed, deliberately, and NOT derived from
+    /// <see cref="AllowedTransitions"/> absence.</b>
+    ///
+    /// <para>Deriving is correct for <c>OperationStateMachine</c> and wrong here.
+    /// <see cref="PreorderSagaState.HoldingCapacity"/>, <see cref="PreorderSagaState.AuthorizingPayment"/>
+    /// and <see cref="PreorderSagaState.CompensatingHold"/> are retained enum members that were
+    /// unwired when booking moved to the 06 engine. They have no outgoing edges either — but they
+    /// are dead states, not endings, and calling them "terminal" would tell a reconciler that a saga
+    /// stuck in one had finished successfully.</para>
+    ///
+    /// <para><c>PreorderSagaStateMachineTests</c> pins the relationship the other way round: every
+    /// terminal listed here must genuinely have no outgoing edges. That keeps the honest half of the
+    /// derivation without inheriting its wrong half.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<PreorderSagaState> TerminalStates =
+        new HashSet<PreorderSagaState>
+        {
+            PreorderSagaState.Completed,
+            PreorderSagaState.FailedFinal,
+        }.ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> when the saga has genuinely ended.</summary>
+    public static bool IsTerminal(PreorderSagaState state)
+        => TerminalStates.Contains(state);
+
+    /// <summary>
+    /// Returns <c>true</c> when there is nothing left for a RECONCILER to do — the saga has either
+    /// ended or is parked awaiting a human.
+    ///
+    /// <para><see cref="PreorderSagaState.ManualReview"/> is <b>not</b> terminal (§21.4 gives it two
+    /// operator-driven edges out), but re-probing it cannot change the answer: no automatic step
+    /// will move it. The distinction matters — a reconciler must stop, while anything reporting a
+    /// final outcome must not treat it as an ending.</para>
+    /// </summary>
+    public static bool IsResolvedForReconcile(PreorderSagaState state)
+        => IsTerminal(state) || state == PreorderSagaState.ManualReview;
 }

@@ -62,8 +62,15 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
         string? targetBookingId,
         DateTimeOffset now,
         CancellationToken ct = default)
-        // Every scope predicate of FindValidGrantByIdAsync except `ConsumedAt == null`. The single-
-        // use fence for this caller is ConsumeAsync's conditional update, not this read.
+        // SCOPE only — tenant, customer, action, target. Deliberately not liveness: neither
+        // consumption nor expiry is checked here.
+        //
+        // Both are enforced atomically by ConsumeAsync, which is where a NEW operation is actually
+        // fenced. Re-checking them in this pre-check only breaks the caller's own honest RETRY:
+        // the first attempt spends the grant and starts its clock running out, so a redelivery
+        // after the TTL — of a request that was already accepted, whose response was simply lost —
+        // was answered with a 403 instead of the recorded operation. Expiry bounds how long a grant
+        // can AUTHORIZE something new, not how long the platform will admit that it already did.
         => db.VerificationGrants
             .AsNoTracking()
             .Where(g =>
@@ -71,8 +78,7 @@ public class VerificationGrantRepository(ApplicationDbContext db) : IVerificatio
                 && g.GrantId == grantId
                 && g.CustomerRef == customerRef
                 && g.AllowedAction == action
-                && (g.TargetBookingId == null || g.TargetBookingId == targetBookingId)
-                && now < g.ExpiresAt)
+                && (g.TargetBookingId == null || g.TargetBookingId == targetBookingId))
             .FirstOrDefaultAsync(ct);
 
     public async Task<VerificationLevel?> GetAssuranceLevelAsync(

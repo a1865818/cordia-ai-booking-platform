@@ -94,4 +94,41 @@ public interface ICapacityReservation
         string operationId,
         string workflowStep,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Hands a booking's seat from the operation that holds it to the operation amending it, on
+    /// the SAME slot, at a new size — the primitive an amendment that does not move the booking
+    /// needs, and the one spec 07 was missing.
+    ///
+    /// <para><b>Why release-and-re-reserve cannot express this.</b> The slot key excludes party
+    /// size, so a party-size change derives the slot the booking already occupies. Reserving the
+    /// full new size against it asks the slot to carry the booking twice, and a slot with no spare
+    /// room refuses — telling the guest there is no space for a table they are sitting at.
+    /// Reserving only the difference avoids that but leaves TWO finalized holds on the booking,
+    /// and a later cancellation releases only the newest booked operation's, leaking the rest
+    /// permanently. Neither half works alone; the transfer has to be one atomic step.</para>
+    ///
+    /// <para>Computes the booking's CURRENT contribution to the slot — the previous owner's
+    /// finalized hold plus anything already finalized under the new operation — and moves the slot
+    /// by exactly the difference to <paramref name="totalCapacity"/>. The previous hold is
+    /// released and the new operation ends up owning a single finalized hold of the full new size,
+    /// so every later path (cancel, compensation, another amendment) finds exactly one hold to act
+    /// on. Self-correcting: it lands on <paramref name="totalCapacity"/> whether the reserve step
+    /// took the delta or the full amount.</para>
+    ///
+    /// <para>Idempotent (Inv-5): once the previous hold is Released its contribution is zero, so a
+    /// redelivery computes a difference of zero and moves nothing.</para>
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> when the slot now reflects <paramref name="totalCapacity"/> for this booking;
+    /// <c>false</c> when the slot could not absorb an increase, leaving everything untouched.
+    /// </returns>
+    Task<bool> AbsorbSameSlotAsync(
+        string tenantId,
+        string previousOperationId,
+        string newOperationId,
+        string workflowStep,
+        string slotId,
+        int totalCapacity,
+        CancellationToken ct = default);
 }

@@ -28,6 +28,13 @@ export const queryKeys = {
     list: (filters: Record<string, string | number | boolean | undefined>) =>
       [...root(), "operations", "list", stableFilter(filters)] as const,
     status: (operationId: string) => [...root(), "operations", "status", operationId] as const,
+    /**
+     * The open manual-recovery queue. A separate key from `list` because it is a separate
+     * table with its own lifetime: a work item stays open until a person closes it, so it
+     * neither appears nor disappears when an operation's status changes.
+     */
+    workItems: (limit: number | undefined) =>
+      [...root(), "operations", "work-items", limit ?? "default"] as const,
   },
 
   conversations: {

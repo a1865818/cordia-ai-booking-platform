@@ -219,6 +219,49 @@ public class GuestContactErasureTests(AcceptanceApiFixture fixture)
     }
 
     /// <summary>
+    /// The retention clock only ever moves FORWARD.
+    ///
+    /// <para>`TouchAsync` pushes `LastUsedAt` out to a future booking's own start instant, so the
+    /// window means "90 days after we last had a reason to hold this" — where the reason includes a
+    /// booking that has not happened yet. A later touch with an EARLIER instant must not drag it
+    /// back: a guest with a booking six months out who books again today would otherwise have their
+    /// window silently reset to today, erasing the contact months before the booking it was being
+    /// held for, and the confirmation and every reminder would settle with no destination.</para>
+    /// </summary>
+    [Fact]
+    public async Task TheRetentionClockNeverMovesBackwards()
+    {
+        var tenantId = TestIds.New("gc-monotonic");
+        var contactRef = await MintRefAsync(tenantId, "+61400444555");
+        var farFuture = DateTimeOffset.UtcNow.AddDays(180);
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var repo = new GuestContactRepository(ctx);
+
+            // The booking is six months out, so the contact is needed until then.
+            await repo.TouchAsync(tenantId, contactRef, farFuture);
+
+            // The guest books again for NEXT WEEK. An unconditional assignment would pull the
+            // clock back to that nearer date.
+            await repo.TouchAsync(tenantId, contactRef, DateTimeOffset.UtcNow.AddDays(7));
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var stored = await ctx.GuestContacts
+                .AsNoTracking()
+                .IgnoreQueryFilters()
+                .SingleAsync(g => g.TenantId == tenantId && g.ContactRef == contactRef);
+
+            // Still pinned to the furthest-out reason to keep it.
+            Assert.True(
+                stored.LastUsedAt >= farFuture.AddSeconds(-1),
+                $"retention clock moved backwards to {stored.LastUsedAt:O}, expected >= {farFuture:O}");
+        }
+    }
+
+    /// <summary>
     /// A contact genuinely untouched for longer than the window is still erased — the clock moving
     /// on use must not become "never erase anything".
     /// </summary>
@@ -321,5 +364,141 @@ public class GuestContactErasureTests(AcceptanceApiFixture fixture)
         {
             Assert.Null(await new GuestContactRepository(ctx).GetByRefAsync(tenantA, refA));
         }
+    }
+
+    // ── Fingerprint backfill (20260807023952_BackfillGuestContactFingerprints) ───────────────────
+
+    /// <summary>
+    /// The backfill migration recomputes the phone/email lookup fingerprints in SQL. That is only
+    /// safe if the SQL expression produces byte-identical output to
+    /// <c>GuestContactRepository</c>'s C# hash — otherwise the repair would write fingerprints
+    /// that no lookup can ever match, which looks like success and fixes nothing.
+    ///
+    /// <para>This asserts the equivalence rather than trusting it: mint a row (C# writes the
+    /// fingerprints), capture them, null them out to reproduce a pre-migration row, prove discovery
+    /// is broken, run the migration's own expression, and require the ORIGINAL values back.</para>
+    ///
+    /// <para>Kept in lockstep with the SQL in
+    /// <c>20260807023952_BackfillGuestContactFingerprints.Up</c>. If either formula moves, this
+    /// fails.</para>
+    /// </summary>
+    [Fact]
+    public async Task TheFingerprintBackfillReproducesTheRepositoryHashExactly()
+    {
+        var tenantId = TestIds.New("gc-backfill");
+        const string phone = "+61400555444";
+        const string email = "backfill.guest@example.com";
+
+        var contactRef = await MintRefAsync(tenantId, phone, email);
+
+        string originalPhoneFp;
+        string originalEmailFp;
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var row = await ctx.GuestContacts.IgnoreQueryFilters()
+                .SingleAsync(g => g.TenantId == tenantId && g.ContactRef == contactRef);
+
+            originalPhoneFp = row.PhoneFingerprint!;
+            originalEmailFp = row.EmailFingerprint!;
+            Assert.False(string.IsNullOrWhiteSpace(originalPhoneFp));
+            Assert.False(string.IsNullOrWhiteSpace(originalEmailFp));
+        }
+
+        // Reproduce a row written before the fingerprint columns existed.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await ctx.Database.ExecuteSqlRawAsync(
+                "UPDATE guest_contacts SET phone_fingerprint = NULL, email_fingerprint = NULL " +
+                "WHERE tenant_id = {0} AND contact_ref = {1};",
+                tenantId, contactRef);
+        }
+
+        // Undiscoverable — NULL never matches, and for a contact_ref-shaped payload this lookup is
+        // the only discovery route there is.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var repo = new GuestContactRepository(ctx);
+            Assert.Empty(await repo.FindRefsByPhoneAsync(tenantId, phone));
+            Assert.Empty(await repo.FindRefsByEmailAsync(tenantId, email));
+        }
+
+        // The migration's expression, verbatim.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await ctx.Database.ExecuteSqlRawAsync(@"
+UPDATE guest_contacts
+SET    phone_fingerprint = encode(
+           sha256(convert_to(tenant_id || chr(31) || phone_e164, 'UTF8')), 'hex')
+WHERE  phone_fingerprint IS NULL
+  AND  phone_e164 IS NOT NULL
+  AND  btrim(phone_e164) <> '';");
+
+            await ctx.Database.ExecuteSqlRawAsync(@"
+UPDATE guest_contacts
+SET    email_fingerprint = encode(
+           sha256(convert_to(tenant_id || chr(31) || email, 'UTF8')), 'hex')
+WHERE  email_fingerprint IS NULL
+  AND  email IS NOT NULL
+  AND  btrim(email) <> '';");
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var row = await ctx.GuestContacts.IgnoreQueryFilters()
+                .SingleAsync(g => g.TenantId == tenantId && g.ContactRef == contactRef);
+
+            // The whole point: SQL and C# agree byte for byte.
+            Assert.Equal(originalPhoneFp, row.PhoneFingerprint);
+            Assert.Equal(originalEmailFp, row.EmailFingerprint);
+
+            // And the row is genuinely discoverable again.
+            var repo = new GuestContactRepository(ctx);
+            Assert.Contains(contactRef, await repo.FindRefsByPhoneAsync(tenantId, phone));
+            Assert.Contains(contactRef, await repo.FindRefsByEmailAsync(tenantId, email));
+        }
+    }
+
+    /// <summary>
+    /// Inv-13: the fingerprint folds the tenant id into the hashed material, so the same phone in
+    /// two tenants backfills to two different values. A repair that ignored tenancy would make one
+    /// tenant's guest resolvable from another's lookup.
+    /// </summary>
+    [Fact]
+    public async Task TheBackfillKeepsFingerprintsTenantScoped()
+    {
+        const string phone = "+61400333222";
+        var tenantA = TestIds.New("gc-bf-a");
+        var tenantB = TestIds.New("gc-bf-b");
+
+        var refA = await MintRefAsync(tenantA, phone);
+        var refB = await MintRefAsync(tenantB, phone);
+        Assert.NotEqual(refA, refB);
+
+        await using var ctx = fixture.CreateContext(tenantA);
+
+        await ctx.Database.ExecuteSqlRawAsync(
+            "UPDATE guest_contacts SET phone_fingerprint = NULL WHERE contact_ref IN ({0}, {1});",
+            refA, refB);
+
+        await ctx.Database.ExecuteSqlRawAsync(@"
+UPDATE guest_contacts
+SET    phone_fingerprint = encode(
+           sha256(convert_to(tenant_id || chr(31) || phone_e164, 'UTF8')), 'hex')
+WHERE  phone_fingerprint IS NULL
+  AND  phone_e164 IS NOT NULL
+  AND  btrim(phone_e164) <> '';");
+
+        var rows = await ctx.GuestContacts.IgnoreQueryFilters()
+            .Where(g => g.ContactRef == refA || g.ContactRef == refB)
+            .ToListAsync();
+
+        Assert.Equal(2, rows.Count);
+        Assert.NotEqual(rows[0].PhoneFingerprint, rows[1].PhoneFingerprint);
+
+        // Same number, but tenant A's lookup finds only tenant A's contact.
+        Assert.Equal(
+            [refA],
+            await new GuestContactRepository(ctx).FindRefsByPhoneAsync(tenantA, phone));
     }
 }

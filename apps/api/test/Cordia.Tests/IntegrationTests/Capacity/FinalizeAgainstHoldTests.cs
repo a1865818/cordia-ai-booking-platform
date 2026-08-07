@@ -384,7 +384,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         await using (var expireCtx = fixture.CreateContext(tenantId))
         {
             var holdRepoLocal = new CapacityHoldRepository(expireCtx);
-            var svc = new FirstPartyCapacityReservation(expireCtx, holdRepoLocal, new Cordia.Infrastructure.Observability.Metrics());
+            var svc = new FirstPartyCapacityReservation(expireCtx, holdRepoLocal, new CapacityLockOrder(new CapacityHoldRepository(expireCtx), new CapacitySlotRepository(expireCtx)), new Cordia.Infrastructure.Observability.Metrics());
 
             await using var tx = await expireCtx.Database.BeginTransactionAsync();
             await svc.ReleaseAsync(tenantId, holdId, ReleaseReason.Expired);

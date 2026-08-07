@@ -60,6 +60,24 @@ public sealed record OperationSummary(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// An open manual-recovery work item as the operator queue needs it (spec 06 §17.5, FM#11).
+///
+/// <para><paramref name="OperationStatus"/> is the operation's CURRENT status, resolved at read
+/// time rather than stored, and null when the linked operation is not visible to this tenant. A work
+/// item stays open until a person closes it, so the operation underneath can have moved — or
+/// finished — since it was raised, and an operator needs the live answer to know whether the item
+/// is still real work.</para>
+/// </summary>
+public sealed record OperationWorkItemSummary(
+    string WorkItemId,
+    string OperationId,
+    string Reason,
+    DateTimeOffset SlaDeadline,
+    string? Assignee,
+    DateTimeOffset CreatedAt,
+    OperationStatus? OperationStatus);
+
 /// <summary>A conversation session as the Conversations thread list needs it.</summary>
 public sealed record ConversationSessionSummary(
     string SessionId,

@@ -906,7 +906,7 @@ public sealed class FinalizeBookingCommandHandler(
     /// booking's <c>CustomerId</c> — the identity a verification grant is later matched against.
     /// One name at a time makes the precedence real instead of incidental.</para>
     /// </summary>
-    private static string? ReadFirstString(string json, params string[] propertyNames)
+    internal static string? ReadFirstString(string json, params string[] propertyNames)
     {
         try
         {

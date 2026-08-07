@@ -150,7 +150,7 @@ public class GetBookingDetailsTests
                 VerificationActionEnum.ReadSensitive,
                 BookingId,
                 It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VerificationRequiredException(
                 TenantId,
                 "cust_1",

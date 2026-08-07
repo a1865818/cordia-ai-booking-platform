@@ -27,6 +27,7 @@ public class ReserveCapacityNoCapacityTests
     private readonly Mock<IWorkflowStepRepository> _stepRepo = new();
     private readonly Mock<ICapacityReservation> _capacityReservation = new();
     private readonly Mock<ICapacitySlotRepository> _slotRepo = new();
+    private readonly Mock<ICapacityHoldRepository> _holdRepo = new();
     private readonly Mock<IBookingIntentRepository> _intentRepo = new();
     private readonly Mock<IScheduledJobRepository> _scheduledJobRepo = new();
     private readonly Mock<IOutboxRepository> _outboxRepo = new();
@@ -66,6 +67,7 @@ public class ReserveCapacityNoCapacityTests
             _stepRepo.Object,
             _capacityReservation.Object,
             _slotRepo.Object,
+            _holdRepo.Object,
             _intentRepo.Object,
             expiryScheduler,
             _outboxRepo.Object,

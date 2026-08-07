@@ -11,6 +11,7 @@ using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Observability;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 
@@ -40,7 +41,8 @@ public sealed class SubmitConfirmedIntentCommandHandler(
     IConversationSessionRepository sessions,
     IVerificationGrantRepository grants,
     IBookingRepository bookingRepo,
-    IGrantAuthorizationService grantAuth)
+    IGrantAuthorizationService grantAuth,
+    IOptions<AssertedActorOptions> assertedActor)
     : IRequestHandler<SubmitConfirmedIntentCommand, AcceptanceResult>
 {
     // §13.3: retain idempotency records for booking life + dispute/audit window.
@@ -81,9 +83,15 @@ public sealed class SubmitConfirmedIntentCommandHandler(
         // operation id, so an unauthorized caller must not reach it either.
         //
         // Returns the grant that authorized this request, when one did. Non-null means the grant
-        // was checked against the full spec 08 scope (tenant, customer, action, target, expiry) —
-        // which is what makes it safe to derive the recorded assurance level from it below, and
-        // what has to be SPENT if this request goes on to create a new operation.
+        // was checked against the spec 08 SCOPE — tenant, customer, action, target — which is what
+        // makes it safe to derive the recorded assurance level from it below.
+        //
+        // Scope, deliberately NOT liveness: `RequireGrantScopeAsync` checks neither consumption nor
+        // expiry, so this must not be read as "the grant is still live". Liveness is enforced
+        // atomically where it belongs — `ConsumeGrantAsync` at commit, which is what a request that
+        // goes on to create a NEW operation has to pass, and which denies a spent or expired grant
+        // by affecting zero rows. Keeping the pre-check scope-only is what lets an honest retry of
+        // an already-accepted request still find its operation instead of a 403.
         var authorizingGrant = await AuthorizeMutationAsync(
             command, operationType, revision.CanonicalPayload.TargetBookingId, confirmation.Identity, ct);
 
@@ -303,7 +311,17 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             ? null
             : await bookingRepo.GetByIdAsync(command.TenantId, targetBookingId, ct);
 
+        // ...and only where an asserted role is allowed to mean anything.
+        //
+        // `StaffRole.Satisfies` validates the VOCABULARY, not the caller: `X-Actor-Role` is a
+        // string the client chose. With the branch unconditionally live, anyone who knew a booking
+        // id could send `X-Actor-Role: operator` and reschedule another customer's booking with no
+        // grant — the requirement routed around rather than enforced, on the one door a reschedule
+        // must use. Gated exactly like the `X-Tenant-Id` shim it depends on (see
+        // <see cref="AssertedActorOptions"/>): on in Development, off elsewhere unless a deployment
+        // opts in, at which point a mutation needs a real grant.
         if (action.Value == VerificationActionEnum.Modify
+            && assertedActor.Value.AllowAssertedStaffRole
             && !string.IsNullOrWhiteSpace(command.ActorId)
             && StaffRole.Satisfies(command.ActorRole, StaffRole.Operator))
         {
@@ -356,6 +374,11 @@ public sealed class SubmitConfirmedIntentCommandHandler(
             action.Value,
             booking.BookingId,
             targetType: "booking",
+            // The CALLER, so a refusal names who attempted it. Without this the deny row fell back
+            // to the booking's own customer — recording the victim of an enumeration sweep as the
+            // party that tried, and making repeated probes by one actor impossible to correlate.
+            actorId: command.ActorId,
+            actorRole: command.ActorRole,
             ct: ct);
 
         return new AuthorizingGrant(grantId, booking.CustomerId, action.Value, booking.BookingId);
@@ -480,6 +503,8 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                     authorizingGrant.Action,
                     authorizingGrant.BookingId,
                     targetType: "booking",
+                    actorId: command.ActorId,
+                    actorRole: command.ActorRole,
                     ct: ct2);
             }
 

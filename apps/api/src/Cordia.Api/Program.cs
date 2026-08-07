@@ -40,6 +40,16 @@ builder.Host.UseSerilog((context, loggerConfig) =>
 
 // --- Layers ---
 builder.Services.AddApplication();
+
+// An asserted `X-Actor-Role` may authorize a reschedule only where asserted identity is already
+// the accepted posture — the same places the `X-Tenant-Id` shim is enabled, and for the same
+// reason: neither is proven, and outside Development both are unauthenticated access to another
+// party's data (Inv-11/Inv-13). Default ON in Development, OFF elsewhere; an explicit
+// `Authorization:AllowAssertedStaffRole` overrides. Superseded by signed actor context (spec 08/15).
+builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
+    o.AllowAssertedStaffRole = builder.Configuration.GetValue(
+        "Authorization:AllowAssertedStaffRole",
+        builder.Environment.IsDevelopment()));
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // --- Web ---

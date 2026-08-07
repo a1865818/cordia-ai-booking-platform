@@ -2,6 +2,7 @@
 using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Bookings;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using Microsoft.AspNetCore.Mvc;
@@ -43,7 +44,8 @@ namespace Cordia.Api.Controllers;
 public class GuestContactsController(
     IGuestContactRepository contacts,
     ITenantContext tenant,
-    IAuditWriter audit) : ControllerBase
+    IAuditWriter audit,
+    IUnitOfWork uow) : ControllerBase
 {
     /// <summary>Returns the handle to put on the booking's canonical payload.</summary>
     [HttpPost]
@@ -73,46 +75,64 @@ public class GuestContactsController(
         // outcome the paragraph above forbids. A loud 400 is the honest answer.
         var normalisedPhone = PhoneMatching.Normalise(body.PhoneE164);
 
-        if (normalisedPhone is null && string.IsNullOrWhiteSpace(body.Email))
+        // The email is held to the same standard as the phone: is it a DESTINATION?
+        //
+        // The blank check alone admitted `"."`, `"a"`, or any other non-whitespace string, which
+        // then satisfied the "at least one usable contact" gate on its own and minted a ref whose
+        // only channel can never be delivered to — the same dead handle the phone normalisation
+        // exists to refuse, arrived at through the other field.
+        var usableEmail = ContactAddress.NormaliseEmail(body.Email);
+
+        if (normalisedPhone is null && usableEmail is null)
         {
             return Problem(
                 statusCode: 400,
                 title: "No usable contact supplied",
                 detail: "At least one of phone_e164 (in international form, e.g. +61400111222) or "
-                    + "email is required — a name is not a destination, and a number the platform "
-                    + "cannot normalise cannot be dialled.");
+                    + "email (a deliverable address, e.g. guest@example.com) is required — a name "
+                    + "is not a destination, and a number the platform cannot normalise cannot be "
+                    + "dialled.");
         }
 
-        var contact = await contacts.GetOrCreateAsync(
-            tenant.TenantId, body.PhoneE164, body.Email, body.DisplayName, ct);
+        GuestContact contact = null!;
 
-        // The ref, and WHICH channels were supplied — never the values. The point of the row is
-        // that the contact is erasable; copying it into audit_events, which is never pruned, would
-        // undo that in the one place retention cannot reach.
-        await audit.WriteAsync(
-            new AuditRecord(
-                TenantId: tenant.TenantId,
-                ActorType: StaffRole.IsKnown(actorRole) ? actorRole! : "operator",
-                ActorId: string.IsNullOrWhiteSpace(actor) ? "unknown" : actor,
-                Action: "guest_contact.minted",
-                TargetType: "guest_contact",
-                TargetId: contact.ContactRef,
-                Decision: "allow",
-                DataClasses: ["contact"],
-                ReasonCode: string.IsNullOrWhiteSpace(reasonCode) ? null : reasonCode,
-                Extra: new
-                {
-                    // The NORMALISED phone, matching what `GetOrCreateAsync` actually stored.
-                    // Keyed on the raw string this claimed a phone destination existed for input
-                    // that normalises to nothing — punctuation only, or past the length ceiling —
-                    // so the one immutable record of the write asserted a destination the contact
-                    // row does not hold. Inv-16 forbids exactly that.
-                    has_phone = normalisedPhone is not null,
-                    has_email = !string.IsNullOrWhiteSpace(body.Email),
-                    has_display_name = !string.IsNullOrWhiteSpace(body.DisplayName),
-                }),
-            // Durable even if the client disconnects: the write it records already happened.
-            CancellationToken.None);
+        // ONE transaction for the PII write and the record of it.
+        //
+        // `GetOrCreateAsync` saves immediately, so with the audit as a separate write an audit
+        // failure left guest contact stored with nothing recording that it had been — in the one
+        // table the platform can erase from, whose whole justification is that every write to it
+        // is accounted for. The caller meanwhile got an error saying nothing happened.
+        await uow.ExecuteInTransactionAsync(async ct2 =>
+        {
+            contact = await contacts.GetOrCreateAsync(
+                tenant.TenantId, body.PhoneE164, body.Email, body.DisplayName, ct2);
+
+            // The ref, and WHICH channels were supplied — never the values. The point of the row is
+            // that the contact is erasable; copying it into audit_events, which is never pruned,
+            // would undo that in the one place retention cannot reach.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: tenant.TenantId,
+                    ActorType: StaffRole.IsKnown(actorRole) ? actorRole! : "operator",
+                    ActorId: string.IsNullOrWhiteSpace(actor) ? "unknown" : actor,
+                    Action: "guest_contact.minted",
+                    TargetType: "guest_contact",
+                    TargetId: contact.ContactRef,
+                    Decision: "allow",
+                    DataClasses: ["contact"],
+                    ReasonCode: string.IsNullOrWhiteSpace(reasonCode) ? null : reasonCode,
+                    Extra: new
+                    {
+                        // The NORMALISED values, matching what `GetOrCreateAsync` actually stored.
+                        // Keyed on the raw strings this claimed destinations existed for input that
+                        // normalises to nothing, so the one immutable record of the write asserted
+                        // destinations the contact row does not hold. Inv-16 forbids exactly that.
+                        has_phone = normalisedPhone is not null,
+                        has_email = usableEmail is not null,
+                        has_display_name = !string.IsNullOrWhiteSpace(body.DisplayName),
+                    }),
+                ct2);
+        }, ct);
 
         return Ok(new GuestContactResponse(contact.ContactRef));
     }

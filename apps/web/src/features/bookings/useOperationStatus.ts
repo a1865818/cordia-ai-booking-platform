@@ -27,9 +27,23 @@ export function isTerminal(status: OperationStatusView | undefined): boolean {
   return status?.terminal === true;
 }
 
-/** True only when the server itself reports the booking as booked. */
+/**
+ * True only when the server itself reports the booking as booked **and settled**.
+ *
+ * Both halves, because the header contract above says "terminal with a booked status" and this
+ * function is what enforces it — it previously checked `status` alone, so the code and its own
+ * stated rule disagreed. `CreateBookingDrawer` renders "Booking confirmed" and appends a schedule
+ * row off this single value, so a `booked` that is not yet terminal would announce a confirmed
+ * booking the platform has not finished making (Inv-16).
+ *
+ * The live API keeps the two in lockstep — `GetOperationStatusQueryHandler` always includes
+ * `Booked` in its terminal set — so this is not a reachable server bug today. It is the guard for
+ * everything that is not the live API: a react-query cache entry from an older response shape, a
+ * mock, a test double, or a future normalized status that is booked-but-pending. The invariant is
+ * cheap to enforce here and impossible to enforce at the call site.
+ */
 export function isBooked(status: OperationStatusView | undefined): boolean {
-  return status?.status === "booked";
+  return status?.status === "booked" && status?.terminal === true;
 }
 
 export interface OperationPollState {

@@ -66,6 +66,39 @@ public static class CatalogStateMachine
             // catalog replacement takes.
         }.ToFrozenDictionary();
 
+    /// <summary>
+    /// Terminal catalog states — <b>derived</b> from <see cref="AllowedTransitions"/>, so the set
+    /// cannot drift from the edge map that defines it.
+    /// </summary>
+    public static readonly IReadOnlySet<CatalogStatus> TerminalStates =
+        Enum.GetValues<CatalogStatus>()
+            .Where(s => !AllowedTransitions.ContainsKey(s))
+            .ToFrozenSet();
+
+    /// <summary>
+    /// States where work is running in a process that may never report back — an antivirus scan or
+    /// an extraction job. The ingestion monitor sweeps exactly these for staleness.
+    ///
+    /// <para><b>Listed, not derived.</b> "Has an outgoing edge" is not the question: <c>Uploaded</c>,
+    /// <c>DraftReady</c>, <c>InReview</c> and <c>Approved</c> are all non-terminal too, and every one
+    /// of them is waiting on a PERSON, not on a job. Sweeping those for staleness would time out an
+    /// operator who has simply not got to the review yet.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<CatalogStatus> InProgressStates =
+        new HashSet<CatalogStatus>
+        {
+            CatalogStatus.Scanning,
+            CatalogStatus.Extracting,
+        }.ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> if <paramref name="status"/> is terminal (no outgoing edges).</summary>
+    public static bool IsTerminal(CatalogStatus status)
+        => TerminalStates.Contains(status);
+
+    /// <summary>Returns <c>true</c> when an external job is running for this catalog.</summary>
+    public static bool IsInProgress(CatalogStatus status)
+        => InProgressStates.Contains(status);
+
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(CatalogStatus from, CatalogStatus to)
         => AllowedTransitions.TryGetValue(from, out var targets) && targets.Contains(to);

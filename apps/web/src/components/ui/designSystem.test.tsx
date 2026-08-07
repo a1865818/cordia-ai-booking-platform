@@ -8,11 +8,11 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReasonCodeDialog } from "./ReasonCodeDialog";
 import { CorrelationIdChip } from "./CorrelationIdChip";
 import { Timeline } from "./Timeline";
-import { MaskedField, maskValue } from "./MaskedField";
+import { MaskedField, maskValue, REVEAL_TTL_MS } from "./MaskedField";
 import { ActionBar } from "./ActionBar";
 import { DiffView, summarise } from "./DiffView";
 import { Stepper } from "./Stepper";
@@ -256,6 +256,49 @@ describe("MaskedField", () => {
     // Keeping the last 4 of a 5-char value would expose it.
     expect(maskValue("12345")).toBe("•••••");
     expect(maskValue("+61400111222")).toBe("••••••••1222");
+  });
+
+  it("does not leak the whole value when tail is 0", () => {
+    // `slice(-0)` returns the ENTIRE string, so an unclamped tail of 0 unmasked everything.
+    expect(maskValue("+61400111222", 0)).toBe("••••••••••••");
+  });
+
+  // The auto-remask is a TIMER, deliberately, not a blur handler — blur never fires on Safari for
+  // a <button> click (indefinite exposure) and fires too eagerly on Chrome/Firefox (re-masks
+  // before a copy gesture completes). That decision was documented in the component but pinned by
+  // nothing, so the behaviour it rests on could have been refactored away silently.
+  it("re-masks on its own after the reveal TTL, with no interaction", () => {
+    vi.useFakeTimers();
+    try {
+      render(<MaskedField label="Phone" value="+61400111222" revealable />);
+      fireEvent.click(screen.getByRole("button", { name: /reveal/i }));
+      expect(screen.getByText("+61400111222")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(REVEAL_TTL_MS + 1);
+      });
+
+      expect(screen.queryByText("+61400111222")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /reveal/i })).toHaveAttribute("aria-pressed", "false");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the pending remask timer on unmount rather than firing into a dead component", () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<MaskedField label="Phone" value="+61400111222" revealable />);
+      fireEvent.click(screen.getByRole("button", { name: /reveal/i }));
+      unmount();
+
+      // No state update on an unmounted component — this throws/warns if the cleanup is dropped.
+      act(() => {
+        vi.advanceTimersByTime(REVEAL_TTL_MS + 1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

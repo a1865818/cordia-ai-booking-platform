@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.BookingFulfillment.Cancellation;
 using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
+using Cordia.Application.Handlers.Console.ListOpenWorkItems;
 using Cordia.Application.Handlers.Console.ListOperations;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
@@ -94,6 +95,42 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
                 o.CorrelationId,
                 o.CreatedAt,
                 o.UpdatedAt)).ToList()));
+    }
+
+    /// <summary>
+    /// Lists the OPEN manual-recovery work items for this tenant, most overdue first.
+    ///
+    /// <para>The queue an operator works through. Every path that gives up on an operation — an
+    /// ambiguous provider cancel, an exhausted retry budget, a poison message, an SLA breach, a
+    /// parked pre-order whose booking already committed — durably opens a work item carrying a
+    /// reason and an SLA deadline. Until this endpoint there was no way to read them: the only
+    /// readers were two cross-tenant aggregates feeding metrics gauges, so the manual-review depth
+    /// could be seen rising without anyone being able to see what was in it.</para>
+    ///
+    /// <para>Ordered by SLA deadline rather than creation time, because different reasons carry
+    /// different deadlines and "most overdue" is the order the work should be done in.</para>
+    /// </summary>
+    [HttpGet("work-items")]
+    [ProducesResponseType(typeof(ListWorkItemsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListWorkItemsResponse>> ListWorkItems(
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var items = await mediator.Send(
+            new ListOpenWorkItemsQuery(tenant.TenantId, limit ?? DefaultListLimit), ct);
+
+        return Ok(new ListWorkItemsResponse(
+            items.Select(w => new OperationWorkItemView(
+                w.WorkItemId,
+                w.OperationId,
+                w.Reason,
+                w.SlaDeadline,
+                w.Assignee,
+                w.CreatedAt,
+                w.OperationStatus is null ? null : OperationStatusNames.ToWireName(w.OperationStatus.Value))).ToList()));
     }
 
     /// <summary>Returns the current status of the given booking operation, or 404 if not found.</summary>
@@ -355,3 +392,23 @@ public sealed record OperationSummaryView(
 public sealed record ListOperationsResponse(
     [property: System.Text.Json.Serialization.JsonPropertyName("operations")]
     IReadOnlyList<OperationSummaryView> Operations);
+
+/// <summary>
+/// An open manual-recovery work item (spec 06 §17.5, FM#11).
+///
+/// <c>operation_status</c> is the operation's status RIGHT NOW, not when the item was raised — a
+/// work item stays open until a person closes it, so the operation may have moved or finished since.
+/// It is null when the linked operation is not visible to this tenant.
+/// </summary>
+public sealed record OperationWorkItemView(
+    [property: System.Text.Json.Serialization.JsonPropertyName("work_item_id")] string WorkItemId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_id")] string OperationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("reason")] string Reason,
+    [property: System.Text.Json.Serialization.JsonPropertyName("sla_deadline")] System.DateTimeOffset SlaDeadline,
+    [property: System.Text.Json.Serialization.JsonPropertyName("assignee")] string? Assignee,
+    [property: System.Text.Json.Serialization.JsonPropertyName("created_at")] System.DateTimeOffset CreatedAt,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_status")] string? OperationStatus);
+
+public sealed record ListWorkItemsResponse(
+    [property: System.Text.Json.Serialization.JsonPropertyName("work_items")]
+    IReadOnlyList<OperationWorkItemView> WorkItems);

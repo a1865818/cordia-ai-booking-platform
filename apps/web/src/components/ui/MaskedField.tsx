@@ -7,7 +7,7 @@ import { Icon } from "./Icon";
  * Long enough to read a phone number aloud or copy it; short enough that walking away does not
  * leave PII up indefinitely.
  */
-const REVEAL_TTL_MS = 20_000;
+export const REVEAL_TTL_MS = 20_000;
 
 interface MaskedFieldProps {
   label: string;

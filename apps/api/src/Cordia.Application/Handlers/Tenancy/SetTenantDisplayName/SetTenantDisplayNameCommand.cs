@@ -68,7 +68,8 @@ public sealed class SetTenantDisplayNameValidator : AbstractValidator<SetTenantD
 
 public sealed class SetTenantDisplayNameCommandHandler(
     ITenantDisplayNameRepository repository,
-    IAuditWriter audit)
+    IAuditWriter audit,
+    IUnitOfWork uow)
     : IRequestHandler<SetTenantDisplayNameCommand, TenantDisplayNameResult>
 {
     public async Task<TenantDisplayNameResult> Handle(
@@ -76,27 +77,34 @@ public sealed class SetTenantDisplayNameCommandHandler(
     {
         var trimmed = request.DisplayName.Trim();
 
-        await repository.UpsertAsync(
-            new TenantDisplayName { TenantId = request.TenantId, DisplayName = trimmed },
-            ct);
+        // ONE transaction for the change and its ALLOW record.
+        //
+        // `UpsertAsync` saves immediately, so with the audit as a separate write an audit failure
+        // left the venue name changed and the change unrecorded — while the caller was handed an
+        // error saying it had not happened. That is the exact hole the ALLOW record exists to
+        // close, reopened by the ordering: the trail could prove who was refused and not who
+        // succeeded, for a rename a guest sees.
+        await uow.ExecuteInTransactionAsync(async ct2 =>
+        {
+            await repository.UpsertAsync(
+                new TenantDisplayName { TenantId = request.TenantId, DisplayName = trimmed },
+                ct2);
 
-        // OperatorActionBehavior writes only the DENY record; the ALLOW is the handler's job.
-        // Without it this owner-only action left the audit trail able to prove who was REFUSED and
-        // unable to prove who succeeded — which is the half that matters when reconstructing what
-        // actually changed a venue's configuration.
-        await audit.WriteAsync(
-            new AuditRecord(
-                TenantId: request.TenantId,
-                ActorType: StaffRole.IsKnown(request.ActorRole) ? request.ActorRole : "owner",
-                ActorId: string.IsNullOrWhiteSpace(request.Actor) ? "unknown" : request.Actor,
-                Action: "tenant.display_name_set",
-                TargetType: "tenant",
-                TargetId: request.TenantId,
-                Decision: "allow",
-                DataClasses: ["tenant_profile"],
-                ReasonCode: string.IsNullOrWhiteSpace(request.ReasonCode) ? null : request.ReasonCode,
-                CorrelationId: request.TenantId),
-            CancellationToken.None);
+            // OperatorActionBehavior writes only the DENY record; the ALLOW is the handler's job.
+            await audit.WriteAsync(
+                new AuditRecord(
+                    TenantId: request.TenantId,
+                    ActorType: StaffRole.IsKnown(request.ActorRole) ? request.ActorRole : "owner",
+                    ActorId: string.IsNullOrWhiteSpace(request.Actor) ? "unknown" : request.Actor,
+                    Action: "tenant.display_name_set",
+                    TargetType: "tenant",
+                    TargetId: request.TenantId,
+                    Decision: "allow",
+                    DataClasses: ["tenant_profile"],
+                    ReasonCode: string.IsNullOrWhiteSpace(request.ReasonCode) ? null : request.ReasonCode,
+                    CorrelationId: request.TenantId),
+                ct2);
+        }, ct);
 
         return new TenantDisplayNameResult(request.TenantId, trimmed);
     }

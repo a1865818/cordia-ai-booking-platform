@@ -1044,6 +1044,19 @@
         },
         "type": "object"
       },
+      "ListWorkItemsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "work_items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationWorkItemView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "ManageableBooking": {
         "additionalProperties": false,
         "properties": {
@@ -1292,6 +1305,40 @@
           "reschedule"
         ],
         "type": "string"
+      },
+      "OperationWorkItemView": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sla_deadline": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_item_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "Outcome": {
         "enum": [
@@ -3070,6 +3117,65 @@
               }
             },
             "description": "Conflict"
+          }
+        },
+        "tags": [
+          "BookingOperations"
+        ]
+      }
+    },
+    "/api/booking-operations/work-items": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
           }
         },
         "tags": [

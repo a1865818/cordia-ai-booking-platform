@@ -6,7 +6,7 @@
  */
 
 import type { QueueItem } from "../../data/console";
-import type { OperationSummary } from "./api";
+import type { OperationSummary, WorkItemSummary } from "./api";
 
 /** Plain-language label for each of the 16 ratified `operation_status` values (D1). */
 export const OPERATION_STATUS_COPY: Record<string, string> = {
@@ -98,8 +98,122 @@ export function relativeAge(iso: string, now: number = Date.now()): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function toQueueItems(operations: readonly OperationSummary[] | null | undefined): QueueItem[] {
-  return (operations ?? []).map(toQueueItem);
+/**
+ * Queue rows, each carrying its open work item when the platform has raised one.
+ *
+ * The two lists are joined here rather than merged server-side because they answer different
+ * questions and have different lifetimes — an operation's status moves on its own, a work item
+ * does not close until a person closes it.
+ */
+export function toQueueItems(
+  operations: readonly OperationSummary[] | null | undefined,
+  workItems?: Record<string, WorkItemInfo>
+): QueueItem[] {
+  return (operations ?? []).map((operation) => {
+    const row = toQueueItem(operation);
+    const workItem = workItems?.[operation.operation_id ?? ""];
+    return workItem ? { ...row, workItem } : row;
+  });
+}
+
+/**
+ * What the manual-recovery queue knows about one operation, keyed by operation id.
+ *
+ * The operations list answers "what state is this in"; the work-item list answers "why was a
+ * person called, and by when". They are separate endpoints because they are separate tables —
+ * a work item outlives the status that raised it, and stays open until someone closes it.
+ */
+export interface WorkItemInfo {
+  reason: string;
+  slaDeadline: string;
+  overdue: boolean;
+  assignee: string | null;
+}
+
+/**
+ * Plain-language wording for the reasons the platform raises work items with.
+ *
+ * The raw reason is a machine tag (`compensation_ambiguous`, `poison:invalid_state_transition`,
+ * `preorder_manual_review:{saga}`) and the board must not show those to a venue owner, for the
+ * same reason it does not show `compensation_required`.
+ */
+const WORK_ITEM_REASON_COPY: Record<string, string> = {
+  compensation_ambiguous: "The venue's cancellation wasn't confirmed",
+  cancel_reconcile_requires_review: "Cancellation needs checking with the venue",
+  modify_reconcile_requires_review: "Change needs checking with the venue",
+  cancel_raced_reconciled_booking: "Cancelled and confirmed at the same time",
+  reconcile_no_effect_budget_exhausted: "We couldn't confirm what the venue did",
+  sla_escalation: "Taking longer than expected",
+};
+
+export function workItemReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return "Needs your review";
+
+  // Reasons carry a suffix when they name the thing that raised them
+  // (`poison:invalid_state_transition`, `preorder_manual_review:{sagaId}`).
+  const [head] = reason.split(":");
+  if (head === "poison") return "A message the platform couldn't process";
+  if (head === "preorder_manual_review") return "Pre-order needs you and the guest to agree";
+  if (head === "waitlist_accept_reconcile_abandoned") return "Waitlist booking outcome unknown";
+
+  return WORK_ITEM_REASON_COPY[reason] ?? reason.split("_").join(" ");
+}
+
+/**
+ * A work item's SLA deadline in words, relative to now — "in 20m", "3h ago".
+ *
+ * Signed on purpose: an operator needs to know whether they have time or are already late, and
+ * `relativeAge` only ever looks backwards. An unreadable date returns "" so the caller renders
+ * nothing rather than "Invalid Date".
+ */
+export function relativeDeadline(iso: string, now: number = Date.now()): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+
+  const deltaMinutes = Math.round((then - now) / 60_000);
+  const past = deltaMinutes < 0;
+  const minutes = Math.abs(deltaMinutes);
+
+  const span =
+    minutes < 1 ? "now"
+      : minutes < 60 ? `${minutes}m`
+        : minutes < 1440 ? `${Math.floor(minutes / 60)}h`
+          : `${Math.floor(minutes / 1440)}d`;
+
+  if (span === "now") return "now";
+  return past ? `${span} ago` : `in ${span}`;
+}
+
+/**
+ * Indexes open work items by operation id so a queue row can show why it needs a person.
+ *
+ * At most one work item is open per operation (`uq_open_work_item_per_operation`), so a map
+ * is the honest shape rather than a lossy pick from a list.
+ */
+export function toWorkItemIndex(
+  workItems: readonly WorkItemSummary[] | null | undefined,
+  now: number = Date.now()
+): Record<string, WorkItemInfo> {
+  const index: Record<string, WorkItemInfo> = {};
+
+  for (const item of workItems ?? []) {
+    const operationId = item.operation_id;
+    if (!operationId) continue;
+
+    const deadline = item.sla_deadline ?? "";
+    const parsed = deadline ? new Date(deadline).getTime() : Number.NaN;
+
+    index[operationId] = {
+      reason: workItemReasonLabel(item.reason),
+      slaDeadline: deadline,
+      // An unparseable deadline is NOT overdue. Guessing "late" from a value we could not
+      // read would put a red flag on a row for no reason a person could check.
+      overdue: !Number.isNaN(parsed) && parsed < now,
+      assignee: item.assignee ?? null,
+    };
+  }
+
+  return index;
 }
 
 /**

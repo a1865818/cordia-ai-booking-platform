@@ -6,7 +6,7 @@ import {
 } from "../data/console";
 
 import {
-  useAvailability, useBookingSchedule, useCatalogItems, useCustomers, useOperations, useSessions,
+  useAvailability, useBookingSchedule, useCatalogItems, useCustomers, useOpenWorkItems, useOperations, useSessions,
   useTranscript, useWaitlistEnrollments,
 } from "../features/hooks";
 import { toAvailableSlots } from "../features/bookings/availability";
@@ -17,7 +17,7 @@ import { updateForKey, valueForKey, type ScopedTo } from "../features/bookings/s
 import { buildWeek, dayLabel, shiftWeekWindow } from "../features/bookings/week";
 import { buildSubmission, customerFromRef, toIsoInstant } from "../features/bookings/buildSubmission";
 import { getOrCreateAttempt, resetAttempt } from "../features/bookings/identity";
-import { toQueueItems } from "../features/operations/adapters";
+import { toQueueItems, toWorkItemIndex } from "../features/operations/adapters";
 import { statusFromResponse } from "../features/operations/api";
 import {
   operationActionFailureMessage, useRequestOperationCancellation, useResolveOperation,
@@ -283,6 +283,14 @@ export function ConsolePage() {
     [availabilityQuery.data]
   );
   const operationsQuery = useOperations({ needsAttention: true, limit: 100 });
+  /**
+   * The open manual-recovery queue, joined onto the rows below.
+   *
+   * A second request rather than a wider projection on the first: work items live in their own
+   * table with their own lifetime (open until a person closes it, not until the status moves),
+   * and the board is the only surface that needs both.
+   */
+  const workItemsQuery = useOpenWorkItems(100);
   const sessionsQuery = useSessions(50);
   const waitlistQuery = useWaitlistEnrollments(true, 100);
   const customersQuery = useCustomers("", 50);
@@ -315,7 +323,14 @@ export function ConsolePage() {
     setScheduleWindow(weekWindow());
     setSelDay((new Date().getDay() + 6) % 7);
   }
-  const liveQueue = useMemo(() => toQueueItems(operationsQuery.data?.operations), [operationsQuery.data]);
+  const workItemIndex = useMemo(
+    () => toWorkItemIndex(workItemsQuery.data?.work_items),
+    [workItemsQuery.data]
+  );
+  const liveQueue = useMemo(
+    () => toQueueItems(operationsQuery.data?.operations, workItemIndex),
+    [operationsQuery.data, workItemIndex]
+  );
   const liveThreads = useMemo(() => toThreads(sessionsQuery.data?.sessions), [sessionsQuery.data]);
   const liveWaitlist = useMemo(() => toWaitlistItems(waitlistQuery.data?.enrollments), [waitlistQuery.data]);
   const liveCustomers = useMemo(() => toCustomers(customersQuery.data?.customers), [customersQuery.data]);

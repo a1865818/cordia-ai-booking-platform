@@ -116,13 +116,17 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
         ApplicationDbContext ctx,
         string tenantId,
         string bookingId,
-        string customerRef)
+        string customerRef,
+        string? bookingReference = null)
     {
         ctx.Bookings.Add(new Booking
         {
             TenantId = tenantId,
             BookingId = bookingId,
-            BookingReference = bookingId,
+            // Defaults to the booking id so existing callers are unchanged; a test that needs to
+            // prove the reference came from the BOOKING ROW rather than the payload passes a
+            // distinct value.
+            BookingReference = bookingReference ?? bookingId,
             CustomerId = customerRef,
             LifecycleStatus = BookingLifecycleStatus.Confirmed,
             Version = 0,
@@ -329,6 +333,61 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
 
         var row = Assert.Single(root.GetProperty("bookings").EnumerateArray());
         Assert.Equal("bk-done", row.GetProperty("booking_id").GetString());
+    }
+
+    /// <summary>
+    /// The reference is written at finalize and lives ONLY on the booking row: it is not a field of
+    /// <c>BookingRequest</c> (which is <c>additionalProperties: false</c>), so it can never appear
+    /// in a current-schema canonical payload. Reading it from the payload alone therefore returned
+    /// null for every normal booking, and the console rendered those rows as literal "Guest"
+    /// (apps/web `adapters.ts` falls back `customer_ref ?? booking_reference ?? "Guest"`).
+    /// </summary>
+    [Fact]
+    public async Task Schedule_ReportsTheBookingReferenceFromTheBookingRow()
+    {
+        var tenantId = NewTenant();
+        var start = DateTimeOffset.UtcNow.AddDays(1);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        await SeedBookingOperationAsync(
+            ctx, tenantId, OperationStatus.Booked, PayloadFor(start, "gel", "bk-ref"));
+        // Deliberately DIFFERENT from the booking id, and absent from the payload, so the assertion
+        // can only pass if the value came from the joined bookings row.
+        await SeedCustomerIdentityAsync(
+            ctx, tenantId, "bk-ref", "cust-ref", bookingReference: "CORDIA-7788");
+
+        var root = await GetJsonAsync(
+            $"/api/Bookings/schedule?from={Uri.EscapeDataString(start.AddHours(-1).ToString("o"))}&to={Uri.EscapeDataString(start.AddHours(1).ToString("o"))}",
+            tenantId);
+
+        var row = Assert.Single(root.GetProperty("bookings").EnumerateArray());
+        Assert.Equal("CORDIA-7788", row.GetProperty("booking_reference").GetString());
+    }
+
+    /// <summary>
+    /// Regression guard for the LEFT join: an operation that has not reached finalize has no
+    /// booking row at all. It must still project — an INNER join here would silently drop every
+    /// in-flight booking off the schedule grid.
+    /// </summary>
+    [Fact]
+    public async Task Schedule_StillProjectsAnInFlightOperationThatHasNoBookingRow()
+    {
+        var tenantId = NewTenant();
+        var start = DateTimeOffset.UtcNow.AddDays(1);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        await SeedBookingOperationAsync(
+            ctx, tenantId, OperationStatus.Finalizing, InFlightCreatePayload(start, "gel"));
+
+        var root = await GetJsonAsync(
+            $"/api/Bookings/schedule?from={Uri.EscapeDataString(start.AddHours(-1).ToString("o"))}&to={Uri.EscapeDataString(start.AddHours(1).ToString("o"))}",
+            tenantId);
+
+        var row = Assert.Single(root.GetProperty("bookings").EnumerateArray());
+        // Present, and honest about having no reference yet — never invented.
+        Assert.True(
+            row.GetProperty("booking_reference").ValueKind is JsonValueKind.Null,
+            "an operation with no booking row must report a null reference, not a fabricated one");
     }
 
     [Fact]
@@ -655,9 +714,81 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
 
     [Theory]
     [InlineData("/api/booking-operations")]
+    [InlineData("/api/booking-operations/work-items")]
     [InlineData("/api/conversation-sessions")]
     [InlineData("/api/waitlist/enrollments")]
     [InlineData("/api/customers")]
     public async Task EveryConsoleReadRequiresATenant(string url)
         => await AssertMissingTenantIsRejectedAsync(url);
+
+    // ---------------------------------------------------------------------
+    // GET /api/booking-operations/work-items
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// The manual-recovery queue is reachable end to end.
+    ///
+    /// <para>Worth an endpoint test rather than only a handler one, because the two things most
+    /// likely to be wrong here are not in the handler: the literal <c>work-items</c> segment sits
+    /// under the same route prefix as <c>{operationId}</c> and must not be swallowed by it, and the
+    /// query has to actually be registered with MediatR.</para>
+    /// </summary>
+    [Fact]
+    public async Task WorkItems_ListsTheOpenQueue_MostOverdueFirst()
+    {
+        var tenantId = NewTenant();
+        var payload = PayloadFor(DateTimeOffset.UtcNow, "gel", "bk-wi");
+        var now = DateTimeOffset.UtcNow;
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var lateOp = await SeedBookingOperationAsync(ctx, tenantId, OperationStatus.ManualReview, payload);
+        var soonOp = await SeedBookingOperationAsync(ctx, tenantId, OperationStatus.Reconciling, payload);
+        var doneOp = await SeedBookingOperationAsync(ctx, tenantId, OperationStatus.Booked, payload);
+
+        ctx.OperationWorkItems.Add(WorkItem(tenantId, soonOp, "sla_escalation", now.AddHours(2), "open"));
+        ctx.OperationWorkItems.Add(WorkItem(tenantId, lateOp, "compensation_ambiguous", now.AddHours(-2), "open"));
+        ctx.OperationWorkItems.Add(WorkItem(tenantId, doneOp, "sla_escalation", now.AddHours(1), "resolved"));
+        await ctx.SaveChangesAsync();
+
+        var body = await GetJsonAsync("/api/booking-operations/work-items", tenantId);
+        var rows = body.GetProperty("work_items").EnumerateArray().ToList();
+
+        // Only the open ones, overdue first.
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(lateOp, rows[0].GetProperty("operation_id").GetString());
+        Assert.Equal("compensation_ambiguous", rows[0].GetProperty("reason").GetString());
+        Assert.Equal(soonOp, rows[1].GetProperty("operation_id").GetString());
+
+        // The linked operation's CURRENT status travels, so an item whose operation has since
+        // moved is recognisable rather than sending an operator to a settled booking.
+        Assert.Equal("manual_review", rows[0].GetProperty("operation_status").GetString());
+        Assert.Equal("reconciling", rows[1].GetProperty("operation_status").GetString());
+    }
+
+    /// <summary>The literal segment must not be parsed as an operation id.</summary>
+    [Fact]
+    public async Task WorkItems_IsNotSwallowedByTheOperationIdRoute()
+    {
+        var tenantId = NewTenant();
+
+        // A 200 with a `work_items` array proves the list action matched; if `{operationId}` had
+        // won, this would be a 404 for an operation literally named "work-items".
+        var body = await GetJsonAsync("/api/booking-operations/work-items", tenantId);
+
+        Assert.True(body.TryGetProperty("work_items", out _));
+    }
+
+    private static OperationWorkItem WorkItem(
+        string tenantId, string operationId, string reason, DateTimeOffset slaDeadline, string state)
+        => new()
+        {
+            TenantId = tenantId,
+            WorkItemId = $"wi-{Guid.NewGuid():N}",
+            OperationId = operationId,
+            Reason = reason,
+            State = state,
+            SlaDeadline = slaDeadline,
+            CreatedAt = DateTimeOffset.UtcNow,
+            Version = 0,
+        };
 }

@@ -97,15 +97,100 @@ public static class OperationStateMachine
             // Booked, Rejected, Expired, Waitlisted, FailedFinal
         }.ToFrozenDictionary();
 
-    private static readonly IReadOnlySet<OperationStatus> _terminalStates =
+    /// <summary>
+    /// The terminal states — <b>derived</b> from <see cref="AllowedTransitions"/>, never listed.
+    ///
+    /// <para>"Terminal" already has a definition one line up: a state with no outgoing edges. Writing
+    /// the members out again created a second source of the same fact inside the authority itself,
+    /// and a state whose last edge was removed would have stayed non-terminal until someone
+    /// remembered to edit both. Deriving makes that impossible.</para>
+    ///
+    /// <para>Exposed because callers that cannot invoke <see cref="IsTerminal"/> — EF Core cannot
+    /// translate a method call into SQL — must still be able to MATERIALISE this set rather than
+    /// retype it. See <c>BookingOperationRepository.TerminalStatuses</c>.</para>
+    ///
+    /// <para>Safe to derive here specifically because every <see cref="OperationStatus"/> absent from
+    /// the edge map is genuinely an ending. That is <b>not</b> true of every state machine in this
+    /// codebase — <c>PreorderSagaStateMachine</c> carries unwired legacy members that are also absent
+    /// yet are not terminals — so that one lists its terminals explicitly and pins the relationship
+    /// with a test instead.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<OperationStatus> TerminalStates =
+        Enum.GetValues<OperationStatus>()
+            .Where(s => !AllowedTransitions.ContainsKey(s))
+            .ToFrozenSet();
+
+    /// <summary>
+    /// States that are waiting on a PERSON OUTSIDE the platform — the customer — rather than on the
+    /// platform itself. Not terminal: they resume when that person acts, or expire.
+    ///
+    /// <para>Owned here because two files previously encoded this partition from opposite
+    /// directions: the SLA sweeper's "eligible" list and its "user wait" list were maintained
+    /// independently, so a new state could have landed in both or in neither. Now
+    /// <see cref="IsSlaEligible"/> is defined as the complement and the two cannot disagree.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<OperationStatus> UserWaitStates =
         new HashSet<OperationStatus>
         {
-            OperationStatus.Booked,
-            OperationStatus.Rejected,
-            OperationStatus.Expired,
-            OperationStatus.Waitlisted,
-            OperationStatus.FailedFinal,
+            OperationStatus.AwaitingUserAction,
+            OperationStatus.AwaitingPayment,
+            OperationStatus.AlternativesRequired,
         }.ToFrozenSet();
+
+    /// <summary>
+    /// States a HUMAN OPERATOR owns: the platform will not advance them on its own, and no customer
+    /// action will either. They exit only through the typed recovery commands (Inv-15).
+    /// </summary>
+    public static readonly IReadOnlySet<OperationStatus> OperatorOwnedStates =
+        new HashSet<OperationStatus>
+        {
+            OperationStatus.ManualReview,
+        }.ToFrozenSet();
+
+    /// <summary>
+    /// States the SLA sweeper evaluates — <b>derived</b> as "not finished, and not the customer's
+    /// turn". Everything left is time the PLATFORM is accountable for.
+    ///
+    /// <para>Includes <see cref="OperationStatus.ManualReview"/> deliberately: an operator sitting on
+    /// a review past its deadline is exactly the kind of delay an SLA is meant to surface. Being
+    /// operator-owned stops the DRIVER from dispatching it; it does not stop the CLOCK.</para>
+    ///
+    /// <para>Materialised as a set because <c>BookingOperationRepository</c> needs it as an array —
+    /// EF Core cannot translate a predicate method into SQL — and retyping it there is what let the
+    /// two halves of this partition drift apart in the first place.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<OperationStatus> SlaEligibleStates =
+        Enum.GetValues<OperationStatus>()
+            .Where(s => !TerminalStates.Contains(s) && !UserWaitStates.Contains(s))
+            .ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> when the SLA clock applies to <paramref name="status"/>.</summary>
+    public static bool IsSlaEligible(OperationStatus status)
+        => SlaEligibleStates.Contains(status);
+
+    /// <summary>
+    /// Terminal states that are a customer-visible FAILURE — <b>derived</b> as the terminals minus
+    /// the two that are not failures.
+    ///
+    /// <para><see cref="OperationStatus.Booked"/> is the success outcome.
+    /// <see cref="OperationStatus.Waitlisted"/> is informational: the request ended, but the guest
+    /// is on a list and may still be seated, so reporting it as a failure would be wrong and
+    /// notifying it as one would be worse (there is no <c>waitlisted.v1</c> failure template by
+    /// design).</para>
+    ///
+    /// <para>Derived rather than listed so a NEW terminal failure state is a failure everywhere at
+    /// once. Three independent copies of this set previously existed — the funnel read model, the
+    /// notification sweep's constants, and that same sweep's inline LINQ predicate — and a new
+    /// terminal would have been silently missing from all three.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<OperationStatus> TerminalFailureStates =
+        TerminalStates
+            .Where(s => s is not OperationStatus.Booked and not OperationStatus.Waitlisted)
+            .ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> when <paramref name="status"/> is a customer-visible failure ending.</summary>
+    public static bool IsTerminalFailure(OperationStatus status)
+        => TerminalFailureStates.Contains(status);
 
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(OperationStatus from, OperationStatus to)
@@ -113,7 +198,38 @@ public static class OperationStateMachine
 
     /// <summary>Returns <c>true</c> if <paramref name="status"/> is a terminal state (no outgoing edges).</summary>
     public static bool IsTerminal(OperationStatus status)
-        => _terminalStates.Contains(status);
+        => TerminalStates.Contains(status);
+
+    /// <summary>Returns <c>true</c> when the operation is waiting on the CUSTOMER.</summary>
+    public static bool IsAwaitingUser(OperationStatus status)
+        => UserWaitStates.Contains(status);
+
+    /// <summary>Returns <c>true</c> when the operation is waiting on a human OPERATOR (Inv-15).</summary>
+    public static bool RequiresOperator(OperationStatus status)
+        => OperatorOwnedStates.Contains(status);
+
+    /// <summary>
+    /// Returns <c>true</c> when the fulfilment driver has a step for this state — i.e. the platform
+    /// itself will advance it without any human.
+    ///
+    /// <para><b>Derived, not listed.</b> A state is driver-dispatchable exactly when it is neither
+    /// terminal, nor waiting on the customer, nor owned by an operator. The driver's <c>switch</c>
+    /// previously encoded this by omission (<c>_ =&gt; null</c>), which fails safe but silently: a new
+    /// state parks forever and nothing says so. <c>WorkflowDefinitionTests</c> asserts the switch and
+    /// this predicate agree exactly, so adding a state without a driver step now fails a test
+    /// instead of stalling an operation in production.</para>
+    /// </summary>
+    public static bool IsDriverDispatchable(OperationStatus status)
+        => !IsTerminal(status) && !IsAwaitingUser(status) && !RequiresOperator(status);
+
+    /// <summary>
+    /// The legal successors of <paramref name="status"/> — "what may happen next" asked of the
+    /// definition rather than restated by the caller. Empty for a terminal state.
+    /// </summary>
+    public static IReadOnlySet<OperationStatus> NextStates(OperationStatus status)
+        => AllowedTransitions.TryGetValue(status, out var targets)
+            ? targets
+            : FrozenSet<OperationStatus>.Empty;
 
     /// <summary>
     /// Validates that <paramref name="to"/> is a legal successor of <paramref name="from"/>.

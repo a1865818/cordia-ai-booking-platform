@@ -2,6 +2,7 @@
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Observability;
 using Cordia.Infrastructure.Observability;
@@ -34,6 +35,7 @@ public sealed class ReserveCapacityCommandHandler(
     IWorkflowStepRepository stepRepo,
     ICapacityReservation capacityReservation,
     ICapacitySlotRepository slotRepo,
+    ICapacityHoldRepository holdRepo,
     IBookingIntentRepository intentRepo,
     CapacityExpiryScheduler expiryScheduler,
     IOutboxRepository outboxRepo,
@@ -61,24 +63,24 @@ public sealed class ReserveCapacityCommandHandler(
         var rev = await intentRepo.GetRevisionAsync(tenantId, op.IntentId, op.IntentRevision, ct);
         var (requestedCapacity, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(rev?.CanonicalPayload);
 
-        // KNOWN GAP — a same-slot amendment transiently reserves the booking's own seat twice.
+        // An amendment that does not MOVE the booking reserves only what is genuinely NEW.
         //
-        // `ValidateOperationCommandHandler` routes every non-Cancel type through here, and the slot
-        // key deliberately excludes party size, so a modify that changes only the party size
-        // derives the SAME slot the booking already occupies and reserves a second, full hold
-        // against it. The END state is correct — the commit finalizes this hold and releases the
-        // previous owner's, netting out to exactly the new size — but between the two the slot must
-        // carry both bookings, and a slot with no spare room cannot: the reserve answers NoCapacity
-        // and the operation lands in AlternativesRequired, telling the guest there is no space for a
-        // table they are already sitting at.
+        // The slot key deliberately excludes party size, so a modify that changes only the party
+        // size derives the SAME slot the booking already occupies. Reserving the full new size
+        // against it asks the slot to carry the booking twice, and a slot with no spare room
+        // refuses — landing the operation in AlternativesRequired and telling the guest there is no
+        // space for a table they are already sitting at.
         //
-        // Deliberately NOT patched by reserving only the delta. That fixes the refusal and breaks
-        // something worse: the previous owner's finalized hold would have to stay, so the booking
-        // would end up holding TWO finalized holds, and a later cancellation releases only the
-        // newest booked operation's — permanently leaking the rest of the seat. Closing this
-        // properly needs a spec 07 primitive that does not exist yet: an atomic transfer of a
-        // FINALIZED hold from one operation to another at a new size, which is the only shape that
-        // both avoids the transient double-count and leaves exactly one hold to release later.
+        // The other half of this rule is `ICapacityReservation.AbsorbSameSlotAsync`, which
+        // `ModifyBookingCommandHandler` calls at commit: it hands the previous owner's seat to this
+        // operation and sizes the result to the whole booking, so exactly ONE finalized hold
+        // survives. Reserving a delta WITHOUT that absorb would leave two, and a later cancellation
+        // releases only the newest — which is why neither half is correct on its own.
+        var previousCapacity = await ReadSameSlotCapacityAsync(op, slotId, ct);
+        var capacityToReserve = previousCapacity is null
+            ? requestedCapacity
+            : requestedCapacity - previousCapacity.Value;
+
         var expiresAt = DateTimeOffset.UtcNow + capacityOptions.Value.HoldTtl;
 
         StepOutcome result = StepOutcome.Continue;
@@ -113,7 +115,11 @@ public sealed class ReserveCapacityCommandHandler(
             }
 
             // 3. Determine if first-party-tracked: slotId derived AND slot row exists.
+            //    A same-slot amendment needing no extra units takes the untracked branch on
+            //    purpose: there is nothing to reserve, and the commit's absorb is what gives this
+            //    operation ownership of the seat the booking already holds.
             var isTracked = slotId is not null
+                && capacityToReserve > 0
                 && await slotRepo.GetAsync(tenantId, slotId, ct2) is not null;
 
             if (isTracked)
@@ -125,7 +131,7 @@ public sealed class ReserveCapacityCommandHandler(
                         operationId,
                         "create",
                         slotId,
-                        requestedCapacity,
+                        capacityToReserve,
                         expiresAt,
                         "first_party"),
                     ct2);
@@ -235,16 +241,32 @@ public sealed class ReserveCapacityCommandHandler(
                 // The reason distinguishes the two ways to land here, because they need different
                 // fixes: no key at all means the payload lacks a resource/time dimension, while a
                 // key with no row means the venue simply has not declared that slot.
-                metrics.FulfillmentCapacityUntrackedTotal.Add(
-                    1,
-                    new KeyValuePair<string, object?>(
-                        MetricNames.Tags.Reason,
-                        slotId is null ? "no_slot_key" : "slot_not_declared"));
+                // `already_held` is not an enforcement gap at all — it is a same-slot amendment
+                // whose units are already booked under the operation that made the booking, and
+                // whose ownership the commit's absorb transfers. Folding it into the other two
+                // would report capacity as unenforced every time a guest shrank a party.
+                var alreadyHeld = capacityToReserve <= 0;
 
-                _ = await opRepo.TryTransitionStatusAsync(
+                var untracked = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, current.Version,
                     OperationStatus.ReservingCapacity, OperationStatus.Held,
-                    reason: "held", ct: ct2);
+                    reason: alreadyHeld ? "held_existing_capacity" : "held", ct: ct2);
+
+                // Counted only when the transition actually happened.
+                //
+                // Incremented ahead of the write, the counter fired for every attempt — including
+                // one that lost the optimistic-concurrency race and advanced nothing — so the one
+                // number a venue has for "how many bookings were accepted without capacity
+                // enforcement" drifted permanently upward and could never be reconciled against the
+                // operations it claimed to describe.
+                if (untracked > 0 && !alreadyHeld)
+                {
+                    metrics.FulfillmentCapacityUntrackedTotal.Add(
+                        1,
+                        new KeyValuePair<string, object?>(
+                            MetricNames.Tags.Reason,
+                            slotId is null ? "no_slot_key" : "slot_not_declared"));
+                }
 
                 result = StepOutcome.Continue;
             }
@@ -253,4 +275,36 @@ public sealed class ReserveCapacityCommandHandler(
         return result;
     }
 
+    /// <summary>
+    /// The units this booking ALREADY holds on <paramref name="slotId"/>, when this operation is an
+    /// amendment that is not moving the booking off its current slot — otherwise
+    /// <see langword="null"/>, meaning "reserve the full amount" (every create, and every genuine
+    /// reschedule to a different slot).
+    ///
+    /// <para>Read from the finalized hold of the operation that actually booked the slot, which is
+    /// the same row <c>ModifyBookingCommandHandler</c> consults before deciding between absorbing
+    /// it and releasing it. Both sides ask the identical question — "is the seat moving?" — from the
+    /// same two facts, so they cannot answer it differently.</para>
+    /// </summary>
+    private async Task<int?> ReadSameSlotCapacityAsync(
+        BookingOperation op, string? slotId, CancellationToken ct)
+    {
+        if (slotId is null
+            || string.IsNullOrWhiteSpace(op.BookingId)
+            || op.OperationType is not (OperationTypeEnum.Modify or OperationTypeEnum.Reschedule))
+        {
+            return null;
+        }
+
+        var owner = await opRepo.GetBookedOperationForBookingAsync(op.TenantId, op.BookingId, ct);
+        if (owner is null || owner.OperationId == op.OperationId)
+            return null;
+
+        var hold = await holdRepo.GetLatestByOperationAndStepAsync(
+            op.TenantId, owner.OperationId, "create", ct);
+
+        return hold is { Status: HoldStatus.Finalized } && hold.SlotId == slotId
+            ? hold.ReservedCapacity
+            : null;
+    }
 }

@@ -245,21 +245,7 @@ public sealed class BookingReadRepository(
            && values.Any(v => string.Equals(v, hint, StringComparison.OrdinalIgnoreCase));
 
     private static string ToLifecycleStatus(OperationTypeEnum operationType, OperationStatus status)
-        => status switch
-        {
-            // A cancel has no `cancelled` operation status of its own (D1): it terminates at
-            // `Booked` — "this operation succeeded" — with the BOOKING carrying the
-            // cancellation. This arm MUST precede the generic `Booked` one, or a successfully
-            // cancelled booking reads back as "confirmed".
-            OperationStatus.Booked when operationType is OperationTypeEnum.Cancel => "cancelled",
-            OperationStatus.Booked when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule
-                => "modification_pending",
-            OperationStatus.Booked => "confirmed",
-            OperationStatus.Rejected or OperationStatus.Expired or OperationStatus.FailedFinal => "cancelled",
-            _ when operationType is OperationTypeEnum.Cancel => "cancellation_pending",
-            _ when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule => "modification_pending",
-            _ => "confirmed",
-        };
+        => BookingLifecycleProjection.From(operationType, status);
 
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));

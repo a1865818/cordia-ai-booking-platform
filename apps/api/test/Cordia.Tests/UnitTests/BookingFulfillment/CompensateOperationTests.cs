@@ -194,8 +194,6 @@ public class CompensateOperationTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
 
-        _workItemRepo.Setup(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         var result = await CreateHandler().Handle(
             new CompensateOperationCommand(tenantId, opId), CancellationToken.None);

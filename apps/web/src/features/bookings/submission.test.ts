@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { canonicalHash } from "../../api/canonicalHash";
-import { buildSubmission, customerFromRef, toCanonicalPayload, toIsoInstant } from "./buildSubmission";
+import {
+  buildSubmission, customerFromRef, toCanonicalPayload, toIsoInstant,
+  normalisePhone, MAX_PHONE_RAW_LENGTH,
+} from "./buildSubmission";
+import { looksUnnormalisedPhone } from "../../components/ui/PhoneInput";
 import { getOrCreateAttempt, resetAttempt, supersedeAttempt } from "./identity";
 import { nextInterval, normalizedStatusLabel, isBooked, isTerminal, MAX_INTERVAL_MS } from "./useOperationStatus";
 import { isRetryableWithNewAttempt, writeFailureMessage } from "./mutations";
@@ -52,6 +56,73 @@ describe("toCanonicalPayload", () => {
     }) as Record<string, unknown>;
     expect(payload.target_booking_id).toBe("bk_1");
     expect(payload.target_booking_version).toBe(3);
+  });
+
+  // The payload is hashed and immutable, so a phone the SERVER cannot normalise must never be
+  // written into it: every server-side PhoneMatching.Normalise would read it back as null and the
+  // booking would be permanently unfindable by phone and un-notifiable, with no repair possible
+  // (rewriting the payload invalidates payload_hash — Inv-2/3).
+  it("keeps a phone the server could never re-normalise out of the immutable payload", () => {
+    const tooManyDigits = `+${"4".repeat(70)}`; // normalises to 71 chars > MAX_PHONE_RAW_LENGTH
+    const payload = toCanonicalPayload({
+      ...draft,
+      customer: { phoneE164: tooManyDigits },
+    }) as Record<string, unknown>;
+
+    expect("customer" in payload).toBe(false);
+  });
+
+  // The case that matters most, and the one an earlier attempt at this fix broke: a perfectly
+  // ordinary number padded past 64 RAW characters. Dropping it would leave a booking with no
+  // contact at all in an immutable payload — worse than the bug being fixed.
+  it("keeps an ordinary number that is merely padded past the raw ceiling", () => {
+    const padded = `+61 400 111 222${" ".repeat(60)}`;
+    expect(padded.length).toBeGreaterThan(MAX_PHONE_RAW_LENGTH);
+
+    const payload = toCanonicalPayload({
+      ...draft,
+      customer: { phoneE164: padded },
+    }) as Record<string, unknown>;
+
+    expect(payload.customer).toEqual({ phone_e164: "+61400111222" });
+  });
+});
+
+describe("normalisePhone — parity with PhoneMatching.Normalise (apps/api)", () => {
+  // The bound is the SERVER's (PhoneMatching.MaxLength = 64), applied to the NORMALISED output —
+  // that is the value written into the payload and the one the server must be able to re-normalise.
+  // These vectors are the parity pin: if either side moves its threshold, one of them fails.
+  it("accepts a value at exactly the 64-char ceiling", () => {
+    const atLimit = `+${"4".repeat(63)}`; // 64 chars normalised
+    expect(atLimit).toHaveLength(MAX_PHONE_RAW_LENGTH);
+    expect(normalisePhone(atLimit)).toBe(atLimit);
+  });
+
+  it("rejects a value one character over the ceiling, rather than truncating it", () => {
+    const overLimit = `+${"4".repeat(64)}`; // 65 chars normalised
+    expect(normalisePhone(overLimit)).toBeUndefined();
+  });
+
+  it("measures the ceiling AFTER stripping formatting, not on the raw input", () => {
+    // 12 digits wrapped in enough separators to exceed 64 raw characters. The server's own bound
+    // never sees this string — it sees the normalised output — so refusing it here would lose a
+    // usable phone for no reason.
+    const padded = `+61 - 400 - 111 - 222${" ".repeat(50)}`;
+    expect(padded.length).toBeGreaterThan(MAX_PHONE_RAW_LENGTH);
+    expect(normalisePhone(padded)).toBe("+61400111222");
+  });
+
+  it("still strips formatting inside the ceiling", () => {
+    expect(normalisePhone("+61 400 111 222")).toBe("+61400111222");
+    expect(normalisePhone("(+61) 400-111-222")).toBe("+61400111222");
+  });
+
+  it("warns at capture for a number that normalises too long", () => {
+    // looksUnnormalisedPhone delegates to normalisePhone, so the operator-facing warning covers
+    // this for free — one rule, one definition of "usable".
+    expect(looksUnnormalisedPhone(`+${"4".repeat(64)}`)).toBe(true);
+    // ...and does NOT nag about a merely padded, perfectly good number.
+    expect(looksUnnormalisedPhone(`+61 400 111 222${" ".repeat(60)}`)).toBe(false);
   });
 });
 
@@ -160,6 +231,11 @@ describe("operation polling", () => {
     expect(isBooked({ status: "booked", terminal: true } as never)).toBe(true);
     expect(isBooked({ status: "accepted", terminal: false } as never)).toBe(false);
     expect(isBooked(undefined)).toBe(false);
+    // The disagreement case, previously untested and previously TRUE: a booked status that is not
+    // yet terminal must not be announced as a confirmed booking (Inv-16).
+    expect(isBooked({ status: "booked", terminal: false } as never)).toBe(false);
+    // `terminal` alone is not success either — rejected/expired/failed are all terminal.
+    expect(isBooked({ status: "rejected", terminal: true } as never)).toBe(false);
   });
 
   it("treats terminal strictly as the server's flag", () => {

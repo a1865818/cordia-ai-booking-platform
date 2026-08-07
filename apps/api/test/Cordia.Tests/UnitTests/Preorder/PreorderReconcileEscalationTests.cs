@@ -27,9 +27,10 @@ public class PreorderReconcileEscalationTests
     private readonly Mock<IBookingOperationRepository> _opRepo = new();
     private readonly Mock<IOutboxRepository> _outbox = new();
     private readonly Mock<IAuditEventRepository> _audit = new();
+    private readonly Mock<IOperationWorkItemRepository> _workItems = new();
 
     private ReconcilePreorderSagaCommandHandler CreateHandler() => new(
-        _sagaRepo.Object, _opRepo.Object, _outbox.Object, _audit.Object,
+        _sagaRepo.Object, _opRepo.Object, _outbox.Object, _audit.Object, _workItems.Object,
         NullLogger<ReconcilePreorderSagaCommandHandler>.Instance);
 
     private static PreorderSaga Saga(PreorderSagaState state, TimeSpan age) => new()

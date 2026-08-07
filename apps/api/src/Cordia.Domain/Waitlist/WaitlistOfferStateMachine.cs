@@ -46,6 +46,19 @@ public static class WaitlistOfferStateMachine
             // Accepted, Declined, Expired, Released
         }.ToFrozenDictionary();
 
+    /// <summary>
+    /// Terminal offer states — <b>derived</b> from <see cref="AllowedTransitions"/>, so the set
+    /// cannot drift from the edge map that defines it.
+    /// </summary>
+    public static readonly IReadOnlySet<WaitlistOfferStatus> TerminalStates =
+        Enum.GetValues<WaitlistOfferStatus>()
+            .Where(s => !AllowedTransitions.ContainsKey(s))
+            .ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> if <paramref name="status"/> is terminal (no outgoing edges).</summary>
+    public static bool IsTerminal(WaitlistOfferStatus status)
+        => TerminalStates.Contains(status);
+
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(WaitlistOfferStatus from, WaitlistOfferStatus to)
         => AllowedTransitions.TryGetValue(from, out var targets) && targets.Contains(to);

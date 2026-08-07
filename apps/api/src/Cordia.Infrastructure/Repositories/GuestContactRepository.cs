@@ -22,7 +22,17 @@ public class GuestContactRepository(ApplicationDbContext db) : IGuestContactRepo
         CancellationToken ct = default)
     {
         var phone = PhoneMatching.Normalise(phoneE164);
-        var mail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+
+        // Held to the same standard as the phone: a value that is not a DESTINATION is not stored
+        // as one. Lower-cased after validation so the fingerprint is stable for a guest who
+        // capitalises differently between bookings.
+        //
+        // A blank check alone let `"."` or `"guest@localhost"` through, so the row could hold an
+        // address nothing could deliver to while the mint audit — which reports the normalised
+        // value — recorded no email at all. The row and the one immutable record of writing it
+        // disagreed, and `NotificationRecipientResolver` does no deliverability re-check of its
+        // own, so it would have trusted whichever it read.
+        var mail = ContactAddress.NormaliseEmail(email)?.ToLowerInvariant();
         var name = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
         var fingerprint = Fingerprint(tenantId, phone, mail);
         var now = DateTimeOffset.UtcNow;
@@ -59,28 +69,46 @@ public class GuestContactRepository(ApplicationDbContext db) : IGuestContactRepo
             LastUsedAt = now,
         };
 
-        db.GuestContacts.Add(row);
+        // ON CONFLICT DO NOTHING, not catch-the-violation.
+        //
+        // The pre-read above is a fast path, not a lock: two bookings for the same guest — a
+        // double-click, or two agent-lane retries — both miss it under READ COMMITTED and both
+        // insert against `ix_guest_contacts_tenant_id_contact_fingerprint`.
+        //
+        // Catching the violation cannot work, and the reason is easy to miss: this now runs inside
+        // the caller's transaction, and PostgreSQL aborts the WHOLE transaction on a constraint
+        // violation. By the time a catch block ran, the transaction would already be poisoned, so
+        // the "read the winner back" query — and the caller's COMMIT — would fail with
+        // `current transaction is aborted`, turning an idempotent 200 into a 500. Letting the
+        // database absorb the conflict raises no exception, so the transaction stays clean.
+        // `CapacitySlotRepository.TryAddAsync` and `IdempotencyRepository.ElectCreatorAsync` use
+        // the same primitive for the same reason.
+        var inserted = await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO public.guest_contacts
+                (tenant_id, contact_ref, phone_e164, email, display_name,
+                 contact_fingerprint, phone_fingerprint, email_fingerprint, created_at, last_used_at)
+            VALUES
+                ({row.TenantId}, {row.ContactRef}, {row.PhoneE164}, {row.Email}, {row.DisplayName},
+                 {row.ContactFingerprint}, {row.PhoneFingerprint}, {row.EmailFingerprint},
+                 {row.CreatedAt}, {row.LastUsedAt})
+            ON CONFLICT (tenant_id, contact_fingerprint) DO NOTHING
+            """,
+            ct);
 
-        try
-        {
-            await db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException)
-        {
-            // Lost the unique-index race with a concurrent booking for the same guest. The winner's
-            // row is the right answer — a second ref for one guest would mean erasing them took two
-            // deletes, and the second would be missed.
-            db.Entry(row).State = EntityState.Detached;
-            var winner = await db.GuestContacts
-                .FirstOrDefaultAsync(g => g.TenantId == tenantId && g.ContactFingerprint == fingerprint, ct);
-            if (winner is null) throw;
+        if (inserted == 1)
+            return row;
 
-            // Same reasoning as the hit above, and monotonic for the same reason.
-            await TouchAsync(tenantId, winner.ContactRef, now, ct);
-            return winner;
-        }
+        // Lost the race. The winner's row is the right answer — a second ref for one guest would
+        // mean erasing them took two deletes, and the second would be missed.
+        var winner = await db.GuestContacts
+            .FirstOrDefaultAsync(g => g.TenantId == tenantId && g.ContactFingerprint == fingerprint, ct)
+            ?? throw new InvalidOperationException(
+                $"Guest contact insert for tenant '{tenantId}' conflicted but the winning row could not be read.");
 
-        return row;
+        // Same reasoning as the hit above, and monotonic for the same reason.
+        await TouchAsync(tenantId, winner.ContactRef, now, ct);
+        return winner;
     }
 
     public Task<GuestContact?> GetByRefAsync(string tenantId, string contactRef, CancellationToken ct = default)

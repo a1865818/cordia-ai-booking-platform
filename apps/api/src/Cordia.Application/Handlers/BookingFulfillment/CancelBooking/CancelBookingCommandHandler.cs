@@ -127,7 +127,7 @@ public sealed class CancelBookingCommandHandler(
                 : "cancelled";
 
         return await CommitCancellationAsync(
-            tenantId, operationId, booking, cancelStep, providerRef, reason, alreadyCancelled, ct);
+            tenantId, operationId, booking, cancelStep, providerRef, reason, ct);
     }
 
     // ---------------------------------------------------------------------------
@@ -181,7 +181,6 @@ public sealed class CancelBookingCommandHandler(
         WorkflowStep cancelStep,
         string? providerRef,
         string reason,
-        bool alreadyCancelled,
         CancellationToken ct)
     {
         var committed = false;
@@ -223,6 +222,15 @@ public sealed class CancelBookingCommandHandler(
             var lifecycleSettled = false;
             var lastVersion = 0L;
 
+            // Did THIS transaction perform the cancellation, or did it find one already done?
+            //
+            // That is the only honest basis for sending "your cancellation is confirmed", and it is
+            // not what `alreadyCancelled` records: that was read BEFORE the provider call, so a
+            // second concurrent cancel of the same booking still carried `false` into the commit,
+            // found the booking already Cancelled inside the transaction, and emitted a SECOND
+            // notification for something the guest had already been told.
+            var cancelledHere = false;
+
             for (var attempt = 0; attempt < BookingTransitionAttempts; attempt++)
             {
                 var freshBooking = await bookingRepo.GetByIdAsync(tenantId, booking.BookingId, ct2)
@@ -244,6 +252,7 @@ public sealed class CancelBookingCommandHandler(
                 if (bookingRows > 0)
                 {
                     lifecycleSettled = true;
+                    cancelledHere = true;
                     break;
                 }
             }
@@ -269,12 +278,13 @@ public sealed class CancelBookingCommandHandler(
 
             // Inv-8: committed in the same transaction as the state it describes.
             //
-            // Only ONE cancellation of a booking is news. A second cancel operation against an
+            // Only ONE cancellation of a booking is news, and the transition this transaction
+            // performed is what proves which call it was. A second cancel operation against an
             // already-cancelled booking still settles (it is a legitimate no-op), but notifying
             // again would send the guest a second "your cancellation is confirmed" message for
             // something they were already told. The audit event below is still written — that is
             // an internal record, and it carries `reason = already_cancelled`.
-            if (!alreadyCancelled)
+            if (cancelledHere)
             {
                 await outboxRepo.AddAsync(new OutboxMessage
                 {

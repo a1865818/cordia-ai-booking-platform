@@ -105,6 +105,16 @@ public static class CapacitySlotKey
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
+            // A non-object root is "not tracked", not an exception.
+            //
+            // `JsonElement.TryGetProperty` throws `InvalidOperationException` — NOT `JsonException`
+            // — when the element is an array, string, number or null, so the catch below never saw
+            // it and a historical revision whose payload is `[]` or `"..."` aborted the operation
+            // reading it. The whole contract of this method is that a payload it cannot understand
+            // degrades to "no slot", so the guard belongs here rather than in every caller.
+            if (root.ValueKind != JsonValueKind.Object)
+                return (1, null);
+
             // party_size — default 1 (a booking always needs >= 1 unit).
             // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
             // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS

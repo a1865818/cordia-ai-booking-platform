@@ -101,6 +101,16 @@ public sealed class SendNotificationCommandHandler(
             CreatedAt = now,
             UpdatedAt = now,
             Version = 0,
+            // Load-bearing for recovery, not just telemetry.
+            //
+            // For a waitlist offer/expiry this carries the ENROLLMENT id (set on the outbox message
+            // by MatchWaitlistOfferCommandHandler / ExpireWaitlistOfferCommandHandler), and once
+            // the in-flight op_wl_* id is gone it is the only route back to the guest — the row
+            // stores NULL for OperationId by design, and RecipientRef is a one-way hash. Reconcile
+            // and retry resolve the destination from this. Set explicitly because the correlation
+            // interceptor cannot see a raw-SQL insert (see TryInsertAsync remarks).
+            CorrelationId = command.CorrelationId,
+            CausationId = command.MessageId,
         };
 
         var inserted = await repo.TryInsertAsync(entity, ct);

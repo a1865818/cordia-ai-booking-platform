@@ -74,7 +74,7 @@ public class SubmitConfirmedIntentPreorderRoutingTests
     private SubmitConfirmedIntentCommandHandler CreateHandler() =>
         new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object,
             new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object, _grants.Object,
-            _bookings.Object, _grantAuth.Object);
+            _bookings.Object, _grantAuth.Object, AssertedActor.Allowed);
 
     // ------------------------------------------------------------------
     // R15 — the assurance level is the SERVER's, not the caller's.

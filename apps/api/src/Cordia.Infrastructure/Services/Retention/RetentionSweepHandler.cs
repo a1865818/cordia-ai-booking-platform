@@ -161,7 +161,7 @@ public class RetentionSweepHandler(ApplicationDbContext db)
                 equals new { rev.TenantId, rev.IntentId, rev.Revision }
             where op.TenantId == tenantId
                 && op.UpdatedAt < cutoff
-                && RetentionPolicy.TerminalStatuses.Contains(op.Status)
+                && RetentionPolicy.PrunableStatuses.Contains(op.Status)
             select rev.CanonicalPayload)
             .AsAsyncEnumerable();
 

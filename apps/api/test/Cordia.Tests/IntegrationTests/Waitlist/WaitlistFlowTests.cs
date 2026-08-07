@@ -42,7 +42,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OfferExpiryScheduler(new ScheduledJobRepository(ctx)),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
@@ -57,7 +57,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             new AuditWriter(new AuditEventRepository(ctx)),
@@ -67,7 +67,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             NullLogger<ExpireWaitlistOfferCommandHandler>.Instance);
@@ -86,7 +86,8 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new BookingOperationRepository(ctx),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             new AuditWriter(new AuditEventRepository(ctx)),
@@ -320,6 +321,102 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         Assert.Equal(HoldStatus.Released, hold.Status);
 
         // Re-match enqueued for the freed opening (same recovery as decline/expire).
+        Assert.True(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
+    }
+
+    /// <summary>
+    /// A cancel must NOT pull the hold out from under an accept that has already minted its booking.
+    ///
+    /// <para>The accept lane is record-before-state: it submits through the spec-04 door FIRST and
+    /// only then claims <c>Offered → Accepted</c>. In that window — and for the whole time a
+    /// deferred auto-accept sits queued — the offer is still "live" to this handler while a booking
+    /// operation for it already exists.</para>
+    ///
+    /// <para>Releasing there is not a harmless race: the 06 engine has already reused that hold
+    /// (ReserveAsync's idempotency pre-check matches the same operation id and step), so finalize
+    /// later sees it Released, returns <c>HoldNoLongerValid</c>, and routes the operation to
+    /// <c>CompensationRequired</c> — AFTER the provider booking was created. Compensation then has
+    /// to cancel a real reservation, and an ambiguous provider answer parks it in
+    /// <c>ManualReview</c> indefinitely.</para>
+    /// </summary>
+    [Fact]
+    public async Task Cancel_DoesNotReleaseAHoldAnAcceptHasAlreadyMintedABookingFor()
+    {
+        var tenantId = TestIds.New("wl-cancel-minted");
+        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
+        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
+        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
+        var (offerId, holdId, operationId) =
+            await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
+
+        // The accept has minted its spec-04 operation but has not yet claimed the offer.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            SeedOperation(ctx, tenantId, operationId, OperationStatus.ReservingCapacity);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+            await BuildCancel(ctx).Handle(
+                new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"),
+                CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // The enrollment is still cancelled and the offer resolved — the guest asked for that.
+        var offer = await assertCtx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(o => o.OfferId == offerId);
+        Assert.Equal(WaitlistOfferStatus.Released, offer.Status);
+
+        // But the SEAT stays with the booking: 06 owns this hold's lifecycle now.
+        var hold = await assertCtx.CapacityHolds.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Active, hold.Status);
+
+        // No re-match — the opening is not free.
+        Assert.False(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
+
+        // And the decision is recorded rather than silently taken.
+        Assert.True(await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(e => e.TenantId == tenantId && e.EventType == "waitlist.hold_retained_for_booking"));
+    }
+
+    /// <summary>
+    /// The retain guard applies to an IN-FLIGHT booking only. Once the operation has terminated,
+    /// nothing is coming to release the hold — retaining it would leave the seat reserved until the
+    /// expiry sweeper reclaimed it, when it could be freed and re-matched immediately. That would be
+    /// strictly worse than the bug the guard exists to fix.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_StillReleasesTheHoldWhenTheMintedOperationHasAlreadyFailed()
+    {
+        var tenantId = TestIds.New("wl-cancel-failed-op");
+        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
+        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
+        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
+        var (_, holdId, operationId) =
+            await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            SeedOperation(ctx, tenantId, operationId, OperationStatus.FailedFinal);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+            await BuildCancel(ctx).Handle(
+                new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"),
+                CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // The seat is genuinely free again, and the opening goes back to the queue.
+        var hold = await assertCtx.CapacityHolds.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Released, hold.Status);
+
         Assert.True(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
             .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
     }

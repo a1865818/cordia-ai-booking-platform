@@ -27,6 +27,29 @@ export function listOperations(filters: OperationFilters = {}, signal?: AbortSig
   );
 }
 
+export type ListWorkItemsResponse =
+  paths["/api/booking-operations/work-items"]["get"]["responses"][200]["content"]["application/json"];
+
+export type WorkItemSummary = NonNullable<ListWorkItemsResponse["work_items"]>[number];
+
+/**
+ * The open manual-recovery queue for this tenant, most overdue first.
+ *
+ * Every path that gives up on an operation — an ambiguous provider cancel, an exhausted
+ * retry budget, a poison message, an SLA breach, a parked pre-order whose booking already
+ * committed — durably opens a work item with a reason and an SLA deadline. The operations
+ * list shows the operation's *status*; this shows why a human was called and by when.
+ *
+ * No actor headers: it is a read, not an operator action, so it is not audited per-call.
+ */
+export function listOpenWorkItems(limit?: number, signal?: AbortSignal) {
+  const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+  return fetchApi<ListWorkItemsResponse>(
+    `/api/booking-operations/work-items${query}`,
+    { signal }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Operator follow-ups (docs/frontend-api-wiring.md §10).
 //

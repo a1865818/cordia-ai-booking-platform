@@ -38,6 +38,16 @@ file sealed class NoCapacityReservation : ICapacityReservation
 
     public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
         => Task.FromResult(FinalizeOutcome.NotTracked);
+
+    public Task<bool> AbsorbSameSlotAsync(
+        string tenantId,
+        string previousOperationId,
+        string newOperationId,
+        string workflowStep,
+        string slotId,
+        int totalCapacity,
+        CancellationToken ct = default) => Task.FromResult(false);
+
 }
 
 // ── Fake booking provider adapter ────────────────────────────────────────────────────────────

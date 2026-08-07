@@ -34,10 +34,16 @@ public class ResolveManualReviewCommandHandlerTests
 
     private readonly Mock<IBookingRepository> _bookingRepo = new();
     private readonly Mock<ICapacityReservation> _capacity = new();
+    private readonly Mock<IBookingIntentRepository> _intents = new();
+    private readonly Mock<ICapacityHoldRepository> _holds = new();
+
+    private readonly Mock<ICapacityLockOrder> _lockOrder = new();
 
     private ResolveManualReviewCommandHandler CreateHandler() =>
         new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object,
             _bookingRepo.Object, _capacity.Object,
+            new Cordia.Application.Handlers.BookingFulfillment.ModifyBooking.ModifyCapacitySettlement(
+                _intents.Object, _holds.Object, _lockOrder.Object, _capacity.Object),
             new AuditWriter(_auditRepo.Object), _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
@@ -117,10 +123,25 @@ public class ResolveManualReviewCommandHandlerTests
 
         Assert.Equal(BookingLifecycleStatus.Confirmed, settledTo);
 
-        // Nothing happened, so no seat changes hands either.
+        // The booking's OWN seat is untouched — it was never given up, so the previous owner's hold
+        // is not released.
         _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ReleaseReason>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.Is<string>(id => id != operationId),
+            It.IsAny<ReleaseReason>(), It.IsAny<CancellationToken>()),
             Times.Never);
+
+        // But any seat THIS operation had already taken goes back.
+        //
+        // This assertion replaces a blanket `Times.Never`, which encoded a premise that stopped
+        // being true: `modify_capacity_unavailable` routes an operation to Reconciling AFTER its
+        // hold is Finalized and units have moved held→booked, and resolving that review as Failed
+        // used to leave those units owned by an operation nothing can ever find again
+        // (`GetBookedOperationForBookingAsync` matches only `Booked`), so the slot under-reported
+        // its availability permanently. Scoped to this operation's own id, and a no-op for the
+        // routes that finalized nothing.
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+            tenantId, operationId, ReleaseReason.Compensated, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>A booking already Cancelled underneath us keeps that outcome — a writer that knew decided it.</summary>
@@ -377,5 +398,71 @@ public class ResolveManualReviewCommandHandlerTests
                 new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.FailedFinal,
                     null, "rpl_1", "ops", "rc_test", "operator"),
                 CancellationToken.None));
+    }
+
+    /// <summary>
+    /// Resolving a CROSS-SLOT reschedule as Booked must not free the old seat when the new one is
+    /// already gone.
+    ///
+    /// <para>This lane is only ever reached through ManualReview, which waits for a human —
+    /// routinely far longer than the hold TTL — so by resolution time the expiry sweeper has very
+    /// often already released this operation's hold on the target slot. `FinalizeAgainstOperationAsync`
+    /// then answers `HoldNoLongerValid`.</para>
+    ///
+    /// <para>The settlement used to discard that answer and release the previous owner's hold
+    /// anyway, leaving a CONFIRMED booking counted against neither slot: the seat the guest
+    /// actually occupies back on sale, and nothing recorded on the slot they moved to. The
+    /// automatic lane refuses for exactly this reason.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_DoesNotFreeTheOldSeatWhenTheNewHoldHasExpired()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify";
+        const string previousOwnerId = "op_create_original";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        // A different operation owns the booking's current seat — the cross-slot shape.
+        _opRepo.Setup(r => r.GetBookedOperationForBookingAsync(
+                tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, previousOwnerId, OperationStatus.Booked));
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.ModificationPending,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        // The target slot's hold is gone — the sweeper reclaimed it while the review sat waiting.
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                tenantId, operationId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.HoldNoLongerValid);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        // The guest keeps the seat they are actually sitting in.
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+            tenantId, previousOwnerId, ReleaseReason.Superseded, It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

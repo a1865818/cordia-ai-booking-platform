@@ -33,15 +33,26 @@ export function lastSeenLabel(iso: string | null | undefined, now = Date.now()):
 /**
  * True when this row is the console operator, not a guest.
  *
- * `/api/customers` is a projection over booking operations that falls back to the
- * confirmation's `identity_ref` when no booking row carries a `customer_id`
- * (`ConsoleReadModel.BuildCustomerResolverAsync`, spec 04 §8.8). A console-made booking has no
- * guest — `BookingRequest` models none — so `identity_ref` is the **operator**, and every such
- * booking collapses into one row whose `booking_count` is "how many bookings staff made".
+ * `/api/customers` is a projection over booking operations that falls back to the confirmation's
+ * `identity_ref` when no booking row carries a `customer_id`
+ * (`ConsoleReadModel.BuildCustomerResolverAsync`, spec 04 §8.8). `identity_ref` is whoever
+ * confirmed the intent, so for a console-made booking that is the **operator**, and those rows
+ * collapse into one whose `booking_count` reads as "how many bookings staff made".
  *
- * That is a real, correct row about a real thing. It is just not a customer, and the screen
- * must not present it as one: unlabelled, the venue's busiest "customer" is the console itself.
- * The durable fix is a ratified way to attach a guest to a staff-made booking (spec 04/08/12).
+ * **Scope, verified 2026-08-07 — narrower than this note used to claim.** The fallback fires only
+ * for operations that have not yet materialised a booking row (in-flight, or terminally failed).
+ * Once a booking exists it always carries a `customer_id`: `FinalizeBookingCommandHandler` ranks
+ * `customer_id` → `contact_ref` → `phone_e164` → … and ends with `?? providerReference`, so the
+ * column is never blank and the `identity_ref` branch is unreachable for finalised bookings. The
+ * earlier wording — "every such booking collapses into one row" — predates that ranking and
+ * overstated the blast radius.
+ *
+ * That is a real, correct row about a real thing. It is just not a customer, and the screen must
+ * not present it as one: unlabelled, the venue's busiest "customer" is the console itself. This
+ * flag is the honest label, not a fix. A true fix needs the projection to expose origin/channel
+ * metadata — `CustomerSummary` carries none today — or a ratified way to attach a guest to a
+ * staff-made booking (spec 04/08/12). Deliberately deferred: adding an origin field changes the
+ * OpenAPI surface, and the mislabelling it would correct is confined to the in-flight case above.
  */
 export function isOperatorRef(customerRef: string | null | undefined): boolean {
   return !!customerRef && customerRef === getActor();

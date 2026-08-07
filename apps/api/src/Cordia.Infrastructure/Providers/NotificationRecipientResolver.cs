@@ -85,7 +85,38 @@ public sealed class NotificationRecipientResolver(
         if (offer is null || !string.Equals(offer.TenantId, tenantId, StringComparison.Ordinal))
             return null;
 
-        var enrollment = await enrollments.GetAsync(offer.EnrollmentId, ct);
+        // The offer is only the route to the enrollment, which is where the address lives.
+        return await TryResolveFromEnrollmentAsync(tenantId, offer.EnrollmentId, ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task<ResolvedRecipient?> ResolveByEnrollmentAsync(
+        string tenantId,
+        string enrollmentId,
+        CancellationToken ct = default)
+    {
+        var guest = await TryResolveFromEnrollmentAsync(tenantId, enrollmentId, ct);
+        if (guest is null)
+            return null;
+
+        // Enrollment-derived, and deliberately so: this path has no operation id to derive from.
+        // It is NOT the row's persisted ref — see the interface remarks. Reconcile/retry keep using
+        // the stored one, which is what keys notification_id (Inv-9).
+        return new ResolvedRecipient(
+            Token(tenantId, enrollmentId), guest.Value.Channel, "en", guest.Value.Destination);
+    }
+
+    /// <summary>
+    /// The enrollment tail shared by the offer lookup and the enrollment-keyed recovery entry
+    /// point. One implementation on purpose: the send path and the reconcile/retry paths must not
+    /// be able to disagree about where a waitlist guest is reachable.
+    /// </summary>
+    private async Task<(string Destination, NotificationChannel Channel)?> TryResolveFromEnrollmentAsync(
+        string tenantId,
+        string enrollmentId,
+        CancellationToken ct)
+    {
+        var enrollment = await enrollments.GetAsync(enrollmentId, ct);
         if (enrollment is null || !string.Equals(enrollment.TenantId, tenantId, StringComparison.Ordinal))
             return null;
 
@@ -105,7 +136,7 @@ public sealed class NotificationRecipientResolver(
     /// Classifies a free-text reference as a deliverable address, or null when it is neither a
     /// phone nor an email — a name, a nickname, or an internal handle.
     /// </summary>
-    private static (string Destination, NotificationChannel Channel)? AsDeliverable(string? raw)
+    internal static (string Destination, NotificationChannel Channel)? AsDeliverable(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return null;
@@ -147,7 +178,7 @@ public sealed class NotificationRecipientResolver(
     /// address on file, the address wins — the console now refuses to record that combination in
     /// the first place, so a stored conflict is legacy data, not a new choice.</para>
     /// </summary>
-    private static NotificationChannel ChannelFor(string? stated, NotificationChannel implied)
+    internal static NotificationChannel ChannelFor(string? stated, NotificationChannel implied)
         => stated?.Trim().ToLowerInvariant() switch
         {
             "channel" => NotificationChannel.Channel,

@@ -46,9 +46,16 @@ public sealed class MenuIngestionMonitor(
     /// </summary>
     private const string ExtractionFailedEventType = Cordia.Domain.Menu.MenuMessageTypes.ExtractionFailed;
 
-    /// <summary>The two statuses that are supposed to be transient. Anything else is a resting state.</summary>
+    /// <summary>
+    /// The statuses that are supposed to be transient. Anything else is a resting state.
+    ///
+    /// <para>Materialised from <see cref="CatalogStateMachine.InProgressStates"/> — an array because
+    /// EF translates <c>array.Contains(column)</c> into SQL <c>= ANY</c> — so the sweep and the
+    /// state machine cannot disagree about which statuses represent a job that may never report
+    /// back.</para>
+    /// </summary>
     private static readonly CatalogStatus[] InProgress =
-        [CatalogStatus.Scanning, CatalogStatus.Extracting];
+        [.. CatalogStateMachine.InProgressStates];
 
     public async Task<int> SettleStalledAsync(
         DateTimeOffset stalledBefore,

@@ -15,6 +15,18 @@ public class CapacitySlotRepository(ApplicationDbContext db) : ICapacitySlotRepo
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.SlotId == slotId, ct);
 
+    /// <inheritdoc/>
+    public Task LockAsync(string tenantId, string slotId, CancellationToken ct = default)
+        // Raw SQL because EF has no `FOR UPDATE`, and a constant rather than the row because the
+        // caller wants the LOCK, not the data — exactly as CapacityHoldRepository.LockAsync does.
+        //
+        // Released when the ambient transaction ends. `tenant_id` is a load-bearing predicate, not
+        // decoration: it bounds the lock to this tenant's row (Inv-13). Fully parameterised through
+        // FormattableString, so there is no injection surface.
+        => db.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT 1 FROM public.capacity_slots WHERE tenant_id = {tenantId} AND slot_id = {slotId} FOR UPDATE",
+            ct);
+
     public async Task AddAsync(CapacitySlot slot, CancellationToken ct = default)
     {
         db.CapacitySlots.Add(slot);
@@ -33,25 +45,31 @@ public class CapacitySlotRepository(ApplicationDbContext db) : ICapacitySlotRepo
     /// </summary>
     public async Task<bool> TryAddAsync(CapacitySlot slot, CancellationToken ct = default)
     {
-        db.CapacitySlots.Add(slot);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-            return true;
-        }
-        // ONLY the unique-violation (23505) is "someone else won". Catching every
-        // DbUpdateException reported a genuinely failed insert — a check/not-null violation, a
-        // serialization failure, a dropped connection — as a lost race, and the caller then
-        // re-read a winner that does not exist and returned its own unsaved instance as a
-        // successful declaration: a 200 for a slot nothing persisted, no audit row (that write is
-        // gated on winning), and every booking against it silently taking the untracked path.
-        // Anything else must surface.
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: "23505" })
-        {
-            // Detach so the failed insert cannot be retried by a later SaveChanges on this context.
-            db.Entry(slot).State = EntityState.Detached;
-            return false;
-        }
+        // ON CONFLICT DO NOTHING, not catch-the-violation.
+        //
+        // Catching 23505 cannot work here at all, and this is the trap: the caller runs inside an
+        // ambient transaction, and PostgreSQL aborts the WHOLE transaction on a constraint
+        // violation. By the time the exception is caught the transaction is already poisoned, so
+        // the "lost the race, read the winner back" path — and the COMMIT itself — fail with
+        // `current transaction is aborted`. The endpoint documented as idempotent by the derived
+        // key therefore 500'd for the loser instead of returning the winner's slot.
+        //
+        // Letting the database absorb the conflict means no exception is ever raised, so the
+        // transaction stays clean and the loser really can read the winner back. This mirrors
+        // `IdempotencyRepository.ElectCreatorAsync`, the same primitive for the same reason.
+        var rows = await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO public.capacity_slots
+                (tenant_id, slot_id, resource_id, starts_at, total_capacity,
+                 held_capacity, booked_capacity, version)
+            VALUES
+                ({slot.TenantId}, {slot.SlotId}, {slot.ResourceId}, {slot.StartsAt},
+                 {slot.TotalCapacity}, {slot.HeldCapacity}, {slot.BookedCapacity}, {slot.Version})
+            ON CONFLICT (tenant_id, slot_id) DO NOTHING
+            """,
+            ct);
+
+        return rows == 1;
     }
 
     public async Task<IReadOnlyList<CapacitySlot>> ListAsync(

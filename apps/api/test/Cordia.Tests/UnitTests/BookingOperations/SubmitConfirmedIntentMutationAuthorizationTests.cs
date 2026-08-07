@@ -71,14 +71,14 @@ public class SubmitConfirmedIntentMutationAuthorizationTests
         _grantAuth.Setup(g => g.RequireGrantScopeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VerificationGrant { TenantId = TenantId, GrantId = GrantId });
     }
 
     private SubmitConfirmedIntentCommandHandler CreateHandler() =>
         new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object,
             _auditEvents.Object, new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object,
-            _grants.Object, _bookings.Object, _grantAuth.Object);
+            _grants.Object, _bookings.Object, _grantAuth.Object, AssertedActor.Allowed);
 
     /// <summary>
     /// The grant is SPENT when the request creates a new operation.
@@ -94,7 +94,7 @@ public class SubmitConfirmedIntentMutationAuthorizationTests
 
         _grantAuth.Verify(g => g.ConsumeGrantAsync(
             TenantId, GrantId, CustomerId, VerificationActionEnum.Modify, BookingId, "booking",
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>
@@ -124,7 +124,7 @@ public class SubmitConfirmedIntentMutationAuthorizationTests
         _grantAuth.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     /// <summary>
@@ -151,6 +151,44 @@ public class SubmitConfirmedIntentMutationAuthorizationTests
             It.IsAny<string?>(), It.IsAny<string?>()), Times.Once);
     }
 
+    /// <summary>
+    /// Where an asserted role is NOT accepted, it authorizes nothing — the mutation needs a grant.
+    ///
+    /// <para>`X-Actor-Role` is a string the client chose; `StaffRole.Satisfies` checks the
+    /// vocabulary, not the caller. With the branch unconditionally live, anyone who knew a booking
+    /// id could send `X-Actor-Role: operator` and reschedule another customer's booking with no
+    /// grant at all — on the one door a reschedule can use. It is gated exactly like the
+    /// `X-Tenant-Id` shim it rides on: on in Development and the test host, off everywhere else.
+    /// </para>
+    ///
+    /// <para>With the gate off the request falls through to the grant path, which here presents no
+    /// usable grant and is refused — the same 403 an unauthenticated caller gets, so the role
+    /// cannot be used to tell the two apart.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnAssertedStaffRoleAuthorizesNothingWhereAssertedIdentityIsNotAccepted()
+    {
+        _grantAuth.Setup(g => g.RequireGrantScopeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new VerificationRequiredException(
+                TenantId, CustomerId, VerificationActionEnum.Modify, BookingId));
+
+        var handler = new SubmitConfirmedIntentCommandHandler(
+            _hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object,
+            _auditEvents.Object, new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object,
+            _grants.Object, _bookings.Object, _grantAuth.Object, AssertedActor.Denied);
+
+        var command = MakeCommand() with { GrantId = null, ActorId = "ops", ActorRole = "operator" };
+
+        await Assert.ThrowsAsync<VerificationRequiredException>(
+            () => handler.Handle(command, TestContext.Current.CancellationToken));
+
+        // Nothing was accepted: no operation row, no outbox message.
+        _ops.Verify(r => r.AddAsync(It.IsAny<BookingOperation>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     /// <summary>The staff-role path authorizes on the asserted role, so it has no grant to spend.</summary>
     [Fact]
     public async Task TheStaffRolePathSpendsNothing()
@@ -162,7 +200,7 @@ public class SubmitConfirmedIntentMutationAuthorizationTests
         _grantAuth.Verify(g => g.ConsumeGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static SubmitConfirmedIntentCommand MakeCommand()

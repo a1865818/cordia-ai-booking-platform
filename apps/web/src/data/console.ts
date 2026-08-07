@@ -58,6 +58,22 @@ export interface QueueItem {
    * that answer must not be offered on such a row. Absent on demo rows.
    */
   isPreorder?: boolean;
+  /**
+   * The open manual-recovery work item for this operation, when one exists.
+   *
+   * A separate record from the status, with a separate lifetime: it is raised when the
+   * platform gives up and stays open until a person closes it, so it says *why* someone was
+   * called and *by when* — which the status alone cannot. Absent on demo rows and on
+   * operations nobody has been called for.
+   */
+  workItem?: {
+    /** Operator-facing wording; the raw reason is a machine tag. */
+    reason: string;
+    slaDeadline: string;
+    /** Past its deadline. Never inferred from an unparseable date. */
+    overdue: boolean;
+    assignee: string | null;
+  };
 }
 
 export interface Thread {

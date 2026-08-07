@@ -1,4 +1,5 @@
 ﻿using Cordia.Domain.Console;
+using Cordia.Domain.Bookings;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
@@ -82,13 +83,13 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             },
             ct);
 
-        var resolveCustomer = await BuildCustomerResolverAsync(tenantId, matches, ct);
+        var resolveIdentity = await BuildCustomerResolverAsync(tenantId, matches, ct);
 
         return new ScheduleResult(
             matches
                 .Select(row => ToScheduledBooking(
                     row,
-                    resolveCustomer(row),
+                    resolveIdentity(row),
                     latestState.TryGetValue(row.Key, out var latest) ? latest : row))
                 .OrderBy(b => b.StartsAt)
                 .ToList(),
@@ -258,10 +259,11 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         var all = new List<ParsedRow>();
         var truncated = await ScanAsync(tenantId, parsed => { all.Add(parsed); return false; }, ct);
 
-        var resolveCustomer = await BuildCustomerResolverAsync(tenantId, all, ct);
+        var resolveIdentity = await BuildCustomerResolverAsync(tenantId, all, ct);
 
+        // The customers projection wants only the identity half; the reference is a schedule concern.
         var withCustomer = all
-            .Select(p => (Parsed: p, CustomerRef: resolveCustomer(p)))
+            .Select(p => (Parsed: p, CustomerRef: resolveIdentity(p).CustomerRef))
             .Where(x => !string.IsNullOrWhiteSpace(x.CustomerRef))
             .ToList();
 
@@ -456,7 +458,7 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
     /// booking materialises, and before that the confirmation's <c>identity_ref</c> — the
     /// evidence of who confirmed the intent (spec 04 §8.8).
     /// </summary>
-    private async Task<Func<ParsedRow, string?>> BuildCustomerResolverAsync(
+    private async Task<Func<ParsedRow, BookingIdentity>> BuildCustomerResolverAsync(
         string tenantId,
         IReadOnlyCollection<ParsedRow> rows,
         CancellationToken ct)
@@ -468,16 +470,20 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        var customerByBooking = bookingIds.Length == 0
-            ? new Dictionary<string, string>(StringComparer.Ordinal)
+        // The reference rides along with the customer id rather than getting its own query or a
+        // join in PayloadRows: it has to be keyed on the SAME booking id the row actually displays.
+        // That id is the parsed one, which falls back to the payload when the operation row has no
+        // BookingId yet — so a join on `booking_operations.booking_id` would miss exactly the rows
+        // this is meant to fix.
+        var rowByBooking = bookingIds.Length == 0
+            ? new Dictionary<string, BookingRow>(StringComparer.Ordinal)
             : (await db.Bookings
                     .AsNoTracking()
                     .Where(b => b.TenantId == tenantId && bookingIds.Contains(b.BookingId))
-                    .Select(b => new { b.BookingId, b.CustomerId })
+                    .Select(b => new BookingRow(b.BookingId, b.CustomerId, b.BookingReference))
                     .ToListAsync(ct))
-                .Where(b => !string.IsNullOrWhiteSpace(b.CustomerId))
                 .GroupBy(b => b.BookingId, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.First().CustomerId, StringComparer.Ordinal);
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var intentIds = rows.Select(r => r.Row.IntentId).Distinct(StringComparer.Ordinal).ToArray();
 
@@ -494,16 +500,38 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
 
         return parsed =>
         {
+            var booking = parsed.BookingId is not null
+                          && rowByBooking.TryGetValue(parsed.BookingId, out var found)
+                ? found
+                : null;
+
+            // The reference exists only once the booking materialises; before that it is genuinely
+            // unknown and is reported as null rather than invented (Inv-16).
+            var reference = string.IsNullOrWhiteSpace(booking?.BookingReference)
+                ? null
+                : booking!.BookingReference;
+
             // An in-flight operation has no booking row yet; the confirmation's identity_ref below
             // is the evidence of who confirmed the intent (spec 04 §8.8) and covers that gap.
-            if (parsed.BookingId is not null
-                && customerByBooking.TryGetValue(parsed.BookingId, out var customerId))
-                return customerId;
+            if (!string.IsNullOrWhiteSpace(booking?.CustomerId))
+                return new BookingIdentity(booking!.CustomerId, reference);
 
             var intentKey = $"{parsed.Row.IntentId}#{parsed.Row.IntentRevision}";
-            return identityByIntent.TryGetValue(intentKey, out var identityRef) ? identityRef : null;
+            return new BookingIdentity(
+                identityByIntent.TryGetValue(intentKey, out var identityRef) ? identityRef : null,
+                reference);
         };
     }
+
+    /// <summary>What the <c>bookings</c> row contributes to a console projection.</summary>
+    private sealed record BookingRow(string BookingId, string? CustomerId, string? BookingReference);
+
+    /// <summary>
+    /// The identity facts a console row shows. Resolved together because both come from the same
+    /// <c>bookings</c> lookup, and because the reference must be keyed on the booking id the row
+    /// displays — not on the operation row's own (often null) <c>BookingId</c>.
+    /// </summary>
+    private sealed record BookingIdentity(string? CustomerRef, string? BookingReference);
 
     /// <summary>
     /// Operations joined to their confirmed revision, newest activity first — the same
@@ -539,16 +567,30 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
     /// </summary>
     private static ScheduledBooking ToScheduledBooking(
         ParsedRow parsed,
-        string? customerRef,
+        BookingIdentity identity,
         ParsedRow state)
     {
         var (row, payload, bookingId, _) = parsed;
         var stateRow = state.Row;
+        var customerRef = identity.CustomerRef;
 
         return new ScheduledBooking(
             bookingId,
             row.OperationId,
-            payload.BookingReference,
+            // The bookings row wins: it is where finalize writes the reference, and it is not a
+            // field of BookingRequest (additionalProperties: false), so a current-schema payload
+            // can never carry one — reading only the payload returned null for every normal
+            // booking and the grid rendered those rows as literal "Guest". The payload spelling
+            // survives as a fallback for historical rows that happened to carry one.
+            //
+            // Same PRECEDENCE as BookingReadRepository.ToProjection, but not the same KEY: that
+            // one joins on `booking_operations.booking_id` alone, while this resolves on
+            // FirstNonEmpty(target_booking_id, row.BookingId, payload.BookingId). So for an
+            // operation whose row carries no BookingId but whose payload names a target, the
+            // console can show a reference manage-booking will not. Narrow — the console's own
+            // cancel/modify doors set BookingId at creation — and the console being the more
+            // complete of the two is the right direction, but they are not identical.
+            FirstNonEmpty(identity.BookingReference, payload.BookingReference),
             payload.StartsAt,
             payload.PartySize,
             payload.DurationMinutes,
@@ -570,21 +612,7 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
     /// manage-booking projection never disagree about a booking's lifecycle state.
     /// </summary>
     private static string ToLifecycleStatus(OperationTypeEnum operationType, OperationStatus status)
-        => status switch
-        {
-            // A cancel has no `cancelled` operation status of its own (D1): it terminates at
-            // `Booked` — "this operation succeeded" — with the BOOKING carrying the
-            // cancellation. This arm MUST precede the generic `Booked` one, or a successfully
-            // cancelled booking reads back as "confirmed".
-            OperationStatus.Booked when operationType is OperationTypeEnum.Cancel => "cancelled",
-            OperationStatus.Booked when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule
-                => "modification_pending",
-            OperationStatus.Booked => "confirmed",
-            OperationStatus.Rejected or OperationStatus.Expired or OperationStatus.FailedFinal => "cancelled",
-            _ when operationType is OperationTypeEnum.Cancel => "cancellation_pending",
-            _ when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule => "modification_pending",
-            _ => "confirmed",
-        };
+        => BookingLifecycleProjection.From(operationType, status);
 
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));

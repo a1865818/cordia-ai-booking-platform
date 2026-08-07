@@ -26,6 +26,7 @@ public sealed class ResolveManualReviewCommandHandler(
     IOutboxRepository outboxRepo,
     IBookingRepository bookingRepo,
     ICapacityReservation capacityReservation,
+    ModifyBooking.ModifyCapacitySettlement capacitySettlement,
     IAuditWriter audit,
     IUnitOfWork uow)
     : IRequestHandler<ResolveManualReviewCommand, Unit>
@@ -81,6 +82,15 @@ public sealed class ResolveManualReviewCommandHandler(
 
             if (command.Resolution == ManualReviewResolution.Booked)
             {
+                // Resolved BEFORE the transition, for the reason the automatic lane documents:
+                // `GetBookedOperationForBookingAsync` returns the NEWEST Booked operation for the
+                // booking, so once this one is Booked it resolves to itself and the seat the
+                // booking is leaving is never given up.
+                var previousOwner = isMutation && !string.IsNullOrWhiteSpace(opInTxn.BookingId)
+                    ? await opRepo.GetBookedOperationForBookingAsync(
+                        command.TenantId, opInTxn.BookingId, ct2)
+                    : null;
+
                 // ManualReview → Booked (§11 legal edge: "verified external result").
                 rows = await opRepo.TryTransitionStatusAsync(
                     command.TenantId,
@@ -107,7 +117,15 @@ public sealed class ResolveManualReviewCommandHandler(
                     if (opInTxn.OperationType == Domain.Generated.OperationTypeEnum.Cancel
                         && target is { LifecycleStatus: BookingLifecycleStatus.CancellationPending })
                     {
-                        await bookingRepo.TryTransitionLifecycleAsync(
+                        // The lifecycle transition is a HARD PRECONDITION for freeing the seat, the
+                        // same rule CancelBookingCommandHandler applies.
+                        //
+                        // A concurrent writer moving the booking's version makes this affect zero
+                        // rows. Releasing anyway would hand the slot to someone else while the
+                        // booking sat at CancellationPending — a seat given away for a cancellation
+                        // that never landed, with the operation and its outbox message committing
+                        // as a success on top.
+                        var cancelled = await bookingRepo.TryTransitionLifecycleAsync(
                             command.TenantId, target.BookingId, target.Version,
                             BookingLifecycleStatus.Cancelled, now, ct2);
 
@@ -120,23 +138,44 @@ public sealed class ResolveManualReviewCommandHandler(
                         // the slot would stay occupied by a booking that no longer exists, which is
                         // exactly the leak this block was added to close. CancelBookingCommandHandler
                         // resolves the owner the same way for the same reason.
-                        var origin = await opRepo.GetBookedOperationForBookingAsync(
-                            command.TenantId, target.BookingId, ct2);
-
-                        if (origin is not null)
+                        if (cancelled > 0)
                         {
-                            await capacityReservation.ReleaseFinalizedByOperationAsync(
-                                command.TenantId, origin.OperationId, ReleaseReason.ProviderReleased, ct2);
+                            var origin = await opRepo.GetBookedOperationForBookingAsync(
+                                command.TenantId, target.BookingId, ct2);
+
+                            if (origin is not null)
+                            {
+                                await capacityReservation.ReleaseFinalizedByOperationAsync(
+                                    command.TenantId, origin.OperationId, ReleaseReason.ProviderReleased, ct2);
+                            }
                         }
                     }
                     else if (opInTxn.OperationType is Domain.Generated.OperationTypeEnum.Modify
-                                 or Domain.Generated.OperationTypeEnum.Reschedule
-                             && target is { LifecycleStatus: BookingLifecycleStatus.ModificationPending })
+                                 or Domain.Generated.OperationTypeEnum.Reschedule)
                     {
-                        // A modified booking is still confirmed — what moved lives on the revision.
-                        await bookingRepo.TryTransitionLifecycleAsync(
-                            command.TenantId, target.BookingId, target.Version,
-                            BookingLifecycleStatus.Confirmed, now, ct2);
+                        if (target is { LifecycleStatus: BookingLifecycleStatus.ModificationPending })
+                        {
+                            // A modified booking is still confirmed — what moved lives on the revision.
+                            await bookingRepo.TryTransitionLifecycleAsync(
+                                command.TenantId, target.BookingId, target.Version,
+                                BookingLifecycleStatus.Confirmed, now, ct2);
+                        }
+
+                        // The SEAT has to be settled too, and nothing else will ever do it.
+                        //
+                        // A modify that went ambiguous routes Finalizing→Reconciling BEFORE
+                        // CommitModificationAsync runs, so its capacity was left exactly as the
+                        // reserve step left it: this operation's hold on the target slot still
+                        // ACTIVE, and the previous owner's hold on the old slot still FINALIZED.
+                        // Resolving the review as Booked settled the operation and the booking and
+                        // stopped there, which leaks in both directions at once — the old slot stays
+                        // occupied by a booking that moved away, and the new slot's hold is dropped
+                        // by the expiry sweeper, after which the slot reads free while a confirmed
+                        // booking sits in it. Neither is recoverable later: a cancellation resolves
+                        // the NEWEST booked operation, which is this one, and finds nothing
+                        // finalized to release.
+                        await capacitySettlement.SettleAsync(
+                            command.TenantId, opInTxn, previousOwner, ct2);
                     }
                 }
 
@@ -194,9 +233,8 @@ public sealed class ResolveManualReviewCommandHandler(
                 //
                 // Failed means NOTHING HAPPENED, so both revert to Confirmed: the amendment was not
                 // applied and the cancellation did not land, which leaves the original booking
-                // exactly as it was. No capacity moves for the same reason — the seat was never
-                // given up. A booking that went Cancelled underneath us is left alone (the status
-                // guard), because that outcome was decided by a writer that did know.
+                // exactly as it was. A booking that went Cancelled underneath us is left alone (the
+                // status guard), because that outcome was decided by a writer that did know.
                 if (isMutation && !string.IsNullOrWhiteSpace(opInTxn.BookingId))
                 {
                     var target = await bookingRepo.GetByIdAsync(command.TenantId, opInTxn.BookingId, ct2);
@@ -212,6 +250,32 @@ public sealed class ResolveManualReviewCommandHandler(
                             BookingLifecycleStatus.Confirmed, now, ct2);
                     }
                 }
+
+                // Give back any seat THIS operation had already taken.
+                //
+                // "No capacity moves — the seat was never given up" used to be stated here as a
+                // premise, and it no longer holds. `modify_capacity_unavailable` routes an
+                // operation to Reconciling AFTER `FinalizeAgainstOperationAsync` has flipped its
+                // hold to Finalized and moved units held→booked on the slot; only then does the
+                // absorb refuse. From there the reconciler escalates to ManualReview, and resolving
+                // that review as Failed left those booked units owned by an operation nobody will
+                // ever look at again: `GetBookedOperationForBookingAsync` matches only `Booked`
+                // operations, so no cancel and no later amendment can find a FailedFinal one's
+                // hold. The slot under-reported its availability permanently.
+                //
+                // Safe for every other route into this branch, and that is why it is not narrowed
+                // to one reason: releasing is scoped to holds under THIS operation id, and the
+                // operations that reach here by any other path hold nothing Finalized — the
+                // ambiguous-provider and `hold_no_longer_valid` routes never finalized, and
+                // `target_cancelled_in_flight` already released what it did. Those calls affect
+                // zero rows.
+                //
+                // Crucially this cannot strip the booking of its real seat: the only route that
+                // leaves a Finalized hold here is the one where the absorb FAILED, so the previous
+                // owner still holds the booking's capacity. `Compensated`, because the operation is
+                // being declared failed and its units are going back to the venue.
+                await capacityReservation.ReleaseFinalizedByOperationAsync(
+                    command.TenantId, command.OperationId, ReleaseReason.Compensated, ct2);
 
                 await outboxRepo.AddAsync(new OutboxMessage
                 {

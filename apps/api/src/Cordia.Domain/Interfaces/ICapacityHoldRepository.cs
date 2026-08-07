@@ -36,4 +36,29 @@ public interface ICapacityHoldRepository
     /// <c>expires_at</c> ascending. Used by the hold-expiry sweeper (spec 07 §8).
     /// </summary>
     Task<IReadOnlyList<CapacityHold>> ListExpiredActiveAsync(DateTimeOffset now, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Takes the row lock on one hold WITHOUT changing it (<c>SELECT … FOR UPDATE</c>), so a
+    /// transaction can acquire its capacity locks in a canonical order.
+    ///
+    /// <para><b>Why a lock with no write.</b> Every capacity path locks <c>capacity_holds</c> before
+    /// <c>capacity_slots</c> — except a same-slot amendment, where
+    /// <c>FinalizeAgainstOperationAsync</c> takes the slot first and only then does
+    /// <c>AbsorbSameSlotAsync</c> reach for the PREVIOUS owner's hold. A concurrent cancel of the
+    /// same booking takes those two rows in the opposite order (hold, then slot), so the two
+    /// transactions can hold one row each and wait on the other: Postgres detects the cycle and
+    /// aborts one side with <c>40P01</c>. No data is corrupted — the loser rolls back and
+    /// redelivery re-runs it — but the work is thrown away for no reason.</para>
+    ///
+    /// <para>The inversion cannot be repaired inside <c>AbsorbSameSlotAsync</c>: by the time it
+    /// runs, the slot is already locked by the finalize step of the same transaction. The previous
+    /// owner's hold therefore has to be locked BEFORE the capacity phase touches the slot, and it
+    /// must be locked without being modified — the <c>HoldNoLongerValid</c> branch that follows
+    /// deliberately leaves the old seat alone, so releasing it early would strip a guest of the
+    /// only capacity they hold.</para>
+    ///
+    /// <para>Returns silently when the hold does not exist: a missing row is not an error here, and
+    /// there is nothing to order against.</para>
+    /// </summary>
+    Task LockAsync(string tenantId, string holdId, CancellationToken ct = default);
 }

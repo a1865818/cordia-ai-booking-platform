@@ -37,13 +37,21 @@ export interface CatalogTransitionVariables {
 }
 
 /**
- * Every catalog LIFECYCLE transition invalidates the discovery list.
+ * Every catalog LIFECYCLE transition invalidates the discovery list **and the moved catalog's own
+ * draft**.
  *
  * The list is fetched with `staleTime: Infinity` and no focus/reconnect refetch (an audited,
  * owner-gated read must not fire because someone alt-tabbed), so nothing else would ever refresh
  * it. Without this, the panel's merge kept overwriting a status the server had just confirmed in
  * a write response with the one from the mount-time snapshot: an approved catalog re-rendered as
  * `in_review`, offering Approve again, which then 409'd with no way out but a page reload.
+ *
+ * **The draft key needed the same treatment, and only the list got it.** `CatalogDraftEditor`
+ * reads `catalogDraft(catalogId)` under the identical never-refetch policy, and its stepper and
+ * save controls are driven by that query's `status`. So approving while the editor was open left
+ * it showing `in_review` with the controls still live, and the next edit 409'd — the exact
+ * dead-end described above, reached through the other cache entry. Invalidating both keeps the
+ * mounted editor consistent with the transition that just happened.
  *
  * `onSettled`, not `onSuccess`: a 409 means the catalog is not where this session thought it was,
  * which is exactly when the stale snapshot most needs replacing.
@@ -54,8 +62,11 @@ function useCatalogLifecycleMutation(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
-    onSettled: () => {
+    onSettled: (_data, _error, variables) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.settings.catalogList() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.settings.catalogDraft(variables.catalogId),
+      });
     },
   });
 }

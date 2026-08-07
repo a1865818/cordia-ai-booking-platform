@@ -167,6 +167,26 @@ export function toCanonicalPayload(draft: BookingDraft): BookingRequest {
 }
 
 /**
+ * The length ceiling, mirroring `PhoneMatching.MaxLength` on the server.
+ *
+ * **Applied to the NORMALISED output, not to the operator's raw input** — and the difference
+ * matters in both directions.
+ *
+ * The server bails to `null` above this length, so the invariant that has to hold is: *the value
+ * this function writes into the canonical payload must be one the server can still normalise
+ * later*. That value is the output (`'+' + digits`), never the raw input, because
+ * `toCanonicalPayload` stores what this returns.
+ *
+ * Bounding the raw input instead would be strictly worse than having no bound. It is unnecessary —
+ * output is never longer than the trimmed raw, so `raw ≤ 64` already implies `output ≤ 64` — and
+ * it is actively harmful: `"+61 400 111 222"` padded past 64 characters by a CRM paste is a
+ * perfectly good 12-digit number, and refusing it would drop the guest's phone out of an
+ * immutable, hashed payload entirely, leaving a booking that can never be notified or found. That
+ * is the very outcome this ceiling exists to prevent.
+ */
+export const MAX_PHONE_RAW_LENGTH = 64;
+
+/**
  * Strips separators from a phone number, keeping digits and a leading `+`.
  *
  * Formatting only, and deliberately so: it does NOT turn `0400111222` into `+61400111222`.
@@ -176,6 +196,19 @@ export function toCanonicalPayload(draft: BookingDraft): BookingRequest {
  *
  * Mirrors `PhoneMatching.Normalise` on the server — the two must agree or a booking created
  * here would not be found by the lookup there.
+ *
+ * **Including the length bound, which is why it is not merely cosmetic.** `toCanonicalPayload`
+ * embeds this output in the canonical payload, which is HASHED and IMMUTABLE. A value longer than
+ * the server's ceiling used to pass here and be written into that payload, after which every
+ * server-side `PhoneMatching.Normalise` — booking discovery, notification resolution — read it
+ * back as `null`. The booking became permanently unfindable by phone and permanently
+ * un-notifiable, and it could not be repaired: rewriting the payload would invalidate
+ * `payload_hash` and every idempotency record derived from it (Inv-2/3).
+ *
+ * The over-long value is dropped rather than truncated — a truncated number is a DIFFERENT number,
+ * and silently dialling it is worse than not having one. Note this rejects the VALUE; it does not
+ * block submission. The operator is warned at capture via `looksUnnormalisedPhone`, which shares
+ * this function so the two can never disagree about what counts as usable.
  */
 export function normalisePhone(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
@@ -186,7 +219,12 @@ export function normalisePhone(raw: string | undefined): string | undefined {
   const hasPlus = plusIdx >= 0 && (firstDigit < 0 || plusIdx < firstDigit);
   const digits = trimmed.replace(/\D/g, "");
   if (digits.length === 0) return undefined;
-  return hasPlus ? `+${digits}` : digits;
+
+  const normalised = hasPlus ? `+${digits}` : digits;
+  // Bounded on the OUTPUT: this is the value that reaches the payload and that the server must be
+  // able to re-normalise. Formatting is stripped first, so a heavily punctuated but ordinary
+  // number keeps its phone instead of losing it.
+  return normalised.length > MAX_PHONE_RAW_LENGTH ? undefined : normalised;
 }
 
 export async function buildSubmission(

@@ -30,6 +30,8 @@ public sealed class GrantAuthorizationService(
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
@@ -44,7 +46,9 @@ public sealed class GrantAuthorizationService(
 
         if (grant is null)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
 
@@ -58,6 +62,8 @@ public sealed class GrantAuthorizationService(
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default)
     {
         var grant = await grants.FindGrantByIdIgnoringConsumptionAsync(
@@ -71,7 +77,9 @@ public sealed class GrantAuthorizationService(
 
         if (grant is null)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
 
@@ -85,6 +93,8 @@ public sealed class GrantAuthorizationService(
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default)
     {
         var rows = await grants.ConsumeAsync(
@@ -97,7 +107,9 @@ public sealed class GrantAuthorizationService(
             ct);
         if (rows == 0)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
     }
@@ -141,11 +153,16 @@ public sealed class GrantAuthorizationService(
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: tenantId,
-                    // A staff-asserted caller is recorded as staff. Attributing an operator's
-                    // refused attempt to "customer" would put it under the guest's name in the one
-                    // record that answers who tried.
-                    ActorType: StaffRole.IsKnown(actorRole) ? actorRole! : "customer",
-                    ActorId: string.IsNullOrWhiteSpace(actorId) ? customerRef : actorId,
+                    // A staff-asserted caller is recorded as staff — but ONLY when they actually
+                    // named themselves. A role with no actor id is not an identification, and
+                    // pairing it with a blank ActorId produced the one thing a deny record must
+                    // never be: an "operator was refused" row that cannot say which operator.
+                    // Falling back to the customer ref (blank on this door's pre-grant denials)
+                    // made it worse by attributing a staff attempt to nobody at all.
+                    ActorType: StaffRole.IsKnown(actorRole) && !string.IsNullOrWhiteSpace(actorId)
+                        ? actorRole!
+                        : "customer",
+                    ActorId: FirstNonBlank(actorId, customerRef) ?? "unknown",
                     Action: "verification.grant_denied",
                     // The resource type the grant authorizes — "booking" by default, but a transcript
                     // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
@@ -179,5 +196,16 @@ public sealed class GrantAuthorizationService(
                 action,
                 targetType);
         }
+    }
+
+    private static string? FirstNonBlank(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+                return candidate;
+        }
+
+        return null;
     }
 }

@@ -10,7 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "../api/queryKeys";
 import { getBookingSchedule, type ScheduleWindow } from "./bookings/api";
 import { getAvailability } from "./bookings/availability";
-import { listOperations, type OperationFilters } from "./operations/api";
+import { listOpenWorkItems, listOperations, type OperationFilters } from "./operations/api";
 import { listSessions, getTranscript } from "./conversations/api";
 import type { SensitiveReadPurpose } from "./conversations/purposes";
 import { listCustomers } from "./customers/api";
@@ -48,6 +48,21 @@ export function useOperations(filters: OperationFilters = {}, enabled = true) {
       limit: filters.limit,
     }),
     queryFn: ({ signal }) => listOperations(filters, signal),
+    enabled,
+  });
+}
+
+/**
+ * The open manual-recovery queue — why each parked operation needs a person, and by when.
+ *
+ * Separate from {@link useOperations} because it reads a separate table. The operations list
+ * says an operation is in `manual_review`; this says it is there because the venue's
+ * cancellation could not be confirmed, and that it was due an hour ago.
+ */
+export function useOpenWorkItems(limit?: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operations.workItems(limit),
+    queryFn: ({ signal }) => listOpenWorkItems(limit, signal),
     enabled,
   });
 }

@@ -38,15 +38,20 @@ public interface IVerificationGrantRepository
         CancellationToken ct = default);
 
     /// <summary>
-    /// Identical scope check to <see cref="FindValidGrantByIdAsync"/> — same tenant, customer,
-    /// action, target and expiry — but it does NOT require the grant to be unconsumed.
+    /// The SCOPE half of <see cref="FindValidGrantByIdAsync"/> — same tenant, customer, action and
+    /// target — with neither liveness condition: the grant may be consumed, and it may be expired.
     ///
-    /// <para>For a caller that consumes the grant LATER, at the moment it commits. Such a caller
-    /// cannot pre-check with the unconsumed variant: its own successful first attempt spends the
-    /// grant, so an honest retry of that same request would then be refused, turning an
-    /// idempotent replay into a 403. Consumption is still enforced — by
-    /// <see cref="ConsumeAsync"/>'s conditional update, which is the atomic single-use fence — this
-    /// only stops the pre-check from double-counting it. A caller that does not consume must use
+    /// <para>For a caller that consumes the grant LATER, at the moment it commits, and whose
+    /// requests are idempotently replayable. Both liveness conditions are enforced atomically by
+    /// <see cref="ConsumeAsync"/>, which is the real single-use fence and the only place a NEW
+    /// operation can be created; re-checking them in the pre-check breaks nothing but the caller's
+    /// own honest retry. Its first attempt spends the grant and leaves the clock running, so a
+    /// redelivery after the TTL — of a request that was already accepted, whose response was lost
+    /// in transit — was refused with a 403 instead of replaying the operation it had already
+    /// created. Expiry bounds how long a grant may AUTHORIZE something new, not how long the
+    /// platform will admit that it already did.</para>
+    ///
+    /// <para>A caller that does not consume has no such fence and MUST use
     /// <see cref="FindValidGrantByIdAsync"/>.</para>
     /// </summary>
     Task<VerificationGrant?> FindGrantByIdIgnoringConsumptionAsync(

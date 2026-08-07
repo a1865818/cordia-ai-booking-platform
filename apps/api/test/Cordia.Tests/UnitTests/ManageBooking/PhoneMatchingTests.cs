@@ -77,4 +77,41 @@ public class PhoneMatchingTests
     {
         Assert.Null(PhoneMatching.Normalise(raw));
     }
+
+    // ── The raw-length ceiling, pinned on BOTH sides ────────────────────────────────────────────
+    //
+    // `normalisePhone` in apps/web/src/features/bookings/buildSubmission.ts carries the identical
+    // bound and the identical two vectors. They have to agree: that function's output is written
+    // into the canonical payload, which is hashed and immutable, so a value the client accepts and
+    // the server later reads back as null makes the booking permanently unfindable by phone with
+    // no repair possible (Inv-2/3). If either side moves its threshold, one of these fails.
+
+    [Fact]
+    public void NormaliseAcceptsAValueAtExactlyTheRawCeiling()
+    {
+        var atLimit = "+" + new string('4', 63); // 64 raw chars
+        Assert.Equal(64, atLimit.Length);
+        Assert.Equal(atLimit, PhoneMatching.Normalise(atLimit));
+    }
+
+    [Fact]
+    public void NormaliseRejectsAValueOverTheRawCeilingRatherThanTruncatingIt()
+    {
+        var overLimit = "+" + new string('4', 64); // 65 raw chars
+        Assert.Equal(65, overLimit.Length);
+        // Null, NOT a shortened number — a truncated phone is a different phone, and silently
+        // dialling it is worse than refusing the value.
+        Assert.Null(PhoneMatching.Normalise(overLimit));
+    }
+
+    [Fact]
+    public void TheCeilingIsMeasuredOnRawLengthNotDigitCount()
+    {
+        // 40 digits, but padded with separators past the ceiling: the server bails BEFORE stripping
+        // punctuation, so this is refused even though its digit count is unremarkable. The client
+        // checks in the same order for the same reason.
+        var padded = "+" + string.Join(" ", Enumerable.Repeat("44", 40));
+        Assert.True(padded.Length > 64);
+        Assert.Null(PhoneMatching.Normalise(padded));
+    }
 }

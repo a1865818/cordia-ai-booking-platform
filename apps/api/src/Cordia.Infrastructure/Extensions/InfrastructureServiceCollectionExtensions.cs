@@ -108,6 +108,7 @@ public static class InfrastructureServiceCollectionExtensions
         // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
         services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();
         services.AddScoped<ICapacityHoldRepository, CapacityHoldRepository>();
+        services.AddScoped<ICapacityLockOrder, CapacityLockOrder>();
         services.AddScoped<ICapacityReservation, FirstPartyCapacityReservation>();
 
         // Spec 07 T4 — primitive resolver + stub external adapter (spec 07 §13 open decision:

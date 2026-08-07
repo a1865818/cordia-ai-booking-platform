@@ -27,6 +27,10 @@ public class PostgresFixture : IAsyncLifetime
         // Run migrations against the test database.
         await using var ctx = CreateContext("fixture-init");
         await ctx.Database.MigrateAsync();
+
+        // Settle what previous runs left behind, or the cross-tenant sweepers' bounded batches
+        // slowly fill with history until a test's own row no longer fits (see StaleFixtureLitter).
+        await StaleFixtureLitter.SettleAsync(TestConnStr);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

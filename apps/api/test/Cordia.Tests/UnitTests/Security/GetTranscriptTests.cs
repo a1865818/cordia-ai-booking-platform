@@ -189,7 +189,7 @@ public class GetTranscriptTests
     {
         SetupSession(recordingAllowed: true);
         _grants.Setup(g => g.RequireGrantAsync(
-                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VerificationRequiredException(Tenant, Customer, VerificationActionEnum.ReadSensitive, null));
 
         // The spec-08 service already deny-audited; the 403 propagates untouched.
@@ -197,7 +197,7 @@ public class GetTranscriptTests
             new GetTranscriptQuery(Tenant, SessionId, "grant-1", null, null, null), CancellationToken.None));
 
         _grants.Verify(g => g.RequireGrantAsync(
-            Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         _store.VerifyNoOtherCalls();
     }
 
@@ -207,7 +207,7 @@ public class GetTranscriptTests
         SetupSession(recordingAllowed: true);
         SetupTurns((1, "hello"));
         _grants.Setup(g => g.RequireGrantAsync(
-                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                Tenant, "grant-1", Customer, VerificationActionEnum.ReadSensitive, null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VerificationGrant { TenantId = Tenant, GrantId = "grant-1", CustomerRef = Customer });
 
         var view = await Handler().Handle(
@@ -239,7 +239,7 @@ public class GetTranscriptTests
         // The stale grant is never consulted — staff precedence skips the grant service entirely.
         _grants.Verify(g => g.RequireGrantAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            It.IsAny<VerificationActionEnum>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
         _audit.Verify(a => a.WriteAsync(
             It.Is<AuditRecord>(r => r.Decision == "allow" && r.ActorType == StaffRole.Operator),
@@ -272,7 +272,7 @@ public class GetTranscriptTests
         // the empty-ref authorization attempt throws VerificationRequiredException.
         _grants.Setup(g => g.RequireGrantAsync(
                 Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
-                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VerificationRequiredException(
                 Tenant, string.Empty, VerificationActionEnum.ReadSensitive, null));
 
@@ -284,7 +284,7 @@ public class GetTranscriptTests
         // proving the handler never revealed absence via a pre-auth 404.
         _grants.Verify(g => g.RequireGrantAsync(
             Tenant, "bogus-grant", string.Empty, VerificationActionEnum.ReadSensitive,
-            null, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -299,7 +299,7 @@ public class GetTranscriptTests
         // Simulate the anomaly: the grant service RETURNS a grant for the empty ref instead of 403ing.
         _grants.Setup(g => g.RequireGrantAsync(
                 Tenant, "empty-ref-grant", string.Empty, VerificationActionEnum.ReadSensitive,
-                null, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                null, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VerificationGrant { TenantId = Tenant, GrantId = "empty-ref-grant", CustomerRef = string.Empty });
 
         // 403 (VerificationRequired), never a NullReferenceException / 500.

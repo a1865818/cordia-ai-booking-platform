@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { QueueItem, chMeta } from "../../../data/console";
-import { operationActions, operationStatusLabel } from "../../../features/operations/adapters";
+import { operationActions, operationStatusLabel, relativeDeadline } from "../../../features/operations/adapters";
 import { Chip } from "../../ui/Chip";
 import { Icon } from "../../ui/Icon";
 import { Chan } from "../../ui/StatusTags";
@@ -202,6 +202,37 @@ export function QueueScreen({
                 <Icon name="alert" size={15} strokeWidth={2} color="#B82C22" />
                 <span className="text-[12.5px] flex-1" style={{ color: '#7A2620' }}>{q.reason}</span>
               </div>
+
+              {/* The open work item, when the platform raised one.
+                  Distinct from the status above: the status says where the operation is, this
+                  says why a person was called and by when. Previously the platform recorded
+                  both durably and showed neither — the row said `manual_review` and nothing
+                  said whether it had been waiting ten minutes or two days. */}
+              {q.workItem && (
+                <div
+                  className="flex items-start gap-2 mt-[7px] px-[11px] py-[9px] rounded-[9px]"
+                  style={{
+                    background: q.workItem.overdue ? '#FDF3F2' : '#FAFAF9',
+                    border: `1px solid ${q.workItem.overdue ? '#F0D5D2' : '#EFEFEF'}`,
+                  }}
+                >
+                  <Icon
+                    name={q.workItem.overdue ? 'alert' : 'clock'}
+                    size={14}
+                    strokeWidth={2}
+                    color={q.workItem.overdue ? '#B82C22' : '#8A8A85'}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px]" style={{ color: q.workItem.overdue ? '#7A2620' : '#4A4A46' }}>
+                      {q.workItem.reason}
+                    </div>
+                    <div className="text-[11px] text-t3 mt-[2px]">
+                      {q.workItem.overdue ? 'Overdue' : 'Due'} {relativeDeadline(q.workItem.slaDeadline)}
+                      {q.workItem.assignee ? ` · ${q.workItem.assignee}` : ''}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Server follow-ups — a real platform action, visually separate from the
                   local clear/dismiss row below. Everything here round-trips the API and

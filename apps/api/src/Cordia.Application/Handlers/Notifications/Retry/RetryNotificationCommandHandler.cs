@@ -120,9 +120,13 @@ public sealed class RetryNotificationCommandHandler(
         // Re-resolve the destination rather than reading it off the row: it is deliberately not
         // persisted, so a retry must go through the same single resolver the first attempt used.
         // Without this a retry would render a message with nowhere to deliver.
-        var retryRecipient = n.OperationId is null
-            ? null
-            : await recipientResolver.ResolveAsync(n.TenantId, n.OperationId, ct);
+        //
+        // A null OperationId means "non-operation message" (spec 10), not "no recipient". Every
+        // waitlist offer/expiry row has one, so gating on it alone sent each of them straight to
+        // the no-destination guard below and settled InvalidRecipient — terminal, and wrong: the
+        // enrollment id on correlation_id still reaches the guest. Same fallback as the reconcile
+        // lane, and it fails closed for any row whose correlation is not an enrollment.
+        var retryRecipient = await ResolveDestinationAsync(n, ct);
         var rendered = new RenderedMessage(
             TemplateVersion: n.TemplateVersion,
             Channel: n.Channel,
@@ -265,6 +269,29 @@ public sealed class RetryNotificationCommandHandler(
         }
 
         return Unit.Value;
+    }
+
+    /// <summary>
+    /// The destination for a retry, from whichever link the row actually carries: the booking
+    /// operation when there is one, else the enrollment id on <c>correlation_id</c> for a waitlist
+    /// offer/expiry (whose <c>op_wl_*</c> id is deliberately not persisted — spec 10).
+    ///
+    /// <para>Gated on the EVENT TYPE as well as the null operation, for the reason spelled out on
+    /// the reconcile lane's copy: <c>correlation_id</c> is a generic column, and without the gate
+    /// the next <c>RequiresOperation: false</c> registration would silently resolve a destination
+    /// from an unrelated enrollment.</para>
+    /// </summary>
+    private async Task<ResolvedRecipient?> ResolveDestinationAsync(Notification n, CancellationToken ct)
+    {
+        if (n.OperationId is not null)
+            return await recipientResolver.ResolveAsync(n.TenantId, n.OperationId, ct);
+
+        if (n.EventType is not (NotificationEvent.WaitlistOffer or NotificationEvent.WaitlistOfferExpired))
+            return null;
+
+        return string.IsNullOrWhiteSpace(n.CorrelationId)
+            ? null
+            : await recipientResolver.ResolveByEnrollmentAsync(n.TenantId, n.CorrelationId, ct);
     }
 
     private Task EmitAuditAsync(Notification n, string eventType, object metadata, CancellationToken ct)

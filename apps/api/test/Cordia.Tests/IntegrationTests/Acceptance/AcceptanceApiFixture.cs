@@ -47,6 +47,10 @@ public class AcceptanceApiFixture : IAsyncLifetime
             // Run EF migrations on startup so the schema is always current.
             builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
         });
+
+        // Both collections share one database, so either may be the first to run. Settling here
+        // too means the backlog is cleared whichever order xUnit picks (see StaleFixtureLitter).
+        await Persistence.StaleFixtureLitter.SettleAsync(TestConnStr);
     }
 
     public async ValueTask DisposeAsync()

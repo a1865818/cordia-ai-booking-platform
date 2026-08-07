@@ -14,14 +14,14 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
     // Terminal statuses that block the cancellation flag from being set (spec 06 §15.5, FM#13).
     // Post-booking cancellation (Booked) is a separate operation (spec 08) and is intentionally
     // included here so that a Booked op cannot be flagged via this path.
+    //
+    // MATERIALISED from the state machine, not retyped. An array is genuinely required — EF Core
+    // translates `array.Contains(column)` into SQL `= ANY`, and cannot translate
+    // OperationStateMachine.IsTerminal — but "we need a different shape" was never a reason to keep
+    // a second copy of the CONTENTS. Spec 06 owns which statuses are terminal; this is that set in
+    // the shape the query planner needs.
     private static readonly OperationStatus[] TerminalStatuses =
-    [
-        OperationStatus.Booked,
-        OperationStatus.Rejected,
-        OperationStatus.Expired,
-        OperationStatus.Waitlisted,
-        OperationStatus.FailedFinal,
-    ];
+        [.. OperationStateMachine.TerminalStates];
 
     public async Task AddAsync(BookingOperation operation, CancellationToken ct = default)
     {
@@ -34,6 +34,30 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
             .AsNoTracking()
             .FirstOrDefaultAsync(o => o.OperationId == operationId, ct);
 
+    /// <summary>
+    /// Version-guarded status transition. <b>Every edge is validated against
+    /// <see cref="OperationStateMachine"/> before it can reach the database.</b>
+    ///
+    /// <para>This is the ONE write path for <c>booking_operations.status</c>, and until now it did
+    /// not consult the state machine at all: whether an edge was legal depended on the caller
+    /// choosing to call <c>EnsureAllowed</c> first, and nine of them did not. The catalog, waitlist
+    /// and pre-order domains were disciplined about it; the booking-operation domain mostly was not.
+    /// The consequence is silent rather than loud — remove an edge from the §11 map and those nine
+    /// call sites keep writing the now-illegal transition, so the authority and the actual behaviour
+    /// diverge with nothing failing.</para>
+    ///
+    /// <para>Validating here makes the map load-bearing instead of advisory, and it cannot be
+    /// bypassed by forgetting. <see cref="InvalidStateTransitionException"/> is not a new failure
+    /// mode for the driver: <c>AdvanceBookingOperationCommandHandler</c> already catches it
+    /// alongside <c>PoisonMessageException</c>, persists an open work item and the "still confirming"
+    /// notification, and dead-letters the transport message — the operation stays in its recoverable
+    /// business state (Inv-14) and an operator is told. An illegal edge is a defect that will never
+    /// self-heal, which is exactly what that path is for.</para>
+    ///
+    /// <para>Validation is on the edge alone. Whether the row is actually AT
+    /// <paramref name="expectedStatus"/> stays the database's job via the guarded predicate, which
+    /// returns 0 rows on a lost race — a legal edge that loses a race is not an error.</para>
+    /// </summary>
     public Task<int> TryTransitionStatusAsync(
         string tenantId,
         string operationId,
@@ -43,7 +67,10 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
         string? reason = null,
         string? bookingId = null,
         CancellationToken ct = default)
-        => bookingId is not null
+    {
+        OperationStateMachine.EnsureAllowed(expectedStatus, next);
+
+        return bookingId is not null
             ? VersionTokenUpdate.UpdateAsync<BookingOperation>(
                 db,
                 expectedVersion,
@@ -63,6 +90,22 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
                     .SetProperty(x => x.StatusReason, reason)
                     .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
                 ct);
+    }
+
+    public Task<int> TrySetBookingIdAsync(
+        string tenantId,
+        string operationId,
+        string bookingId,
+        CancellationToken ct = default)
+        => db.BookingOperations
+            .IgnoreQueryFilters()
+            .Where(o => o.TenantId == tenantId
+                        && o.OperationId == operationId
+                        && o.BookingId == null)
+            .ExecuteUpdateAsync(
+                s => s.SetProperty(x => x.BookingId, bookingId)
+                       .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
+                ct);
 
     public Task<int> SetCancellationRequestedAsync(
         string tenantId,
@@ -80,19 +123,15 @@ public class BookingOperationRepository(ApplicationDbContext db) : IBookingOpera
                        .SetProperty(x => x.UpdatedAt, when),
                 ct);
 
-    // Non-terminal automated statuses eligible for SLA evaluation (IgnoreQueryFilters — cross-tenant).
-    // Explicitly listed because OperationStateMachine.IsTerminal is not translatable to SQL.
+    // Statuses eligible for SLA evaluation (IgnoreQueryFilters — cross-tenant), MATERIALISED from
+    // the state machine for the same reason as TerminalStatuses above.
+    //
+    // This list and EvaluateOperationSlaCommand's `UserWaitStatuses` used to be maintained
+    // independently, in different projects, as complements of each other — so a new status could
+    // silently land in both partitions or in neither. Both now derive from the one definition, and
+    // WorkflowDefinitionTests asserts the partition covers every status exactly once.
     private static readonly OperationStatus[] SlaEligibleStatuses =
-    [
-        OperationStatus.Accepted,
-        OperationStatus.Validating,
-        OperationStatus.ReservingCapacity,
-        OperationStatus.Held,
-        OperationStatus.Finalizing,
-        OperationStatus.Reconciling,
-        OperationStatus.CompensationRequired,
-        OperationStatus.ManualReview,
-    ];
+        [.. OperationStateMachine.SlaEligibleStates];
 
     public Task<BookingOperation?> GetBookedOperationForBookingAsync(
         string tenantId,

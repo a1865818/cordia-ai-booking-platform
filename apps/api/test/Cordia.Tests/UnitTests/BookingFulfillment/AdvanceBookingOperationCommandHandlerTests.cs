@@ -64,8 +64,6 @@ public class AdvanceBookingOperationCommandHandlerTests
             .Returns(Task.CompletedTask);
         _workItemRepo.Setup(r => r.GetOpenByOperationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
-        _workItemRepo.Setup(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
         _outboxRepo.Setup(r => r.ExistsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
         _outboxRepo.Setup(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))

@@ -58,6 +58,8 @@ public sealed class ModifyBookingCommandHandler(
     IAuditEventRepository auditRepo,
     IUnitOfWork uow,
     ICapacityReservation capacityReservation,
+    ICapacityHoldRepository holdRepo,
+    ICapacityLockOrder lockOrder,
     Metrics metrics)
     : IRequestHandler<ModifyBookingCommand, StepOutcome>
 {
@@ -111,6 +113,21 @@ public sealed class ModifyBookingCommandHandler(
             ?? throw new PoisonMessageException(
                 $"Modify operation '{operationId}' targets booking '{targetBookingId}', which does not exist.");
 
+        // Write the resolved target BACK onto the operation row when it came from the fallback.
+        //
+        // Everything downstream reads `op.BookingId`, not this local — and the recovery paths are
+        // where that bites. An ambiguous outcome routes to Reconciling, the reconciler escalates to
+        // ManualReview, and ResolveManualReviewCommandHandler settles the target booking only when
+        // `opInTxn.BookingId` is populated. For an operation relying on the payload fallback it
+        // never is, so the resolver skipped the settlement and its capacity cleanup and left the
+        // booking at ModificationPending permanently — the operator resolves the review and the
+        // booking still tells every reader a change is outstanding.
+        //
+        // Conditional on it still being null, so this can never overwrite a target another writer
+        // established, and idempotent across redeliveries.
+        if (string.IsNullOrWhiteSpace(op.BookingId))
+            await opRepo.TrySetBookingIdAsync(tenantId, operationId, targetBookingId, ct);
+
         // A cancelled booking cannot be moved. This is a business outcome, not a failure to
         // retry: the guest must make a new booking.
         //
@@ -159,17 +176,23 @@ public sealed class ModifyBookingCommandHandler(
 
             // Ambiguous outcomes must reconcile before anything else happens (Inv-7): we do not
             // know whether the provider applied the amendment, so we must not report that it did.
-            if (result.Kind is not (ProviderResultKind.Created
-                or ProviderResultKind.AlreadyExists
-                or ProviderResultKind.NotFound))
+            if (result.Kind is not (ProviderResultKind.Created or ProviderResultKind.AlreadyExists))
             {
+                // NotFound is included here, and that is a change of stance.
+                //
+                // For a CREATE, NotFound means nothing was made and there is nothing to undo. For a
+                // MODIFY it means the provider has no record of a booking this platform holds a
+                // reference to — so the amendment definitively did NOT happen, and the venue is
+                // still working from the original reservation. Settling that as `Booked` finalized
+                // the new slot's capacity, released the old one, cleared ModificationPending and
+                // told the guest their booking had moved: four statements about a booking the
+                // venue says it does not have.
+                //
+                // It is also not a failure to retry — the booking will not reappear — so it takes
+                // the same route as an ambiguous outcome: Reconciling, which escalates every
+                // modify/reschedule to ManualReview for a human to reconcile the two systems.
                 return await RouteToReconcilingAsync(tenantId, operationId, result.Kind, ct);
             }
-
-            // NotFound: the provider has no such booking, so there was nothing to move. The
-            // operation still settles — from current state, without claiming a provider effect.
-            if (result.Kind == ProviderResultKind.NotFound)
-                reason = "modified_no_provider_effect";
         }
         else
         {
@@ -177,7 +200,7 @@ public sealed class ModifyBookingCommandHandler(
             reason = "modified_no_provider_effect";
         }
 
-        return await CommitModificationAsync(tenantId, operationId, booking, step, reason, ct);
+        return await CommitModificationAsync(tenantId, operationId, booking, revision, step, reason, ct);
     }
 
     // ---------------------------------------------------------------------------
@@ -250,6 +273,7 @@ public sealed class ModifyBookingCommandHandler(
         string tenantId,
         string operationId,
         Booking booking,
+        BookingIntentRevision revision,
         WorkflowStep step,
         string reason,
         CancellationToken ct)
@@ -287,6 +311,57 @@ public sealed class ModifyBookingCommandHandler(
             // identity guard below skips, and the old slot leaks forever.
             var previousOwner = await opRepo.GetBookedOperationForBookingAsync(
                 tenantId, booking.BookingId, ct2);
+
+            // Is the booking actually MOVING?
+            //
+            // A same-slot amendment (a party-size change) derives the identical slot key, so the
+            // seat is not being handed from one slot to another — it is being resized in place, and
+            // ownership of it has to pass to this operation. `ReserveCapacityCommandHandler` asks
+            // the same question from the other side and reserves only the difference, so the two
+            // are halves of one rule and read the same two facts to stay in step.
+            var previousHold = previousOwner is not null && previousOwner.OperationId != operationId
+                ? await holdRepo.GetLatestByOperationAndStepAsync(
+                    tenantId, previousOwner.OperationId, "create", ct2)
+                : null;
+
+            var (targetCapacity, targetSlotId) =
+                CapacitySlotKey.DeriveFromCanonicalPayload(revision.CanonicalPayload);
+
+            var sameSlot = previousHold is { Status: HoldStatus.Finalized }
+                           && previousHold.SlotId is not null
+                           && previousHold.SlotId == targetSlotId;
+
+            // ── Acquire EVERY capacity row this transaction will touch, in canonical order. ──
+            //
+            // Two different cycles have been built out of this lane, and both came from acquiring
+            // rows lazily — each step taking what it needed, in whatever order it happened to need
+            // it:
+            //
+            //   * hold↔slot. `FinalizeAgainstOperationAsync` takes this operation's hold then the
+            //     slot; `AbsorbSameSlotAsync` then reaches for the PREVIOUS owner's hold. A
+            //     concurrent cancel takes those same two rows the other way round.
+            //   * slot↔slot. A cross-slot reschedule takes the NEW slot (via finalize) and then the
+            //     OLD one (via the release below) — ordered by role. Two reschedules moving in
+            //     opposite directions between the same pair of slots each hold one and want the
+            //     other. Locking holds before slots does nothing about this one: both rows are
+            //     slots.
+            //
+            // Taking all four up front collapses both. Every later step re-touches a row this
+            // transaction already holds, so it acquires nothing new and can re-order nothing.
+            // `ICapacityLockOrder` owns the order (holds before slots, each ascending by id) — this
+            // call site only says which rows.
+            //
+            // LOCKS, not writes. The `HoldNoLongerValid` branch immediately below must leave the old
+            // seat untouched; releasing it early would strip the guest of the only capacity they
+            // still hold. A lock changes nothing, so ordering and refusal are satisfiable together.
+            var ownHold = await holdRepo.GetLatestByOperationAndStepAsync(
+                tenantId, operationId, "create", ct2);
+
+            await lockOrder.AcquireAsync(
+                tenantId,
+                holdIds: [previousHold?.HoldId, ownHold?.HoldId],
+                slotIds: [previousHold?.SlotId, targetSlotId],
+                ct2);
 
             var finalizeOutcome = await capacityReservation.FinalizeAgainstOperationAsync(
                 tenantId, operationId, "create", ct2);
@@ -330,6 +405,83 @@ public sealed class ModifyBookingCommandHandler(
                 return;
             }
 
+            // The booking must still be LIVE. Re-read inside the transaction, because the check at
+            // the top of Handle ran before the provider call and a cancellation can commit in that
+            // window — cancel only moves the BOOKING's lifecycle, never the creating operation's
+            // status, so `GetBookedOperationForBookingAsync` still resolves an owner and nothing
+            // else here would notice. Without this the modify booked itself against a cancelled
+            // booking, finalized a hold nothing would ever release, and told the guest their
+            // booking had moved moments after they cancelled it.
+            var bookingNow = await bookingRepo.GetByIdAsync(tenantId, booking.BookingId, ct2);
+            if (bookingNow is null || bookingNow.LifecycleStatus == BookingLifecycleStatus.Cancelled)
+            {
+                await opRepo.TryTransitionStatusAsync(
+                    tenantId, operationId, freshOp.Version,
+                    OperationStatus.Finalizing, OperationStatus.Reconciling,
+                    reason: "modify_target_cancelled_in_flight", ct: ct2);
+
+                // The hold this call just finalized belongs to an amendment that must not stand.
+                if (finalizeOutcome == FinalizeOutcome.Finalized)
+                {
+                    await capacityReservation.ReleaseFinalizedByOperationAsync(
+                        tenantId, operationId, ReleaseReason.Compensated, ct2);
+                }
+
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "booking.modify_target_cancelled_in_flight",
+                    Actor = "system",
+                    SubjectRef = booking.BookingId,
+                    CorrelationId = operationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new { reason = "target_cancelled_in_flight" }),
+                    OccurredAt = now,
+                }, ct2);
+
+                return;
+            }
+
+            // ── The same-slot seat transfer is decided BEFORE the operation is called Booked. ──
+            //
+            // It has to be: Booked is terminal, so a capacity failure discovered afterwards has
+            // nowhere legal to go. Running it after the transition meant a refusal was swallowed
+            // into a counter while the operation still settled Booked, cleared ModificationPending
+            // and told the guest the booking had changed — with the ledger still holding the old
+            // size against a provider reservation that had already grown.
+            if (sameSlot
+                && !await capacityReservation.AbsorbSameSlotAsync(
+                    tenantId, previousOwner!.OperationId, operationId, "create",
+                    previousHold!.SlotId!, targetCapacity, ct2))
+            {
+                // The slot cannot carry the new size and nothing was written. The provider has
+                // already applied the amendment, so this is the same shape as an expired hold:
+                // there is an external effect the ledger cannot honour, and only a human can
+                // decide between resizing the venue's own capacity and moving the guest back.
+                metrics.FulfillmentCapacityRaceLossTotal.Add(1);
+
+                await opRepo.TryTransitionStatusAsync(
+                    tenantId, operationId, freshOp.Version,
+                    OperationStatus.Finalizing, OperationStatus.Reconciling,
+                    reason: "modify_capacity_unavailable", ct: ct2);
+
+                await auditRepo.AddAsync(new AuditEvent
+                {
+                    TenantId = tenantId,
+                    EventId = $"evt_{Guid.NewGuid():N}",
+                    EventType = "booking.modify_capacity_unavailable",
+                    Actor = "system",
+                    SubjectRef = booking.BookingId,
+                    CorrelationId = operationId,
+                    OperationId = operationId,
+                    Metadata = JsonSerializer.Serialize(new { reason = "capacity_unavailable" }),
+                    OccurredAt = now,
+                }, ct2);
+
+                return;
+            }
+
             // Finalized, or NotTracked for a venue that has declared no slots — capacity is
             // unenforced there by decision, not by accident. Either way the amendment stands.
             var rows = await opRepo.TryTransitionStatusAsync(
@@ -352,8 +504,13 @@ public sealed class ModifyBookingCommandHandler(
                 //
                 // Only undo what this call actually did: a hold that was ALREADY Finalized before
                 // we ran belongs to the winner and must be left alone.
+                // NOT applied to the same-slot path: there the absorb above has already handed the
+                // booking's whole seat to this operation, so releasing it would strip a live
+                // booking of the only capacity it has. The absorb is idempotent and the winning
+                // delivery performs the identical one, so leaving it is consistent either way.
                 var settled = await opRepo.GetAsync(operationId, ct2);
-                if (finalizeOutcome == FinalizeOutcome.Finalized
+                if (!sameSlot
+                    && finalizeOutcome == FinalizeOutcome.Finalized
                     && settled is not null
                     && settled.Status != OperationStatus.Booked)
                 {
@@ -364,7 +521,7 @@ public sealed class ModifyBookingCommandHandler(
                 return;
             }
 
-            if (previousOwner is not null && previousOwner.OperationId != operationId)
+            if (!sameSlot && previousOwner is not null && previousOwner.OperationId != operationId)
             {
                 // `Superseded`, not `ProviderReleased`: the seat is not being given back to the
                 // venue, it is being handed from the old slot to the new one by this very

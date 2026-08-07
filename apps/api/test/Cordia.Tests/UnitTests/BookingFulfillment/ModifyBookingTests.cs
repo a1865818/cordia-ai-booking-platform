@@ -93,9 +93,14 @@ public class ModifyBookingTests
 
     private readonly Mock<ICapacityReservation> _capacity = new();
 
+    private readonly Mock<ICapacityHoldRepository> _holds = new();
+
+    private readonly Mock<ICapacityLockOrder> _lockOrder = new();
+
     private ModifyBookingCommandHandler Build() => new(
         _ops.Object, _bookings.Object, _intents.Object, _steps.Object, _adapter.Object,
-        _outbox.Object, _audit.Object, _uow.Object, _capacity.Object, new Metrics());
+        _outbox.Object, _audit.Object, _uow.Object, _capacity.Object, _holds.Object,
+        _lockOrder.Object, new Metrics());
 
     /// <summary>
     /// Capacity ownership TRANSFERS to the reschedule: the old slot's finalized hold is released
@@ -281,8 +286,22 @@ public class ModifyBookingTests
         Assert.Empty(_emitted);
     }
 
+    /// <summary>
+    /// A provider that says it has no such booking has NOT moved one, so the operation must not
+    /// report that it did.
+    ///
+    /// <para>NotFound used to settle as <c>Booked</c> with reason <c>modified_no_provider_effect</c>
+    /// — reasoning borrowed from the create lane, where NotFound genuinely means "nothing was
+    /// made". For a modify it means the venue has no record of a booking this platform holds a
+    /// reference to, and settling it finalized the new slot's capacity, released the old one,
+    /// cleared ModificationPending and told the guest the booking had moved. Four claims about a
+    /// reservation the venue is still holding at the original time.</para>
+    ///
+    /// <para>It is not retryable either — the booking will not reappear — so it takes the ambiguous
+    /// route: Reconciling, which escalates modify/reschedule to a human.</para>
+    /// </summary>
     [Fact]
-    public async Task AProviderThatNeverHeldTheBookingStillSettlesWithoutClaimingAnEffect()
+    public async Task AProviderThatNeverHeldTheBookingReconcilesRatherThanClaimingAMove()
     {
         GivenOperation();
         GivenBooking();
@@ -290,8 +309,29 @@ public class ModifyBookingTests
 
         await RunAsync();
 
+        Assert.Equal(OperationStatus.Reconciling, _settledTo);
+        Assert.Equal("modify_notfound", _settledReason);
+        // Nothing is announced and no capacity moves while the two systems disagree.
+        Assert.Empty(_emitted);
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ReleaseReason>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The first-party case is NOT the same and still settles: with no provider reference there was
+    /// never an external reservation to disagree with, so the platform is the whole record and the
+    /// amendment stands.
+    /// </summary>
+    [Fact]
+    public async Task AFirstPartyBookingWithNoProviderReferenceStillSettles()
+    {
+        GivenOperation();
+        GivenBooking(providerRef: null);
+
+        await RunAsync();
+
         Assert.Equal(OperationStatus.Booked, _settledTo);
-        // The reason has to say no provider effect occurred, or the audit trail claims one did.
         Assert.Equal("modified_no_provider_effect", _settledReason);
     }
 
@@ -430,4 +470,221 @@ public class ModifyBookingTests
             Times.Never);
     }
 
+    // ── Lock ordering: the previous owner's hold is locked BEFORE the slot is touched ────────────
+
+    private const string SameSlotService = "svc-lock-order";
+    private static readonly DateTimeOffset SameSlotStart =
+        DateTimeOffset.Parse("2026-09-02T09:00:00.000Z", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// A same-slot amendment: the payload carries a resource dimension so a slot key derives, and
+    /// the previous owner holds a FINALIZED hold on that very slot.
+    /// </summary>
+    private string GivenSameSlotAmendment(string previousOperationId)
+    {
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload =
+                    $$"""{"operation":"modify","service_id":"{{SameSlotService}}","starts_at":"2026-09-02T09:00:00.000Z","party_size":4}""",
+                PayloadHash = "h2",
+            });
+
+        // Derived with the production helper, so the test cannot drift from the key the handler
+        // actually computes.
+        var slotId = Cordia.Domain.Capacity.CapacitySlotKey.Derive(
+            null, SameSlotService, null, SameSlotStart)!;
+
+        _ops.Setup(o => o.GetBookedOperationForBookingAsync(
+                TenantId, BookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingOperation
+            {
+                TenantId = TenantId,
+                OperationId = previousOperationId,
+                BookingId = BookingId,
+                Status = OperationStatus.Booked,
+                OperationType = OperationTypeEnum.Create,
+            });
+
+        _holds.Setup(h => h.GetLatestByOperationAndStepAsync(
+                TenantId, previousOperationId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacityHold
+            {
+                TenantId = TenantId,
+                HoldId = "hold_previous_owner",
+                OperationId = previousOperationId,
+                WorkflowStep = "create",
+                SlotId = slotId,
+                ReservedCapacity = 2,
+                Status = HoldStatus.Finalized,
+            });
+
+        return slotId;
+    }
+
+    /// <summary>
+    /// Every capacity row this transaction will touch is acquired BEFORE anything writes one.
+    ///
+    /// <para>`FinalizeAgainstOperationAsync` takes this operation's own hold and then the SLOT;
+    /// `AbsorbSameSlotAsync` afterwards wants the PREVIOUS owner's hold. A concurrent cancel of the
+    /// same booking takes those two rows the other way round (hold, then slot), so the two
+    /// transactions could each hold one and wait on the other — Postgres aborts one with 40P01.
+    /// Nothing is corrupted and redelivery re-runs the loser, but a whole transaction's work is
+    /// discarded and the pair can keep colliding.</para>
+    ///
+    /// <para>Asserted as an ORDER rather than a count: the acquisition existing but landing after
+    /// the finalize would restore the exact cycle it is meant to remove.</para>
+    /// </summary>
+    [Fact]
+    public async Task SameSlotModify_AcquiresEveryCapacityRowBeforeTouchingTheSlot()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+        GivenSameSlotAmendment("op_create_original");
+
+        var calls = new List<string>();
+
+        _lockOrder.Setup(l => l.AcquireAsync(
+                TenantId,
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("acquire"))
+            .Returns(Task.CompletedTask);
+
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                TenantId, OperationId, "create", It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("finalize"))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.Finalized);
+
+        _capacity.Setup(c => c.AbsorbSameSlotAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("absorb"))
+            .ReturnsAsync(true);
+
+        await RunAsync();
+
+        Assert.Equal(["acquire", "finalize", "absorb"], calls);
+    }
+
+    /// <summary>
+    /// The acquisition names the previous owner's hold AND both slot rows — not just the hold.
+    ///
+    /// <para>Locking holds before slots removes the hold↔slot cycle and nothing else. A same-slot
+    /// amendment resolves both slot ids to the same row, so passing them is redundant here; the
+    /// point of pinning it on this path too is that the two lanes build the SAME acquisition set,
+    /// which is what stops the cross-slot branch below from being the only one that gets it right.</para>
+    /// </summary>
+    [Fact]
+    public async Task SameSlotModify_AcquisitionNamesThePreviousHoldAndTheSlot()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+        var slotId = GivenSameSlotAmendment("op_create_original");
+
+        IEnumerable<string?>? holdIds = null;
+        IEnumerable<string?>? slotIds = null;
+
+        _lockOrder.Setup(l => l.AcquireAsync(
+                TenantId,
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, IEnumerable<string?>, IEnumerable<string?>, CancellationToken>(
+                (_, h, s, _) => { holdIds = h.ToList(); slotIds = s.ToList(); })
+            .Returns(Task.CompletedTask);
+
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                TenantId, OperationId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.Finalized);
+
+        _capacity.Setup(c => c.AbsorbSameSlotAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await RunAsync();
+
+        Assert.NotNull(holdIds);
+        Assert.Contains("hold_previous_owner", holdIds!);
+        Assert.NotNull(slotIds);
+        Assert.Contains(slotId, slotIds!);
+    }
+
+    /// <summary>
+    /// A genuine RESCHEDULE acquires BOTH slot rows up front — the case the previous fix missed.
+    ///
+    /// <para>This path used to take no lock at all, on the argument that a cross-slot move and a
+    /// cancel "never contend" because the new slot and the old slot are different rows. That is
+    /// true of a reschedule versus a cancel. It is false of a reschedule versus ANOTHER
+    /// reschedule: one moving <c>S1 → S2</c> takes the new slot then the old, and one moving
+    /// <c>S2 → S1</c> takes those same two rows in the opposite order. Each holds one, each wants
+    /// the other, and the cycle is built entirely out of slot rows — so ordering holds before slots
+    /// does not touch it. Two guests swapping between the same two sittings is enough.</para>
+    ///
+    /// <para>Naming both slots in one acquisition lets <c>ICapacityLockOrder</c> sort them, which
+    /// is what makes the pair take them in the same direction.</para>
+    /// </summary>
+    [Fact]
+    public async Task CrossSlotReschedule_AcquiresBothSlotsBeforeTouchingEither()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        // The TARGET slot must actually derive, or the handler has only one slot id to name and the
+        // cross-slot shape is not under test at all.
+        var targetSlotId = GivenSameSlotAmendment("op_create_original");
+
+        // …but the previous owner sits on a DIFFERENT slot. That is the genuine reschedule: two
+        // distinct rows, which is exactly the pair two opposing reschedules can cycle on.
+        _holds.Setup(h => h.GetLatestByOperationAndStepAsync(
+                TenantId, "op_create_original", "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacityHold
+            {
+                TenantId = TenantId,
+                HoldId = "hold_previous_owner",
+                OperationId = "op_create_original",
+                WorkflowStep = "create",
+                SlotId = "slot_old",
+                ReservedCapacity = 2,
+                Status = HoldStatus.Finalized,
+            });
+
+        Assert.NotEqual("slot_old", targetSlotId);
+
+        var calls = new List<string>();
+        IEnumerable<string?>? slotIds = null;
+
+        _lockOrder.Setup(l => l.AcquireAsync(
+                TenantId,
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<IEnumerable<string?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, IEnumerable<string?>, IEnumerable<string?>, CancellationToken>(
+                (_, _, s, _) => { slotIds = s.ToList(); calls.Add("acquire"); })
+            .Returns(Task.CompletedTask);
+
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                TenantId, OperationId, "create", It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("finalize"))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.Finalized);
+
+        await RunAsync();
+
+        // Acquired first, and BOTH slots named — the old one it will release and the new one it
+        // will finalize into.
+        Assert.Equal("acquire", calls[0]);
+        Assert.NotNull(slotIds);
+        Assert.Contains("slot_old", slotIds!);
+        Assert.Contains(targetSlotId, slotIds!);
+        Assert.Equal(2, slotIds!.Where(s => !string.IsNullOrEmpty(s)).Distinct().Count());
+    }
 }

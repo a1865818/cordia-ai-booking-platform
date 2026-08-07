@@ -333,4 +333,134 @@ public class ReconcileNotificationTests
 
         // Inv-8: handler never writes to booking_operations.
     }
+
+    // ── 7. Waitlist recovery: OperationId is NULL by design (spec 10) ───────────────────────────
+
+    /// <summary>
+    /// A waitlist offer/expiry row stores <c>OperationId = null</c> — spec 10 ratifies it as "null
+    /// for non-operation messages", because the <c>op_wl_*</c> operation does not exist until the
+    /// offer is accepted and a non-null value would violate the composite FK.
+    ///
+    /// <para>Reconcile used to read that null as "no recipient" and settle
+    /// <c>InvalidRecipient</c> — which is TERMINAL. A guest the provider had actually reached was
+    /// permanently recorded unreachable and the offer was never re-attempted. The enrollment id on
+    /// <c>correlation_id</c> is the durable link back to them.</para>
+    /// </summary>
+    [Fact]
+    public async Task WaitlistRow_NullOperation_ResolvesDestinationFromEnrollmentCorrelation()
+    {
+        const string enrollmentId = "wle_abc123";
+
+        var n = MakeSendingNotification();
+        n.OperationId = null;
+        n.CorrelationId = enrollmentId;
+        n.EventType = NotificationEvent.WaitlistOffer;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, NotificationId, 1L,
+                NotificationState.Sending, ProviderMsgId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _recipientResolver.Setup(r => r.ResolveByEnrollmentAsync(
+                TenantId, enrollmentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_enrollment", NotificationChannel.Sms, "en", Destination: "+61400111222"));
+
+        var adapter = MakeAdapter(NotificationChannel.Sms, supportsLookup: false, supportsSendIdempotency: true);
+        adapter.Setup(a => a.SendAsync(ProviderKey, It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, ProviderMsgId, null));
+
+        var result = await BuildHandler(adapter.Object)
+            .Handle(new ReconcileNotificationCommand(TenantId, NotificationId), CancellationToken.None);
+
+        Assert.Equal(ReconcileOutcome.AcceptedViaResend, result);
+
+        // The guest is actually reached — not settled as unreachable.
+        adapter.Verify(a => a.SendAsync(ProviderKey, It.Is<RenderedMessage>(
+            m => m.Destination == "+61400111222"), It.IsAny<CancellationToken>()), Times.Once);
+
+        _repo.Verify(r => r.MarkFailedAsync(TenantId, NotificationId, It.IsAny<long>(),
+            It.IsAny<NotificationState>(), NotificationState.InvalidRecipient,
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Inv-9: the row's persisted ref keys notification_id and must survive verbatim — the
+        // enrollment-derived ref the resolver returns is NOT written back over it.
+        adapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.Is<RenderedMessage>(
+            m => m.MinimizedRecipient == "recip-test"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// Fails closed: a row with no operation AND no correlation still has nowhere to deliver, so
+    /// the no-destination guard must behave exactly as it did before the fallback existed.
+    /// </summary>
+    [Fact]
+    public async Task WaitlistRow_NullOperation_NoCorrelation_StillSettlesInvalidRecipient()
+    {
+        var n = MakeSendingNotification();
+        n.OperationId = null;
+        n.CorrelationId = null;
+        n.EventType = NotificationEvent.WaitlistOffer;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+        _repo.Setup(r => r.MarkFailedAsync(TenantId, NotificationId, 1L,
+                NotificationState.Sending, NotificationState.InvalidRecipient,
+                "provider_invalid", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var adapter = MakeAdapter(NotificationChannel.Sms, supportsLookup: false, supportsSendIdempotency: true);
+
+        var result = await BuildHandler(adapter.Object)
+            .Handle(new ReconcileNotificationCommand(TenantId, NotificationId), CancellationToken.None);
+
+        Assert.Equal(ReconcileOutcome.Failed, result);
+
+        // Inv-16: never claim a delivery that was not attempted.
+        adapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        _repo.Verify(r => r.MarkFailedAsync(TenantId, NotificationId, 1L,
+            NotificationState.Sending, NotificationState.InvalidRecipient,
+            "provider_invalid", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// The enrollment fallback is gated on the waitlist event types, not merely on a null
+    /// operation. `correlation_id` is a generic column, so a future non-waitlist event that leaves
+    /// `OperationId` null — or any producer that stores a trace id there — must NOT be able to
+    /// resolve a destination from an unrelated enrollment and message a stranger.
+    /// </summary>
+    [Fact]
+    public async Task NullOperation_OnANonWaitlistEvent_NeverConsultsTheEnrollmentFallback()
+    {
+        var n = MakeSendingNotification();
+        n.OperationId = null;
+        // A real enrollment id sitting in correlation_id, but the wrong event type for it to mean
+        // that — precisely the confusion the gate exists to refuse.
+        n.CorrelationId = "wle_someone_else";
+        n.EventType = NotificationEvent.BookingConfirmed;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+        _repo.Setup(r => r.MarkFailedAsync(TenantId, NotificationId, 1L,
+                NotificationState.Sending, NotificationState.InvalidRecipient,
+                "provider_invalid", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _recipientResolver.Setup(r => r.ResolveByEnrollmentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_stranger", NotificationChannel.Sms, "en", Destination: "+61400999999"));
+
+        var adapter = MakeAdapter(NotificationChannel.Sms, supportsLookup: false, supportsSendIdempotency: true);
+
+        await BuildHandler(adapter.Object)
+            .Handle(new ReconcileNotificationCommand(TenantId, NotificationId), CancellationToken.None);
+
+        // The fallback was never even asked, and nothing was sent to the stranger.
+        _recipientResolver.Verify(r => r.ResolveByEnrollmentAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        adapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

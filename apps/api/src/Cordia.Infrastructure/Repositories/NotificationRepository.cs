@@ -45,6 +45,22 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
     /// violation). All enum columns receive explicit pg-enum casts to avoid "unknown type" errors
     /// when the Npgsql type-mapper has not yet seen the enum on this connection.
     /// Returns 1 (inserted / new identity) or 0 (dedup hit / identity already present).
+    ///
+    /// <para><c>correlation_id</c>/<c>causation_id</c> are written EXPLICITLY here, unlike every
+    /// other <see cref="ICorrelatable"/> row. <c>CorrelationStampingInterceptor</c> only walks
+    /// <c>ChangeTracker</c> entries, and this insert bypasses <c>SaveChangesAsync</c> entirely — so
+    /// the columns silently stayed NULL on every notification ever written. That was not merely a
+    /// missing telemetry breadcrumb: for a waitlist offer the correlation id IS the enrollment id,
+    /// and it is the only link back to the guest once the in-flight <c>op_wl_*</c> id is gone.
+    /// Dropping it left <c>ReconcileNotificationCommandHandler</c> and
+    /// <c>RetryNotificationCommandHandler</c> with nothing to resolve a destination from.</para>
+    ///
+    /// <para><b>Forward-only.</b> Rows written before this change still carry NULL, so the
+    /// recovery those two handlers gained applies to notifications created from here on. They fail
+    /// closed on an older row — the pre-existing <c>InvalidRecipient</c> outcome, not a wrong
+    /// destination. No backfill ships because there is no way to recover the association: the
+    /// <c>op_wl_*</c> id survives only inside <c>notification_id</c> and <c>recipient_ref</c>,
+    /// which are both one-way hashes.</para>
     /// </remarks>
     public async Task<bool> TryInsertAsync(Notification notification, CancellationToken ct = default)
     {
@@ -54,7 +70,8 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                 (tenant_id, notification_id, operation_id, event_type, recipient_ref,
                  template_version, material_revision, state, channel, priority,
                  provider_idempotency_key, provider_ref, failure_category,
-                 attempt_count, next_eligible_at, created_at, updated_at, version)
+                 attempt_count, next_eligible_at, created_at, updated_at, version,
+                 correlation_id, causation_id)
             VALUES
                 ({notification.TenantId}, {notification.NotificationId}, {notification.OperationId},
                  {PgEnum.Label(notification.EventType)}::notification_event_enum,
@@ -64,7 +81,8 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                  {PgEnum.Label(notification.Priority)}::message_priority_enum,
                  {notification.ProviderIdempotencyKey}, {notification.ProviderRef}, {notification.FailureCategory},
                  {notification.AttemptCount}, {notification.NextEligibleAt},
-                 {notification.CreatedAt}, {notification.UpdatedAt}, {notification.Version})
+                 {notification.CreatedAt}, {notification.UpdatedAt}, {notification.Version},
+                 {notification.CorrelationId}, {notification.CausationId})
             ON CONFLICT (tenant_id, notification_id) DO NOTHING
             """,
             ct);
@@ -144,19 +162,15 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
             ct);
 
-    // Terminal statuses that require BookingConfirmed (§F4).
-    private static readonly OperationStatus[] BookedStatuses =
-    [
-        OperationStatus.Booked,
-    ];
-
-    // Terminal statuses that require FinalFailure (§F4).
+    // Terminal statuses that require FinalFailure (§F4) — MATERIALISED from the state machine,
+    // which owns the classification, rather than restated here (array so EF emits SQL `= ANY`).
+    //
+    // There used to be a `BookedStatuses` constant beside this one, and BOTH were dead: the sweep
+    // query below re-stated each set inline as an `||` chain a few lines away, so the file carried
+    // two representations of the same two sets and the compiler could not have told anyone if they
+    // diverged. The query now uses this one.
     private static readonly OperationStatus[] FailureStatuses =
-    [
-        OperationStatus.FailedFinal,
-        OperationStatus.Rejected,
-        OperationStatus.Expired,
-    ];
+        [.. OperationStateMachine.TerminalFailureStates];
 
     // Pre-built accepted/delivered state filter — reused in the subqueries below.
     private static readonly NotificationState[] AcceptedStates =
@@ -192,9 +206,7 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                 (
                     (op.Status == OperationStatus.Booked &&
                         !acceptedConfirmed.Any(a => a.TenantId == op.TenantId && a.OperationId == op.OperationId)) ||
-                    ((op.Status == OperationStatus.FailedFinal ||
-                      op.Status == OperationStatus.Rejected ||
-                      op.Status == OperationStatus.Expired) &&
+                    (FailureStatuses.Contains(op.Status) &&
                         !acceptedFailure.Any(a => a.TenantId == op.TenantId && a.OperationId == op.OperationId))
                 ))
             .OrderBy(op => op.UpdatedAt)

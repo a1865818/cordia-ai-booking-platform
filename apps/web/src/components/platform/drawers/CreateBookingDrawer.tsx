@@ -10,7 +10,7 @@ import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
 import { Spinner } from "../../ui/Spinner";
 import { ErrorState } from "../../ui/ErrorState";
-import { buildSubmission, toIsoInstant } from "../../../features/bookings/buildSubmission";
+import { buildSubmission, normalisePhone, toIsoInstant } from "../../../features/bookings/buildSubmission";
 import { PhoneInput } from "../../ui/PhoneInput";
 import { getOrCreateAttempt, resetAttempt } from "../../../features/bookings/identity";
 import { submitBooking } from "../../../features/bookings/submit";
@@ -351,8 +351,21 @@ export function CreateBookingDrawer({
       // Minted BEFORE the payload is built, because the payload is hashed here and the ref has to
       // be inside that hash. A failure here fails the booking rather than silently falling back to
       // the inline shape: quietly writing an un-erasable phone number would defeat the point.
-      const contactRef = phone.trim()
-        ? (await createGuestContact({ phoneE164: phone.trim() })).contact_ref
+      // Normalised BEFORE the mint, not sent raw.
+      //
+      // `PhoneMatching.Normalise` on the server bails to null above 64 RAW characters — a
+      // stackalloc stack-safety bound — and `GuestContactsController` answers 400 when it does. So
+      // an ordinary number carrying enough formatting or paste padding to cross that line was
+      // refused outright, even though it normalises to a perfectly good 12-digit number the server
+      // would happily store. Sending the normalised form means the console and the server agree on
+      // what is usable instead of the console tripping a bound it never sees.
+      //
+      // Falls back to the raw value when normalisation yields nothing (punctuation only, or too
+      // many digits to be a phone) so the server still produces its own 400 with the right message
+      // rather than this silently skipping the mint.
+      const typedPhone = phone.trim();
+      const contactRef = typedPhone
+        ? (await createGuestContact({ phoneE164: normalisePhone(typedPhone) ?? typedPhone })).contact_ref
         : undefined;
 
       const request = await buildSubmission(

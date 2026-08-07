@@ -272,12 +272,29 @@ public sealed class EnrollWaitlistCommandHandler(
         // the caller a 201 for a row that does not exist and 404s on every subsequent read. The
         // winner's record holds the real id — the acceptance path resolves the same race the
         // same way.
-        var winner = await idempotency.GetByKeyAsync(command.TenantId, idempotencyKey, ct);
-        return winner?.OperationId
+        var winner = await idempotency.GetByKeyAsync(command.TenantId, idempotencyKey, ct)
             ?? throw new IdempotencyConflictException(
                 idempotencyKey,
                 enrollmentId,
                 "Lost the enrolment creator election but the winning record could not be read.");
+
+        // The same-key/different-payload check has to run HERE too, not only on the pre-election
+        // read (Inv-3).
+        //
+        // Two concurrent requests sharing one explicit key with DIFFERENT enrolments both see no
+        // existing record and both fall through to the election. The loser then returned the
+        // winner's enrolment id as its own success — a 201 for somebody else's party size, channel
+        // or auto-book consent, which is precisely the silent merge §10.2 forbids. The acceptance
+        // path re-checks the hash on its lost-election path for this exact reason.
+        if (winner.RequestHash != $"{requestHash.Version}:{requestHash.Value}")
+        {
+            throw new IdempotencyConflictException(
+                idempotencyKey,
+                winner.OperationId,
+                $"Idempotency key '{idempotencyKey}' is already bound to a different enrolment.");
+        }
+
+        return winner.OperationId;
     }
 
     /// <summary>

@@ -20,6 +20,7 @@ namespace Cordia.Application.Handlers.Waitlist.Cancel;
 public sealed class CancelWaitlistEnrollmentCommandHandler(
     IWaitlistEnrollmentRepository enrollmentRepo,
     IWaitlistOfferRepository offerRepo,
+    IBookingOperationRepository opRepo,
     ICapacityReservation capacity,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
@@ -41,8 +42,20 @@ public sealed class CancelWaitlistEnrollmentCommandHandler(
             if (enrollment.CancelledAt is not null)
                 return;
 
-            await enrollmentRepo.CancelAsync(
+            // The stamp is the ACTION. Everything below describes it, so nothing below may run
+            // unless it happened.
+            //
+            // `CancelAsync` is version-guarded and filters `CancelledAt == null`, so 0 rows means a
+            // concurrent writer cancelled it first. Ignoring that wrote an `allow` decision for
+            // `waitlist.enrollment_cancelled` on a call that changed nothing — an authorization
+            // trail claiming a second operator succeeded at an action only one of them performed —
+            // and released the winner's offer hold on top. The enrollment is cancelled either way;
+            // the winner's transaction owns the record of it.
+            var stamped = await enrollmentRepo.CancelAsync(
                 command.TenantId, command.EnrollmentId, enrollment.Version, now, ct2);
+
+            if (stamped == 0)
+                return;
 
             // Release any live offer + roll back its temporary hold so the slot is freed. Resolve the
             // offer FIRST (version-guarded) and release the hold ONLY when we win: a concurrent accept
@@ -55,7 +68,53 @@ public sealed class CancelWaitlistEnrollmentCommandHandler(
                     command.TenantId, offer.OfferId, offer.Version, offer.Status,
                     WaitlistOfferStatus.Released, now, ct2);
 
-                if (released > 0 && !string.IsNullOrEmpty(offer.HoldId))
+                // Has an accept already handed this hold to the 06 engine?
+                //
+                // `GetLiveByEnrollmentAsync` excludes Accepted, so a CLAIMED offer is already out of
+                // reach. But the accept lane is record-before-state: it mints the spec-04 operation
+                // FIRST and only then claims `Offered → Accepted`. Between that mint COMMITTING and
+                // the claim — and for the whole time a deferred auto-accept sits queued — the offer
+                // is still live here while a booking operation for it already exists.
+                //
+                // NOT a complete fence, and worth being precise about: the mint is written inside
+                // `SubmitConfirmedIntentCommandHandler`'s own transaction, so it is invisible to
+                // this one until it commits. A cancel landing inside that window still sees no
+                // operation and still releases. Closing that too would mean serialising on a row
+                // both lanes take before either writes, which is a larger change than the leak
+                // justifies — this narrows the exposure from "the whole accept flow, including the
+                // entire deferred auto-accept delay" to "one in-flight database transaction".
+                //
+                // Releasing then pulls the hold out from under an in-flight booking. The 06 engine
+                // has already reused that hold (ReserveAsync's idempotency pre-check matches on the
+                // same operation id and step), so finalize later sees it Released, returns
+                // HoldNoLongerValid, and routes the operation to CompensationRequired — after the
+                // provider booking was created. Compensation then has to cancel a real reservation,
+                // and if the provider answers ambiguously the operation parks in ManualReview.
+                //
+                // The operation row's existence is exactly the right signal: the offer carries its
+                // `op_wl_*` id from match time, but a booking_operations row appears only when an
+                // accept submits through the spec-04 door. So a cancel racing a not-yet-run
+                // auto-accept still releases correctly — no booking exists to protect.
+                var mintedOperation = string.IsNullOrWhiteSpace(offer.OperationId)
+                    ? null
+                    : await opRepo.GetAsync(offer.OperationId, ct2);
+
+                // Only an operation still IN FLIGHT owns the seat.
+                //
+                // A terminal one does not, and retaining for it would be strictly worse than the
+                // bug: nothing is coming to release the hold, so the seat would sit reserved until
+                // the offer-expiry sweeper reclaimed it, when it could have been freed and
+                // re-matched now. `IsTerminal` is spec 06's, not a local list.
+                //
+                // `Booked` is terminal and therefore falls through to the release — which is a
+                // no-op, because a booked operation's hold is FINALIZED and `ReleaseAsync` only
+                // touches ACTIVE holds. That is the shape the original code relied on without
+                // saying so, and it is why this bug only ever bit an in-flight accept.
+                var bookingOwnsTheHold = mintedOperation is not null
+                                         && mintedOperation.TenantId == command.TenantId
+                                         && !OperationStateMachine.IsTerminal(mintedOperation.Status);
+
+                if (released > 0 && !string.IsNullOrEmpty(offer.HoldId) && !bookingOwnsTheHold)
                 {
                     await capacity.ReleaseAsync(command.TenantId, offer.HoldId, ReleaseReason.Compensated, ct2);
 
@@ -65,6 +124,30 @@ public sealed class CancelWaitlistEnrollmentCommandHandler(
                     var rematch = WaitlistRematchMessage.Build(command.TenantId, offer, enrollment, now);
                     if (rematch is not null)
                         await outboxRepo.AddAsync(rematch, ct2);
+                }
+                else if (released > 0 && bookingOwnsTheHold)
+                {
+                    // The enrollment is still cancelled — the guest asked for that — but the seat
+                    // now belongs to the booking the accept minted, and 06 owns its lifecycle:
+                    // it releases the hold on compensation, expiry or a later cancellation. No
+                    // re-match either: the opening is not free.
+                    await auditRepo.AddAsync(new AuditEvent
+                    {
+                        TenantId = command.TenantId,
+                        EventId = $"evt_{Guid.NewGuid():N}",
+                        EventType = "waitlist.hold_retained_for_booking",
+                        Actor = command.Actor,
+                        SubjectRef = command.EnrollmentId,
+                        CorrelationId = command.EnrollmentId,
+                        OperationId = offer.OperationId,
+                        Metadata = JsonSerializer.Serialize(new
+                        {
+                            offer_id = offer.OfferId,
+                            hold_id = offer.HoldId,
+                            reason = "accept_already_minted_operation",
+                        }),
+                        OccurredAt = now,
+                    }, ct2);
                 }
             }
 

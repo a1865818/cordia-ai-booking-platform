@@ -103,31 +103,39 @@ public sealed class AcceptWaitlistOfferCommandHandler(
         // converge on a single booking regardless of who wins the claim below.
         await mediator.Send(submit, ct);
 
-        // --- Claim the offer Offered → Accepted (version-guarded). ---
-        var won = await offerRepo.TryResolveAsync(
-            command.TenantId, command.OfferId, offer.Version,
-            WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct);
-        if (won == 0)
-        {
-            // Lost the race: a concurrent accept/expire/decline moved the row. Reload and re-evaluate.
-            var reloaded = await offerRepo.GetAsync(command.OfferId, ct);
-            if (reloaded?.Status == WaitlistOfferStatus.Accepted)
-                return Unit.Value; // concurrent accept won — same booking already minted (idempotent)
-
-            // Lost to a concurrent expire/decline AFTER the booking was already minted. The booking
-            // record is the source of truth (spec 06 owns its terminal outcome + the customer
-            // notification), so do NOT report 409. Schedule a reconcile that, once 06 finishes, marks
-            // the enrollment fulfilled if it booked (so the enrollee is never re-offered → no
-            // double-book) or leaves it eligible if it failed (spec 11 §5.1).
-            await uow.ExecuteInTransactionAsync(
-                ct2 => reconcileScheduler.ScheduleAsync(
-                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2),
-                ct);
-            return Unit.Value;
-        }
-
+        // --- Claim the offer Offered → Accepted, and record it, in ONE transaction. ---
+        //
+        // The claim used to commit on its own, with the audits following in a separate transaction.
+        // A failure in the window between them left the offer permanently Accepted with no `allow`
+        // record of who accepted it — and unrecoverable, because the retry path above sees an
+        // already-Accepted offer, re-submits the booking and returns without ever reaching the
+        // audit. The security decision was simply lost. Writing both under one transaction means a
+        // retry either finds the claim made AND recorded, or re-does both.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            var won = await offerRepo.TryResolveAsync(
+                command.TenantId, command.OfferId, offer.Version,
+                WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct2);
+
+            if (won == 0)
+            {
+                // Lost the race: a concurrent accept/expire/decline moved the row. Reload and
+                // re-evaluate.
+                var reloaded = await offerRepo.GetAsync(command.OfferId, ct2);
+                if (reloaded?.Status == WaitlistOfferStatus.Accepted)
+                    return; // concurrent accept won — same booking already minted (idempotent)
+
+                // Lost to a concurrent expire/decline AFTER the booking was already minted. The
+                // booking record is the source of truth (spec 06 owns its terminal outcome + the
+                // customer notification), so do NOT report 409. Schedule a reconcile that, once 06
+                // finishes, marks the enrollment fulfilled if it booked (so the enrollee is never
+                // re-offered → no double-book) or leaves it eligible if it failed (spec 11 §5.1).
+                await reconcileScheduler.ScheduleAsync(
+                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId,
+                    attempt: 0, now, ct2);
+                return;
+            }
+
             // The claim is won but the booking outcome belongs to 06 (capacity/payment/provider may
             // still fail). Schedule the same reconcile probe the lost-claim path uses: once 06 books,
             // it marks the enrollment fulfilled so FindEligibleAsync never re-offers (or silently

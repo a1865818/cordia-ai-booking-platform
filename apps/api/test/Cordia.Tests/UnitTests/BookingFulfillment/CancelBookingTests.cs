@@ -295,11 +295,21 @@ public class CancelBookingTests
         _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    /// <summary>
+    /// Losing the race to a writer that reached the SAME end state is not a failure: the booking is
+    /// cancelled, so this delivery finishes the operation normally — and says NOTHING to the guest.
+    ///
+    /// <para>The notification is the point. This is the concurrent-cancel shape exactly: the
+    /// booking read as CancellationPending before the provider call, so the handler's
+    /// `alreadyCancelled` flag was false, and it stayed false while the transaction found the row
+    /// already Cancelled. Emitting on that stale flag sent a SECOND "your cancellation is
+    /// confirmed" for a cancellation the winning transaction had already announced. Eligibility now
+    /// comes from whether THIS transaction performed the transition, which is the only fact that
+    /// distinguishes the two callers.</para>
+    /// </summary>
     [Fact]
-    public async Task BookingCancelledByAConcurrentWriter_SettlesWithoutRetryingTheTransition()
+    public async Task BookingCancelledByAConcurrentWriter_SettlesWithoutRetryingOrNotifyingTwice()
     {
-        // Losing the race to a writer that reached the SAME end state is not a failure: the
-        // booking is cancelled, so this delivery finishes the operation normally.
         ArrangeHappyPath(lifecycle: BookingLifecycleStatus.Cancelled);
         _bookings.SetupSequence(b => b.GetByIdAsync(TenantId, BookingId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(BookingRow(BookingLifecycleStatus.CancellationPending, ProviderRef))
@@ -315,7 +325,9 @@ public class CancelBookingTests
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
             It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
-        _outbox.Verify(o => o.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Once);
+        _outbox.Verify(o => o.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+        // The internal record is still written — that is the operation's own trail, not news.
+        _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

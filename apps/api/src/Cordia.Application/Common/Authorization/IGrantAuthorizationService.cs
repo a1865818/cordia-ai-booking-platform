@@ -17,16 +17,26 @@ public interface IGrantAuthorizationService
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default);
 
     /// <summary>
     /// Scope-only check for a caller that consumes the grant later, inside its own commit
     /// transaction (see <see cref="ConsumeGrantAsync"/>). Denies — and deny-audits — exactly as
-    /// <see cref="RequireGrantAsync"/> does on tenant/customer/action/target/expiry, but tolerates
-    /// an already-consumed grant so a legitimate idempotent replay of the SAME request is not
-    /// refused by the fence its own first attempt set. Single-use is still enforced: a NEW request
-    /// presenting a spent grant reaches <see cref="ConsumeGrantAsync"/>, which affects zero rows
-    /// and denies.
+    /// <see cref="RequireGrantAsync"/> does on tenant/customer/action/target.
+    ///
+    /// <para><b>SCOPE, not liveness — neither consumption NOR expiry is checked here.</b> Both are
+    /// enforced atomically by <see cref="ConsumeGrantAsync"/>, which is the fence a NEW operation
+    /// actually passes through. Re-checking either here would refuse a legitimate idempotent replay
+    /// of the SAME request: the first attempt spends the grant and starts its clock running out, so
+    /// a redelivery after the TTL — of a request already accepted, whose response was merely lost —
+    /// would get a 403 instead of the recorded operation. Expiry bounds how long a grant can
+    /// AUTHORIZE something new, not how long the platform will admit it already did.</para>
+    ///
+    /// <para>So a non-null result here proves SCOPE only. Anything that must not happen on a dead
+    /// grant has to go through <see cref="ConsumeGrantAsync"/> — do not treat this result as proof
+    /// the grant is still live.</para>
     /// </summary>
     Task<VerificationGrant> RequireGrantScopeAsync(
         string tenantId,
@@ -35,6 +45,8 @@ public interface IGrantAuthorizationService
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -66,5 +78,7 @@ public interface IGrantAuthorizationService
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default);
 }

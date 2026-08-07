@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { operationStatusLabel, relativeAge, toQueueItem, toQueueItems } from "./adapters";
+import {
+  operationStatusLabel,
+  relativeAge,
+  relativeDeadline,
+  toQueueItem,
+  toQueueItems,
+  toWorkItemIndex,
+  workItemReasonLabel,
+} from "./adapters";
 import type { OperationSummary } from "./api";
 
 function summary(overrides: Partial<OperationSummary> = {}): OperationSummary {
@@ -80,5 +88,75 @@ describe("relativeAge", () => {
 
   it("returns an empty string for an unparseable instant", () => {
     expect(relativeAge("not-a-date", now)).toBe("");
+  });
+});
+
+describe("work items on the queue", () => {
+  const now = Date.parse("2026-08-07T12:00:00Z");
+
+  function workItem(overrides: Record<string, unknown> = {}) {
+    return {
+      work_item_id: "wi_1",
+      operation_id: "op_2f9c1b7e4a6d5c3b8e0f1a2b",
+      reason: "compensation_ambiguous",
+      sla_deadline: "2026-08-07T13:00:00Z",
+      assignee: null,
+      created_at: "2026-08-07T11:00:00Z",
+      operation_status: "manual_review",
+      ...overrides,
+    } as never;
+  }
+
+  it("joins the open work item onto its operation's row", () => {
+    const index = toWorkItemIndex([workItem()], now);
+    const [row] = toQueueItems([summary()], index);
+
+    expect(row.workItem?.reason).toBe("The venue's cancellation wasn't confirmed");
+    expect(row.workItem?.overdue).toBe(false);
+  });
+
+  it("leaves a row without a work item untouched rather than inventing one", () => {
+    const [row] = toQueueItems([summary()], toWorkItemIndex([], now));
+
+    expect(row.workItem).toBeUndefined();
+  });
+
+  it("flags an item past its deadline", () => {
+    const index = toWorkItemIndex([workItem({ sla_deadline: "2026-08-07T11:00:00Z" })], now);
+
+    expect(index["op_2f9c1b7e4a6d5c3b8e0f1a2b"].overdue).toBe(true);
+  });
+
+  it("does not call an item overdue when the deadline could not be read", () => {
+    // Guessing "late" from a value nobody can check would put a red flag on a row for a
+    // reason the operator cannot verify.
+    const index = toWorkItemIndex([workItem({ sla_deadline: "not-a-date" })], now);
+
+    expect(index["op_2f9c1b7e4a6d5c3b8e0f1a2b"].overdue).toBe(false);
+  });
+
+  it("translates machine reason tags into operator language", () => {
+    expect(workItemReasonLabel("sla_escalation")).toBe("Taking longer than expected");
+    // Suffixed reasons name the thing that raised them; the suffix is not shown.
+    expect(workItemReasonLabel("poison:invalid_state_transition"))
+      .toBe("A message the platform couldn't process");
+    expect(workItemReasonLabel("preorder_manual_review:saga_123"))
+      .toBe("Pre-order needs you and the guest to agree");
+  });
+
+  it("degrades an unknown reason to readable words rather than showing a raw tag", () => {
+    expect(workItemReasonLabel("some_new_reason")).toBe("some new reason");
+    expect(workItemReasonLabel(null)).toBe("Needs your review");
+  });
+
+  it("skips a work item with no operation to attach to", () => {
+    expect(toWorkItemIndex([workItem({ operation_id: null })], now)).toEqual({});
+  });
+
+  it("says how long is left, or how late it already is", () => {
+    expect(relativeDeadline("2026-08-07T12:20:00Z", now)).toBe("in 20m");
+    expect(relativeDeadline("2026-08-07T09:00:00Z", now)).toBe("3h ago");
+    expect(relativeDeadline("2026-08-07T12:00:00Z", now)).toBe("now");
+    expect(relativeDeadline("not-a-date", now)).toBe("");
   });
 });
