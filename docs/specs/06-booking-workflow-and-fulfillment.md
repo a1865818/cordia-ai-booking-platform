@@ -435,3 +435,74 @@ Unit tests (`Category=Unit`, Moq) cover each handler's transition logic and clas
 - **Canonicalization spec + hash algorithm** — the `request_hash` stored on every attempt must match the [04](04-submission-and-idempotency.md) canonical hash; the provider idempotency key derivation depends on it.
 - **Initial SLO values** — the §8 SLA table thresholds (expected completion, pending/escalation, max automated-recovery window) are placeholders pending measured baselines (§26).
 - **`workflow_steps` table** — *resolved.* The durable per-phase **step** record (distinct from `workflow_attempts`) that the worker protocol (§12.6) needs for sweeper recovery and inbox-dedup-independence is **ratified** and its DDL is owned by [12](12-data-model-and-persistence.md). It carries `workflow_step_id`, `tenant_id`, `operation_id`, `step_type`, `status` (pending|in_progress|succeeded|failed|terminal), `provider_idempotency_key`, `attempt_count`, `version`, `not_before`, with unique `(tenant_id, operation_id, step_type)`. This spec owns the step protocol; 12 owns the table shape.
+
+## 19. State ownership and ManualReview durability (implementation-resolved)
+
+### 19.1 Single ownership of state classification
+
+Spec 06 owns `operation_status` (D1) **and its classifications**. A component that needs to know
+whether an operation has ended, is waiting on the customer, is waiting on an operator, or is being
+driven by the platform **must ask `OperationStateMachine`** — it must not keep its own set.
+
+`OperationStateMachine` exposes the questions callers actually have:
+
+| Question | Method |
+|---|---|
+| Has it ended? | `IsTerminal` — **derived** from absence of outgoing edges, not listed |
+| Did it end badly? | `IsTerminalFailure` — terminals minus `Booked` and `Waitlisted` |
+| Waiting on the customer? | `IsAwaitingUser` |
+| Waiting on an operator? | `RequiresOperator` |
+| Will the platform advance it? | `IsDriverDispatchable` |
+| Does the SLA clock apply? | `IsSlaEligible` — non-terminal and not the customer's turn |
+| What may happen next? | `NextStates` |
+
+**Why this is normative rather than stylistic.** A reconciler once kept its own narrower terminal
+set. The set fell behind the enum, two statuses fell through the gap, and they were re-probed to
+exhaustion and then abandoned — with nothing failing anywhere. The failure mode of a duplicated
+state set is silence.
+
+**Permitted exceptions**, in this shape only:
+
+- **A materialised collection** where a method call cannot be used — EF Core cannot translate
+  `IsTerminal` into SQL — provided it is *derived* from the state machine, not retyped.
+- **A documented delta**: a short, named list of states that are terminal *for one component
+  specifically*, with the reason stated per entry, on top of `IsTerminal`. A delta must never grow
+  into a second terminal set.
+- **A product classification** (e.g. what belongs on an operator's queue board) that is separately
+  proven exhaustive against D1.
+
+Anything else is a defect. `StateOwnershipArchitectureTests` enforces this by reflection: a new
+static collection of state values outside `Cordia.Domain` fails until it is justified in writing.
+`WorkflowDefinitionTests` enforces the relationships — terminality equals edge-map absence, every
+status is classified exactly once, the driver's dispatch table matches `IsDriverDispatchable`, and
+the SLA partition is disjoint and total.
+
+Every `operation_status` write goes through `TryTransitionStatusAsync`, which calls
+`OperationStateMachine.EnsureAllowed`. The §11 edge map is therefore **load-bearing, not advisory**:
+an illegal edge cannot reach the database, and removing an edge cannot silently diverge from what
+handlers actually write. An `InvalidStateTransitionException` is already handled by the driver's
+poison path — business state is persisted with an open work item before the transport message is
+dead-lettered (Inv-14).
+
+### 19.2 ManualReview must be tracked, not merely entered
+
+`ManualReview` is a business state that waits for a person, and it never auto-advances (Inv-15). It
+therefore has one requirement above every other state: **it must be impossible to enter it silently.**
+
+- **On entry**, in the SAME transaction as the status transition: an open `operations_work_items` row
+  carrying a reason and an SLA deadline, a `notification.still_confirming.v1` outbox row, and an
+  audit event. `ManualReviewEscalator` is the only sanctioned way in.
+- **At most one open work item per operation**, enforced by `uq_open_work_item_per_operation` and
+  written with an atomic `INSERT … ON CONFLICT DO NOTHING`. Read-then-insert is **not** acceptable:
+  the losing insert raises `23505`, which aborts the whole ambient transaction and takes the
+  transition, the outbox row and the audit event down with it — losing an escalation to a race whose
+  correct outcome was "someone else already did it".
+- **Outstanding items MUST be enumerable.** `GET /api/booking-operations/work-items` returns the open
+  queue for a tenant, most overdue first, with each item's reason, SLA deadline, assignee and the
+  linked operation's *current* status. A durable record nothing can read is not meaningfully
+  different from no record: the manual-review depth gauge could show the queue growing with no way
+  to see what was in it.
+- **Giving up is an event, not a silence.** Any reconciler that stops watching an operation whose
+  outcome it does not know MUST write an audit event **and** open a work item. An audit row is
+  history — nothing reads it proactively, it carries no deadline and no assignee. A log line is
+  less than that.

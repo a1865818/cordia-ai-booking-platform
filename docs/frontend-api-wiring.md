@@ -1,6 +1,6 @@
 # Wiring the Cordia Web Console to the Backend API
 
-**Status:** Guide · **Audience:** whoever connects `apps/web` to `apps/api` · **Last mapped:** 2026-08-06
+**Status:** Guide · **Audience:** whoever connects `apps/web` to `apps/api` · **Last mapped:** 2026-08-07
 (re-mapped against the full `apps/api` surface after specs 01–15 landed, then reconciled with the
 2026-08-06 gap-closure pass — §17–§19 — which closed several gaps §12 still listed as open)
 
@@ -8,7 +8,8 @@ This document is the map of the API surface as it exists **today**, what the con
 actually reaches, and what it deliberately stops on. It describes built behaviour, not a
 plan: §1–§4 are the surface and the per-screen verdict, §5–§9 are the conventions the
 wiring holds to, §10 is the endpoint reference, **§13 is the short answer to "what is left to wire"**, and
-§11–§16 record specific closed and open items.
+§11–§16 record specific closed and open items. **§20 restates §13's totals** after the one endpoint
+added since the 2026-08-06 mapping.
 
 > **TL;DR** — Specs 01–15 are implemented, but **not all of them surface over HTTP**. Roughly
 > half the platform is a background lane (queue, outbox, fulfilment, capacity, deposits,
@@ -24,7 +25,8 @@ wiring holds to, §10 is the endpoint reference, **§13 is the short answer to "
 > dev shim, which is now gated to Development (§4, §12 gap 1). History lives in
 > `thoughts/shared/{research,plans,reviews}/2026-08-04_frontend-api-wiring.md` — one
 > consolidated file per category, each carrying the later passes (three-wiring-gaps,
-> console-booking-guest-identity, console-reconciliation) as appended, dated parts.
+> console-booking-guest-identity, console-reconciliation, and the 2026-08-07 hardening trio:
+> residual-review-findings, capacity-deadlock, capacity-lock-order) as appended, dated parts.
 
 ---
 
@@ -355,6 +357,7 @@ the rest are kebab/lowercase.
 | POST | `/api/Bookings/{id}/cancellations` | `SubmitBookingCancellationResponse` (202/400/403/409) | Cancel |
 | GET | `/api/Bookings/schedule?from&to&limit` | `BookingScheduleResponse` | Tenant-wide window read (Today grid). Defaults: `from` = start of UTC day, `to` = +7d, `limit` 1–500. Reports `truncated` |
 | GET | `/api/booking-operations?status&needs_attention&limit` | `ListOperationsResponse` | Raw 16-value `status` per row (D1) — what gates the follow-ups. `status` is repeated or comma-separated; an unknown value is a **400**, never silently ignored |
+| GET | `/api/booking-operations/work-items?limit` | `ListWorkItemsResponse` | **Added 2026-08-07 (§20).** The open manual-recovery queue, most overdue first: `reason`, `sla_deadline`, `assignee`, and the linked operation's **current** status. Tenant-scoped; a plain read, so no `X-Actor` and no audit row. Literal segment — it must be declared before `{operationId}`, and a test pins that it is not swallowed by it |
 | GET | `/api/booking-operations/{operationId}` | `OperationStatusView` | Poll async op — **normalized** 9-value status only (D2) |
 | POST | `/api/booking-operations/{id}/{cancel\|resume\|resolve\|alternatives}` | anon status (202) | Operator follow-ups. `resume`/`resolve` are `manual_review`-only and need `X-Actor` + `X-Actor-Role` + `X-Reason-Code`; `resolve` body `resolution ∈ {booked, failed_final}` (+`provider_ref` when booked); `alternatives` is `alternatives_required`-only; `cancel` is an idempotent **request**, any non-terminal status |
 | GET | `/api/conversation-sessions?limit` | `ListConversationSessionsResponse` | Metadata only — no transcript text |
@@ -1361,3 +1364,55 @@ no hold or availability-mode field on any response, and nothing anywhere records
 | `PermissionGate` | The owner check was copy-pasted verbatim, comment and all. It now ports `StaffRole.Satisfies` — which is **not** an equality test: `owner ⊇ operator`, so both hand-written copies would have refused an owner any operator-required action. Still a **UI hint, not a boundary**: the role is client-asserted and the server re-checks everything |
 | `ConsentBadge` | Nothing rendered consent at all. An unrecognised state shows **verbatim** rather than as "Unknown" — the vocabulary is a pg-enum that can gain members before this file knows them |
 | `Countdown` | One implementation of "how long is left", which `offerExpiryLabel` now delegates to. Always floors: rounding once put "expired" beside a live Accept button. Takes `now` as a **prop** so a list ticks from one clock and every row agrees with the actions above it |
+
+---
+
+## 20. Manual-recovery queue (2026-08-07)
+
+One console-owned endpoint was added after the 2026-08-06 mapping, so §10 and §13's "left to
+wire: 0" are restated here rather than left silently stale.
+
+### `GET /api/booking-operations/work-items` — the queue nothing could read
+
+`operations_work_items` is the platform's record that it has stopped making progress on an
+operation and needs a person. Every give-up path writes one, in the same transaction as the state
+change it accompanies: an ambiguous provider cancel, an exhausted retry budget, a poison message
+about to be dead-lettered, an SLA breach, and — since this pass — a pre-order saga parked at §21.4
+and a waitlist accept-reconcile that has run out of attempts.
+
+**It had exactly two readers, both cross-tenant aggregates feeding metrics gauges**
+(`fulfillment.manual_review.depth` and its oldest-age sibling), plus a by-operation-id lookup that
+requires already knowing which operation you are looking for. So the depth gauge could show the
+queue growing and nothing could say what was in it. A durable record nothing can enumerate is not
+meaningfully better than no record.
+
+The endpoint returns the open items for one tenant, ordered by SLA deadline — most overdue first,
+because different reasons carry different deadlines and creation order is a different question.
+Each row carries the linked operation's **current** status, resolved at read time: a work item stays
+open until a person closes it, so the operation underneath may have moved or finished since, and an
+operator needs the live answer to know whether the item is still real work.
+
+**Console surface.** Folded into the existing Queue board rather than given a screen of its own —
+the operations list already answers "what state is this in", and the work item answers "why was a
+person called, and by when". Each row that has one shows the reason in operator language (the raw
+value is a machine tag like `compensation_ambiguous` or `poison:invalid_state_transition`) and
+flags an item past its deadline. An unparseable deadline is **not** rendered as overdue: a red flag
+an operator cannot verify is worse than none.
+
+**Not an operator action.** It is a plain read, so unlike `/resume` and `/resolve` it takes no
+`X-Actor` spine and writes no audit row — reading a queue is not a decision. It is tenant-scoped by
+an explicit predicate, and the linked operation's tenant is re-checked before its status is
+surfaced (Inv-13).
+
+### The totals, restated
+
+- **wired:** every console-owned endpoint in §10, now including this one.
+- **left to wire: 0.**
+- **never (C): 6** — unchanged. Verified this pass: no file under `apps/web/src` calls any of
+  `/api/channels/{messaging,telephony}`, `/api/notification-webhooks/delivery-receipts`,
+  `/api/conversation-sessions/{id}/{consent,transcript-turns}`, or
+  `/api/Bookings/{id}/modifications`. The console reaches
+  `/api/conversation-sessions/{id}/transcript` — the audited **read** — and nothing adjacent to it.
+
+§12's gap list is unchanged; gap 1 (no web-origin `TenantContext` issuance — the console cannot
+authenticate outside Development) remains the load-bearing one.

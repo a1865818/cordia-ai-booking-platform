@@ -1,16 +1,19 @@
 ---
-date: 2026-08-04
-researcher: Claude (spec-loop Stage 1 — three passes)
-git_commit: 343f220 (passes 1–2) · 77b4fd8 (pass 3)
+date: 2026-08-07
+researcher: Claude (spec-loop Stage 1 — six passes)
+git_commit: 343f220 (passes 1–2) · 77b4fd8 (pass 3) · e037c32 (passes 4–6)
 branch: feat/ui-wire
 repository: Cordia
 topic: "Wiring apps/web to apps/api — consolidated baseline research"
-tags: [research, baseline-audit, apps/web, apps/api, api-contract, react-query, canonical-hash, truthfulness, spec-04, spec-08, spec-14, spec-15]
+tags: [research, baseline-audit, apps/web, apps/api, api-contract, react-query, canonical-hash, truthfulness, capacity, lock-ordering, state-ownership, manual-review, spec-04, spec-06, spec-07, spec-08, spec-11, spec-14, spec-15]
 status: complete
 consolidates:
   - 2026-07-27 frontend-api-wiring baseline
   - 2026-08-03 frontend-wiring gap closure baseline
   - 2026-08-04 console truthfulness baseline
+  - 2026-08-07 residual review findings baseline (Part 4)
+  - 2026-08-07 capacity deadlock + waitlist limbo baseline (Part 5)
+  - 2026-08-07 capacity lock order + state ownership baseline (Part 6)
 ---
 
 # Research — Wiring the Cordia Web Console to the Backend API
@@ -1401,3 +1404,818 @@ Adding `idempotency_key` to `EnrollWaitlistRequest` changes the .NET OpenAPI sur
 `bun nx run api-contract:generate-types` must run, and `libs/api-contract/openapi/v1.json` is
 regenerated. **No Pydantic contract changes**, so `shared-schemas` is untouched. The field is
 additive and nullable, so no existing caller breaks.
+
+---
+
+# Part 4 — Residual review findings baseline (2026-08-07, 8 items)
+
+
+# Residual review findings — research & baseline audit
+
+## Purpose
+
+A large review batch was closed by commit `374f52b` ("close the post-PR hardening review
+findings") plus an uncommitted, API-only working-tree pass (51 files). Re-verification found
+**eight items still open**. This document is the baseline audit for closing them, and is the
+regression baseline the Stage 6 diff runs against.
+
+## Verification method
+
+Four parallel read-only audits (web lane; api infrastructure; api application + langgraph;
+schedule/phone), plus direct reads of the fulfilment handlers in the main context. Every
+"fixed" claim below was confirmed against **actual code**, not against an explanatory comment —
+several files in this repo carry comments describing a fix in the past tense.
+
+## What was already closed (not re-opened here)
+
+Confirmed fixed by direct read: modify/reschedule capacity settlement (previous owner resolved
+before the `Booked` transition; `HoldNoLongerValid` and `NotFound` both route to `Reconciling`;
+the illegal `Finalizing→Rejected` edge replaced with `CompensationRequired` behind
+`OperationStateMachine.EnsureAllowed`; target booking id written back via `TrySetBookingIdAsync`),
+the cancel duplicate-notification race (`cancelledHere` now derives from the lifecycle transition
+this transaction actually performed), grant single-use consumption gated on the creator election,
+assurance level derived from the effective `X-Grant-Id`, the staff-role branch gated behind
+`AssertedActorOptions`, the audit allow-envelopes (waitlist accept/decline/cancel, venue name,
+capacity slot), `ON CONFLICT DO NOTHING` slot insert, monotonic guest-contact clock, retention
+sweeper tenant enumeration + erasure audit, menu monitor single-transaction settle with CAS
+gating, recipient-channel derivation from address shape, the reconcile resume guard, the 403
+`detail` identity leak, and the langgraph guest-identity projection (fixed in `read_back.py` /
+`identify_intent.py`, **not** `state.py` as originally reported).
+
+---
+
+## Existing Feature Behavior (Baseline Audit)
+
+### 1. Operation-status success gate — `apps/web/src/features/bookings/useOperationStatus.ts`
+
+**Today.** `isTerminal(s)` → `s?.terminal === true` (line 26-28). `isBooked(s)` →
+`s?.status === "booked"` (line 31-33), with **no** `terminal` requirement. The file header
+(lines 5-7) states the hook decides success "only when the server reports `terminal` with a
+`booked` status" — the code does not enforce its own stated contract.
+
+**Consumers.** Exactly one production caller: `CreateBookingDrawer.tsx:227`
+(`const booked = isBooked(poll.status)`). On true it sets `phase='done'`, calls `onCreated(...)`
+appending an optimistic row to the schedule board (client state, not a query invalidation).
+`isTerminal` has no caller outside the hook itself.
+
+**Server contract.** `GetOperationStatusQuery.cs:58-77` computes `terminal` from a fixed set that
+**always includes `Booked`**, and sets `Status`/`Terminal` on the same object. The two can never
+disagree over the wire today.
+
+**Severity re-rating.** Not exploitable against the live API. It is a defence-in-depth gap against
+stale react-query cache entries, mocks, and test doubles, plus a code-vs-documented-contract
+mismatch in three places (`useOperationStatus.ts:5-7`, `CreateBookingDrawer.tsx:509`).
+
+**Invariant.** Inv-16 (agent/UI states only authoritative outcomes).
+
+**Coverage.** `submission.test.ts:159-169` asserts `{booked,terminal:true}` → true and
+`{accepted,terminal:false}` → false. The disagreement case `{booked, terminal:false}` is
+**untested**.
+
+### 2. Waitlist notification recovery — Reconcile **and** Retry
+
+**Today.** `SendNotificationCommandHandler.cs:91` writes `OperationId = op is null ? null :
+operationId`. For waitlist offer/expiry sends (`RequiresOperation=false`, registered at
+`ApplicationServiceCollectionExtensions.cs:262-269`) there is no `booking_operations` row yet, so
+the column is NULL — deliberately, to skip the composite FK
+(`NotificationConfiguration.cs:28-32`, `ON DELETE RESTRICT`; a NULL column skips enforcement).
+
+**This is spec-compliant.** Spec 10's ratified entity sketch declares `OperationId` as
+"null for non-operation messages". The send side is correct.
+
+**The defect is in the readers.** Both gate recipient resolution on the wrong column:
+- `ReconcileNotificationCommandHandler.cs:174-176`
+- `RetryNotificationCommandHandler.cs:123-125` (**same bug, missed by the original report**)
+
+Both evaluate to `null` for every waitlist row, producing
+`NotificationSendOutcome.InvalidRecipient` with `FailureCategory: "no_destination"`, settled via
+`MarkFailedAsync` into `NotificationState.InvalidRecipient` — **terminal, unrecoverable**, and
+emitting no reconcile audit. A guest who *was* successfully notified is permanently recorded as
+unreachable.
+
+**Why `RecipientRef` cannot be the fix surface.** It is not the spec's "opaque handle" — the
+implementation made it a **one-way, truncated hash**:
+`Token(tenantId, value) = "recip_" + SHA256($"{tenantId}|{value}")[..16]`
+(`NotificationRecipientResolver.cs:276-279`). It is derived from the *operation id*, and its own
+doc warns that changing the derivation would change every `notification_id` and break Inv-9 dedup.
+Off-limits.
+
+**The available no-DDL surface.** `notifications.correlation_id` and `causation_id` already exist
+as nullable `text` (migration `20260630123648_AddCorrelationToChainTables.cs:55-67`) and are
+**dead columns**: `NotificationRepository.TryInsertAsync` is a raw `ExecuteSqlInterpolatedAsync`
+whose column list omits them, which also bypasses `CorrelationStampingInterceptor` (it only scans
+`ChangeTracker`). Meanwhile the enrollment id **is already flowing** — `MatchWaitlistOfferCommandHandler.cs:162`
+and `ExpireWaitlistOfferCommandHandler.cs:78` set the outbox `CorrelationId = enrollment.EnrollmentId`,
+and `CorrelationEnrichmentBehavior.cs:49-54` seeds ambient correlation for every
+`IInboxConsumerRequest`. It is simply dropped at insert.
+
+**Resolver shape.** `NotificationRecipientResolver.TryResolveFromWaitlistAsync` (lines 79-102)
+accepts only an `op_wl_*` id, looks up `WaitlistOffer` by `OperationId`
+(`WaitlistOfferRepository.GetByOperationIdAsync`), then chains to the enrollment. There is no
+enrollment-id entry point today.
+
+**`op_wl_*` map.** Minted at `MatchWaitlistOfferCommandHandler.cs:78`; the durable
+`op_wl_*` → `EnrollmentId` mapping lives on `WaitlistOffer.OperationId`
+(`WaitlistOffer.cs:21`, nullable, no FK).
+
+**Invariants.** Inv-8 (booking persisted before notification — unaffected), Inv-9 (independent
+dedup — must not be disturbed), Inv-16.
+
+**Coverage.** `SendNotificationTests.cs:531-558` covers the *send* path with
+`RequiresOperation=false`. `ReconcileNotificationTests.cs`, `RetryNotificationTests.cs` and
+`NotificationReconcileTests.cs` contain **zero** `Waitlist`/`op_wl` matches. Entirely untested.
+
+### 3. Guest-contact fingerprint backfill
+
+**Today.** `GuestContactRepository.GetOrCreateAsync` is the **only** insert path and always
+populates all three fingerprints (lines 65-67, 86-97). Discovery by phone/email goes solely
+through `FindRefsByPhoneAsync`/`FindRefsByEmailAsync`, which match on
+`PhoneFingerprint`/`EmailFingerprint` — a NULL fingerprint can never match (NULL ≠ NULL).
+
+**Fingerprint algorithm.** Plain, **unkeyed** SHA-256 over `string.Join('\x1F', fields)`, hex
+lowercase; the "salt" is the tenant id folded into the plaintext (lines 205-234). No config, no
+key ring, no per-process state — **deterministic and reproducible in SQL**. The values hashed are
+the already-normalised `phone_e164`/`email` column contents, so no re-implementation of
+`PhoneMatching.Normalise` / `ContactAddress.NormaliseEmail` is needed for a backfill.
+
+**Migration history.** `20260806010659_GuestContactStore` created the table with **no** fingerprint
+columns. `20260806042423_GuestContactRetentionClockAndCatalogStatusClock` added
+`phone_fingerprint`/`email_fingerprint` nullable, plus their indexes, with **no `UPDATE`**.
+
+**Severity re-rating — this is the important finding.** Both migrations shipped in the **same
+commit** (`970ca4c`), on `feat/ui-wire`, never merged to `main`. At that commit the application
+always writes fingerprints, and against the earlier schema the INSERT would fail outright (columns
+absent). NULL-fingerprint rows are therefore reachable **only** in a developer's local database
+left at an intermediate migration. Zero rows in CI or production. This is **defensive hygiene, not
+a P1 data-loss bug** — a correction to the original report.
+
+**Discovery fallback.** `BookingReadRepository.MatchesHints` (lines 199-238) still matches
+*legacy-shape* payloads carrying an inline `phone_e164` directly via `PhoneMatching.Matches`, so
+pre-`guest_contacts` bookings are unaffected. There is no fallback for the new `contact_ref`-only
+shape.
+
+**Migration-immutability guard.** `tools/scripts/check_migrations_immutable.sh`
+(`.pre-commit-config.yaml:129-133`) fails on any `--diff-filter=MDR` change to an existing
+migration file (snapshot excepted). **Adding a new migration is always allowed**; editing
+`20260806042423_...` — including a `Down()`-only edit — would trip the guard. The backfill must be
+a **new forward-only migration**.
+
+**Precedent.** `20260628023022_OpenWorkItemUniquePerOperation.cs:21-32` runs a genuine data
+`UPDATE` inside `Up()`.
+
+**Invariants.** Inv-13 (tenant scope — the backfill must stay tenant-keyed), spec 14 PII handling.
+Note: `guest_contacts` is **not** in spec 12's D17 24-table catalog; it exists under the
+2026-08-06 owner ruling (`docs/frontend-api-wiring.md:707`).
+
+**Coverage.** `GuestContactErasureTests.cs` covers minting, normalisation, tenant isolation,
+erasure and the monotonic clock. **No test constructs a NULL-fingerprint row.**
+
+### 4. Console schedule loses the booking reference
+
+**Today.** `ConsoleReadModel.PayloadRows()` (lines 512-532) joins only `booking_operations` ↔
+`booking_intent_revisions`. `db.Bookings` is queried **only** inside `BuildCustomerResolverAsync`
+(lines 473-480) and selects just `{BookingId, CustomerId}`. `ToScheduledBooking` (line 551) fills
+the reference from `payload.BookingReference`.
+
+**Why that is structurally always null.** `BookingRequest` is `additionalProperties: false`, so a
+current-schema canonical payload can never carry `booking_reference`. As the sibling read model
+documents (`BookingReadRepository.cs:106-117`), the reference "is written at finalize and lives
+ONLY on the booking row."
+
+**The pattern to mirror.** `BookingReadRepository.BaseRows()` (lines 118-138) does a **LEFT** join
+to `db.Bookings` (left, so pre-finalize operations still project) and resolves via
+`FirstNonEmpty(row.BookingReference, payload.BookingReference)` (line 158).
+
+**Authoritative column.** `Booking.BookingReference` is `IsRequired()` and unique per tenant
+(`BookingConfiguration.cs:16,25-26`); `ProviderReference` is nullable with a partial index and is
+effectively an internal duplicate of `BookingId`.
+
+**Contract impact — none.** `ScheduledBooking.BookingReference` (`ConsoleProjections.cs:27`),
+`ScheduledBookingView.BookingReference` (`BookingsController.cs:271`) and
+`libs/api-contract/openapi/v1.json:1576-1583` are **already** nullable strings. Only the runtime
+value is wrong; **no `api-contract` regeneration required**.
+
+**Visible symptom.** `apps/web/src/features/bookings/adapters.ts:142` renders
+`row.customer_ref ?? row.booking_reference ?? "Guest"` — with the reference always null, rows
+without a resolvable customer render as literal `"Guest"`.
+
+**Coverage.** None of the 7 `Schedule_*` tests in `ConsoleReadEndpointTests.cs` assert
+`booking_reference`. `ConsolePage.test.tsx:208` supplies `booking_reference: "REF1"` but never
+asserts it renders. Untested on both sides.
+
+### 5. Phone normalisation parity — client vs server
+
+**Server.** `PhoneMatching.Normalise` keeps ASCII digits plus a leading `+` (only if it precedes
+the first digit), and **hard-bails to `null`** when `trimmed.Length > MaxLength` (64) — a
+`stackalloc` stack-safety bound checked on the raw length, before punctuation is stripped. It is a
+wholesale rejection, not a truncation.
+
+**Client.** `normalisePhone` (`buildSubmission.ts:180-190`) agrees byte-for-byte on digit survival
+and the leading-`+` rule, but has **no length cap at all**.
+
+**Where it actually bites — a correction to the original report.** The **mint** path is *safe*:
+`CreateBookingDrawer.tsx:355` posts raw `phone.trim()` to `POST /api/guest-contacts`, and
+`GuestContactsController.cs:76,86-95` rejects an unnormalisable phone with a **400**. The real
+exposure is the **legacy inline-payload fallback** at `buildSubmission.ts:161-162`
+(`toCanonicalPayload`), where `normalisePhone`'s uncapped output is embedded directly into the
+**hashed, immutable** canonical payload with no server-side gate at write time (it sits inside an
+opaque `customer` object). `PhoneInput`'s `looksUnnormalisedPhone` only *warns*. An over-64-char
+raw value therefore passes the client, enters an immutable payload, and is then **permanently
+unmatchable** by every server-side `PhoneMatching.Normalise` caller — and cannot be repaired,
+because rewriting the payload would invalidate `payload_hash` and every derived idempotency record
+(Inv-2/3).
+
+**Caller behaviour on `null`** — only the mint endpoint rejects; every lookup path silently
+returns no match:
+
+| Caller | Behaviour |
+|---|---|
+| `GuestContactsController.Create:76` | **400 reject** |
+| `GuestContactRepository.GetOrCreateAsync:24` | stores null (safe — controller gated) |
+| `GuestContactRepository.FindRefsByPhoneAsync:122` | silent `[]` |
+| `NotificationRecipientResolver.AsDeliverable:126` | silent not-deliverable |
+| `BookingReadRepository.MatchesAnyPhone:225-241` | silent zero candidates |
+
+**Invariants.** Inv-2/Inv-3 (immutable payload + hash binding) — this is a canon.v1-style
+cross-language parity concern, not a UX nicety.
+
+**Coverage.** `PhoneMatchingTests.cs` never exercises the 64-char boundary.
+`endpointBackedPrimitives.test.tsx:184-210` covers shape warnings only, never an overlong input.
+No direct unit test for `normalisePhone`.
+
+### 6. Customers screen — guest vs operator attribution
+
+**Today.** `ConsoleReadModel.BuildCustomerResolverAsync` (lines 459-506) resolves
+`Booking.CustomerId` when a booking row exists, else falls back to the intent confirmation's
+`IdentityRef` (who confirmed). `adapters.ts:46-48` flags `isOperatorRef` by string-equality against
+the local session actor; `CustomersScreen.tsx:265` renders "You · console bookings".
+
+**Severity re-rating.** `FinalizeBookingCommandHandler.cs:864-879` sets `Booking.CustomerId` from a
+preference chain (`customer_id`, `contact_ref`, `phone_e164`, …) with a final
+`?? providerReference`. `CustomerId` is therefore **never** null once a booking exists, so the
+`identityByIntent` operator-collapse fallback fires **only for operations with no booking row yet**
+(in-flight or failed). The `adapters.ts` comment ("every such booking collapses into one row")
+overstates the current behaviour and may predate the `contact_ref` ranking fix.
+
+**Available metadata.** `CustomerSummary` carries only `customer_ref`, booking count, first/last
+activity and `last_service_id`. **No origin/channel field exists** — `adapters.ts:58` hard-codes
+`channel: "web"`.
+
+**Coverage.** Not covered for the in-flight attribution case.
+
+### 7. Menu approve does not invalidate the draft cache
+
+**Today.** `useApproveCatalog` routes through `useCatalogLifecycleMutation`
+(`mutations.ts:51-61`), which invalidates **only** `queryKeys.settings.catalogList()`.
+`useEditCatalogItems` (lines 100-104) is the only hook that invalidates
+`queryKeys.settings.catalogDraft(variables.catalogId)` — a **separate** cache entry
+(`queryKeys.ts:71` vs `:73`).
+
+**Why it cannot self-correct.** `CatalogDraftEditor.tsx:80-92` sets `staleTime: Infinity`,
+`refetchOnWindowFocus: false`, `refetchOnReconnect: false`, `refetchOnMount: false` — deliberately,
+because the draft read is an audited `IOperatorActionRequest` and refetching on focus would spam
+audit rows. The stepper is driven by `query.data?.status` (line 96, 152-160).
+
+**Consequence.** With the editor mounted, an approve leaves the stepper showing `in_review` and the
+save controls live; the next edit 409s. This is the exact failure the file's own header comment
+(`mutations.ts:39-50`) describes for the *list* — the fix was applied to `catalogList` only.
+
+**Coverage.** Not covered.
+
+### 8. MaskedField reveal policy — deliberate deviation
+
+**Today.** `REVEAL_TTL_MS = 20_000` with a `setTimeout` auto-remask (lines 48-65). The blur
+approach was **explicitly evaluated and rejected** (lines 51-58): Safari does not focus a
+`<button>` on click so `focusout` never fired (indefinite exposure); Chrome/Firefox fired too
+eagerly, re-masking before a copy selection could be made.
+
+**What it protects.** Two production call sites only. The substantive one is
+`ModelTraceViewerPanel.tsx:172-175`, masking **conversation-trace content** — not PAN. Card data
+is handled server-side (`SensitiveDataMask`, `AuditEventSanitizationInterceptor`), never through
+this component.
+
+**`tail=0` clamp is already fixed** — `maskValue` clamps via
+`Math.min(Math.max(Math.trunc(tail), 0), v.length)` (line 111).
+
+**The real gap.** `designSystem.test.tsx:225-260` covers masking, reveal, non-un-redaction and
+`aria-pressed`, but **nothing asserts the 20s TTL actually remasks**. The behaviour is unlocked by
+tests.
+
+---
+
+## Registry position & type-generation blast radius
+
+| Contract / mechanism | Owner | This work |
+|---|---|---|
+| `notifications` table + `notification_id` derivation | 10 (contract) / 12 (DDL) | **referencer** — must not alter `RecipientRef`/`notification_id` derivation (Inv-9) |
+| `notifications.correlation_id` column | 12 (DDL, already exists) | **referencer** — populate only, no DDL |
+| `guest_contacts` | owner ruling 2026-08-06 (not in D17) | data backfill only, new migration |
+| `ScheduledBookingView` / `ScheduledBooking` | console read model | value-only change; shape already nullable |
+| `PhoneMatching` | 08 (manage-booking matching) | server bound is authoritative; client must agree |
+| `operation_status` / `NormalizedOperationStatus` | 06 | **referencer** — read only |
+
+**Type generation: no Pydantic contract changes, no `shared-schemas` regeneration, and no
+`api-contract` regeneration** (item 4's field is already nullable in `v1.json`). This keeps the
+cross-app blast radius at zero.
+
+## Automated coverage that must stay green
+
+- `bun nx test api` (Category=Unit) — notification, waitlist, manage-booking, phone-matching suites
+- `bun nx test-integration api` — `ConsoleReadEndpointTests`, `GuestContactErasureTests`,
+  `NotificationSenderTests`, `WaitlistFlowTests`, `BookingReadRepositoryTests`
+- `bun nx test web` — `submission.test.ts`, `designSystem.test.tsx`, `ConsolePage.test.tsx`,
+  `endpointBackedPrimitives.test.tsx`
+- `bun nx lint api` / `bun nx lint web`
+
+## Net severity re-rating vs the original report
+
+| # | Reported | Audited |
+|---|---|---|
+| 1 | P1 | **P2** — not reachable via the real API; defence-in-depth + contract mismatch |
+| 2 | P1 (1 handler) | **P1, wider** — Reconcile *and* Retry; unrecoverable terminal misclassification |
+| 3 | P1 | **P3** — unreachable outside a local dev DB; cheap insurance |
+| 4 | P2 | **P2 confirmed** — value always null; visible as `"Guest"` rows |
+| 5 | P2 | **P1 on the inline path** — poisons an immutable hashed payload (Inv-2/3) |
+| 6 | P2 | **P3** — only in-flight operations; no origin metadata exists to fix it properly |
+| 7 | P2 | **P2 confirmed** — editor cannot self-correct by design |
+| 8 | P2 | **Won't-fix candidate** — deliberate, well-argued; real gap is missing test |
+
+---
+
+# Part 5 — Capacity lock-order deadlock + waitlist accept limbo (2026-08-07)
+
+
+# Research & baseline audit — capacity deadlock + waitlist accept limbo
+
+## Existing Feature Behavior (Baseline Audit)
+
+### A. Capacity lock ordering
+
+**The convention (upheld everywhere but one place).** Every method in
+`FirstPartyCapacityReservation` locks `capacity_holds` **before** `capacity_slots`:
+
+| Method | Order |
+|---|---|
+| `ReserveAsync` (55-124) | read holds → **UPDATE slot** → **INSERT hold** (inserts don't contend with existing hold rows) |
+| `ReleaseHoldAsync` (412-454) | **UPDATE hold** → **UPDATE slot** |
+| `FinalizeAgainstOperationAsync` (159-217) | read hold → **UPDATE hold** → **UPDATE slot** |
+| `ReleaseFinalizedByOperationAsync` (338-404) | read → **UPDATE hold** → **UPDATE slot** |
+
+**`AbsorbSameSlotAsync` (220-335) is the sole reversal:**
+read previousHold → read newHold → **UPDATE slot (253-262)** → **UPDATE previous-owner hold
+(275-285)** → **UPDATE new-op hold (298-309)**. Ordered by *role* (previous-owner first), not by
+hold id.
+
+**No `SELECT … FOR UPDATE` exists anywhere in this path.** All reads are `AsNoTracking`. Every lock
+comes from an `ExecuteUpdateAsync` single-statement UPDATE (`VersionTokenUpdate.UpdateAsync` is one
+UPDATE, not read-then-write).
+
+**The deadlock.** For booking `B` created by `Op1` with finalized hold `H1` on slot `S`:
+
+- **TxM** (`ModifyBookingCommand.CommitModificationAsync`, same-slot amendment `Op2`):
+  `FinalizeAgainstOperationAsync` (333-334) locks `HOLD(Op2) → SLOT(S)`; then
+  `AbsorbSameSlotAsync` (420-424) wants `HOLD(H1)`. **Net: `SLOT(S) → HOLD(H1)`.**
+- **TxC** (`CancelBookingCommandHandler.CommitCancellationAsync`, cancel `Op3`):
+  `ReleaseFinalizedByOperationAsync(origin=Op1)` (273-277) locks **`HOLD(H1) → SLOT(S)`**.
+
+Circular wait ⇒ `40P01 deadlock_detected`. Both resolve `previousOwner`/`origin` to `Op1` via
+`GetBookedOperationForBookingAsync` — the normal case while neither has committed.
+
+**Critically, the inversion is at TRANSACTION level, not inside the method.** By the time
+`AbsorbSameSlotAsync` runs, `FinalizeAgainstOperationAsync` has already taken `SLOT(S)` in the same
+transaction. Reordering statements inside `AbsorbSameSlotAsync` therefore **cannot** fix it — the
+previous owner's hold must be locked before the capacity phase touches the slot at all.
+
+**Duplicated.** `ModifyCapacitySettlement.SettleAsync:72-89` (reached from
+`ResolveManualReviewCommandHandler:177-178`) has the identical Finalize-then-Absorb sequence, so the
+manual-recovery lane deadlocks the same way. Any fix must cover both call sites.
+
+**No deadlock handling exists.** `UnitOfWork` (12-21) begins a transaction with **no isolation level
+argument** (default READ COMMITTED), no retry wrapper, no SQLSTATE catch. Grep for
+`40P01`/`40001`/`serialization_failure`/`deadlock_detected` across `apps/api`: **zero matches**. An
+aborted side propagates as an unhandled `PostgresException`; recovery is entirely by redelivery.
+(`CancelBookingCommandHandler`'s `BookingTransitionAttempts = 3` loop is an *optimistic-concurrency*
+re-read inside one transaction — not deadlock retry.)
+
+**Coverage.** `SameSlotAmendmentTests.cs` exercises `AbsorbSameSlotAsync` thoroughly but
+**single-threaded**. No test anywhere runs concurrent modify vs cancel, and none asserts lock order.
+
+### B. Waitlist accept stranded past `CompensationRequired`
+
+**The reconciler's classification** — `ReconcileWaitlistAcceptCommandHandler.cs:34-41`:
+
+```csharp
+private static readonly HashSet<OperationStatus> _terminalFailureStates =
+[ FailedFinal, Rejected, Expired, AlternativesRequired ];
+```
+
+Success = `Booked` only (line 55) → stamps `CancelAsync` as fulfilment (63-64). Failure = that
+hand-written set (line 70) → audit, leave enrollment eligible. **Everything else falls through to
+"in-flight" by exclusion** (78+) and is re-probed.
+
+**This duplicates a set the codebase already owns.** `OperationStateMachine._terminalStates`
+(`OperationStateMachine.cs:100-108`) = `{Booked, Rejected, Expired, Waitlisted, FailedFinal}`, and
+`IsTerminal` (115-116) is already the authority used by `AdvanceBookingOperationCommandHandler:80`
+and `EvaluateOperationSlaCommand:114`. Per `docs/specs/README.md` the `operation_status` enum **and
+its terminal semantics are owned by spec 06**; spec 11 §17 says the accept "delegates … to the
+spec-06 operation engine and **awaits its terminal**." The reconciler is a *referencer* keeping its
+own narrower copy — a single-ownership violation, and the reason two states fall through the gap.
+
+**The race window is narrower than assumed.** `GetLiveByEnrollmentAsync`
+(`WaitlistOfferRepository.cs:30-38`) returns only `Pending|Matched|Offered` — **not `Accepted`** — so
+once the accept commits its claim, cancel cannot touch the hold. The real windows are:
+1. between `mediator.Send(submit)` (`AcceptWaitlistOfferCommandHandler.cs:104`, which mints the
+   spec-04 operation) and the `Offered → Accepted` claim (114-118); and
+2. the **entire** deferred auto-accept window — `MatchWaitlistOfferCommandHandler:118-134` leaves the
+   offer `Offered` until the queued `AutoAcceptWaitlistOfferCommand` runs.
+
+**How it reaches `CompensationRequired`.** The 06 engine reuses the waitlist hold via
+`ReserveAsync`'s idempotency pre-check (`FirstPartyCapacityReservation.cs:57-64`), conditional on the
+hold still being `Active`. If cancel released it *after* `ReservingCapacity → Held` but before
+finalize, `FinalizeAgainstOperationAsync` returns `HoldNoLongerValid` and
+`FinalizeBookingCommandHandler` routes `Finalizing → CompensationRequired` (143-146 and 505-508).
+**In both branches the provider `CreateBookingAsync` has already succeeded**, so compensation must
+cancel a real external booking.
+
+**`CompensationRequired` is correctly NOT terminal**, and usually resolves in **milliseconds**:
+`FinalizeBookingCommandHandler` returns `Continue`, so `AdvanceBookingOperationCommandHandler`'s
+same synchronous loop immediately dispatches `CompensateOperationCommand`, which reaches
+`FailedFinal` (130-133 / 238-241). The reconciler's 5-minute first probe therefore *usually* sees
+`FailedFinal` and classifies correctly — it "gets away with" the missing case.
+
+**The genuinely permanent case is `ManualReview`.** When the provider cancel comes back
+Ambiguous/Transient/PermanentError/AuthError, `CompensateOperationCommandHandler:198-207` escalates
+`CompensationRequired → ManualReview` and returns `Wait`. `AdvanceBookingOperationCommandHandler`'s
+dispatch switch (83-117) has **no case for `ManualReview`** — it falls to `_ => null` and the loop
+stops. The operation sits there until a human resolves it. `ManualReview` is in **neither**
+the reconciler's failure set **nor** `OperationStateMachine._terminalStates`, so the reconciler
+re-probes, exhausts `MaxAttempts = 3` × `Delay = 5 min` (`WaitlistAcceptReconcileScheduler.cs:26,29`)
+≈ 15 minutes, then **gives up silently**: a `logger.LogWarning` and `return Unit.Value` — no
+`CancelledAt`, no audit event, no work item, no escalation.
+
+So the enrollment is left neither fulfilled nor explicitly re-matched, with no durable record that
+the waitlist side was abandoned, while the operation may sit in `ManualReview` indefinitely.
+
+**Coverage.** `ReconcileWaitlistAcceptHandlerTests.cs` covers the four states in the hand-written
+set, `Booked`, and one in-flight exemplar (`ReservingCapacity`). **No test uses
+`CompensationRequired` or `ManualReview`.** `WaitlistFlowTests` tests cancel/decline/expire release
+against a still-`Offered` offer with **no concurrent in-flight accept**.
+
+## Registry position & blast radius
+
+| Contract | Owner | This work |
+|---|---|---|
+| `operation_status` + terminal semantics | **06** | **referencer** — must consult `OperationStateMachine.IsTerminal`, not copy it |
+| Atomic capacity reservation + hold deadline | **07** | **owned** — lock ordering is an implementation concern of the owner |
+| Waitlist offer lifecycle | **11** | **owned** |
+| `capacity_holds` / `capacity_slots` DDL | **12** | **referenced — no DDL in this work** |
+
+**Type generation: none.** No Pydantic contract, no OpenAPI surface. Zero cross-app blast radius.
+
+Spec 07 §266 states the design intent the absorb path departs from: capacity writes are
+"single-statement conditional UPDATE … no row locks held across network."
+
+## Automated coverage that must stay green
+
+- `bun nx test api` — `SameSlotAmendmentTests`, `ReconcileWaitlistAcceptHandlerTests`,
+  `CancelBookingTests`, `ModifyBookingTests`, `ReserveCapacity*Tests`
+- `bun nx test-integration api` — `WaitlistFlowTests`, `WaitlistAcceptFlowTests`,
+  `StateMachineCapstoneTests`, `RetryAndFailureTests`
+- `bun nx lint api`
+
+## Severity re-rating vs the goal statement
+
+| Item | As stated | As audited |
+|---|---|---|
+| Deadlock | liveness, redelivery recovers | **confirmed** — and localized to `AbsorbSameSlotAsync`'s two call sites; not fixable inside the method |
+| "reconciler doesn't classify `CompensationRequired` as terminal" | accurate description | **`CompensationRequired` is correctly non-terminal** and self-resolves in ms. The permanent stranding is **`ManualReview`**, plus a **silent** give-up at the cap. Root cause is a duplicated terminal set, not a missing enum case. |
+| "cancel releases the hold out from under an in-flight accept" | confirmed | window is narrower than feared (`Accepted` already excluded) but real in two places, incl. the whole deferred auto-accept window |
+
+---
+
+# Part 6 — Global capacity lock order, state ownership, ManualReview (2026-08-07)
+
+
+# Research & baseline audit — capacity lock order, state ownership, ManualReview
+
+This audit **builds on** the earlier pass
+(Part 5 above),
+which fixed the modify-vs-cancel `HOLD(prev)`/`SLOT` inversion. That fix is in the working tree and
+is correct. This audit widens the sweep to **every** capacity transaction, **every** duplicated state
+set, and the **whole** ManualReview lifecycle — and finds work the earlier pass did not cover.
+
+**Baseline at audit time:** `bun nx test api` → **1341 passed, 0 failed**.
+
+---
+
+## Existing Feature Behavior (Baseline Audit)
+
+### A. Capacity: every transaction touching `capacity_holds` / `capacity_slots`
+
+All writes funnel through `FirstPartyCapacityReservation`
+(`apps/api/src/Cordia.Infrastructure/Services/FirstPartyCapacityReservation.cs`). There are **no
+FKs, no cascades, and no triggers** on either table (migration `20260628034341_CapacitySlotsAndHolds`,
+plus `CapacityHoldConfiguration` / `CapacitySlotConfiguration`), so **no other table's write can
+implicitly lock a capacity row**. Only two raw-SQL statements touch these tables in production:
+`CapacityHoldRepository.LockAsync` (`SELECT … FOR UPDATE`) and `CapacitySlotRepository.TryAddAsync`
+(`INSERT … ON CONFLICT DO NOTHING`).
+
+`UnitOfWork.ExecuteInTransactionAsync` (`UnitOfWork.cs:12-21`) opens with **no isolation argument**
+→ READ COMMITTED. **No `40P01` / `40001` handling exists anywhere.** Recovery is by broker
+redelivery only.
+
+#### Per-method internal order
+
+| Method | Order | Verdict |
+|---|---|---|
+| `ReserveAsync` (55-124) | HOLD(read, non-locking) → **SLOT(update)** → **HOLD(insert)** | slot-before-hold *textually*, but see **A4** |
+| `ReleaseHoldAsync` (437-479) | HOLD(update) → SLOT(update) | canonical |
+| `FinalizeAgainstOperationAsync` (159-217) | HOLD(update) → SLOT(update) | canonical |
+| `ReleaseByOperationAsync` (139-156) | loop: HOLD(update) → SLOT(update) | see **A2** |
+| `ReleaseFinalizedByOperationAsync` (363-429) | loop: HOLD(update) → SLOT(update) | see **A2** |
+| `AbsorbSameSlotAsync` (220-360) | HOLD(lock ×2, **ordered by hold id**) → SLOT(update) → HOLD(update) ×2 | fixed by the earlier pass |
+
+#### Per-transaction inventory
+
+| # | Entry point | Ordered capacity ops | Verdict |
+|---|---|---|---|
+| A | `ReserveCapacityCommandHandler:88-273` | SLOT(update) → HOLD(insert) | safe — **A4** |
+| B | `MatchWaitlistOfferCommandHandler:49-152` | SLOT(update) → HOLD(insert) | safe — **A4** |
+| C | `FinalizeBookingCommandHandler:125-179, 430-586` | HOLD → SLOT | canonical |
+| D | `ModifyBookingCommand.CommitModificationAsync:282-582` **same-slot** | **HOLD(prev, lock)** → HOLD(own) → SLOT → HOLD ×2 | fixed by the earlier pass |
+| D′ | same, **cross-slot** | HOLD(own) → **SLOT(new)** → HOLD(prev) → **SLOT(old)** | 🔴 **A1 — live deadlock** |
+| E | `ModifyCapacitySettlement.SettleAsync:45-126` | identical to D / D′ | 🔴 **A1** on the cross-slot branch |
+| F | `CancelBookingCommandHandler.CommitCancellationAsync:188-324` | HOLD(prev) → SLOT | canonical |
+| G | `CompensateOperationCommandHandler:115-182, 221-285` | HOLD → SLOT (loop) | **A2** |
+| H | `ResolveManualReviewCommandHandler:51-334` | three branches → F-shape or E-shape | 🔴 **A1** via E |
+| I–L | Waitlist cancel/decline/expire, `ReleaseExpiredHoldsCommandHandler` | single HOLD → SLOT | canonical / **A2** |
+| M | `CreateCapacitySlotCommandHandler` | SLOT only | N/A |
+| N | `AvailabilityQueryHandler` | read-only, non-locking | N/A |
+
+#### 🔴 A1 — Cross-slot reschedule takes two slot rows in **role order, not a total order** (NEW, live)
+
+The earlier pass reasoned only about hold-vs-slot and concluded the cross-slot path was safe because
+"`SLOT(new) ≠ SLOT(old)`, so there is no shared row to cycle on". That is true for **one**
+transaction against a cancel. It is **false for two cross-slot reschedules running in opposite
+directions**, which share *both* rows:
+
+- **TxA** — booking *B* moves `S1 → S2`: `HOLD(ownA)` → **`SLOT(S2)`** → `HOLD(prevA)` → **`SLOT(S1)`**
+- **TxB** — booking *C* moves `S2 → S1`: `HOLD(ownB)` → **`SLOT(S1)`** → `HOLD(prevB)` → **`SLOT(S2)`**
+
+TxA holds `SLOT(S2)` and wants `SLOT(S1)`; TxB holds `SLOT(S1)` and wants `SLOT(S2)`. **Circular wait
+⇒ `40P01`.** Reachable in ordinary use: two guests swapping between the same two sittings
+("move 7pm→8pm" and "move 8pm→7pm") at the same moment. Present in **both** call sites
+(`ModifyBookingCommand:511-518` and `ModifyCapacitySettlement:122-123`), i.e. the automatic lane and
+the manual-recovery lane, exactly like the original defect.
+
+**Not fixable by the hold-before-slot rule alone** — the rule says nothing about the order of two
+slot rows. The rule needs a second clause.
+
+#### 🟡 A2 — Multi-row loops have no total order and interleave hold/slot (latent, structural)
+
+`ReleaseFinalizedByOperationAsync:373-378` and `GetActiveByOperationAsync`
+(`CapacityHoldRepository.cs:29-33`) both return `ToListAsync()` with **no `ORDER BY`**. The loop then
+runs `HOLD(h₁) → SLOT(s₁) → HOLD(h₂) → SLOT(s₂)`, which is both (a) a hold acquired *after* a slot,
+and (b) a hold set acquired in a database-determined order.
+
+**Honest severity: latent, not currently live.** Reaching `n > 1` requires one operation to own two
+holds of the same status simultaneously; today `create` is the only workflow step and
+`AbsorbSameSlotAsync` collapses to a single finalized hold, so the loops run with `n ≤ 1` in every
+flow I traced. It is a **public primitive whose shape permits the inversion**, with no guard, no
+ordering, and no comment saying `n ≤ 1` is required. The fix is two lines and removes the class.
+
+#### ✅ A4 — `ReserveAsync`'s SLOT-then-HOLD-insert is **not** a lock-order violation
+
+Textually it touches `capacity_slots` before `capacity_holds`, so a naive reading of the rule flags
+it. It is nonetheless safe, and the reason is worth pinning in the rule itself rather than
+rediscovering: **an `INSERT` creates a new row and therefore acquires no lock any other transaction
+can already hold.** The only way it can wait is a unique-index conflict on
+`uq_active_hold_per_op_step`, and that cannot form a cycle here:
+
+- If a concurrent releaser is uncommitted, the step-1 pre-check (`:61-64`) reads the hold as still
+  `Active` under READ COMMITTED and returns `Held(existing)` **without touching the slot**.
+- If it has committed, the row is `Released` and no longer in the partial index, so no conflict.
+- Two concurrent *reserves* for the same `(op, step)` conflict on the index, but neither ever waits
+  on the other's slot lock — a wait, not a cycle (documented at `:100-107`).
+
+So the global rule must be stated over **row locks on pre-existing rows**, not over "which table is
+touched first". This is a precision fix to the rule, not a weakening of it.
+
+#### Existing capacity coverage
+
+39 test files reference capacity. **Exactly one test uses two genuinely concurrent connections** —
+`SameSlotAmendmentTests.LockAsyncGenuinelyHoldsTheRowAgainstAConcurrentWriter:317-349` (holder takes
+`FOR UPDATE`; contender sets `lock_timeout='750ms'` and fails `55P03`). Its sibling
+`LockAsyncReleasesTheRowWhenItsTransactionEnds:356-382` is sequential. `grep` for
+`Task.WhenAll|Parallel\.|Task\.Run` across `apps/api/test` finds **no matches in any capacity test**.
+**No test anywhere asserts a `40P01`**, and no test reproduces any deadlock scenario end-to-end.
+Lock ordering is currently asserted only by a Moq call-order unit test
+(`ModifyBookingTests.cs:539-567`).
+
+`PostgresFixture` supports the needed concurrency: `CreateContext(tenantId)` builds a **fresh
+`DbContextOptionsBuilder` and connection** per call, so N independent overlapping transactions are
+available. Tests share one physical DB (`Cordia_API_Test`) and isolate by minting unique tenant ids.
+
+**Spec 07 §12 (line 349) explicitly calls for this:** *"Use Alba integration tests against a real
+PostgreSQL for the concurrency/race cases (deterministic two-transaction interleaving)."* The
+deterministic-interleaving requirement is currently unmet.
+
+#### Where the rule is written down
+
+**Nowhere.** `grep -i "lock order|deadlock|for update"` across `docs/` returns only
+`FOR UPDATE SKIP LOCKED` queue-claim references. `docs/dotnet-api-patterns.md` has **zero** matches.
+The sole explanation of the ordering rule is a code comment on `ICapacityHoldRepository.LockAsync`
+(`:40-63`). Spec 07 never names `FOR UPDATE`, `40P01`, or lock ordering.
+
+---
+
+### B. Workflow state ownership — 15 duplication sites
+
+Five state machines exist, all in `Cordia.Domain`, all `FrozenDictionary`/`FrozenSet` shaped. **Their
+public APIs are not uniform, and that asymmetry is the root cause of most duplication:**
+
+| State machine | Terminal set | Exposes `IsTerminal`? |
+|---|---|---|
+| `OperationStateMachine` (`Entities/OperationStateMachine.cs`) | Booked, Rejected, Expired, Waitlisted, FailedFinal | ✅ |
+| `NotificationStateMachine` | SuppressedDuplicate, InvalidRecipient, Delivered, FailedPermanent | ❌ |
+| `WaitlistOfferStateMachine` | Accepted, Declined, Expired, Released | ❌ |
+| `PreorderSagaStateMachine` | Completed, FailedFinal | ❌ (has `IsInFlightForwardStep`) |
+| `CatalogStateMachine` | Quarantined, Superseded, ExtractFailed | ❌ |
+
+**Four of five force every caller that needs "is this done?" to hand-roll a set.**
+
+#### B1 — Duplicated `OperationStatus` sets
+
+| # | Site | Literal | Means | Risk |
+|---|---|---|---|---|
+| 1 | `BookingOperationRepository.cs:17-24` | 5 terminals | terminal (SQL-translatable) | hand copy; EF genuinely cannot translate `IsTerminal`, but nothing derives it |
+| 2 | `BookingOperationRepository.cs:100-110` | `SlaEligibleStatuses` (8) | non-terminal ∧ ¬user-wait | new state silently excluded from SLA sweeping |
+| 3 | `EvaluateOperationSlaCommand.cs:38-43` | `UserWaitStatuses` (3) | waiting on the customer | **complement of #2, in a different file** — a state can end up in both or neither |
+| 4 | `RetentionPolicy.cs:27-35` | 4 terminals — **excludes `Waitlisted`** | "safe to prune" | **name collision, not a bug** — see below |
+| 5 | `BookingFunnelReadModel.cs:29-34` | Rejected, FailedFinal, Expired | terminal failure | new terminal failure silently missing from the funnel |
+| 6 | `NotificationRepository.cs:166-177` | `BookedStatuses`, `FailureStatuses` | terminal outcome → notification type | drift |
+| 7 | `NotificationRepository.cs:211-216` | the **same two sets again**, as inline LINQ | ditto | two representations **45 lines apart in one file** |
+| 8 | `ListOperationsQuery.cs:45-53` | `NeedsAttention` (6) | "operator must act" | a new needs-attention state is invisible to the console queue |
+| 9 | `GetOperationStatusQuery.cs:58-64` | `is Booked or Rejected or Expired or Waitlisted or Failed` | terminal | hand-written 5-way pattern instead of `IsTerminal` |
+| 10 | `ConsoleReadModel.cs:613-628` **and** `BookingReadRepository.cs:247-262` | byte-identical `ToLifecycleStatus` switch | status → booking lifecycle label | **hand-mirrored across two files**; the comment at `ConsoleReadModel.cs:609-611` says it exists so the two "never disagree" — with no mechanism enforcing that |
+| 11 | `ReconcilePreorderSagaCommandHandler.cs:44-50` | `{FailedFinal, Rejected, Expired, AlternativesRequired}` | 06 has failed | **the exact flat copy the waitlist reconciler already removed**, still present here |
+| 12 | `ReconcilePreorderSagaCommandHandler.cs:78-83` | `is Completed or FailedFinal or ManualReview` | saga already resolved | no `IsTerminal` on `PreorderSagaStateMachine` to delegate to |
+| 13 | `RecordDeliveryReceiptCommandHandler.cs:40-46` | 4 notification terminals | terminal | no `IsTerminal` on `NotificationStateMachine` |
+| 14 | `MenuIngestionMonitor.cs:50-51` | `[Scanning, Extracting]` | in progress | no helper on `CatalogStateMachine` |
+| 15 | `AdvanceBookingOperationCommandHandler.cs:83-117` | dispatch `switch`, `_ => null` | which states the driver drives | fails **safe** (new state parks) but nothing asserts the wait set matches the machine |
+
+**#4 is a name collision, not a divergence.** `RetentionPolicy.IsTerminal` means *"safe to physically
+prune"*, and excluding `Waitlisted` is correct — a waitlisted operation still has a live enrollment.
+The defect is that it borrows the word `Terminal` from a concept spec 06 owns, so it reads as drift
+and invites someone to "fix" it. Rename + derive, do not change behaviour.
+
+**Also inside `OperationStateMachine` itself:** `_terminalStates` (`:100-108`) is hand-listed while
+the class doc (`:16-17`) says terminals are "states absent from this dictionary". Two sources of
+terminality in the authority. (Note: deriving terminal-from-absence is **safe for
+`OperationStateMachine`** but **unsafe for `PreorderSagaStateMachine`**, whose unwired legacy members
+`HoldingCapacity`/`AuthorizingPayment`/`CompensatingHold` are also absent yet are not terminals.)
+
+#### B2 — Unvalidated literal transitions
+
+`IBookingOperationRepository.TryTransitionStatusAsync` (`BookingOperationRepository.cs:37-65`) does a
+version-guarded `UPDATE … WHERE Status = @expected` and **never calls
+`OperationStateMachine.EnsureAllowed`**. Whether an edge is legal is therefore up to each caller, and
+that is applied inconsistently:
+
+- **Disciplined** (calls `EnsureAllowed` first): `ModifyBookingCommand:618`,
+  `CompensatePreorderItemsCommandHandler:60,63`, all catalog handlers, `MenuIngestionMonitor:85`,
+  `AcceptWaitlistOfferCommandHandler:70`, `DeclineWaitlistOfferCommandHandler:45`.
+- **Not disciplined** (literal `(from, to)` straight to the repo, no validation anywhere in the
+  method): `CancelBookingCommandHandler:207`, `FinalizeBookingCommandHandler:170,539`,
+  `ReconcileOperationCommandHandler:218`, `CompensateOperationCommandHandler:132,240`,
+  `ResolveManualReviewCommandHandler:95-104,210-217`, `ValidateOperationCommandHandler:167`,
+  `RespondToAlternativesCommandHandler:68,108`, `ProcessDepositEventCommandHandler:95`.
+
+If an edge is ever **removed** from `AllowedTransitions`, those nine sites keep writing the now-illegal
+transition to the database and nothing throws. The state machine and runtime behaviour diverge
+silently — which is precisely the failure mode this work exists to prevent.
+
+#### B3 — Test coverage for consistency
+
+Each state machine has an exhaustive self-test (`OperationStateMachineTests.cs` is 232 lines and
+already asserts `TerminalStates_HaveNoOutgoingEdgesInAllowedTransitions`). **No test anywhere asserts
+cross-consistency** between a derived set and its machine: not #2∪#3 = non-terminal, not #4 vs the
+terminal set, not the two `ToLifecycleStatus` copies, not `NeedsAttention`, not the driver's wait set.
+
+**There are no architecture tests in the repo at all** — no `NetArchTest`, no `ArchUnit`, no
+reflection-based assembly scanning in any test.
+
+---
+
+### C. ManualReview lifecycle
+
+**The goal statement's premise needs correcting: entry is not a dead end.** Every operation-level
+entry funnels through `ManualReviewEscalator.EscalateAsync`
+(`ManualReviewEscalator.cs:34-103`), which in **one transaction** does the version-guarded
+transition + an `OperationWorkItem{State="open"}` + a `notification.still_confirming.v1` outbox row +
+an `operation.manual_review` audit event. Callers: `ReconcileOperationCommandHandler:88,146,296` and
+`CompensateOperationCommandHandler:198`. `operations_work_items` carries
+`uq_open_work_item_per_operation` — a partial unique index on `(tenant_id, operation_id) WHERE state
+= 'open'`. Exits are `POST /api/booking-operations/{id}/resolve` and `/resume`, both
+`IOperatorActionRequest` (fail-closed actor/role/reason-code headers), both closing the work item.
+
+The real gaps are elsewhere:
+
+#### 🔴 C1 — No way to enumerate outstanding work items
+
+`IOperationWorkItemRepository` (`:6-51`) exposes `GetOpenByOperationAsync` (needs the id you are
+looking for), `CountOpenAsync` and `OldestOpenAgeSecondsAsync` — both **cross-tenant, for metrics
+gauges only** (`MetricsGaugeHostedService.cs:67-72`). **There is no list method, no query handler,
+and no controller reads the table.** An operator can see the *operation* via
+`GET /api/booking-operations?needs_attention=true`, but never the work item's reason, SLA deadline,
+assignee, or age. "Outstanding ManualReview items can be identified and acted on" is **not**
+satisfied: you can see that an operation is in `manual_review`, but not the tracking record, and
+nothing tells you *which* ones have breached SLA.
+
+#### 🔴 C2 — Pre-order saga `ManualReview` creates no work item at all
+
+`PreorderSagaState.ManualReview` is a **separate** state machine from `OperationStatus.ManualReview`.
+It is reached from `CompensatePreorderBookingCommandHandler:52`
+(`CompensatingBooking → ManualReview`) and `ReconcilePreorderSagaCommandHandler:225-243`
+(`Reconciling → ManualReview`). Both write **only** an audit event and an outbox notification via
+`PreorderSagaSupport.Audit` — **neither touches `IOperationWorkItemRepository`.** A saga parked
+awaiting operator + customer agreement (spec 11 §21.4) has **no durable work-tracking row**, does not
+appear in the `fulfillment.manual_review.depth` gauge, and has no SLA deadline. This is the genuine
+"silent dead end".
+
+#### 🟡 C3 — `ManualReviewEscalator` uses read-then-add instead of the atomic primitive
+
+`:56-69` does `GetOpenByOperationAsync` then `AddAsync`. `TryAddOpenAsync` — the atomic
+`INSERT … ON CONFLICT DO NOTHING` designed for exactly this and used by
+`AuditMissingTerminalNotificationCommandHandler:71` — exists and is **otherwise dead code**. Two
+concurrent escalations both pass the read, the second violates the unique index, and PostgreSQL
+aborts the **whole ambient transaction** (the same trap `CapacitySlotRepository.TryAddAsync:34-61`
+documents at length). `AdvanceBookingOperationCommandHandler:170-185` has the identical pattern.
+
+#### 🟡 C4 — Waitlist reconcile exhaustion still only logs
+
+`ReconcileWaitlistAcceptCommandHandler:136-139` — after `MaxAttempts` it emits a `LogWarning` and
+returns. The earlier pass added audits to the *settled* branches, but the **exhaustion** branch still
+has no durable record. The user's requirement — "reconciliation does not only LogWarning and forget
+it" — is unmet here.
+
+#### 🟡 C5 — SLA evaluation cannot tell "waiting on an operator" from "waiting on a provider"
+
+`EvaluateOperationSlaCommand.cs:94` folds `ManualReview` into the generic in-progress default, so an
+operation already owned by a human keeps being SLA-evaluated and can have a work item re-created.
+
+#### Existing ManualReview coverage
+
+Good at the operation level: `ManualRecoveryTests.cs` (incl.
+`ManualReviewEscalator_DoubleEscalate_YieldsOneOpenWorkItem`), `PoisonDeadLetterTests.cs`,
+`SlaEvaluatorTests.cs`, `OperationWorkItemPersistenceTests.cs`,
+`ResolveManualReviewCommandHandlerTests.cs`, `ResumeWorkflowStepCommandHandlerTests.cs`.
+**Zero coverage** for: pre-order saga ManualReview work tracking (C2), any enumeration surface (C1),
+the reconcile-exhaustion durable record (C4).
+
+---
+
+## Registry position & blast radius
+
+| Contract / mechanism | Owner | This work |
+|---|---|---|
+| Atomic capacity reservation, hold lifecycle, lock ordering | **07** | **owned** — ordering is the owner's implementation concern |
+| `capacity_holds` / `capacity_slots` DDL | 12 | **referenced — no DDL** |
+| `operation_status` (D1) + terminal semantics | **06** | **referenced — consult, never copy** |
+| `NormalizedOperationStatus` (D2) | 06 | referenced — read only |
+| `operations_work_items` | 12 (DDL) / 06 (semantics, FM#11) | **referenced — no DDL**; new read method + query only |
+| Pre-order saga states (§5.3 / §21.4) | **11** | **owned** |
+| Notification / catalog / waitlist-offer state machines | 10 / 11 / 11 | owned — adding a query helper changes no state |
+
+**Frozen decisions:** D1 (16 statuses) and D2 (9 normalized) are **read-only** here — no status is
+added, removed, or reclassified.
+
+**Release-blocking invariants in play:** **Inv-6** (capacity atomic), **Inv-7** (ambiguous ⇒
+reconcile), **Inv-13** (tenant scope), **Inv-14** (DLQ ≠ business state), **Inv-15** (typed human
+retries), **Inv-16** (authoritative outcomes only).
+
+**Type-generation blast radius:** none for the capacity and state-ownership work. **One** surface —
+if a work-item listing endpoint is added to `Cordia.Api`, `bun nx run api-contract:generate-types`
+must be re-run and `apps/web` may consume it. No Pydantic contract is touched, so
+`shared-schemas` is **not** regenerated.
+
+## Automated coverage that must stay green
+
+- `bun nx test api` — **1341 baseline.** `SameSlotAmendmentTests`, `FirstPartyCapacityReservationTests`,
+  `ReserveCapacity*`, `ModifyBookingTests`, `CancelBookingTests`, `CompensateOperationTests`,
+  `ReconcileWaitlistAcceptHandlerTests`, `Resolve/ResumeManualReview*Tests`, all five
+  `*StateMachineTests`, `RetentionPolicy` tests, `NormalizedStatusProjectionTests`
+- `bun nx test-integration api` — `ManualRecoveryTests`, `SlaEvaluatorTests`, `WaitlistFlowTests`,
+  `PoisonDeadLetterTests`, `ConsoleReadEndpointTests`, `StateMachineCapstoneTests`,
+  `OperationWorkItemPersistenceTests`, `CapacitySchemaTests`
+- `bun nx lint api`, `bun nx build api`
+
+## Severity re-rating vs the goal statement
+
+| Goal item | As stated | As audited |
+|---|---|---|
+| "Fix every violation incl. `AbsorbSameSlotAsync`, `ModifyCapacitySettlement`, `FinalizeAgainstOperationAsync`" | implies all three are broken | `AbsorbSameSlotAsync` + same-slot `ModifyCapacitySettlement` were **already fixed**; `FinalizeAgainstOperationAsync` is and always was canonical. **The live defect is elsewhere: the cross-slot slot↔slot cycle (A1), which the earlier pass explicitly reasoned was safe.** |
+| "capacity_holds → capacity_slots" as the whole rule | one clause | **insufficient** — needs a total order on multi-row acquisition of *each* table (A1, A2) and an explicit insert carve-out (A4) |
+| "Remove duplicated hardcoded state sets" | reconciler-scoped | **15 sites across 5 state machines**; root cause is 4 of 5 machines lacking `IsTerminal`. Plus 9 handlers writing transitions with no edge validation at all (B2) |
+| "ManualReview becomes a silent dead end" | entry is the problem | **entry is well-built** (`ManualReviewEscalator` = transition + work item + outbox + audit, atomically). Real gaps: **no enumeration surface (C1)** and **pre-order saga parks with no work item at all (C2)** |
+| "reconciliation only LogWarning" | accurate | confirmed at `ReconcileWaitlistAcceptCommandHandler:136-139` (C4) |

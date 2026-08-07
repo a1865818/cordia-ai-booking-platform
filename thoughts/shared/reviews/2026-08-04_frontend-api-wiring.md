@@ -1,14 +1,14 @@
 ---
-date: 2026-08-04
-reviewers: /code-review xhigh (sonnet subagents) · a 100-agent conformance workflow · two independent diff reviewers · three parallel reviewers
-range: 343f220..77b4fd8 on feat/ui-wire (six rounds across four implementation passes)
+date: 2026-08-07
+reviewers: /code-review xhigh (sonnet subagents) · a 100-agent conformance workflow · two independent diff reviewers · three parallel reviewers · four parallel read-only auditors
+range: 343f220..e037c32 + working tree on feat/ui-wire (nine rounds across seven implementation passes)
 status: all findings closed
-consolidates: the six review rounds previously recorded inside the per-pass plan documents plus the standalone gap-closure review
+consolidates: the six review rounds previously recorded inside the per-pass plan documents, the standalone gap-closure review, and the three 2026-08-07 hardening reviews
 ---
 
 # Review record — frontend ↔ API wiring
 
-Six review rounds ran over the `feat/ui-wire` work. This is all of them in one place, oldest first.
+Nine review rounds ran over the `feat/ui-wire` work. This is all of them in one place, oldest first.
 The implementation record is `../plans/2026-08-04_frontend-api-wiring.md`; the baselines are
 `../research/2026-08-04_frontend-api-wiring.md`.
 
@@ -24,6 +24,9 @@ The implementation record is `../plans/2026-08-04_frontend-api-wiring.md`; the b
 | 4 | Cancel fulfilment — conformance | audit against the wiring doc's stated rules | 15 confirmed | pass-2 range |
 | 5 | Gap closure — xhigh | `/code-review xhigh`, sonnet subagents | 15, **all real, none refuted** | `0cc7431` |
 | 6 | Console truthfulness | 3 parallel reviewers, then a second round | 5 + 7 defects | pass-4 range |
+| 7 | Residual review findings | re-verification of 8 items against **actual code**, not comments | 8 → 8 confirmed, 3 severity-corrected | working tree |
+| 8 | Capacity deadlock + waitlist limbo | main-context review; lock behaviour settled **empirically** | no blockers, 1 refinement | working tree |
+| 9 | Capacity lock order + state ownership | 4 parallel auditors, then adversarial verification against real Postgres | 1 live deadlock the previous round had argued was safe | working tree |
 
 **The one theme worth carrying forward:** in rounds 5 and 6, a majority of findings were *fresh
 instances of the very defect class the pass was written to remove* — including two introduced by the
@@ -599,3 +602,456 @@ before trusting a verification run.
   done here: this is the package that generates `openapi/v1.json`, which the entire
   `api-contract` → web type pipeline descends from, so changing it is its own change with its own
   verification — not a side effect of a console pass.
+
+---
+
+# Review — residual review findings (7 phases)
+
+**Date:** 2026-08-07 · **Branch:** `feat/ui-wire`
+**Plan:** [`../plans/2026-08-04_frontend-api-wiring.md`](../plans/2026-08-04_frontend-api-wiring.md)
+**Method:** adversarial review instructed to *refute* the changes, with the Cordia invariants
+(Inv-2/3, 5, 9, 13, 16) as the rubric. Scoped to the seven phases only — the working tree also
+carries an unrelated uncommitted hardening pass.
+
+**Verdict: no blockers. Four 🟡, four 💭. All 🟡 addressed; two 💭 addressed, two accepted.**
+
+---
+
+## 🟡 1 — Phase 2: the length bound was on the wrong string (**a regression I introduced**)
+
+The most valuable finding in the batch, and it reversed part of the fix.
+
+The server's 64-char ceiling applies to whatever value it *receives*. For the inline payload path
+that is `normalisePhone`'s **output** (`'+' + digits`) — never the operator's raw input. So bounding
+raw input was:
+
+- **unnecessary** — output is never longer than trimmed raw, so `raw ≤ 64 ⟹ output ≤ 64`; and
+- **actively harmful** — `"+61 400 111 222"` padded past 64 characters by a CRM paste is an
+  ordinary 12-digit number that *previously worked*. My version returned `undefined`, and
+  `toCanonicalPayload` then wrote a booking with **no guest contact at all** into an immutable,
+  hashed payload: permanently un-notifiable and unrepairable (Inv-2/3). Precisely the harm the
+  phase exists to prevent, reached by a new route.
+
+**Fixed:** the bound now applies to the normalised output. Tests rewritten to encode the corrected
+semantics, including `keeps an ordinary number that is merely padded past the raw ceiling`, which
+fails against the version I originally shipped.
+
+**Also closed the original finding properly.** `CreateBookingDrawer` posted the raw value to
+`POST /api/guest-contacts`, where the server's raw bound answers 400 — so a padded-but-valid number
+was refused at the mint door too. It now sends `normalisePhone(typed) ?? typed`, falling back to
+raw so the server still produces its own 400 for genuinely unusable input. This is the
+"align the client and server normalisation" half of the original review item, which the first
+implementation had not actually delivered.
+
+## 🟡 2 — Phase 1: the correlation fallback was safe only by coincidence
+
+The enrollment fallback was gated on `OperationId is null`, but `correlation_id` is a generic,
+unvalidated `text` column. Today only the two waitlist registrations produce a null-operation row
+and both set it to an enrollment id — but that is a property of two lines in a DI file, enforced by
+nothing. The next `RequiresOperation: false` registration, or any producer storing a trace id there,
+would resolve a destination from an unrelated enrollment and message a stranger.
+
+**Fixed:** both handlers now gate on
+`EventType is WaitlistOffer or WaitlistOfferExpired` before consulting `correlation_id`.
+New test `NullOperation_OnANonWaitlistEvent_NeverConsultsTheEnrollmentFallback` stubs the resolver
+to return a stranger's number and asserts it is never even asked.
+
+## 🟡 3 — Phase 1: recovery is forward-only
+
+Rows written before this change still carry `correlation_id = NULL`, so the recovery applies only
+to notifications created from here on. The reviewer's suggested backfill (join `notifications` →
+`waitlist_offers` on the `op_wl_*` id) is **not feasible**: that id survives only inside
+`notification_id` and `recipient_ref`, both one-way hashes.
+
+**Resolved by documenting**, not by code. The behaviour fails *closed* on an older row — the
+pre-existing `InvalidRecipient` outcome, never a wrong destination — and this is an unmerged branch
+with no production rows. `TryInsertAsync`'s remarks now state the limitation explicitly.
+
+## 🟡 4 — Phase 2: the comment overstated what the code does
+
+The docblock said values are "rejected … worse than refusing", which reads as blocking submission;
+nothing blocks submission (the drawer's gate never consults `looksUnnormalisedPhone`).
+**Fixed:** the comment now says the *value* is dropped, the operator is warned at capture, and
+submission is not blocked.
+
+## 💭 Addressed
+
+- **Phase 3 — "cannot disagree" was half true.** The *precedence* matches
+  `BookingReadRepository.ToProjection`, but the *key* does not: manage-booking joins on
+  `op.BookingId` alone, the console resolves `FirstNonEmpty(target_booking_id, row.BookingId,
+  payload.BookingId)`. Comment corrected to state the difference and why the console being more
+  complete is the right direction.
+- **Phase 7 — schema qualification.** `UPDATE guest_contacts` → `UPDATE public.guest_contacts`,
+  matching `GuestContactRepository`'s own SQL.
+
+## 💭 Accepted without change
+
+- **Phase 1 — resolved channel is discarded; the adapter is chosen from `n.Channel`.** A row written
+  before the `ChannelFor` fix and retried after it could disagree. Unreachable: nothing ever updates
+  `WaitlistEnrollment.CustomerRef` (only `CancelledAt` is set). Adding a settle-`InvalidRecipient`
+  guard would introduce its own failure mode for a path that cannot be reached.
+- **Phase 7 — `btrim` trims ASCII space, `IsNullOrWhiteSpace` covers all Unicode whitespace.**
+  Unreachable: `PhoneMatching.Normalise` emits only `'+'` and ASCII digits, and `NormaliseEmail`
+  validates.
+
+---
+
+## Confirmed correct under adversarial probing
+
+- **Phase 3 filter reorder is provably behaviour-preserving.** `(TenantId, BookingId)` is the PK and
+  the query filters by tenant, so every `GroupBy` group is a singleton and `.First()` cannot change.
+  Moving the blank-`CustomerId` filter from pre-group to the resolver hits the same
+  `identityByIntent` branch with the same value. The customers projection is untouched.
+- **Phase 7 SQL reproduces the C# hash exactly** — field order, `chr(31)` ≡ `(char)0x1F`, UTF-8,
+  built-in `sha256`, lowercase hex, null/blank handling. The fingerprint indexes are **non-unique**
+  (only `(tenant_id, contact_fingerprint)` is unique), so two contacts sharing a phone cannot abort
+  the backfill on a duplicate key. `Down()` as a no-op still allows `database update <earlier>`.
+- **Inv-9 intact** — `NotificationIdentity.Derive` and `Token` untouched; both handlers pass the
+  row's persisted `RecipientRef` and read only `.Destination`.
+- **Inv-5 intact** — the retry handler (the only inbox consumer of the three) still settles through
+  the result switch rather than throwing.
+- **Inv-13 intact** — `TryResolveFromEnrollmentAsync` re-checks tenant; the backfill hashes each
+  row's own `tenant_id`.
+- **Phase 5** — one production caller; `terminal ∧ ¬booked` already had a branch.
+- **Phase 6** — `adapters.ts` is comment-only and its new claim verified true against
+  `FinalizeBookingCommandHandler` (`?? providerReference`, and `ReadFirstString` skips blanks, so
+  `CustomerId` is never blank for a finalised booking).
+
+## Verification after fixes
+
+| Check | Result |
+|---|---|
+| `bun nx build api` | Build succeeded |
+| `bun nx test api` | **1335 passed**, 0 failed |
+| `bun nx test-integration api` | **549 passed**, 1 skipped, 0 failed |
+| `bun nx lint api` | clean |
+| `bun nx test web` | **601 passed**, 0 failed |
+| `bun nx lint web` / `typecheck web` | clean |
+
+---
+
+# Review — capacity lock-order deadlock + waitlist accept limbo
+
+**Date:** 2026-08-07 · **Branch:** `feat/ui-wire`
+**Plan:** [`../plans/2026-08-04_frontend-api-wiring.md`](../plans/2026-08-04_frontend-api-wiring.md)
+
+**Note on method:** the adversarial review agent terminated early (session limit) after reading only
+part of the diff. The review below was therefore completed **in the main context**, and where an
+argument could be settled empirically rather than by reasoning, it was — see "Proven, not assumed".
+
+**Verdict: no blockers.** One refinement made during review (Phase 2 terminal-operation case).
+
+---
+
+## Proven, not assumed: `LockAsync` really locks
+
+The entire deadlock fix rests on one unverified premise — that
+`SELECT 1 … FOR UPDATE` issued through `ExecuteSqlInterpolatedAsync` (an API built for
+*non-queries*) actually takes a row lock. A passing suite only proves it does not throw.
+
+Two integration tests now prove it against real Postgres:
+
+- `LockAsyncGenuinelyHoldsTheRowAgainstAConcurrentWriter` — a second transaction with
+  `SET LOCAL lock_timeout = '750ms'` fails with `55P03 lock_not_available` when attempting to
+  UPDATE the locked row. Deterministic: it fails fast rather than hanging the suite.
+- `LockAsyncReleasesTheRowWhenItsTransactionEnds` — after rollback the row updates freely, so the
+  fix cannot trade a deadlock for a permanently stuck row.
+
+## Lock-order analysis (the cycle is gone, and no new one appears)
+
+Ordered acquisition on the shared rows, after the change:
+
+| Path | Order |
+|---|---|
+| Same-slot modify | **`HOLD(prev)`** → `HOLD(own)` → `SLOT` |
+| Cancel | **`HOLD(prev)`** → `SLOT` |
+| `ModifyCapacitySettlement` (manual recovery) | **`HOLD(prev)`** → `HOLD(own)` → `SLOT` |
+| Cross-slot reschedule | `HOLD(own)` → `SLOT(new)` → `HOLD(prev)` → `SLOT(old)` |
+
+The two paths that previously formed the cycle now both **enter through `HOLD(prev)`**, so one waits
+rather than the pair deadlocking.
+
+**Cross-slot deliberately takes no lock, and that is correct.** It reaches `SLOT(new)` before
+`HOLD(prev)` — superficially the same inversion — but cancel only ever wants `SLOT(old)`, and by
+definition of *cross*-slot `SLOT(new) ≠ SLOT(old)`. There is no shared row to cycle on. Taking the
+lock there would serialise transactions that never contend. Pinned by
+`CrossSlotReschedule_DoesNotTakeThePreviousOwnerLock`.
+
+**No new cycle from concurrent amendments.** Two same-slot modifies on adjacent operations (`Op2`
+absorbing `Op1`, `Op3` absorbing `Op2`) acquire `H1→H2` and `H2→H3` — a chain, not a cycle. Absorb's
+internal hold locks are additionally ordered by hold id, which is a total order, so no pair can
+invert. (With the caller hoist in place that internal ordering is largely moot; it is retained as
+defence for any future caller that invokes absorb without a preceding finalize.)
+
+**`ReserveAsync` remains slot→insert-hold.** An INSERT does not contend for an existing hold row's
+lock, so it cannot participate in this cycle. Unchanged, pre-existing.
+
+**No NRE risk.** `sameSlot` is a pattern match (`previousHold is { Status: Finalized }`), so
+`previousHold!` inside the `if (sameSlot)` branch is provably non-null in both call sites.
+
+## Phase 3 — full status classification diff
+
+Enumerating D1's 16 statuses under old vs new logic:
+
+| Status | Old | New | Change |
+|---|---|---|---|
+| `Booked` | fulfil | fulfil | — (handled at line 90, before `HasSettled`) |
+| `Rejected`, `Expired`, `FailedFinal` | settle-failure | settle-failure | — (now sourced from `IsTerminal`) |
+| `AlternativesRequired` | settle-failure | settle-failure | — (now an explicit waitlist stop state) |
+| **`Waitlisted`** | in-flight → probe | **settle** | **changed — correct**: terminal per 06; probing cannot change it. Previously re-probed 3× then abandoned silently. |
+| **`ManualReview`** | in-flight → probe | **settle** | **changed — the bug**: no driver dispatch case exists, so it cannot progress without a human. |
+| `Accepted`, `Validating`, `AwaitingUserAction`, `ReservingCapacity`, `Held`, `AwaitingPayment`, `Finalizing`, `Reconciling`, `CompensationRequired` | in-flight | in-flight | — all actively driven or awaiting the user |
+
+**No state settles early or wrongly.** The only two behaviour changes are both states that genuinely
+cannot progress under further probing.
+
+**`CompensationRequired` deliberately still probes**, contrary to the goal's wording — it has legal
+outgoing edges and the driver dispatches compensation on the next iteration of the same loop.
+
+## Refinement made during review — Phase 2
+
+The retain guard originally fired for **any** existing operation row. That is wrong when the
+operation has already terminated: nothing is coming to release the hold, so the seat would sit
+reserved until the offer-expiry sweeper reclaimed it — **strictly worse than the bug**, which only
+ever bit an in-flight accept.
+
+Tightened to `&& !OperationStateMachine.IsTerminal(mintedOperation.Status)`. `Booked` therefore falls
+through to the release, which is a harmless no-op because a booked operation's hold is `Finalized`
+and `ReleaseAsync` only touches `Active` holds — the shape the original code depended on without
+stating it. Pinned by `Cancel_StillReleasesTheHoldWhenTheMintedOperationHasAlreadyFailed`.
+
+## Checked, nothing wrong
+
+- **Inv-13**: the cancel guard re-checks `mintedOperation.TenantId == command.TenantId` explicitly
+  rather than trusting the ambient filter, matching `EnrollWaitlistCommandHandler`'s convention.
+  `LockAsync`'s raw SQL carries an explicit `tenant_id` predicate and is fully parameterised
+  (`FormattableString` → EF parameters; no injection surface).
+- **Inv-5**: no handler opens a new `IUnitOfWork`; all terminal outcomes are settled, never thrown.
+- **Skipping the rematch cannot strand a free opening** — it is skipped only while a booking is
+  in-flight, when the opening is not free; terminal operations now release *and* rematch.
+- **Absorb's arithmetic and idempotency are untouched** — only lock acquisition moved. Its writes
+  were deliberately **not** reordered, preserving the "slot refuses ⇒ nothing written" contract.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `bun nx build api` | Build succeeded |
+| `bun nx test api` | **1340 passed**, 0 failed (1335 → 1340) |
+| `bun nx test-integration api` | **553 passed**, 1 skipped, 0 failed (550 → 553) |
+| `bun nx lint api` | clean |
+
+---
+
+## Second pass — `/code-review high` (multi-agent), 2026-08-07
+
+A separate multi-agent review ran over the surrounding area. It surfaced **two genuine bugs in
+adjacent pre-existing code** that this work's changes made reachable or newly relevant, plus three
+documentation-accuracy items. All five addressed.
+
+### 🔴 HIGH — `ModifyCapacitySettlement` discarded the finalize outcome (fixed)
+
+`SettleAsync` threw away `FinalizeAgainstOperationAsync`'s result and then unconditionally released
+the previous owner's hold on the old slot. This lane is reached **only** through `ManualReview`,
+which waits for a human — routinely far longer than `HoldTtl` — so by resolution time the expiry
+sweeper has very often already reclaimed this operation's hold on the target slot, making
+`HoldNoLongerValid` the *common* case here rather than a rare race.
+
+Result: a **confirmed booking counted against neither slot** — the seat the guest actually occupies
+freed for resale, and nothing recorded on the slot they moved to. The automatic lane refuses for
+precisely this reason ("the guest must not end up holding neither seat"); this lane did not.
+
+Fixed by capturing the outcome and returning early on `HoldNoLongerValid`, leaving the booking on
+its original seat. Pinned by `Handle_Booked_DoesNotFreeTheOldSeatWhenTheNewHoldHasExpired`.
+
+### 🟠 MEDIUM — Failed manual-review stranded capacity (fixed)
+
+`ResolveManualReviewCommandHandler`'s Failed branch asserted "no capacity moves — the seat was never
+given up". That premise is broken by the `modify_capacity_unavailable` route, which reaches
+Reconciling **after** `FinalizeAgainstOperationAsync` has flipped the hold to Finalized and moved
+units held→booked; only then does the absorb refuse. Resolving as Failed left those booked units
+owned by an operation nothing can ever find again — `GetBookedOperationForBookingAsync` matches only
+`Booked` — so the slot under-reported availability permanently.
+
+Fixed with a `ReleaseFinalizedByOperationAsync` scoped to **this operation's own id**. Safe for
+every other route into the branch (they finalized nothing, so it affects zero rows), and it cannot
+strip the booking's real seat because the only route leaving a Finalized hold here is the one where
+the absorb *failed* — meaning the previous owner still holds the booking's capacity.
+
+An existing test asserted `Times.Never` on that release, encoding the disproved premise; it now
+asserts the release happens for this operation and **not** for the previous owner.
+
+### 🟡 LOW — my Phase 2 comment overclaimed (corrected)
+
+The retain guard reads `booking_operations`, which cannot see a mint still inside
+`SubmitConfirmedIntentCommandHandler`'s own uncommitted transaction. My comment claimed the guard
+covered "between the mint and the claim"; it actually covers between the mint **committing** and the
+claim. Corrected to state the residual window honestly — the guard narrows exposure from "the whole
+accept flow including the entire deferred auto-accept delay" to "one in-flight database
+transaction", which is a real improvement but not a fence.
+
+### 🟡 LOW — stale expiry claims in two comments (corrected)
+
+`IGrantAuthorizationService.RequireGrantScopeAsync` and its caller in
+`SubmitConfirmedIntentCommandHandler` both claimed the scope check covers "expiry". It does not —
+`FindGrantByIdIgnoringConsumptionAsync` deliberately omits both consumption and expiry so an honest
+retry of an already-accepted request is not refused by its own fence. Not exploitable (liveness is
+enforced atomically by `ConsumeAsync`), but a maintainer trusting either comment could reuse the
+scope result on a path that never consumes. Both now state scope-only explicitly and point to
+`ConsumeGrantAsync` as the liveness fence.
+
+### 💭 Noted, not changed — `party_size` defaults to 1
+
+`CapacitySlotKey.DeriveFromCanonicalPayload` defaults absent `party_size` to 1, which the absorb
+arithmetic then treats as the authoritative seat size. The reviewer stated the reachability caveat
+honestly: no current producer omits it (the console types it required, and the agent's slot capture
+requires it), so this is latent. Left alone deliberately — changing the default would alter the
+reserve path's behaviour for a case nothing can currently produce, which is a worse trade than
+recording it here.
+
+### Verification after the second pass
+
+| Check | Result |
+|---|---|
+| `bun nx build api` | Build succeeded |
+| `bun nx test api` | **1341 passed**, 0 failed |
+| `bun nx test-integration api` | **553 passed**, 1 skipped, 0 failed |
+| `bun nx lint api` | clean |
+
+## Residual risk
+
+No test drives a genuine concurrent modify-vs-cancel deadlock end-to-end — such a test is
+inherently timing-dependent and would be flaky. It is covered instead by (a) the deterministic
+call-order assertion, (b) the two empirical lock-behaviour tests, and (c) the written lock-order
+analysis above. A `40P01` retry wrapper was deliberately **not** added: it would mask future
+lock-order inversions across every transaction in the system.
+
+---
+
+# Review — global capacity lock order, state ownership, ManualReview durability
+
+**Date:** 2026-08-07 · **Branch:** `feat/ui-wire`
+**Plan:** [`../plans/2026-08-04_frontend-api-wiring.md`](../plans/2026-08-04_frontend-api-wiring.md)
+
+**Verdict: no blockers.** One scope addition made during review (removing the now-dead
+`IOperationWorkItemRepository.AddAsync`), recorded in the plan.
+
+---
+
+## The headline finding: the previous pass's safety argument was wrong
+
+The earlier work fixed the hold↔slot inversion and reasoned explicitly that the cross-slot path was
+safe:
+
+> *"Cross-slot deliberately takes no lock, and that is correct. It reaches `SLOT(new)` before
+> `HOLD(prev)` — superficially the same inversion — but cancel only ever wants `SLOT(old)`, and by
+> definition of cross-slot `SLOT(new) ≠ SLOT(old)`. There is no shared row to cycle on."*
+
+That is true of a reschedule **versus a cancel**. It is false of a reschedule **versus another
+reschedule**: one moving `S1 → S2` and one moving `S2 → S1` share *both* rows and take them in
+opposite orders. The cycle is built entirely out of slot rows, so the hold-before-slot rule cannot
+touch it. Two guests swapping between the same two sittings is enough to trigger it.
+
+**This is now proven, not argued.**
+`OppositeOrderSlotAcquisition_Deadlocks_ProvingTheCycleIsReal` genuinely aborts with `40P01` against
+real PostgreSQL.
+
+## Proven, not assumed
+
+Every safety claim in this change has a paired negative control, because a test showing "the current
+code does not deadlock" proves nothing if the scenario could never have deadlocked:
+
+| Claim | Proof | Control |
+|---|---|---|
+| Two opposing cross-slot reschedules cannot deadlock | `TwoOpposingCrossSlotReschedulesDoNotDeadlock` | `OppositeOrderSlotAcquisition_Deadlocks…` (`40P01`) |
+| Modify vs cancel cannot deadlock | `ModifyAndCancelAcquisitionsDoNotDeadlock` | `SlotBeforeHoldAcquisition_Deadlocks…` (`40P01`) |
+| Holds really are taken before slots | `AcquisitionBlocksOnTheHoldBeforeItEverReachesTheSlot` | asserts positively that a third transaction can still take the slot |
+| The slot lock is real | `SlotLockAsyncGenuinelyHoldsTheRow…` (`55P03`) | — |
+| Locks release | `LocksReleaseWhenTheTransactionCommits` / `…RollsBack` | — |
+
+**Determinism.** Deadlock tests use a two-sided barrier so both transactions provably hold their
+first row before either reaches for its second — PostgreSQL's detector then *guarantees* it fires.
+Ordering tests deliberately do **not** use the barrier (with a correct order the second transaction
+blocks and could never signal) and use a bounded `Task.WhenAny` timeout instead. Blocking tests use
+`SET LOCAL lock_timeout` so a genuine wait fails fast rather than hanging the suite.
+
+## Lock-order analysis after the change
+
+| Path | Acquisition |
+|---|---|
+| Same-slot modify | `HOLD(prev)`, `HOLD(own)` ascending → `SLOT` |
+| Cross-slot reschedule | `HOLD(prev)`, `HOLD(own)` ascending → `SLOT(old)`, `SLOT(new)` **ascending** |
+| Cancel | `HOLD(prev)` → `SLOT` |
+| `ModifyCapacitySettlement` (manual recovery) | identical to the automatic lane, by construction |
+| Multi-hold release loops | all holds ascending, then all slots — no interleave |
+| `ReserveAsync` | `SLOT(update)` → `HOLD(insert)` — **compliant under clause 4** |
+
+No transaction acquires a pre-existing hold row after a slot row, and no set of same-table rows is
+acquired in caller order. The remaining question — whether `ReserveAsync`'s insert can close a cycle
+via `uq_active_hold_per_op_step` — was traced in both directions and cannot: against a concurrent
+release the step-1 pre-check returns early under READ COMMITTED, and against a concurrent reserve
+neither side ever waits on the other's slot lock.
+
+## Checked, nothing wrong
+
+- **`AbsorbSameSlotAsync`'s writes were not reordered.** Its "slot refuses ⇒ nothing written"
+  contract depends on the slot UPDATE being first; only lock *acquisition* moved. `SameSlotAmendmentTests` green.
+- **No set membership changed anywhere.** Phase 3 moved where 15 classifications are *defined*, never
+  which states are in them. The one that looks like a change — `RetentionPolicy` — is a rename plus a
+  derivation that reproduces the same four statuses, pinned by a test that states *why* `Waitlisted`
+  is excluded so the next reader finds an argument rather than an inconsistency.
+- **Enforcing `EnsureAllowed` at the choke point surfaced exactly one problem, and it was a test.**
+  `TryTransitionStatus_WrongExpectedStatus_ReturnsZero_AndDoesNotMutate` asserted the status guard
+  using `Validating → Booked`, which is not an edge at all. It passed only because nothing checked.
+  Fixed to a legal edge, so the test now exercises the mechanism it names. **No production path was
+  writing an illegal transition** — the §11 map and the handlers already agreed.
+- **`InvalidStateTransitionException` is not a new failure mode.** The driver already catches it
+  alongside `PoisonMessageException`, commits business state with an open work item, and
+  dead-letters the transport message (Inv-14).
+- **Inv-13.** The new lock SQL and the new endpoint carry explicit `tenant_id` predicates and are
+  fully parameterised; the work-item query re-checks the linked operation's tenant before surfacing
+  its status. Cross-tenant test added.
+- **Inv-5 is strengthened, not merely held.** Three work-item creation paths used read-then-add,
+  where a lost race raises 23505 and aborts the *whole* ambient transaction — losing the escalation,
+  its outbox row and its audit event to a race whose correct outcome was "someone else already did
+  it". All three now use the atomic insert.
+- **Route disambiguation.** `work-items` is a literal segment under the same prefix as
+  `{operationId}`; ASP.NET Core prefers literals, and `WorkItems_IsNotSwallowedByTheOperationIdRoute`
+  pins it rather than trusting that.
+
+## Scope addition made during review
+
+`IOperationWorkItemRepository.AddAsync` was left dead once all three writers moved to
+`TryAddOpenAsync`. It is the exact unguarded insert whose 23505 aborts the ambient transaction, so
+leaving it on the interface hands the same bug to the next escalation path. Removed, with a comment
+in its place explaining why there is no plain insert. Beyond the plan's blast radius, so recorded
+rather than done silently.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `bun nx lint api` | clean |
+| `bun nx build api` | succeeded |
+| `bun nx test api` | **1422 passed**, 0 failed (1341 baseline) |
+| `bun nx test-integration api` | **568 passed**, 1 skipped, 0 failed (553 baseline) |
+| `bun nx typecheck web` / `lint web` / `build web` | clean |
+| `bun nx test web` | **609 passed** (601 baseline) |
+
+## Residual risk
+
+1. **No end-to-end concurrent run of the two real handlers.** The chain is complete and each link is
+   tested — the handlers name both slots in one acquisition (unit), the primitive sorts any input
+   (unit), and sorted acquisition cannot cycle while unsorted provably does (integration, real DB) —
+   but no test starts two `ModifyBookingCommandHandler` invocations concurrently. Such a test would
+   be timing-dependent and flaky; the deterministic decomposition was preferred deliberately.
+2. **The A2 multi-hold loops remain untested for `n > 1`**, because no current flow produces two
+   same-status holds on one operation. The fix is defensive; if a second workflow step is ever
+   introduced, that case wants a test.
+3. **`TERMINAL_OPERATION_STATUSES` in `apps/web/src/features/operations/adapters.ts`** is still a
+   hand-written copy of the terminal set in a different language. Nothing generated exposes it, so
+   the .NET architecture test cannot reach it. Out of scope here; worth a cross-language guard if the
+   set ever changes.
+4. **`EvaluateOperationSlaCommand` still treats `ManualReview` as generic in-progress** (C5). Left
+   deliberately: the existing open-work-item guard already prevents duplicates, so there is no defect
+   behind a change, and reclassifying it would alter SLA behaviour with no bug to justify it.
