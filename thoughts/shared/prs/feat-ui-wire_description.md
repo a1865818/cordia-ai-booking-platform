@@ -53,6 +53,76 @@
 > History records are consolidated into one plan/research/review file each under
 > `thoughts/shared/`.
 
+---
+
+## Update — 2026-08-07 backend hardening (`f7052b0`, `75522ef`)
+
+Three hardening passes landed on the branch after the wiring work. They are one commit because
+they interleave in the same files (the capacity service, the modify command, the waitlist
+reconciler and their tests); a hunk-level split would have produced intermediate states that were
+never built or tested.
+
+### The load-bearing finding
+
+An earlier pass fixed a hold↔slot deadlock and argued **in writing** that the cross-slot path was
+safe: *"cancel only ever wants `SLOT(old)`, and by definition of cross-slot `SLOT(new) ≠ SLOT(old)`,
+so there is no shared row to cycle on."*
+
+That holds against a **cancel**. It is false against **another reschedule** — one moving `S1 → S2`
+and one moving `S2 → S1` share *both* rows and take them in opposite orders. The cycle is built
+entirely out of slot rows, so hold-before-slot never applied to it. Two guests swapping between the
+same two sittings is enough to trigger it. It is now reproduced as a real-PostgreSQL `40P01` rather
+than argued.
+
+### What changed
+
+- **Cordia Capacity Lock Order** (spec 07, normative): holds before slots, each set ascending by id,
+  with a documented carve-out for inserts. `ICapacityLockOrder` is the single implementation — call
+  sites name the rows they touch, never the order.
+- **State ownership**: four of five state machines exposed no `IsTerminal`, which is why fifteen call
+  sites hand-rolled their own sets. All fifteen now derive or ask. Every `operation_status` edge is
+  validated at the single write path, so the §11 map is load-bearing rather than advisory.
+- **ManualReview**: added `GET /api/booking-operations/work-items` and surfaced reason / SLA deadline
+  / current status on the console queue. The table had **no reader at all**, so an escalation was
+  durable and unreachable at the same time. Pre-order saga parks and abandoned accept-reconciles now
+  open work items, and every insert is atomic (a lost read-then-add race raised `23505`, which aborts
+  the whole ambient transaction and loses the escalation with it).
+- **Guards**: reflection architecture tests block a sixteenth duplicated state set and keep the
+  driver's dispatch table in step with the state machine.
+- Closes the eight residual review findings (notification recipient recovery on reconcile **and**
+  retry, guest-contact fingerprint backfill, console booking reference, phone-normalisation parity,
+  menu draft cache invalidation, operation-status success gate).
+
+### Gates
+
+| Lane | Result |
+|---|---|
+| api | 1422 unit · 568 integration (1 pre-existing skip) · lint · build |
+| web | 609 tests · lint 0/0 · typecheck · build |
+| langgraph | 1021 unit · 51 integration · lint |
+
+### Reviewer notes
+
+- **One deliberate behaviour change:** `TryTransitionStatusAsync` now throws on an illegal state
+  edge. No production path was writing one — enforcing it surfaced a *test* asserting on
+  `Validating → Booked`, which is not an edge. It routes to the existing DLQ/work-item path (Inv-14).
+- **New migration** `20260807023952_BackfillGuestContactFingerprints` — data-only, forward-only,
+  idempotent, tenant-scoped. New file only, so the immutability guard is untouched and the
+  `ModelSnapshot` is correctly unchanged.
+- **`docs/frontend-api-wiring.md` re-mapped to 2026-08-07.** The new endpoint was wired but recorded
+  nowhere, which made §13's "every endpoint is in exactly one of the three groups" false; §10 gains
+  the row and §20 restates the totals. Group C was re-verified — no file under `apps/web/src` calls
+  any of the six must-never-wire endpoints.
+- **12 manual-verification items remain outstanding** across the three passes (human acceptance
+  checks: overlong-phone paste warning, draft-editor stepper after approve, `MaskedField` 20s
+  re-mask, schedule booking-reference rendering, Inv-6 under load). Automated verification is
+  complete.
+- **Residual risk:** no test starts two real modify handlers concurrently — that would be
+  timing-dependent. The chain is covered deterministically instead: handlers name both slots in one
+  acquisition (unit), the primitive sorts any input (unit), and sorted acquisition cannot cycle while
+  unsorted provably does (integration, real Postgres).
+
+
 ## Type of change
 
 - [x] Bug fix (fixes an issue)
