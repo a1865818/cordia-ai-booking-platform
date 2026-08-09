@@ -124,7 +124,17 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             if (page.Count < PageSize) return false; // last page — exhausted
         }
 
-        return true; // hit the ceiling with rows still unexamined
+        // Reaching the ceiling is NOT the same as leaving rows unexamined, and reporting it as
+        // such was a lie in the operator's direction that matters most. A tenant with exactly
+        // MaxScan rows — or whose final page lands precisely on the boundary — has been read in
+        // full, yet `return true` told the schedule its grid was partial and told the customers
+        // search it may have missed someone who does not exist. "Possibly incomplete" is the one
+        // answer an operator cannot act on, so it must not be given when the scan is provably done.
+        //
+        // One row is probed, and only in the rare ceiling case, so the ordinary path pays nothing.
+        // `PayloadRows` orders by (updated_at desc, operation_id) — the same total order the paging
+        // used — so "is there anything after row MaxScan" is well defined rather than planner luck.
+        return await PayloadRows(tenantId).Skip(scanned).Take(1).AnyAsync(ct);
     }
 
     public async Task<IReadOnlyList<OperationSummary>> ListOperationsAsync(
