@@ -227,8 +227,8 @@ export function CreateBookingDrawer({
   // the canonical payload, so changing it must NOT invalidate a live attempt.
   const [attemptNonce, setAttemptNonce] = useState(() => String(Date.now()));
   const attemptKey = useMemo(
-    () => `create:${attemptNonce}|${svc}|${day}|${time}|${partySize}|${phone.trim()}`,
-    [attemptNonce, svc, day, time, partySize, phone]
+    () => `create:${attemptNonce}|${svc}|${day}|${time}|${partySize}|${phone.trim()}|${service?.durationMinutes ?? ''}`,
+    [attemptNonce, svc, day, time, partySize, phone, service]
   );
   // Guards the one-shot 'booking confirmed' announcement; see the effect below.
   const announcedRef = useRef<string | null>(null);
