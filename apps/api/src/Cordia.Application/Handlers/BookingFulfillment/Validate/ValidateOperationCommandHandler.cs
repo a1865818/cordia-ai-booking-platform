@@ -34,6 +34,7 @@ public sealed class ValidateOperationCommandHandler(
     IValidationPolicy validationPolicy,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    IBookingRepository bookingRepo,
     IUnitOfWork uow)
     : IRequestHandler<ValidateOperationCommand, StepOutcome>
 {
@@ -174,6 +175,13 @@ public sealed class ValidateOperationCommandHandler(
                     }
 
                     var nowR = DateTimeOffset.UtcNow;
+
+                    // A rejected MUTATION must give the booking row its lifecycle back. Rejected is
+                    // terminal, so nothing downstream will ever revisit it: without this a modify
+                    // refused by policy left the booking at ModificationPending permanently while
+                    // the operation read `rejected`.
+                    await BookingPendingLifecycle.RevertOnFailureAsync(
+                        bookingRepo, tenantId, afterValidating, nowR, ct2);
 
                     // Spec 11 §5.3 / Inv-8: a pre-order operation signals the saga (booking_failed,
                     // reason from the policy) so it compensates the reserved items and emits the

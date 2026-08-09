@@ -23,6 +23,7 @@ public class ValidateUserActionGateTests
     private readonly Mock<IOutboxRepository> _outboxRepo = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
 
     private ValidateOperationCommandHandler CreateHandler() => new(
         _opRepo.Object,
@@ -31,6 +32,7 @@ public class ValidateUserActionGateTests
         _validationPolicy.Object,
         _outboxRepo.Object,
         _auditRepo.Object,
+        _bookingRepo.Object,
         _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>

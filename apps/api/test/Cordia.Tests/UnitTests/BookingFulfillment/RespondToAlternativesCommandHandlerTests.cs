@@ -19,10 +19,13 @@ public class RespondToAlternativesCommandHandlerTests
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
 
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
+
     private RespondToAlternativesCommandHandler CreateHandler() => new(
         _opRepo.Object,
         _outboxRepo.Object,
         _auditRepo.Object,
+        _bookingRepo.Object,
         _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
@@ -109,6 +112,70 @@ public class RespondToAlternativesCommandHandlerTests
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<AuditEvent>(e => e.EventType == "operation.failed_final"),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// A declined MUTATION hands the booking row its lifecycle back.
+    ///
+    /// <para><c>POST /api/Bookings/{id}/modifications</c> parks the booking at
+    /// <c>ModificationPending</c> and is its only writer; only the automatic SUCCESS paths ever
+    /// cleared it. Declining the alternatives prompt terminalizes the operation at
+    /// <c>FailedFinal</c> — nothing looks at it again — so the booking went on telling every reader
+    /// a change was outstanding, permanently, while the operation said the change had failed.</para>
+    /// </summary>
+    [Fact]
+    public async Task Decline_RevertsAPendingModification_SoTheBookingStopsClaimingAChangeIsInFlight()
+    {
+        var tenantId = "t-test";
+        var operationId = "op-decline-modify";
+        var op = MakeOp(tenantId, operationId, OperationStatus.AlternativesRequired, version: 3);
+        op.OperationType = OperationTypeEnum.Modify;
+        op.BookingId = "bk-1";
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(op);
+
+        _bookingRepo.Setup(b => b.GetByIdAsync(tenantId, "bk-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = "bk-1",
+                BookingReference = "CORD-1",
+                Version = 7,
+                LifecycleStatus = BookingLifecycleStatus.ModificationPending,
+            });
+
+        var handler = CreateHandler();
+        await handler.Handle(
+            new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(b => b.TryTransitionLifecycleAsync(
+                tenantId, "bk-1", 7, BookingLifecycleStatus.Confirmed,
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>A create has no existing booking to un-park, so nothing is touched.</summary>
+    [Fact]
+    public async Task Decline_OfACreate_TouchesNoBookingLifecycle()
+    {
+        var tenantId = "t-test";
+        var operationId = "op-decline-create";
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, operationId, OperationStatus.AlternativesRequired, version: 3));
+
+        var handler = CreateHandler();
+        await handler.Handle(
+            new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(b => b.TryTransitionLifecycleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     // ── Guard: wrong status ──────────────────────────────────────────────────────────────────

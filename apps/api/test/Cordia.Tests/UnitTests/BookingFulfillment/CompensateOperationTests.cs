@@ -30,6 +30,7 @@ public class CompensateOperationTests
     private readonly Mock<IUnitOfWork> _uow = new();
     private readonly Mock<IOperationWorkItemRepository> _workItemRepo = new();
     private readonly Mock<ICapacityReservation> _capacityReservation = new();
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
 
     private ManualReviewEscalator CreateEscalator() =>
         new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, _auditRepo.Object);
@@ -37,7 +38,8 @@ public class CompensateOperationTests
     private CompensateOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _adapter.Object, _outboxRepo.Object, _auditRepo.Object,
-            CreateEscalator(), _uow.Object, _capacityReservation.Object, new Metrics());
+            CreateEscalator(), _uow.Object, _capacityReservation.Object, _bookingRepo.Object,
+            new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId, string operationId, OperationStatus status, long version = 0,

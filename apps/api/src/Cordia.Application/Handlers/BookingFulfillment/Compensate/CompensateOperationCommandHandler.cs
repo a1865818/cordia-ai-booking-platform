@@ -40,6 +40,7 @@ public sealed class CompensateOperationCommandHandler(
     ManualReviewEscalator manualReviewEscalator,
     IUnitOfWork uow,
     ICapacityReservation capacityReservation,
+    IBookingRepository bookingRepo,
     Metrics metrics)
     : IRequestHandler<CompensateOperationCommand, StepOutcome>
 {
@@ -141,6 +142,14 @@ public sealed class CompensateOperationCommandHandler(
                         // or hold already released/finalized at finalize time).
                         await capacityReservation.ReleaseByOperationAsync(
                             tenantId, operationId, ReleaseReason.Compensated, ct2);
+
+                        // A compensated MUTATION gives the booking row its lifecycle back too. The
+                        // seat is released here and the booking left parked at
+                        // Modification/CancellationPending — the operation and the row it acted on
+                        // disagreeing about the same event, with FailedFinal terminal so nothing
+                        // ever revisits it.
+                        await BookingPendingLifecycle.RevertOnFailureAsync(
+                            bookingRepo, tenantId, freshOp, DateTimeOffset.UtcNow, ct2);
 
                         // Spec 11 §5.3: a pre-order op signals the saga (→ compensate items) instead
                         // of emitting the customer failure notification directly.
@@ -249,6 +258,11 @@ public sealed class CompensateOperationCommandHandler(
                 // or hold already released/finalized at finalize time).
                 await capacityReservation.ReleaseByOperationAsync(
                     tenantId, operationId, ReleaseReason.Compensated, ct2);
+
+                // Same on the no-effect route: nothing happened to the booking, so the pending
+                // status the manage-booking door parked must not outlive the operation.
+                await BookingPendingLifecycle.RevertOnFailureAsync(
+                    bookingRepo, tenantId, freshOp, DateTimeOffset.UtcNow, ct2);
 
                 // Spec 11 §5.3: a pre-order op signals the saga instead of notifying the customer.
                 await outboxRepo.AddAsync(new OutboxMessage

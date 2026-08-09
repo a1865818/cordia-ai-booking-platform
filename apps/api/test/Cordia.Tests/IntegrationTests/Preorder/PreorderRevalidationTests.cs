@@ -199,7 +199,8 @@ public class PreorderRevalidationTests(PostgresFixture fixture)
         {
             var decline = new Cordia.Application.Handlers.BookingFulfillment.Alternatives.RespondToAlternativesCommandHandler(
                 new BookingOperationRepository(ctx), new OutboxRepository(ctx),
-                new AuditEventRepository(ctx), new Cordia.Infrastructure.Services.UnitOfWork(ctx));
+                new AuditEventRepository(ctx), new BookingRepository(ctx),
+                new Cordia.Infrastructure.Services.UnitOfWork(ctx));
             await decline.Handle(
                 new Cordia.Application.Handlers.BookingFulfillment.Alternatives.RespondToAlternativesCommand(
                     tenantId, operationId,

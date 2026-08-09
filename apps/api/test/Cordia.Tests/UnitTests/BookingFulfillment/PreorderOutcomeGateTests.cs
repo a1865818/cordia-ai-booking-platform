@@ -121,9 +121,11 @@ public class PreorderOutcomeGateTests
                 .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
         }
 
+        public readonly Mock<IBookingRepository> Bookings = new();
+
         public ValidateOperationCommandHandler Handler() => new(
             OpRepo.Object, Steps.Object, Verification.Object, Policy.Object,
-            Outbox.Object, Audit.Object, Uow.Object);
+            Outbox.Object, Audit.Object, Bookings.Object, Uow.Object);
     }
 
     [Fact]
