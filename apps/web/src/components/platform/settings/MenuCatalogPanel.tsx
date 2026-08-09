@@ -122,11 +122,21 @@ export function MenuCatalogPanel() {
     // status a write response had confirmed seconds ago.
     const serverConfirmedAt = discovered.dataUpdatedAt;
 
+    // SERVER FIRST, so the discovery endpoint's newest-first order survives the merge.
+    //
+    // Seeding the map with the session-tracked rows meant insertion order was "whatever this
+    // browser happened to touch, oldest first", and a server row replacing one kept that stale
+    // position — Map.set on an existing key does not move it. Server-only catalogs were then
+    // appended at the end, so a catalog created seconds ago on another machine rendered BELOW
+    // rows from an old session. The endpoint's whole contract is newest-first, and the list has
+    // no timestamp column to re-sort by, so the order it returns is the only ordering signal
+    // there is; it has to be the spine of the merge rather than an afterthought.
     const byId = new Map<string, TrackedCatalog>();
-    for (const t of catalogs) byId.set(t.catalogId, t);
+    const local = new Map(catalogs.map(t => [t.catalogId, t]));
+
     for (const s of server) {
       if (!s.catalog_id) continue;
-      const local = byId.get(s.catalog_id);
+      const tracked = local.get(s.catalog_id);
 
       // The newer statement wins, and neither side is inherently authoritative — both are
       // server statements, just made at different times. The list is fetched once with
@@ -134,16 +144,27 @@ export function MenuCatalogPanel() {
       // the snapshot win there re-rendered an approved catalog as `in_review`, offered Approve
       // again, and 409'd. The mutations now invalidate this query, but the refetch lands a beat
       // later and serves the old data until it does — so recency has to be checked here too.
-      const localConfirmedAt = local ? Date.parse(local.confirmedAt) : NaN;
-      if (Number.isFinite(localConfirmedAt) && localConfirmedAt > serverConfirmedAt) continue;
+      const localConfirmedAt = tracked ? Date.parse(tracked.confirmedAt) : NaN;
+      const localWins = Number.isFinite(localConfirmedAt) && localConfirmedAt > serverConfirmedAt;
 
-      byId.set(s.catalog_id, {
+      // Either way the row takes the SERVER's position: which statement is fresher decides the
+      // status, never where the catalog sits in the list.
+      byId.set(s.catalog_id, localWins ? tracked! : {
         catalogId: s.catalog_id,
-        versionLabel: s.version_label ?? local?.versionLabel ?? '',
-        lastConfirmedStatus: s.status ?? local?.lastConfirmedStatus ?? '',
+        versionLabel: s.version_label ?? tracked?.versionLabel ?? '',
+        lastConfirmedStatus: s.status ?? tracked?.lastConfirmedStatus ?? '',
         confirmedAt: new Date(serverConfirmedAt).toISOString(),
       });
     }
+
+    // Session-only catalogs are appended: registered seconds ago and not yet in any fetch, so
+    // they are the freshest thing here — but they are also the rows the server has never
+    // confirmed, and putting them above a discovery list this read cannot order them within
+    // would be inventing a rank. Kept so a just-registered catalog does not vanish.
+    for (const t of catalogs) {
+      if (!byId.has(t.catalogId)) byId.set(t.catalogId, t);
+    }
+
     return [...byId.values()];
   })();
 
@@ -269,12 +290,49 @@ export function MenuCatalogPanel() {
         </div>
       )}
 
-      {/* Catalogs this session has touched, at their last server-confirmed status. */}
+      {/* The tenant's catalogs, at the more recent of the server's status and this session's. */}
       <div style={{ borderTop: '1px solid #EFEFEF', marginTop: 10, paddingTop: 10 }}>
-        {merged.length === 0 ? (
-          <div className="py-2 text-[12.5px] text-t3">
-            No catalogs started from this session yet.
+        {/*
+          The discovery read's own state, rendered ALONGSIDE the list rather than instead of it.
+          `discovered.data?.catalogs ?? []` collapses pending and error into an empty array, so a
+          failed `GET /api/menu/catalogs` looked exactly like a tenant with no catalogs — an
+          operator was told there was nothing to approve when the truth was that we could not
+          find out, with no retry offered. Session-tracked rows still render underneath: those
+          are statuses a write response actually confirmed, and they stay true while the
+          discovery read is down.
+        */}
+        {discovered.isError && (
+          <div className="mb-[9px]">
+            <ErrorState
+              inline
+              error={discovered.error}
+              title="Could not load the catalog list"
+              // "Reload list", not the shared "Try again" default. The action-failure ErrorState
+              // above renders its own retry, and when an Approve 403s while this read is also
+              // down, both are on screen at once — two buttons with identical accessible names
+              // doing entirely different things (re-run the write vs. refetch the list). A
+              // screen-reader user gets no way to tell them apart, and neither does a test.
+              retryLabel="Reload list"
+              onRetry={() => void discovered.refetch()}
+            />
           </div>
+        )}
+
+        {discovered.isPending && (
+          <div role="status" className="py-2 text-[12.5px] text-t3">
+            Loading catalogs…
+          </div>
+        )}
+
+        {merged.length === 0 ? (
+          // Only claimed when the read SUCCEEDED and returned nothing. While it is pending or
+          // failed the emptiness is ours, not the tenant's — and the sentence is no longer
+          // scoped to "this session", since discovery covers catalogs started anywhere.
+          !discovered.isPending && !discovered.isError && (
+            <div className="py-2 text-[12.5px] text-t3">
+              No menu catalogs yet.
+            </div>
+          )
         ) : (
           merged.map((catalog) => {
             const actions = catalogConsoleActions(catalog.lastConfirmedStatus);

@@ -8,6 +8,14 @@ interface ErrorStateProps {
   /** Rendered as the heading. Defaults to a message derived from the error. */
   title?: string;
   onRetry?: () => void;
+  /**
+   * Label for the retry control. Defaults to "Try again".
+   *
+   * Override it wherever two ErrorStates can be on screen at once — a failed write beside a
+   * failed read — so the buttons do not present identical accessible names for entirely
+   * different actions.
+   */
+  retryLabel?: string;
   /** Compact variant for inline panels rather than a full screen. */
   inline?: boolean;
 }
@@ -18,7 +26,7 @@ interface ErrorStateProps {
  * available, so it is shown verbatim rather than replaced with a generic string; a
  * `ValidationProblemDetails` additionally lists its per-field messages.
  */
-export function ErrorState({ error, title, onRetry, inline }: ErrorStateProps) {
+export function ErrorState({ error, title, onRetry, retryLabel, inline }: ErrorStateProps) {
   const status = isApiError(error) ? error.status : undefined;
   const detail =
     error instanceof Error && error.message ? error.message : "Something went wrong.";
@@ -80,7 +88,7 @@ export function ErrorState({ error, title, onRetry, inline }: ErrorStateProps) {
         {onRetry && (
           <div className={inline ? "mt-[7px]" : "mt-[16px]"}>
             <GhostButton onClick={onRetry} icon="clock">
-              Try again
+              {retryLabel ?? "Try again"}
             </GhostButton>
           </div>
         )}

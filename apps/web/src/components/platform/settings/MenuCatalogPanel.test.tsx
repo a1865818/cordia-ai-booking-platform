@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import { MenuCatalogPanel } from "./MenuCatalogPanel";
 import { recordCatalogStatus } from "../../../features/menu/catalogs";
 import { ApiError } from "../../../api/problem";
+import type { CatalogSummary } from "../../../features/menu/api";
 
 vi.mock("../../../features/session/identity", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../features/session/identity")>()),
@@ -24,17 +25,43 @@ vi.mock("../../../features/menu/api", async (importOriginal) => ({
   sendCatalogForReview: vi.fn(),
   approveCatalog: vi.fn(),
   publishCatalog: vi.fn(),
+  // The discovery read was left unmocked, so every test in this file was quietly exercising a
+  // real `fetch` that jsdom rejects — the panel rendered its error path and the assertions
+  // happened to pass anyway because the empty state did not distinguish the two. It does now.
+  listCatalogs: vi.fn(),
 }));
 
 import { sessionIdentity } from "../../../features/session/identity";
 import {
-  approveCatalog, publishCatalog, sendCatalogForReview, uploadMenuCatalog,
+  approveCatalog, listCatalogs, publishCatalog, sendCatalogForReview, uploadMenuCatalog,
 } from "../../../features/menu/api";
 
 function identity(role: string) {
   return {
     actor: "console-operator", role, tenant: "demo",
     actorInitials: "CO", tenantInitial: "D",
+  };
+}
+
+/**
+ * A discovery row in the shape the endpoint actually returns.
+ *
+ * Spelled out through the generated contract rather than as a two-field literal, so a test
+ * cannot pass against a shape the API does not send — `age_seconds` in particular drives the
+ * "taking longer than expected" panel.
+ */
+function catalogRow(
+  catalogId: string,
+  status: string,
+  extra: Partial<CatalogSummary> = {}
+): CatalogSummary {
+  return {
+    catalog_id: catalogId,
+    status,
+    version_label: null,
+    created_at: "2026-08-09T00:00:00Z",
+    age_seconds: 5,
+    ...extra,
   };
 }
 
@@ -49,6 +76,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
   vi.mocked(sessionIdentity).mockReturnValue(identity("owner"));
+  // Default: the discovery read SUCCEEDS and the tenant has no catalogs. That is the only state
+  // in which the panel may claim there are none.
+  vi.mocked(listCatalogs).mockResolvedValue({ catalogs: [] });
 });
 afterEach(() => sessionStorage.clear());
 
@@ -113,7 +143,7 @@ describe("registering a menu", () => {
 
     expect(await screen.findByText(/owner role/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Try again/ })).toBeInTheDocument();
-    expect(screen.getByText("No catalogs started from this session yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No menu catalogs yet.")).toBeInTheDocument();
   });
 
   it("retries with what the operator NOW sees in the box, not the failed render's value", async () => {
@@ -186,5 +216,113 @@ describe("walking the state machine", () => {
     await waitFor(() => expect(approveCatalog).toHaveBeenCalledWith("cat_r"));
     expect(await screen.findByText(/Approved — ready to publish/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
+  });
+});
+
+describe("the discovery read's own state", () => {
+  it("does not present a failed catalog read as a tenant with no catalogs", async () => {
+    // `discovered.data?.catalogs ?? []` collapses pending and error into an empty array, so a
+    // failed GET looked exactly like an empty tenant: the operator was told there was nothing to
+    // approve when the truth was that we could not find out, and no retry was offered.
+    vi.mocked(listCatalogs).mockRejectedValue(new ApiError(503, "upstream down"));
+    render(<MenuCatalogPanel />, { wrapper });
+
+    expect(await screen.findByText("Could not load the catalog list")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload list" })).toBeInTheDocument();
+    expect(screen.queryByText("No menu catalogs yet.")).not.toBeInTheDocument();
+  });
+
+  it("re-reads on the operator's retry", async () => {
+    vi.mocked(listCatalogs)
+      .mockRejectedValueOnce(new ApiError(503, "upstream down"))
+      .mockResolvedValueOnce({ catalogs: [catalogRow("cat_back", "in_review")] });
+    render(<MenuCatalogPanel />, { wrapper });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reload list" }));
+
+    expect(await screen.findByText("cat_back")).toBeInTheDocument();
+    expect(screen.queryByText("Could not load the catalog list")).not.toBeInTheDocument();
+  });
+
+  it("says it is loading rather than claiming the tenant is empty", async () => {
+    // Never resolves: the panel must not fill the gap with a claim it cannot support yet.
+    vi.mocked(listCatalogs).mockReturnValue(new Promise(() => {}));
+    render(<MenuCatalogPanel />, { wrapper });
+
+    expect(await screen.findByText("Loading catalogs…")).toBeInTheDocument();
+    expect(screen.queryByText("No menu catalogs yet.")).not.toBeInTheDocument();
+  });
+
+  it("keeps session-confirmed rows visible while the discovery read is down", async () => {
+    // A status this session's own write response confirmed is still true when the list read
+    // fails — dropping it would lose the one thing we do know.
+    recordCatalogStatus("cat_mine", "approved", "menu-v1");
+    vi.mocked(listCatalogs).mockRejectedValue(new ApiError(503, "upstream down"));
+    render(<MenuCatalogPanel />, { wrapper });
+
+    expect(await screen.findByText("Could not load the catalog list")).toBeInTheDocument();
+    expect(screen.getByText("cat_mine")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
+  });
+});
+
+describe("merge ordering", () => {
+  it("preserves the discovery endpoint's newest-first order over local insertion order", async () => {
+    // Seeding the map with session rows first pinned them at the top: Map.set on an existing key
+    // does not move it, so a server row replacing a locally-tracked one kept the local position
+    // and server-only rows were appended after. A catalog created seconds ago on another machine
+    // therefore rendered BELOW rows from an old session, inverting the one ordering signal the
+    // endpoint gives.
+    recordCatalogStatus("cat_old", "uploaded", "old");
+    vi.mocked(listCatalogs).mockResolvedValue({
+      catalogs: [
+        catalogRow("cat_newest", "in_review"),
+        catalogRow("cat_middle", "draft_ready"),
+        catalogRow("cat_old", "uploaded"),
+      ],
+    });
+    render(<MenuCatalogPanel />, { wrapper });
+
+    await screen.findByText("cat_newest");
+
+    const ids = screen.getAllByTitle(/^cat_/).map(n => n.textContent);
+    expect(ids).toEqual(["cat_newest", "cat_middle", "cat_old"]);
+  });
+
+  it("keeps a just-registered catalog the fetch has not seen yet, at the end", async () => {
+    // It is genuinely the freshest thing here, but the server has never confirmed it and this
+    // read cannot rank it against the list — so it is kept, not promoted.
+    recordCatalogStatus("cat_local", "uploaded", null);
+    vi.mocked(listCatalogs).mockResolvedValue({
+      catalogs: [catalogRow("cat_server", "in_review")],
+    });
+    render(<MenuCatalogPanel />, { wrapper });
+
+    await screen.findByText("cat_server");
+
+    const ids = screen.getAllByTitle(/^cat_/).map(n => n.textContent);
+    expect(ids).toEqual(["cat_server", "cat_local"]);
+  });
+});
+
+describe("two failures at once", () => {
+  it("keeps the write retry and the list retry tellable apart", async () => {
+    // An Approve that 403s while the discovery read is also down puts two ErrorStates on screen.
+    // Sharing the "Try again" label gave them identical accessible names for entirely different
+    // actions — re-run the write, or refetch the list — with nothing to distinguish them.
+    recordCatalogStatus("cat_r", "in_review", null);
+    vi.mocked(listCatalogs).mockRejectedValue(new ApiError(503, "upstream down"));
+    vi.mocked(approveCatalog).mockRejectedValueOnce(new ApiError(403, "forbidden"));
+    render(<MenuCatalogPanel />, { wrapper });
+
+    await screen.findByRole("button", { name: "Reload list" });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByRole("button", { name: /Try again/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload list" })).toBeInTheDocument();
+
+    // The write retry re-runs the write, and only the write.
+    fireEvent.click(screen.getByRole("button", { name: /Try again/ }));
+    await waitFor(() => expect(approveCatalog).toHaveBeenCalledTimes(2));
   });
 });
