@@ -190,6 +190,61 @@ hook ran the .NET unit suite and formatting on every commit.
   reschedule authorization section, so the console-authentication exception stays a single
   documented boundary rather than two.
 
+---
+
+## Update — 2026-08-09 terminal-path preconditions (`e8dc43e`, `a1dd572`)
+
+A follow-up review of the branch returned eight findings — six in the manual-recovery and
+capacity terminal paths, two in the console. Three of the six were one defect wearing three hats,
+so they were fixed together rather than patched individually.
+
+### The load-bearing finding
+
+**Resolving a ManualReview treated its preconditions as optional side effects.** A cancel reached
+its lifecycle transition only when the booking was already `CancellationPending`, and then
+discarded the result. Both gaps committed the same lie: outside that state the block was skipped
+entirely, and a zero-row result fell through — so the operation recorded `Booked`, the outbox
+announced the cancellation had succeeded, and the booking stayed **live**. A guest told their
+booking was cancelled, sitting in a slot the venue still has reserved (Inv-7/Inv-8).
+
+### What changed
+
+| Area | Fix |
+|---|---|
+| Cancel resolved Booked | The lifecycle transition is a hard precondition, matching `CancelBookingCommandHandler` — missing booking or zero rows refuses. Already-`Cancelled` is idempotent success, and the seat release runs unconditionally as the sibling handler does (a zero-row no-op when already free) |
+| Modify resolved Booked | Refuses **before** any capacity or outbox write when the booking is not amendable. Stated as an allow-list of the two settleable lifecycle states, so `CancellationPending` — a cancellation in flight — refuses too, and a value added later fails closed |
+| Pending-change clear | Version-guarded and its result is a precondition: a lost race used to leave the booking at `ModificationPending` permanently while the outbox reported success |
+| `NotTracked` ≠ finalized | No first-party hold was ever created, so there is no destination seat — the same position as `HoldNoLongerValid`. A cross-slot payload still derives a non-null target key, so the previous owner's finalized hold was released anyway and the booking committed Booked with capacity on **neither** slot. Fixed in **both** lanes; the automatic one is the common path |
+| Failed-mutation revert | The pending state is now matched to the operation that parked it. Reverting on either state meant a failed Modify whose booking had moved to `CancellationPending` was pushed back to Confirmed, silently undoing an unrelated in-flight cancellation. Fixed in `BookingPendingLifecycle`, so the four terminal-failure routes sharing it are fixed too |
+| Console "today" | `isToday` came from `ConsoleWeek.todayIndex`, frozen at week-build time — a console open across local midnight kept **yesterday** marked as today, now-line and "remaining" tile included. `todayIndexAt` asks the screen's existing 30s clock; DST-safe by comparing calendar days. The create drawer's default day read the same stale index |
+| Refused reschedule | The no-confirmed-version branch returned without reverting the optimistic move, leaving the booking in a slot the platform had just declined |
+| Partially-answered queue | `loadFailures` omitted the work-items query, so a failure there rendered as a fully loaded queue that had quietly dropped every escalation's reason, SLA deadline and assignee |
+
+### Gates
+
+| Lane | Result |
+|---|---|
+| api | 1442 unit · lint · build |
+| web | 615 tests · lint 0/0 · typecheck |
+
+langgraph is untouched by this pass. Integration suites were not re-run (they need the Postgres
+fixture); the pre-commit hook ran the .NET unit suite and formatting on every commit.
+
+### Reviewer notes
+
+- **One prescription was deliberately not followed.** The report asked that the modify path require
+  `ModificationPending` before reverting. It must not: `ModifyBookingCommand` treats that state as
+  optional precisely because a reschedule accepted through the spec-04 door never parks the booking
+  there, so enforcing it would refuse every console reschedule this lane exists to recover. The
+  automatic lane's actual rule — refuse on a booking that is not amendable — is used instead.
+- **`/code-review high` then found four defects in these fixes, all since closed:** the `NotTracked`
+  guard was applied to the manual lane only, while that class's own comment says the two lanes must
+  not drift; a fall-through comment claimed a state enumeration was exhaustive when
+  `CancellationPending` was unhandled; an already-cancelled path dropped a seat release the sibling
+  handler runs unconditionally; and a React effect dependency widened to `week` would have wiped a
+  half-typed booking form on any week navigation.
+- **No new migration, no contract change**, so nothing regenerates.
+
 
 ## Type of change
 
