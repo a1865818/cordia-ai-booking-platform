@@ -152,6 +152,24 @@ name — a signed context alone would still not give the console a user or a bus
 | `X-Provider-Message-Id` / `X-Provider-Call-Id` | Channel webhooks only | Provider's own correlation id, echoed when well-formed. Not used by the UI. |
 | `X-Webhook-Secret` | Notification provider webhooks only | Not used by the UI. |
 
+
+**`customer_ref` is minimised on every ungated list read (2026-08-09, spec 14 / Inv-12).** It was
+documented as opaque and was not: `bookings.customer_id` resolves through
+`customer_id → contact_ref → caller_id → phone_e164 → email`, and `waitlist_enrollments.customer_ref`
+is the value `NotificationRecipientResolver` sends to. The console mints an opaque `contact_ref`, but
+the **agent lane never does** — it carries `phone_e164` inline — so agent-created bookings put a raw
+phone number on `GET /api/customers`, `GET /api/Bookings/schedule`, `GET /api/conversation-sessions`
+and `GET /api/waitlist/enrollments`, all of which need nothing but tenant scope: no grant, no reason
+code, no audit row. That was a lower bar than the transcript read of the same data class, and
+`?query=` over the raw column was a working phone-prefix search.
+
+`ContactMinimisation.Mask` now runs at the point of emission on all four: a phone leaves as `•••222`,
+an email as `p•••@example.com`, and an opaque handle passes through unchanged. The search matches the
+masked value. Grouping still uses the raw key, so per-guest counts are exact. The un-masked contact
+remains behind the grant-gated `GET /api/Bookings/{bookingId}`. **Still open at the source:** minting
+a `contact_ref` in the agent lane so the column stops being an address at all.
+
+
 **Transcript authorization is an OR, not an AND**: `GET /api/conversation-sessions/{id}/transcript`
 accepts **either** a spec-08 `read_sensitive` grant scoped to the session's customer **or** a
 staff role (`X-Actor` + `X-Actor-Role` satisfying operator + `X-Reason-Code`). Consent
@@ -268,6 +286,12 @@ the submitted `service_id` is an id the server actually knows — see §9.
 
 ### Reschedule / modify (`RescheduleDrawer`, drag on the grid) — live since 2026-08-06
 1. `GET /api/Bookings/{id}` → the current `version`, which becomes `target_booking_version`.
+   For a **gated** booking this read answers `requires_verification` (403) — the staff-role headers
+   authorize the mutation, not this read — so the console mounts a `VerificationGate` on that 403
+   and replays the move with the grant. The grant then travels on **both** this read and the
+   `POST /api/Bookings` in step 3; sending it on the read alone loops the operator through a fresh
+   verification code on every attempt, because outside Development the asserted-role path is off
+   and the write is refused without a grant of its own. See §17.
 2. `POST /api/Bookings/{id}/changes:validate` → pre-flight. Refuses on `stale_version`,
    `capacity_unavailable` or `policy_failed` **before** an attempt identity is minted, so a
    refused change costs no operation id and no idempotency key. Authorized by `X-Actor` /
@@ -363,7 +387,7 @@ the rest are kebab/lowercase.
 | GET | `/api/conversation-sessions?limit` | `ListConversationSessionsResponse` | Metadata only — no transcript text |
 | GET | `/api/conversation-sessions/{sessionId}/transcript` | `TranscriptView` | Grant **or** staff role + reason (§4). 409 when consent is absent/declined. Allow and deny both audited |
 | POST | `/api/conversation-sessions/{sessionId}/{consent\|transcript-turns}` | persisted results | Agent-lane writes |
-| GET | `/api/customers?query&limit` | `ListCustomersResponse` | Case-insensitive substring on the customer ref; `limit` 1–200. Reports `truncated` |
+| GET | `/api/customers?query&limit` | `ListCustomersResponse` | Case-insensitive substring on the **masked** customer ref; `limit` 1–200. Reports `truncated`. **`customer_ref` is minimised (2026-08-09)** — see the note below |
 | GET | `/api/reporting/funnel?from&to` | `BookingFunnelView` | Defaults to the last 24 h |
 | GET | `/api/reporting/overview?from&to` | `BookingOverviewResponse` | Defaults to the last 7 d. Per-day/channel/service aggregates; deliberately **no** agent-vs-human split (nothing records who handled a booking). Per-day `booked` counts **create/modify/reschedule** operations only — a cancellation reaching its terminal state is not a booking made that day |
 | GET | `/api/catalog/items?query&category&max_results` | anon item list | **Published** items only. `max_results` default 20; out-of-range is a 400, not clamped |
@@ -1080,11 +1104,25 @@ Three details that are load-bearing:
   header and nothing else. A pre-flight may be no stricter than the change it de-risks; it must not
   be looser either.
 
-**No `VerificationGate` was wired for reschedule, and that is now the right answer rather than a
-gap.** The console operator *is* the authorization. Cancel takes the grant path because
-`.../cancellations` consumes one structurally; a gate here would ask an operator to step up a guest
-in order to satisfy a check the operator's own role already satisfies — a gate that authorizes
-nothing, which is the same theatre R15 was about.
+**No `VerificationGate` is offered UP FRONT for a reschedule, and that is the right answer.** The
+console operator *is* the authorization for the write. Cancel takes the grant path because
+`.../cancellations` consumes one structurally; asking for a step-up before every reschedule would
+make an operator verify a guest in order to satisfy a check their own role already satisfies — a
+gate that authorizes nothing, which is the same theatre R15 was about.
+
+**But one appears when the platform asks for it (2026-08-09).** A reschedule must first read the
+booking's current version, and `GET /api/Bookings/{id}` answers `requires_verification` for a gated
+booking. The staff-role headers authorize the *mutation*; they do not authorize that *read* — so
+with no gate at all, a gated booking could not be rescheduled by any route: the read threw, the
+generic handler said "couldn't change this booking", and nothing on screen led anywhere. The gate is
+therefore **reactive, never pre-emptive**: it is mounted only after the platform itself returns
+`verification_required`, and the resulting grant travels on **both** the read and the write.
+
+Both halves matter. `submitBooking` gained a `grantId` parameter for the second: the asserted-role
+path is gated on `Authorization:AllowAssertedStaffRole`, which defaults to Development only, so
+outside Development a reschedule presenting no grant is refused however good its actor headers are.
+Forwarding the grant to the read alone turned the step-up into a loop — read succeeds, write 403s,
+gate reappears — burning a verification code per attempt.
 
 **2. Nothing ever cleared `ModificationPending`.** `SubmitBookingModificationCommandHandler` parks
 the booking there so concurrent writers see a change in flight, and it was the **only** writer of
@@ -1257,9 +1295,11 @@ holes that turning reschedule on exposed: the acceptance front door now authoriz
 door opens. The six group-C endpoints remain deliberately unwired; wiring any of them would be a
 defect, not progress.
 
-**On the missing reschedule `VerificationGate`:** there is no longer one to wire. The console
-operator's role *is* the authorization the server checks, so a step-up gate there would satisfy
-nothing the request does not already satisfy — see §17.
+**On the missing reschedule `VerificationGate`:** there is no *pre-emptive* one to wire — the
+console operator's role is the authorization the server checks for the mutation. A **reactive** one
+was added on 2026-08-09 for the case the role cannot cover: the booking-details read that precedes
+the change answers `requires_verification` for a gated booking, and the role authorizes the write,
+not that read. It is mounted only on that 403, and its grant travels on both calls — see §17.
 
 ---
 
