@@ -72,13 +72,30 @@ describe("transcript query key", () => {
     const after = queryKeys.conversations.transcript("sess_1", "grant_1");
 
     expect(before).not.toEqual(after);
-    expect(before.at(-1)).toBe("no-grant");
-    expect(after.at(-1)).toBe("grant_1");
+    expect(before).toContain("no-grant");
+    expect(after).toContain("grant_1");
   });
 
   it("keeps different sessions on different keys", () => {
     expect(queryKeys.conversations.transcript("sess_1", "g")).not.toEqual(
       queryKeys.conversations.transcript("sess_2", "g")
     );
+  });
+
+  /**
+   * A new stated PURPOSE is a new audited disclosure, so it must not be served from cache.
+   *
+   * The read is cached with `staleTime: Infinity` and `X-Reason-Code` is what the server writes
+   * on the audit row. Keyed without the purpose, re-opening a session inside `gcTime` prompted
+   * the operator for one and then handed back the cached transcript — the PII was disclosed
+   * under a purpose that never reached the server and produced no audit row at all.
+   */
+  it("changes when the operator states a different purpose, so the read is genuinely re-audited", () => {
+    const support = queryKeys.conversations.transcript("sess_1", "grant_1", "customer_support");
+    const dispute = queryKeys.conversations.transcript("sess_1", "grant_1", "dispute");
+
+    expect(support).not.toEqual(dispute);
+    expect(support).toContain("customer_support");
+    expect(dispute).toContain("dispute");
   });
 });

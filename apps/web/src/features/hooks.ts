@@ -96,7 +96,7 @@ export function useTranscript(
   enabled = true
 ) {
   return useQuery({
-    queryKey: queryKeys.conversations.transcript(sessionId ?? "", grantId),
+    queryKey: queryKeys.conversations.transcript(sessionId ?? "", grantId, reasonCode ?? undefined),
     queryFn: ({ signal }) => getTranscript(sessionId!, reasonCode!, { signal, grantId }),
     enabled: enabled && Boolean(sessionId) && Boolean(reasonCode),
     staleTime: Infinity,

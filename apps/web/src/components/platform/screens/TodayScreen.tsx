@@ -291,14 +291,15 @@ function SideList({
 
 // ── Diagram view ──────────────────────────────────────────────────────────
 function DiagramView({
-  bookings, selDay, timeFilter, openBooking, onDragReschedule, resourceLabel, resources, isToday,
-  now,
+  bookings, selDay, timeFilter, openBooking, onDragReschedule, onDragRefused, resourceLabel,
+  resources, isToday, now,
 }: {
   bookings: Booking[];
   selDay: number;
   timeFilter: string;
   openBooking: (id: string) => void;
   onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
+  onDragRefused?: () => void;
   resourceLabel: string;
   resources: readonly GridResource[];
   /** True only when the selected column is the real current day. Gates the now-line. */
@@ -404,6 +405,13 @@ function DiagramView({
         openBooking(d.id);
       } else if (!d.conflict) {
         onDragReschedule(d.id, { day: selDay, start: d.curStart, staff: d.curStaff, dur: d.curDur });
+      } else {
+        // A refusal has to SAY it refused.
+        //
+        // This branch did nothing at all: no request, no message, and the bar snapped back to where
+        // it started as the drag state cleared. That is indistinguishable from the drag not having
+        // registered, so the operator's reading is "the grid is broken", and they try again.
+        onDragRefused?.();
       }
     };
 
@@ -413,7 +421,7 @@ function DiagramView({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [drag, bookings, selDay, openBooking, onDragReschedule]);
+  }, [drag, bookings, selDay, openBooking, onDragReschedule, onDragRefused]);
 
   // Build time columns for header
   const headerCols: { left: number; t: number; isHour: boolean; isHalf: boolean; label: string }[] = [];
@@ -797,6 +805,12 @@ export interface TodayScreenProps {
   queueCount: number;
   bookings: Booking[];
   onDragReschedule: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
+  /**
+   * Called when a drag is dropped somewhere the grid will not submit, so the refusal can be
+   * reported to the operator. Without it the drop was a silent no-op and the bar simply sprang
+   * back, which reads as a broken grid rather than as a decision.
+   */
+  onDragRefused?: () => void;
   resourceLabel: string;
   /**
    * The lanes to draw. One unnamed lane while the platform models no resource — see
@@ -821,7 +835,7 @@ const TIME_OPTS   = [
 export function TodayScreen({
   device, week, onPrevWeek, onNextWeek, onGoToToday, selDay, setSelDay,
   openBooking, goQueue, queueCount,
-  bookings, onDragReschedule, resourceLabel, resources, loaded = true,
+  bookings, onDragReschedule, onDragRefused, resourceLabel, resources, loaded = true,
 }: TodayScreenProps) {
   const isPhone = device === 'phone';
   const [calView,    setCalView]    = useState<'diagram' | 'list'>('diagram');
@@ -1100,6 +1114,7 @@ export function TodayScreen({
               timeFilter={timeFilter}
               openBooking={openBooking}
               onDragReschedule={onDragReschedule}
+              onDragRefused={onDragRefused}
               resourceLabel={resourceLabel}
               resources={resources}
               isToday={isToday}

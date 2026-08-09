@@ -45,8 +45,22 @@ export const queryKeys = {
      * would otherwise serve that cached failure forever — the operator would complete step-up
      * and see the same error.
      */
-    transcript: (sessionId: string, grantId?: string) =>
-      [...root(), "conversations", "transcript", sessionId, grantId ?? "no-grant"] as const,
+    transcript: (sessionId: string, grantId?: string, reasonCode?: string) =>
+      [
+        ...root(),
+        "conversations",
+        "transcript",
+        sessionId,
+        grantId ?? "no-grant",
+        // The stated PURPOSE is part of the key, because it is part of the disclosure.
+        //
+        // `X-Reason-Code` is what the server writes on the audit row, and the read is cached with
+        // `staleTime: Infinity`. Keyed without it, re-opening a session inside `gcTime` prompted
+        // the operator for a purpose and then served the cached transcript — the PII was disclosed
+        // under a purpose that never reached the server and produced no audit row at all. Every
+        // distinct stated purpose has to be its own audited read (spec 14).
+        reasonCode ?? "no-reason",
+      ] as const,
   },
 
   waitlist: {

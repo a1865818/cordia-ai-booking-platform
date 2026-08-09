@@ -186,7 +186,11 @@ export function ConsolePage() {
   const [selDay, setSelDay] = useState(() => (new Date().getDay() + 6) % 7);
 
   // Conversations
-  const [convOpen, setConvOpen] = useState('c3');
+  //
+  // The SELECTION, which is not necessarily a conversation that exists. It starts on a demo id,
+  // and the demo threads are replaced wholesale once the sessions read lands — see `convOpen`
+  // below, which is the one every consumer must use.
+  const [selectedConv, setSelectedConv] = useState('c3');
   const [convView, setConvView] = useState<'list' | 'thread'>('list');
   const [takenOver, setTakenOver] = useState<Set<string>>(new Set());
 
@@ -334,6 +338,28 @@ export function ConsolePage() {
   const liveThreads = useMemo(() => toThreads(sessionsQuery.data?.sessions), [sessionsQuery.data]);
   const liveWaitlist = useMemo(() => toWaitlistItems(waitlistQuery.data?.enrollments), [waitlistQuery.data]);
   const liveCustomers = useMemo(() => toCustomers(customersQuery.data?.customers), [customersQuery.data]);
+
+  const showingDemoThreads = sessionsQuery.data === undefined;
+  const sourceThreads = showingDemoThreads ? THREADS : liveThreads;
+
+  /**
+   * The conversation actually on screen — resolved here so the thread the operator SEES and the
+   * thread every gate is keyed on are the same one.
+   *
+   * `selectedConv` starts on the demo id `c3`, and the demo threads are swapped out wholesale the
+   * moment the sessions read lands. `ConversationsScreen` used to paper over the mismatch with a
+   * `threads.find(...) || threads[0]` fallback, which rendered a REAL guest session whose id
+   * nothing else knew about: `openSessionIsLive` was false, so no transcript was fetched and no
+   * purpose was ever asked for, and the message map had no entry for it — a live conversation
+   * displayed as a confident, completely empty thread. "Take over this chat" recorded the
+   * selection rather than the thread on screen for the same reason, so the Live dot never cleared.
+   *
+   * Resolving the fallback HERE instead makes that impossible: there is one id, and it is a member
+   * of the list being rendered.
+   */
+  const convOpen = sourceThreads.some(t => t.id === selectedConv)
+    ? selectedConv
+    : (sourceThreads[0]?.id ?? selectedConv);
 
   // Only fetch a transcript for a session that came from the API — the demo thread ids
   // are not real sessions and would 404.
@@ -791,17 +817,27 @@ export function ConsolePage() {
       const accepted = await submitBooking(request);
 
       const operationId = accepted.operation_id;
+      let settled = false;
       if (operationId) {
         toast({ message: 'Change submitted — confirming…', duration: 3000 });
         const status = await pollToTerminal(operationId, controller.signal);
+        settled = status.terminal === true;
         toast({
-          message: status.terminal
+          message: settled
             ? `Change: ${normalizedStatusLabel(status.status, 'reschedule').toLowerCase()}`
             : 'Still confirming the change — check the queue shortly',
           duration: 5000,
         });
       }
-      resetAttempt(attemptKey);
+
+      // Only a TERMINAL answer spends the attempt identity.
+      //
+      // `pollToTerminal` returns the last non-terminal status when its 60s budget runs out, which
+      // is the branch that just told the operator "still confirming the change" — and then reset
+      // the identity anyway. The next attempt therefore minted a fresh operation id and
+      // idempotency key for a reschedule the server was still working on, and accepted it as a
+      // second, independent operation. Keeping the identity makes the retry a replay (Inv-2).
+      if (settled) resetAttempt(attemptKey);
       invalidateBookingViews();
     } catch (error) {
       // Abandoned polling is not a failure: the screen went away, the operation did not.
@@ -949,7 +985,7 @@ export function ConsolePage() {
     });
   };
 
-  const openConv = (id: string) => { setConvOpen(id); setConvView('thread'); };
+  const openConv = (id: string) => { setSelectedConv(id); setConvView('thread'); };
 
   function takeOver() {
     setTakenOver(prev => new Set([...prev, convOpen]));
@@ -957,10 +993,9 @@ export function ConsolePage() {
   }
 
   function handleCustomerMessage(customerName: string) {
-    const thread = (sessionsQuery.data === undefined ? THREADS : liveThreads)
-      .find(t => t.name === customerName);
+    const thread = sourceThreads.find(t => t.name === customerName);
     if (thread) {
-      setConvOpen(thread.id);
+      setSelectedConv(thread.id);
       setConvView('thread');
     }
     go('conversations');
@@ -968,7 +1003,7 @@ export function ConsolePage() {
 
   const onViewTranscript = (tid: string) => {
     closeDrawer();
-    setConvOpen(tid);
+    setSelectedConv(tid);
     setConvView('thread');
     setScreen('conversations');
   };
@@ -1063,6 +1098,14 @@ export function ConsolePage() {
               queueCount={queueCount}
               bookings={bookings}
               onDragReschedule={onRescheduleDone}
+              // A refused drop is a decision, and a decision the operator cannot see is
+              // indistinguishable from a broken grid. The wording says what the grid actually
+              // knows: it saw an overlap on the single lane it draws, which is a warning about
+              // this venue's own diary, not the platform refusing the change.
+              onDragRefused={() => toast({
+                message: 'That overlaps another booking in this view — move it to a free slot, or open the booking to change it.',
+                duration: 5000,
+              })}
               resourceLabel={tenantCfg.resourceLabel}
               // One unnamed lane: the platform models no resource, so the grid names none.
               resources={UNASSIGNED_RESOURCES}
@@ -1090,8 +1133,6 @@ export function ConsolePage() {
           // Fall back to demo threads only while the session list has never loaded — a
           // successful-but-empty result is a real answer ("no conversations yet") and must
           // not be replaced with fabricated rows.
-          const showingDemoThreads = sessionsQuery.data === undefined;
-          const sourceThreads = showingDemoThreads ? THREADS : liveThreads;
           const displayThreads = sourceThreads.map(t =>
             takenOver.has(t.id) ? { ...t, live: false } : t
           );

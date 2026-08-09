@@ -227,7 +227,14 @@ export function ConversationsScreen({
   transcriptError, transcriptPending,
 }: ConversationsScreenProps) {
   const isDesktop = device !== 'phone';
-  const active = threads.find(t => t.id === convOpen) || threads[0];
+  // No fallback to `threads[0]`.
+  //
+  // Substituting a different thread than the one `convOpen` names rendered a REAL guest session
+  // that nothing else in the page knew was open: no transcript was fetched for it, no purpose was
+  // asked for, the message map had no entry, and it displayed as a confident empty conversation.
+  // "Take over" recorded `convOpen` too, so the Live dot never cleared. The caller resolves the
+  // selection to a thread that actually exists; here, an id that matches nothing renders nothing.
+  const active = threads.find(t => t.id === convOpen);
   const showList = isDesktop || convView === 'list';
   const showThread = isDesktop || convView === 'thread';
 

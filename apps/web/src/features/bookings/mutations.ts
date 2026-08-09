@@ -181,7 +181,16 @@ export function useCancelBooking() {
         throw error;
       }
 
-      resetAttempt(attemptKey);
+      // Only a TERMINAL answer spends the attempt identity.
+      //
+      // `pollToTerminal` deliberately returns the last non-terminal status when the 60s budget
+      // runs out — "the server is still working", the commonest outcome on a slow provider, not a
+      // failure. Resetting there threw away the operation id and idempotency key of an operation
+      // still in flight, so the operator's next click minted a FRESH identity and the server, seeing
+      // a key it had never been given, accepted a second cancellation for the same booking. Keeping
+      // the identity makes that click a replay of the same request, which is what Inv-2 is for.
+      if (status.terminal === true) resetAttempt(attemptKey);
+
       return {
         status,
         settled: status.terminal === true,
