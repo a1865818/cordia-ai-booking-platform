@@ -152,10 +152,30 @@ export function CatalogDraftEditor({
   const pending: CatalogItemEdit[] = items.flatMap(item => {
     const d = drafts[item.item_id ?? ''];
     if (!d) return [];
-    const patch: CatalogItemEdit = { itemId: item.item_id ?? '' };
+    // An item the read could not identify cannot be edited at all, so it must not reach the wire.
+    // `item_id` is `string | null` on the generated contract, and a null collapsed to `''` here —
+    // which then failed `pending.find(e => e.itemId === item.item_id)` in the diff below, so Save
+    // offered "1 change" that the preview showed as nothing. Worse, `ApplyItemEditsAsync` throws
+    // `CatalogItemNotFoundException` the moment one edit affects zero rows, and the whole batch
+    // rolls back — one unidentifiable item would discard every other correction in the save.
+    if (!item.item_id) return [];
+
+    const patch: CatalogItemEdit = { itemId: item.item_id };
     let changed = false;
-    if (d.name !== undefined && d.name !== item.name) { patch.name = d.name; changed = true; }
-    if (d.description !== undefined && d.description !== item.description) {
+    // Normalised the same way as the description below, and for the same reason: the generated
+    // contract types BOTH as `string | null`, and a null renders as `''` in a controlled input.
+    // Clicking into an unnamed item and back out otherwise staged `name: ''` against a stored
+    // `null` — a write that changes nothing, presented as a change. Clearing a REAL name still
+    // stages `''`.
+    if (d.name !== undefined && (d.name ?? '') !== (item.name ?? '')) {
+      patch.name = d.name; changed = true;
+    }
+    // `null` and `''` both mean "no description", so moving between them is not an edit.
+    // A stored `null` rendered as `''` in the field, so clicking into an empty description and
+    // back out staged `description: ''` — a write that changes nothing, shown to the operator as
+    // a change they are asked to approve. A genuine CLEAR (real text emptied) still stages `''`,
+    // which is the point of sending only changed fields rather than everything.
+    if (d.description !== undefined && (d.description ?? '') !== (item.description ?? '')) {
       patch.description = d.description; changed = true;
     }
     if (d.priceMinor !== undefined && d.priceMinor !== item.price_minor) {
@@ -166,13 +186,22 @@ export function CatalogDraftEditor({
 
   const diff: DiffItem[] = items.map(item => {
     const p = pending.find(e => e.itemId === item.item_id);
+    const priceMoved = p?.priceMinor !== undefined;
     return {
       id: item.item_id ?? '',
-      name: p?.name ?? item.name ?? '',
+      // `||`, not `??`. A cleared name stages `''`, and `??` would take it — leaving the row that
+      // needs the MOST scrutiny with no heading at all, just a "Changed" badge. The previous name
+      // keeps the row identifiable, and `describeEdit` says it was cleared.
+      name: p?.name || item.name || (item.item_id ?? ''),
       kind: p ? 'changed' : 'unchanged',
-      meta: p?.name && p.name !== item.name ? `was “${item.name}”` : undefined,
-      before: money(item.price_minor, item.currency),
-      after: money(p?.priceMinor ?? item.price_minor, item.currency),
+      meta: describeEdit(p, item),
+      // ONLY when the price actually moved. Computed unconditionally, a description-only edit
+      // rendered the old price struck through beside an identical new one — and in this
+      // component's own vocabulary a strikethrough means "value being replaced", so the diff
+      // asserted a price change nobody made, on the screen whose entire job is to make an
+      // unintended change impossible to miss.
+      before: priceMoved ? money(item.price_minor, item.currency) : undefined,
+      after: priceMoved ? money(p.priceMinor, item.currency) : undefined,
     };
   });
 
@@ -240,15 +269,29 @@ export function CatalogDraftEditor({
             {items.map(item => {
               const id = item.item_id ?? '';
               const d = drafts[id] ?? {};
+              // `POST .../edit` keys on this id, so an item the read could not identify cannot be
+              // corrected at all. `pending` already refuses to stage one (it would fail the whole
+              // batch server-side); disabling the inputs stops the operator typing a correction
+              // that silently goes nowhere.
+              const editable = Boolean(item.item_id);
               return (
                 <li key={id} className="rounded-[10px] border border-cd-border bg-white p-[10px]">
-                  <div className="font-mono text-[10.5px] text-t3 mb-[6px] break-all">{id}</div>
+                  <div className="font-mono text-[10.5px] text-t3 mb-[6px] break-all">
+                    {id || 'This item has no id and cannot be edited.'}
+                  </div>
                   <div className="flex flex-wrap gap-[8px]">
                     <label className="flex-1 min-w-[160px]">
                       <div className="text-[11px] text-t3 mb-[3px]">Name</div>
                       <input
                         value={d.name ?? item.name ?? ''}
                         onChange={e => change(id, { name: e.target.value })}
+                        // Per-item accessible names on all three controls. The visible labels are
+                        // one word each, so a screen-reader user moving control-to-control through
+                        // a 30-item draft heard "Name, edit text" thirty times with nothing saying
+                        // which item they were on — the id above is a plain div, in no control's
+                        // accessible name.
+                        aria-label={`Name for ${item.name || id}`}
+                        disabled={!editable}
                         className="w-full h-[34px] border border-cd-border rounded-[8px] px-[9px] text-[12.5px] text-ink outline-none focus:border-[#2F6BEB]"
                       />
                     </label>
@@ -256,6 +299,8 @@ export function CatalogDraftEditor({
                       <div className="text-[11px] text-t3 mb-[3px]">Price (minor)</div>
                       <input
                         inputMode="numeric"
+                        aria-label={`Price in minor units for ${item.name || id}`}
+                        disabled={!editable}
                         value={priceText[id] ?? String(item.price_minor ?? '')}
                         onChange={e => {
                           const raw = e.target.value;
@@ -284,6 +329,36 @@ export function CatalogDraftEditor({
                       )}
                     </label>
                   </div>
+                  {/*
+                    Full width and a textarea, unlike the two fields above: a description is the
+                    sentence the extractor pulled off the menu ("45 minutes, includes soak-off"),
+                    not a token. Sharing the row with the price would truncate exactly the text
+                    the operator opened this editor to check.
+
+                    `CatalogItemEdit` has carried `description` and `pending` has staged it since
+                    this editor was written — there was simply no input, so that branch was
+                    unreachable. An extractor mistake in a description could be neither seen nor
+                    corrected here, and it is frozen into the catalog on approval along with the
+                    item it belongs to.
+                  */}
+                  <label className="block mt-[8px]">
+                    <div className="text-[11px] text-t3 mb-[3px]">Description</div>
+                    <textarea
+                      rows={2}
+                      value={d.description ?? item.description ?? ''}
+                      onChange={e => change(id, { description: e.target.value })}
+                      aria-label={`Description for ${item.name || id}`}
+                        disabled={!editable}
+                      // Which of the two empty cases this is — and it is not always the same one.
+                      // A blank box right after a deliberate clear was still reading "No
+                      // description was extracted", which is the opposite of true: one WAS
+                      // extracted and is about to be removed.
+                      placeholder={item.description
+                        ? 'Cleared — saving will remove this description.'
+                        : 'No description was extracted.'}
+                      className="w-full border border-cd-border rounded-[8px] px-[9px] py-[6px] text-[12.5px] text-ink outline-none focus:border-[#2F6BEB] resize-y leading-[1.45]"
+                    />
+                  </label>
                   {item.extraction_confidence !== undefined && item.extraction_confidence !== null && (
                     <div className="text-[11px] text-t3 mt-[5px]">
                       Extractor confidence {Math.round(item.extraction_confidence * 100)}% — check
@@ -351,6 +426,65 @@ export function CatalogDraftEditor({
       )}
     </div>
   );
+}
+
+/**
+ * Which fields moved, in words, for the diff row's secondary line.
+ *
+ * The row's before/after columns can only carry the PRICE, so a name-only or description-only
+ * edit rendered as a row badged "Changed" whose two visible numbers were identical — a change
+ * the operator is asked to approve with nothing on screen saying what it was. That was tolerable
+ * while name was the only other editable field and its old value was shown here; with
+ * descriptions editable it is not.
+ *
+ * Price is deliberately absent: the columns already show it, and repeating it in words would
+ * bury the two changes they cannot show.
+ */
+function describeEdit(
+  edit: CatalogItemEdit | undefined,
+  item: CatalogDraftItem
+): string | undefined {
+  if (!edit) return undefined;
+
+  const parts: string[] = [];
+
+  // `!== undefined`, not truthiness. The old test was `p?.name && …`, so clearing a name to the
+  // empty string — a real change, and a destructive one — produced no explanation at all.
+  //
+  // Every branch below tests the FLATTENED value rather than the raw one, because a whitespace-
+  // only field is empty to a reader and to the diff line: `" "` is truthy, so a truthiness test
+  // sent it down the "had a value" path and rendered `was “”` — an empty quotation.
+  if (edit.name !== undefined) {
+    const before = flatten(item.name ?? '');
+    if (!before) parts.push('name added');
+    else if (!flatten(edit.name)) parts.push(`name cleared (was “${before}”)`);
+    // The NEW name is the diff row's heading, so only the old one needs restating here.
+    else parts.push(`name was “${before}”`);
+  }
+
+  if (edit.description !== undefined) {
+    const before = flatten(item.description ?? '');
+    const after = flatten(edit.description);
+    // Both sides, because the description appears NOWHERE else in the row: `before`/`after` carry
+    // the price and the heading carries the name. Saying only `description was “45 minutes”`
+    // rendered a deletion and a correction as byte-identical text, so the approval surface could
+    // not tell a destructive removal from a fix — the one distinction this line exists to draw.
+    if (!before) parts.push(`description added: “${after}”`);
+    else if (!after) parts.push(`description cleared (was “${before}”)`);
+    else parts.push(`description: “${before}” → “${after}”`);
+  }
+
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+/**
+ * One line, bounded. A description can be several sentences and can carry newlines from the
+ * textarea; the diff's secondary line is a single row, so an unflattened value would break the
+ * layout of the very list that is meant to make a change obvious.
+ */
+function flatten(text: string, max = 40): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
 /** True when the operator has typed something that cannot be minor units. Empty is not invalid. */

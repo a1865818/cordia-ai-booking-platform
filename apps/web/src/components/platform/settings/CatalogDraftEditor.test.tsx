@@ -291,3 +291,183 @@ describe("closing mid-save", () => {
     expect(retry).toBeDisabled();
   });
 });
+
+describe("editing a description", () => {
+  it("shows the extracted description and sends a correction", async () => {
+    // `CatalogItemEdit` has carried `description` and `pending` has staged it since this editor
+    // was written — there was no input, so the branch was unreachable. An extractor mistake in a
+    // description could be neither seen nor corrected, and it is frozen in on approval.
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    const boxes = screen.getAllByLabelText(/^Description for /);
+    expect(boxes[0]).toHaveValue("45 minutes");
+
+    fireEvent.change(boxes[0], { target: { value: "45 minutes, includes soak-off" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+
+    await waitFor(() =>
+      expect(calls().some(([u]) => String(u).includes("/edit"))).toBe(true)
+    );
+    const editCall = calls().find(([u]) => String(u).includes("/edit"))!;
+    const body = JSON.parse(String(editCall[1].body));
+    expect(body.edits).toEqual([
+      { item_id: "cat_1:itm_gel", name: undefined, description: "45 minutes, includes soak-off", price_minor: undefined },
+    ]);
+  });
+
+  it("treats an emptied description as a deliberate clear", async () => {
+    // The counterpart to the rule below: emptying REAL text is a change the operator meant, and
+    // sending only changed fields is what makes it expressible at all.
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], { target: { value: "" } });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeEnabled();
+    expect(screen.getByText(/description cleared \(was “45 minutes”\)/)).toBeInTheDocument();
+  });
+
+  it("does NOT stage a change when a NULL description is touched and left empty", async () => {
+    // `description` is `string?` on the server DTO, so a stored `null` is a real case — and it
+    // renders as `''` in the textarea, identically to a stored `''`. Clicking in and back out
+    // staged `description: ''` against that `null`: a write that changes nothing, shown to the
+    // operator as a change they are asked to approve. `''` alone would not have proved this,
+    // since `'' !== ''` was already false.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], description: null }],
+      }))
+    );
+
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    const box = screen.getByLabelText(/^Description for /);
+    expect(box).toHaveValue("");
+
+    fireEvent.change(box, { target: { value: "x" } });
+    fireEvent.change(box, { target: { value: "" } });
+
+    expect(screen.getByRole("button", { name: /No changes to save/ })).toBeDisabled();
+    expect(screen.getByText("Nothing has been changed yet.")).toBeInTheDocument();
+  });
+
+  it("names a description-only edit in the diff, which the price columns cannot show", async () => {
+    // Before this the row was badged "Changed" with two identical prices and no explanation.
+    open();
+    await screen.findByText("cat_1:itm_pedi");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[1], {
+      target: { value: "Includes callus treatment" },
+    });
+
+    expect(await screen.findByText(/description added: “Includes callus treatment”/)).toBeInTheDocument();
+  });
+});
+
+describe("a null name behaves like a null description", () => {
+  it("does not stage a no-op write when an unnamed item's name is touched", async () => {
+    // The generated contract types `name` as `string | null` too, so this is the same defect one
+    // line above the description one — not a hypothetical. Fixing only description would have
+    // left the pair inconsistent for the next reader.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], name: null }],
+      }))
+    );
+
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    const name = screen.getByLabelText(/^Name for /);
+    expect(name).toHaveValue("");
+
+    fireEvent.change(name, { target: { value: "x" } });
+    fireEvent.change(name, { target: { value: "" } });
+
+    expect(screen.getByRole("button", { name: /No changes to save/ })).toBeDisabled();
+  });
+
+  it("still treats clearing a REAL name as a change, and says what it was", async () => {
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Name for /)[0], { target: { value: "" } });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeEnabled();
+    // The old meta used a truthiness test, so clearing a name to '' produced no explanation at
+    // all — the most destructive edit was the one the diff described least.
+    expect(screen.getByText(/name cleared \(was “Gel manicure”\)/)).toBeInTheDocument();
+  });
+});
+
+describe("what the diff claims", () => {
+  it("does not strike through a price nobody touched", async () => {
+    // before/after were computed unconditionally, so a description-only edit rendered the old
+    // price struck through beside an identical new one. In this component's vocabulary a
+    // strikethrough means "value being replaced", so the diff asserted a price change nobody
+    // made — on the screen whose whole job is making an unintended change impossible to miss.
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: "60 minutes" },
+    });
+
+    expect(await screen.findByText("1 changed")).toBeInTheDocument();
+    expect(screen.queryByText("AUD 45.00")).toBeNull();
+  });
+
+  it("tells a description CLEAR apart from a description EDIT", async () => {
+    // Both used to render `description was “45 minutes”`, so the approval surface could not
+    // distinguish a destructive removal from a correction.
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: "60 minutes" },
+    });
+
+    expect(await screen.findByText(/description: “45 minutes” → “60 minutes”/)).toBeInTheDocument();
+  });
+
+  it("keeps a heading on the row whose name was cleared", async () => {
+    // `p?.name ?? item.name` took the staged '' and left the row that needs the most scrutiny
+    // with no title at all — just a "Changed" badge.
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Name for /)[0], { target: { value: "" } });
+
+    await screen.findByText(/name cleared/);
+    // The previous name still identifies the row.
+    expect(screen.getAllByText("Gel manicure").length).toBeGreaterThan(0);
+  });
+});
+
+describe("an item the read could not identify", () => {
+  it("cannot be edited, and never joins a save that would roll the whole batch back", async () => {
+    // `item_id` is `string | null` on the generated contract. A null collapsed to '' here, which
+    // then missed `pending.find(...)` in the diff — Save offered "1 change" the preview showed as
+    // nothing — and server-side `ApplyItemEditsAsync` throws CatalogItemNotFoundException the
+    // moment one edit affects zero rows, discarding every other correction in the batch.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], item_id: null }],
+      }))
+    );
+
+    open();
+    expect(await screen.findByText(/no id and cannot be edited/)).toBeInTheDocument();
+
+    const name = screen.getByLabelText(/^Name for /);
+    expect(name).toBeDisabled();
+    fireEvent.change(name, { target: { value: "Corrected" } });
+
+    expect(screen.getByRole("button", { name: /No changes to save/ })).toBeDisabled();
+  });
+});
