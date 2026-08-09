@@ -192,7 +192,12 @@ export function CatalogDraftEditor({
       // `||`, not `??`. A cleared name stages `''`, and `??` would take it — leaving the row that
       // needs the MOST scrutiny with no heading at all, just a "Changed" badge. The previous name
       // keeps the row identifiable, and `describeEdit` says it was cleared.
-      name: p?.name || item.name || (item.item_id ?? ''),
+      //
+      // Flattened at each step, so the emptiness test here agrees with `describeEdit`'s. Raw
+      // truthiness disagreed: a staged `" "` is truthy, so the heading became a blank space while
+      // `describeEdit` — which flattens — called the same value empty. The row rendered with no
+      // visible title at all and a badge claiming a name had been added.
+      name: oneLine(p?.name ?? '') || oneLine(item.name ?? '') || (item.item_id ?? ''),
       kind: p ? 'changed' : 'unchanged',
       meta: describeEdit(p, item),
       // ONLY when the price actually moved. Computed unconditionally, a description-only edit
@@ -454,37 +459,155 @@ function describeEdit(
   // Every branch below tests the FLATTENED value rather than the raw one, because a whitespace-
   // only field is empty to a reader and to the diff line: `" "` is truthy, so a truthiness test
   // sent it down the "had a value" path and rendered `was “”` — an empty quotation.
+  // ORDER MATTERS, and getting it wrong is how an earlier version of this line lied.
+  //
+  // `before === after` has to be tested FIRST. Both values are flattened, so two that differ only
+  // in whitespace collapse to the same string — including to the same EMPTY string. Testing
+  // `!before` ahead of it sent those down the "added" branch, so deleting an extractor-produced
+  // "  " announced `description added: “”`: a destructive removal reported as an addition of
+  // nothing, which is the exact removal-vs-correction distinction these lines exist to draw.
   if (edit.name !== undefined) {
-    const before = flatten(item.name ?? '');
-    if (!before) parts.push('name added');
-    else if (!flatten(edit.name)) parts.push(`name cleared (was “${before}”)`);
-    // The NEW name is the diff row's heading, so only the old one needs restating here.
-    else parts.push(`name was “${before}”`);
+    const before = oneLine(item.name ?? '');
+    const after = oneLine(edit.name);
+    if (before === after) parts.push('name: spacing only');
+    else if (!before) parts.push('name added');
+    else if (!after) parts.push(`name cleared (was “${clip(before)}”)`);
+    // The NEW name is the diff row's heading, so only the old one needs restating here — but it
+    // is windowed against the new one, so a correction late in a long name is not clipped away.
+    else parts.push(`name was “${diffWindow(before, after).before}”`);
   }
 
   if (edit.description !== undefined) {
-    const before = flatten(item.description ?? '');
-    const after = flatten(edit.description);
-    // Both sides, because the description appears NOWHERE else in the row: `before`/`after` carry
-    // the price and the heading carries the name. Saying only `description was “45 minutes”`
+    const before = oneLine(item.description ?? '');
+    const after = oneLine(edit.description);
+    // Collapsing whitespace can make two genuinely different stored values render identically.
+    // The write is real — the server keeps the raw text — so it is named rather than shown as a
+    // pair of identical quotations.
+    if (before === after) parts.push('description: spacing only');
+    // Both sides below, because the description appears NOWHERE else in the row: `before`/`after`
+    // carry the price and the heading carries the name. Saying only `description was “45 minutes”`
     // rendered a deletion and a correction as byte-identical text, so the approval surface could
-    // not tell a destructive removal from a fix — the one distinction this line exists to draw.
-    if (!before) parts.push(`description added: “${after}”`);
-    else if (!after) parts.push(`description cleared (was “${before}”)`);
-    else parts.push(`description: “${before}” → “${after}”`);
+    // not tell a destructive removal from a fix.
+    else if (!before) parts.push(`description added: “${clip(after)}”`);
+    else if (!after) parts.push(`description cleared (was “${clip(before)}”)`);
+    else {
+      const w = diffWindow(before, after);
+      parts.push(`description: “${w.before}” → “${w.after}”`);
+    }
   }
 
   return parts.length ? parts.join(' · ') : undefined;
 }
 
 /**
- * One line, bounded. A description can be several sentences and can carry newlines from the
- * textarea; the diff's secondary line is a single row, so an unflattened value would break the
- * layout of the very list that is meant to make a change obvious.
+ * One line. A description can be several sentences and can carry newlines from the textarea; the
+ * diff's secondary line is a single row, so an unflattened value would break the layout of the
+ * very list that is meant to make a change obvious.
  */
-function flatten(text: string, max = 40): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
-  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Grapheme clusters — what a reader would call "one character".
+ *
+ * Slicing by UTF-16 unit leaves a lone surrogate that renders as a replacement glyph. Code points
+ * fix that much, but they are not the whole story and it would be easy to stop there believing
+ * otherwise: `Array.from` still splits a ZWJ emoji sequence into its parts (👨‍👩‍👧 is five code
+ * points), a flag into two regional indicators, and an accent off its letter (e + ́ ). A cut at any
+ * of those boundaries strands a bare combining mark or turns one glyph into three.
+ *
+ * `Intl.Segmenter` is the only thing that matches what is actually on screen. The code-point
+ * fallback is for a runtime without it, where the lone-surrogate case — the one that renders as
+ * visibly broken text rather than merely wrong text — is still handled.
+ */
+/**
+ * The slice of `Intl.Segmenter` used here, declared locally.
+ *
+ * `apps/web` compiles against `lib: ES2020`, which predates the built-in typing. Raising the
+ * whole app's lib to reach one runtime API would change the emit target for every file — a real
+ * blast radius for a diff-preview helper — so the shape it needs is stated here instead, and the
+ * feature test below is what decides whether it is actually used.
+ */
+interface GraphemeSegmenter {
+  segment(input: string): Iterable<{ segment: string }>;
+}
+
+type GraphemeSegmenterCtor =
+  new (locale?: string, options?: { granularity: 'grapheme' }) => GraphemeSegmenter;
+
+const graphemeSegmenter: GraphemeSegmenter | null = (() => {
+  const ctor = (Intl as unknown as { Segmenter?: GraphemeSegmenterCtor }).Segmenter;
+  // Built ONCE: constructing a Segmenter is expensive and this runs per keystroke, per item.
+  return typeof ctor === 'function' ? new ctor(undefined, { granularity: 'grapheme' }) : null;
+})();
+
+function graphemes(text: string): string[] {
+  if (!graphemeSegmenter) return Array.from(text);
+  return Array.from(graphemeSegmenter.segment(text), s => s.segment);
+}
+
+/** How much of a value the diff line may show, and how much unchanged context to keep around the change. */
+const WINDOW_MAX = 48;
+const WINDOW_CONTEXT = 8;
+
+/**
+ * Two values windowed onto the span where they actually DIFFER.
+ *
+ * Truncating each from the start hid the change outright: two descriptions sharing a long opening
+ * clause rendered as `“Gel manicure, includes a full soak-off and…” → “Gel manicure, includes a
+ * full soak-off and…”` — identical text on both sides of an arrow, on the screen whose only job
+ * is to show the operator what they are about to approve. The full replacement was saved
+ * regardless, so the preview was not merely unhelpful, it was wrong.
+ *
+ * The window is computed from the SHARED prefix and suffix, so both sides are cut at the same
+ * logical place and the surviving fragments line up for comparison. A little unchanged context is
+ * kept on each side so the change reads in situ rather than as a floating fragment.
+ */
+function diffWindow(beforeText: string, afterText: string): { before: string; after: string } {
+  const a = graphemes(beforeText);
+  const b = graphemes(afterText);
+
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+
+  // Bounded by what the prefix already consumed, so the two spans can never overlap on a value
+  // like "aaa" → "aaaaa", where the same characters would otherwise be claimed twice.
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  return { before: windowOf(a, prefix, suffix), after: windowOf(b, prefix, suffix) };
+}
+
+/** The visible slice of one value, with an ellipsis wherever text was elided. */
+function windowOf(value: readonly string[], prefix: number, suffix: number): string {
+  if (value.length <= WINDOW_MAX) return value.join('');
+
+  // `end > start` is guaranteed, not defended: the suffix loop is bounded by what the prefix
+  // already consumed, so `prefix + suffix <= value.length` for both values, which makes
+  // `end >= prefix + WINDOW_CONTEXT > prefix - WINDOW_CONTEXT = start`. A dead `end <= start`
+  // branch used to sit here reading as load-bearing; if that suffix bound is ever relaxed to
+  // allow the two spans to overlap, THIS is the invariant that breaks and the slice inverts.
+  const start = Math.max(0, prefix - WINDOW_CONTEXT);
+  let end = Math.min(value.length, value.length - suffix + WINDOW_CONTEXT);
+
+  // The differing span can itself be longer than the budget; keep its head rather than nothing.
+  if (end - start > WINDOW_MAX) end = Math.min(value.length, start + WINDOW_MAX);
+
+  return (start > 0 ? '…' : '')
+    + value.slice(start, end).join('')
+    + (end < value.length ? '…' : '');
+}
+
+/** A single value with no counterpart to align to — head-truncated. */
+function clip(text: string): string {
+  return windowOf(graphemes(text), 0, 0);
 }
 
 /** True when the operator has typed something that cannot be minor units. Empty is not invalid. */

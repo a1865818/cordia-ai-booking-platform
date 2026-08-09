@@ -471,3 +471,170 @@ describe("an item the read could not identify", () => {
     expect(screen.getByRole("button", { name: /No changes to save/ })).toBeDisabled();
   });
 });
+
+describe("the diff window on long text", () => {
+  const LONG = "Gel manicure with a full soak-off, cuticle work and a base coat";
+
+  function withDescription(description: string) {
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], description }],
+      }))
+    );
+  }
+
+  it("shows a change that falls beyond the truncation point", async () => {
+    // Head-truncating each side at a fixed width rendered `“prefix…” → “prefix…”` — identical
+    // text on both sides of an arrow — while the full replacement was saved anyway. The preview
+    // was not merely unhelpful, it was wrong.
+    withDescription(`${LONG} in pink`);
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: `${LONG} in red` },
+    });
+
+    const meta = await screen.findByText(/^description: /);
+    const [before, after] = meta.textContent!.split("→");
+    expect(before).not.toEqual(after);
+    expect(before).toContain("pink");
+    expect(after).toContain("red");
+  });
+
+  it("keeps a change at the START visible too", async () => {
+    withDescription(`Gel ${LONG}`);
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: `Acrylic ${LONG}` },
+    });
+
+    const meta = await screen.findByText(/^description: /);
+    expect(meta.textContent).toContain("Gel");
+    expect(meta.textContent).toContain("Acrylic");
+  });
+
+  it("names a whitespace-only change instead of quoting two identical values", async () => {
+    // The stored values genuinely differ and the server keeps the raw text, so the write is real
+    // — but collapsing whitespace makes them render the same.
+    withDescription("45  minutes");
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: "45 minutes" },
+    });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeEnabled();
+    expect(screen.getByText(/description: spacing only/)).toBeInTheDocument();
+  });
+
+  it("does not split an emoji when it truncates", async () => {
+    // `slice` on UTF-16 units can cut a surrogate pair in half, leaving a lone half that renders
+    // as a replacement glyph.
+    //
+    // These lengths are chosen, not arbitrary: they put the window boundary INSIDE the pizza's
+    // surrogate pair, where a UTF-16 implementation emits a bare \udf55. The first version of
+    // this test used 47 characters of padding, where the boundary misses the pair entirely — it
+    // passed against the very implementation it claimed to rule out, and against every padding
+    // from 0 to 79.
+    const padded = "x".repeat(32);
+    const shared = "aaaaaa";
+    withDescription(`${padded}🍕${shared} original`);
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: `${padded}🍕${shared} replaced` },
+    });
+
+    const meta = await screen.findByText(/^description: /);
+    // Spreading by code points keeps a valid pair as one 2-unit string; a HALF pair survives as a
+    // 1-unit string whose code unit is in the surrogate range. That is the only failure shape.
+    const lone = [...meta.textContent!].some(
+      c => c.length === 1 && c.charCodeAt(0) >= 0xd800 && c.charCodeAt(0) <= 0xdfff
+    );
+    expect(lone).toBe(false);
+    expect(meta.textContent).toContain("🍕");
+  });
+});
+
+describe("grapheme-safe truncation", () => {
+  it("does not split a ZWJ emoji sequence into its parts", async () => {
+    // `Array.from` alone is NOT enough. 👨‍👩‍👧 is five code points, so a code-point cut landing
+    // inside it drops the father and leaves the joiner dangling — `…‍👩‍👧`. These exact lengths
+    // put the window boundary inside the family; shift them and the cut misses it and the test
+    // stops discriminating, which is how the first version of it passed against both.
+    const padded = "x".repeat(40);
+    const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const shared = `${family} aa `;
+
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], description: `${padded}${shared}original` }],
+      }))
+    );
+
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], {
+      target: { value: `${padded}${shared}replaced` },
+    });
+
+    const text = (await screen.findByText(/^description: /)).textContent!;
+
+    // A zero-width joiner may only appear as part of the whole family — never orphaned.
+    expect(text).toContain(family);
+    expect(text.split("‍").length - 1).toBe(2 * 2); // two intact families, two joiners each
+  });
+});
+
+describe("whitespace-only values at the empty boundary", () => {
+  it("calls deleting an extractor's whitespace description a spacing change, not an addition", async () => {
+    // Testing `!before` ahead of `before === after` sent this down the "added" branch, so a
+    // DESTRUCTIVE removal announced `description added: “”` — an addition of nothing. That is
+    // the removal-vs-correction distinction these lines exist to draw, inverted.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], description: "  " }],
+      }))
+    );
+
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getAllByLabelText(/^Description for /)[0], { target: { value: "" } });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeEnabled();
+    expect(screen.getByText(/description: spacing only/)).toBeInTheDocument();
+    expect(screen.queryByText(/description added/)).toBeNull();
+  });
+
+  it("keeps a row heading when the staged name is only whitespace", async () => {
+    // The heading used raw truthiness, so a staged `" "` was accepted as a name and the row that
+    // needs the most scrutiny rendered with a blank title — while `describeEdit`, which flattens,
+    // called the same value empty. The two emptiness tests have to agree.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        ...DRAFT,
+        items: [{ ...DRAFT.items[0], name: null }],
+      }))
+    );
+
+    open();
+    await screen.findByText("cat_1:itm_gel");
+
+    fireEvent.change(screen.getByLabelText(/^Name for /), { target: { value: " " } });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeEnabled();
+    expect(screen.getByText(/name: spacing only/)).toBeInTheDocument();
+    // Falls back to the item id rather than rendering an invisible heading.
+    expect(screen.getAllByText("cat_1:itm_gel").length).toBeGreaterThan(1);
+  });
+});
