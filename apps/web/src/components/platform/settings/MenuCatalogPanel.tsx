@@ -172,7 +172,34 @@ export function MenuCatalogPanel() {
   const review = useSendCatalogForReview();
   const approve = useApproveCatalog();
   const publish = usePublishCatalog();
-  const anyBusy = upload.isPending || review.isPending || approve.isPending || publish.isPending;
+
+  // A save inside the open draft editor is the FIFTH in-flight write on this panel, and it was
+  // the only one nothing here knew about.
+  //
+  // `in_review` carries both `canApprove` and `canEdit`, so Save and Approve sit on the same row
+  // at the same time — separate mutations with separate pending flags. An owner could stage a
+  // price correction, click Save, and click Approve before it returned. If Approve won, the
+  // catalog left `in_review`, the editor unmounted, the in-flight edit was refused by a catalog
+  // that is no longer editable, and its error went with the unmounted component: the operator
+  // watched the catalog turn Approved and had no reason to think their corrections had not been
+  // applied. Items cannot change after approval, so that is not recoverable by retrying.
+  const [draftSaving, setDraftSaving] = useState(false);
+
+  // Split deliberately. `lifecycleBusy` is what the EDITOR is told to lock on — feeding it
+  // `anyBusy` would make a save lock itself, which `edit.isPending` already handles and which
+  // would leave the button permanently disabled if the two flags ever disagreed.
+  const lifecycleBusy =
+    upload.isPending || review.isPending || approve.isPending || publish.isPending;
+  const anyBusy = lifecycleBusy || draftSaving;
+
+  // A retry stored on a failure is invoked from a LATER render than the one that created it, so
+  // it must read the CURRENT busy state rather than the one it closed over. Without this the
+  // failure panel's "Try again" was the one live door left in the room: `transition` guards its
+  // entry with `anyBusy`, but the `run` it stores calls `mutation.mutate` directly, so an Approve
+  // that had failed earlier could still be re-fired from that button while a draft save was in
+  // flight — reopening the exact race the gating above exists to close.
+  const anyBusyRef = useRef(anyBusy);
+  anyBusyRef.current = anyBusy;
 
   /** Records only what a server response actually said (the list's honesty contract). */
   function confirmFromBody(body: unknown, label?: string | null) {
@@ -216,11 +243,14 @@ export function MenuCatalogPanel() {
     if (anyBusy) return;
     setFailure(null);
 
-    const run = () =>
+    const run = () => {
+      // Re-checked on every invocation, not just the first: `run` is also the stored retry.
+      if (anyBusyRef.current) return;
       mutation.mutate({ catalogId }, {
         onSuccess: (body) => confirmFromBody(body),
         onError: (error) => setFailure({ action, error, retry: run }),
       });
+    };
     run();
   }
 
@@ -286,6 +316,12 @@ export function MenuCatalogPanel() {
             error={failure.error}
             title={menuActionFailureMessage(failure.error, failure.action)}
             onRetry={failure.retry}
+            // Disabled, not silently inert. Both `doUpload` and `transition`'s `run` return early
+            // while something else is in flight, so before this the button looked live, did
+            // nothing when clicked, showed no spinner and gave no message — and the operator's
+            // only reasonable reading was that the retry had run and failed again.
+            retryDisabled={anyBusy}
+            retryTitle="Another menu action is still running — this will be available when it finishes."
           />
         </div>
       )}
@@ -413,6 +449,11 @@ export function MenuCatalogPanel() {
                     <CatalogDraftEditor
                       catalogId={catalog.catalogId}
                       onClose={() => setOpenDraft(null)}
+                      // Both halves of the row-level race: the panel learns about an in-flight
+                      // save so it can disable Approve, and the editor learns about an
+                      // in-flight transition so it can disable Save.
+                      onSavingChange={setDraftSaving}
+                      locked={lifecycleBusy}
                       // The server's own status is more trustworthy than what our writes
                       // implied. `recordCatalogStatus` RETURNS the updated list — discarding it
                       // would leave sessionStorage and the rendered row disagreeing, so the row

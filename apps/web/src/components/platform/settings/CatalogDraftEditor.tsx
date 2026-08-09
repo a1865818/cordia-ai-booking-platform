@@ -51,6 +51,22 @@ interface CatalogDraftEditorProps {
   onClose: () => void;
   /** Lets the panel record the status the server actually reported. */
   onStatusObserved?: (status: string) => void;
+  /**
+   * Reports whether a save is in flight, so the panel can gate the row's lifecycle actions.
+   *
+   * Without it the two halves of the same row could run at once: Save here and Approve there are
+   * separate mutations with separate pending flags, so an owner could stage a price correction,
+   * click Save, and click Approve before it returned.
+   */
+  onSavingChange?: (saving: boolean) => void;
+  /**
+   * True while the panel has a lifecycle transition in flight, which must block a save.
+   *
+   * The mirror of `onSavingChange`, and needed for the same reason: `edit.isPending` alone
+   * leaves Save fully clickable while an Approve is running, so the same race just runs the
+   * other way round and the edit is refused by a catalog that has already left `in_review`.
+   */
+  locked?: boolean;
 }
 
 /**
@@ -67,7 +83,9 @@ interface CatalogDraftEditorProps {
  * goes straight to the server is indistinguishable from a deliberate correction. Only the
  * fields that actually changed are submitted.
  */
-export function CatalogDraftEditor({ catalogId, onClose, onStatusObserved }: CatalogDraftEditorProps) {
+export function CatalogDraftEditor({
+  catalogId, onClose, onStatusObserved, onSavingChange, locked,
+}: CatalogDraftEditorProps) {
   const [drafts, setDrafts] = useState<Record<string, Partial<CatalogItemEdit>>>({});
   // The price field's raw text, kept separately from the staged edit.
   //
@@ -106,6 +124,22 @@ export function CatalogDraftEditor({ catalogId, onClose, onStatusObserved }: Cat
       onStatusObservedRef.current?.(status);
     }
   }, [status]);
+
+  // Same ref-not-dependency reasoning as `onStatusObserved` above: the panel passes an inline
+  // setter, so depending on the callback identity would re-fire on every parent render.
+  const onSavingChangeRef = useRef(onSavingChange);
+  onSavingChangeRef.current = onSavingChange;
+  const saving = edit.isPending;
+  useEffect(() => {
+    onSavingChangeRef.current?.(saving);
+    // Reports FALSE on unmount, and that is load-bearing rather than tidiness. This editor is
+    // unmounted the moment its row loses `canEdit` — which is exactly what an Approve does — so
+    // a save in flight at that instant would leave the panel holding `saving: true` with no
+    // component left to ever clear it, disabling every action on every row for the rest of the
+    // session. The cleanup also runs between renders, where the following effect immediately
+    // re-reports the current value, so the steady state is unaffected.
+    return () => onSavingChangeRef.current?.(false);
+  }, [saving]);
 
   const items: readonly CatalogDraftItem[] = query.data?.items ?? [];
 
@@ -146,7 +180,24 @@ export function CatalogDraftEditor({ catalogId, onClose, onStatusObserved }: Cat
     <div className="mt-[12px] rounded-[12px] p-[13px]" style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
       <div className="flex items-center justify-between gap-[10px] mb-[11px]">
         <div className="text-[13px] font-semibold text-ink">Review draft items</div>
-        <GhostButton onClick={onClose}>Close</GhostButton>
+        {/*
+          Gated on the save, and this is the counterexample to the comment on the effect above.
+          The panel disables its own "Hide draft" toggle while anything is in flight, but Close
+          lived here and did not: clicking it during a save unmounted this editor, the cleanup
+          reported `saving: false`, and Approve went live again while the `POST .../edit` was
+          still on the wire — React Query does not cancel a mutation on unmount, and this call
+          carries no abort signal. The row's transitions would then race the very edit the panel
+          thought had finished.
+        */}
+        <GhostButton
+          onClick={onClose}
+          disabled={edit.isPending}
+          title={edit.isPending
+            ? 'Waiting for the save to finish — closing now would let the catalog be approved before the edit lands.'
+            : undefined}
+        >
+          Close
+        </GhostButton>
       </div>
 
       {status && (
@@ -257,7 +308,13 @@ export function CatalogDraftEditor({ catalogId, onClose, onStatusObserved }: Cat
                 inline
                 error={edit.error}
                 title={menuActionFailureMessage(edit.error, "save these edits")}
+                // DISABLED while a transition runs, not withdrawn. Removing `onRetry` deleted the
+                // button from the DOM, so an operator tabbed onto it lost focus to `<body>` the
+                // moment an unrelated Publish started, and the control reappeared elsewhere in
+                // the tab order when that settled. Same reasoning as the Save button below.
                 onRetry={() => edit.mutate({ catalogId, edits: pending })}
+                retryDisabled={locked}
+                retryTitle="A catalog action is still running — retry once it finishes."
               />
             </div>
           )}
@@ -270,8 +327,18 @@ export function CatalogDraftEditor({ catalogId, onClose, onStatusObserved }: Cat
 
           <div className="mt-[12px]">
             <PrimaryButton
-              disabled={pending.length === 0 || edit.isPending}
+              // `locked` closes the other half of the race the panel's `anyBusy` closes for the
+              // row buttons: an Approve already in flight will take the catalog out of
+              // `in_review`, so a save started now is refused by the time it lands.
+              disabled={pending.length === 0 || edit.isPending || locked}
               busy={edit.isPending}
+              // Says WHY. Under `locked` the button greys out with no spinner and its label
+              // unchanged, which is indistinguishable from a broken control — and the staged
+              // edits are still sitting in the form, so an operator who reloads to "fix" it
+              // loses them.
+              title={locked && pending.length > 0
+                ? 'A catalog action is still running — this will be available when it finishes.'
+                : undefined}
               onClick={() => edit.mutate(
                 { catalogId, edits: pending },
                 { onSuccess: () => { setDrafts({}); setPriceText({}); } }

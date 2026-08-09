@@ -326,3 +326,49 @@ describe("two failures at once", () => {
     await waitFor(() => expect(approveCatalog).toHaveBeenCalledTimes(2));
   });
 });
+
+describe("a save and a transition on the same row", () => {
+  it("disables Approve while the open draft editor has a save in flight", async () => {
+    // `in_review` carries both canApprove and canEdit. Save and Approve are separate mutations
+    // with separate pending flags, and the panel could not see the editor's — so an owner could
+    // stage a price correction, click Save, and click Approve before it returned. If Approve
+    // won, the catalog left in_review, the editor unmounted, the edit was refused and its error
+    // went with the unmounted component: the operator saw Approved and had no reason to doubt
+    // the corrections landed. Items cannot change after approval, so that is not recoverable.
+    recordCatalogStatus("cat_r", "in_review", null);
+    vi.mocked(listCatalogs).mockResolvedValue({ catalogs: [] });
+
+    // The draft read resolves; the edit hangs, holding the save in flight.
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) =>
+      String(url).includes("/edit")
+        ? new Promise<Response>(() => {})
+        : Promise.resolve(new Response(JSON.stringify({
+            catalog_id: "cat_r",
+            status: "in_review",
+            version_label: null,
+            items: [{
+              item_id: "cat_r:itm_1", name: "Gel manicure", description: "", price_minor: 4500,
+              currency: "AUD", category: null, allergen_info: null, extraction_confidence: 0.9,
+            }],
+          }), { status: 200, headers: { "Content-Type": "application/json" } }))
+    ));
+
+    try {
+      render(<MenuCatalogPanel />, { wrapper });
+
+      fireEvent.click(await screen.findByRole("button", { name: "Review items" }));
+      await screen.findByText("cat_r:itm_1");
+
+      const priceInput = screen.getAllByDisplayValue(/^\d+$/)[0];
+      fireEvent.change(priceInput, { target: { value: "5000" } });
+      fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled()
+      );
+      expect(approveCatalog).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

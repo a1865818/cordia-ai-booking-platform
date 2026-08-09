@@ -63,8 +63,11 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-function open() {
-  render(<CatalogDraftEditor catalogId="cat_1" onClose={() => {}} />, { wrapper: Providers });
+function open(props: Partial<Parameters<typeof CatalogDraftEditor>[0]> = {}) {
+  render(
+    <CatalogDraftEditor catalogId="cat_1" onClose={() => {}} {...props} />,
+    { wrapper: Providers }
+  );
 }
 
 describe("CatalogDraftEditor", () => {
@@ -170,5 +173,121 @@ describe("CatalogDraftEditor", () => {
     open();
     await screen.findByText("cat_1:itm_gel");
     expect(screen.getByText(/Extractor confidence 62%/)).toBeInTheDocument();
+  });
+});
+
+describe("racing a lifecycle transition on the same row", () => {
+  it("reports a save in flight so the panel can gate Approve", async () => {
+    // `in_review` carries both canApprove and canEdit, so Save and Approve are live on the same
+    // row at once. They are separate mutations with separate pending flags, and the panel could
+    // not see this one — so it left Approve enabled while a save was in flight.
+    let release: (() => void) | undefined;
+    vi.mocked(fetch).mockImplementation((url) =>
+      String(url).includes("/edit")
+        ? new Promise<Response>(resolve => { release = () => resolve(jsonResponse({ ok: true })); })
+        : Promise.resolve(jsonResponse(DRAFT))
+    );
+
+    const saving: boolean[] = [];
+    open({ onSavingChange: v => saving.push(v) });
+    await screen.findByText("cat_1:itm_gel");
+
+    const priceInputs = screen.getAllByDisplayValue(/^\d+$/);
+    fireEvent.change(priceInputs[0], { target: { value: "5000" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+
+    await waitFor(() => expect(saving.at(-1)).toBe(true));
+
+    release!();
+    await waitFor(() => expect(saving.at(-1)).toBe(false));
+  });
+
+  it("reports NOT saving when it unmounts mid-save, so the panel does not latch", async () => {
+    // An Approve unmounts this editor the instant the row loses canEdit. A parent left holding
+    // `true` would disable every action on every row for the rest of the session.
+    vi.mocked(fetch).mockImplementation((url) =>
+      String(url).includes("/edit")
+        ? new Promise<Response>(() => {}) // never settles
+        : Promise.resolve(jsonResponse(DRAFT))
+    );
+
+    const saving: boolean[] = [];
+    const { unmount } = render(
+      <CatalogDraftEditor catalogId="cat_1" onClose={() => {}} onSavingChange={v => saving.push(v)} />,
+      { wrapper: Providers }
+    );
+    await screen.findByText("cat_1:itm_gel");
+
+    const priceInputs = screen.getAllByDisplayValue(/^\d+$/);
+    fireEvent.change(priceInputs[0], { target: { value: "5000" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+    await waitFor(() => expect(saving.at(-1)).toBe(true));
+
+    unmount();
+    expect(saving.at(-1)).toBe(false);
+  });
+
+  it("refuses to start a save while a lifecycle transition is running", async () => {
+    // The mirror of the above. `edit.isPending` alone left Save fully clickable during an
+    // Approve, so the same race just ran the other way and the edit was refused by a catalog
+    // that had already left in_review.
+    open({ locked: true });
+    await screen.findByText("cat_1:itm_gel");
+
+    const priceInputs = screen.getAllByDisplayValue(/^\d+$/);
+    fireEvent.change(priceInputs[0], { target: { value: "5000" } });
+
+    expect(await screen.findByRole("button", { name: /Save 1 change$/ })).toBeDisabled();
+    expect(calls().some(([u]) => String(u).includes("/edit"))).toBe(false);
+  });
+});
+
+describe("closing mid-save", () => {
+  it("cannot be closed while a save is in flight", async () => {
+    // The panel gates its own "Hide draft" toggle, but Close lived here and did not. Clicking it
+    // during a save unmounted this editor, the cleanup reported `saving: false`, and Approve went
+    // live while the POST was still on the wire — React Query does not cancel on unmount.
+    vi.mocked(fetch).mockImplementation((url) =>
+      String(url).includes("/edit")
+        ? new Promise<Response>(() => {})
+        : Promise.resolve(jsonResponse(DRAFT))
+    );
+
+    const onClose = vi.fn();
+    open({ onClose });
+    await screen.findByText("cat_1:itm_gel");
+
+    const priceInputs = screen.getAllByDisplayValue(/^\d+$/);
+    fireEvent.change(priceInputs[0], { target: { value: "5000" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the failed-save retry on screen while a transition runs, disabled", async () => {
+    vi.mocked(fetch).mockImplementation((url) =>
+      String(url).includes("/edit")
+        ? Promise.resolve(jsonResponse({ title: "nope" }, 500))
+        : Promise.resolve(jsonResponse(DRAFT))
+    );
+
+    const { rerender } = render(
+      <CatalogDraftEditor catalogId="cat_1" onClose={() => {}} />, { wrapper: Providers }
+    );
+    await screen.findByText("cat_1:itm_gel");
+
+    const priceInputs = screen.getAllByDisplayValue(/^\d+$/);
+    fireEvent.change(priceInputs[0], { target: { value: "5000" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save 1 change$/ }));
+    await screen.findByRole("button", { name: /Try again/ });
+
+    // A transition starts on the panel. The retry must stay put, not disappear from the tab order.
+    rerender(<CatalogDraftEditor catalogId="cat_1" onClose={() => {}} locked />);
+
+    const retry = screen.getByRole("button", { name: /Try again/ });
+    expect(retry).toBeInTheDocument();
+    expect(retry).toBeDisabled();
   });
 });
