@@ -1,4 +1,4 @@
-import { isApiError } from "../../api/problem";
+import { isApiError, isApiVerificationRequiredError } from "../../api/problem";
 import { ApiValidationError } from "../../api/problem";
 import { Icon } from "./Icon";
 import { GhostButton } from "./Button";
@@ -16,6 +16,16 @@ interface ErrorStateProps {
    * different actions.
    */
   retryLabel?: string;
+  /**
+   * Disables the retry without removing it.
+   *
+   * Withdrawing `onRetry` to block a retry deletes the button from the DOM, which drops keyboard
+   * focus to `<body>` mid-tab and makes the control reappear elsewhere in the tab order when the
+   * block lifts. A disabled button keeps its place and, with `retryTitle`, keeps its explanation.
+   */
+  retryDisabled?: boolean;
+  /** Why the retry is unavailable — shown on hover while `retryDisabled`. */
+  retryTitle?: string;
   /** Compact variant for inline panels rather than a full screen. */
   inline?: boolean;
 }
@@ -26,12 +36,14 @@ interface ErrorStateProps {
  * available, so it is shown verbatim rather than replaced with a generic string; a
  * `ValidationProblemDetails` additionally lists its per-field messages.
  */
-export function ErrorState({ error, title, onRetry, retryLabel, inline }: ErrorStateProps) {
+export function ErrorState({
+  error, title, onRetry, retryLabel, retryDisabled, retryTitle, inline,
+}: ErrorStateProps) {
   const status = isApiError(error) ? error.status : undefined;
   const detail =
     error instanceof Error && error.message ? error.message : "Something went wrong.";
 
-  const heading = title ?? headingFor(status);
+  const heading = title ?? headingFor(status, error);
   const fields = error instanceof ApiValidationError ? error.fieldMessages() : [];
 
   return (
@@ -87,7 +99,12 @@ export function ErrorState({ error, title, onRetry, retryLabel, inline }: ErrorS
 
         {onRetry && (
           <div className={inline ? "mt-[7px]" : "mt-[16px]"}>
-            <GhostButton onClick={onRetry} icon="clock">
+            <GhostButton
+              onClick={onRetry}
+              disabled={retryDisabled}
+              title={retryDisabled ? retryTitle : undefined}
+              icon="clock"
+            >
               {retryLabel ?? "Try again"}
             </GhostButton>
           </div>
@@ -97,7 +114,7 @@ export function ErrorState({ error, title, onRetry, retryLabel, inline }: ErrorS
   );
 }
 
-function headingFor(status: number | undefined): string {
+function headingFor(status: number | undefined, error: unknown): string {
   switch (status) {
     case undefined:
       return "Couldn't reach the server";
@@ -106,7 +123,17 @@ function headingFor(status: number | undefined): string {
     case 401:
       return "Your session needs to be re-established";
     case 403:
-      return "Verification needed";
+      // Not every 403 is a verification problem, and `toApiError` already draws the line: a 403
+      // carrying `status: requires_verification` or `code: verification_required` becomes an
+      // ApiVerificationRequiredError, while a role or authorization refusal stays a plain
+      // ApiError. Only the first is something the operator can resolve by verifying a guest.
+      //
+      // Keying the heading on the status alone told the second group to pursue verification for
+      // a permission problem verification cannot fix — and that is the console's most common
+      // 403 by far, since every menu and waitlist action 403s for a session without the role.
+      return isApiVerificationRequiredError(error)
+        ? "Verification needed"
+        : "This session isn't allowed to do that";
     case 404:
       return "Not found";
     case 409:
