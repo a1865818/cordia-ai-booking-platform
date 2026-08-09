@@ -7,6 +7,7 @@ import type { BookableService } from "../../../features/bookings/services";
 import { buildWeek } from "../../../features/bookings/week";
 
 vi.mock("../../../features/bookings/submit", () => ({ submitBooking: vi.fn() }));
+vi.mock("../../../features/bookings/guestContact", () => ({ createGuestContact: vi.fn() }));
 
 const WEEK = buildWeek(new Date("2026-08-03T00:00:00").toISOString());
 
@@ -332,5 +333,89 @@ describe("CreateBookingDrawer", () => {
       expect(screen.getByText(/appears full/)).toBeInTheDocument();
       expect(screen.getAllByRole("option")).toHaveLength(optionCount);
     });
+  });
+
+  // ── The submit gate must not pass a party size the API will refuse ─────────────────────────
+
+  it.each(["0", "-1", "2.5", ""])(
+    "refuses to submit party size %s — the input's min is never enforced by the browser",
+    (value) => {
+      // The confirm button is not a form submit, so `<input min={1}>` runs no constraint
+      // validation at all, and the gate only asked whether the string was non-empty. `0`, `-1`
+      // and `2.5` all reached the API through `Number(partySize)` — a durable booking for nobody.
+      open();
+      fireEvent.change(screen.getByPlaceholderText("Search or add a customer"), {
+        target: { value: "Priya" },
+      });
+      fireEvent.change(screen.getByLabelText(/party size/i), { target: { value } });
+
+      expect(screen.getByRole("button", { name: /confirm booking/i })).toBeDisabled();
+    }
+  );
+
+  it.each(["1", "6", "51", "200"])("accepts party size %s — the API states no ceiling", (value) => {
+    // `BookingRequest.party_size` is `{"type":"integer","exclusiveMinimum":0}` — a floor and
+    // nothing else. A client-side maximum would refuse a booking the platform accepts and assert a
+    // limit no spec has set, leaving a venue taking a function for sixty unable to submit at all.
+    open();
+    fireEvent.change(screen.getByPlaceholderText("Search or add a customer"), {
+      target: { value: "Priya" },
+    });
+    fireEvent.change(screen.getByLabelText(/party size/i), { target: { value } });
+
+    expect(screen.getByRole("button", { name: /confirm booking/i })).toBeEnabled();
+  });
+
+  // ── Idempotency: a retry must present the same payload under the same key ──────────────────
+
+  it("reuses the minted guest-contact ref on retry, so the payload hash cannot drift", async () => {
+    // `POST /api/guest-contacts` returns a NEW opaque ref on every call, and that ref is inside
+    // the hashed canonical payload. Minting a fresh one per attempt changed `payload_hash` while
+    // `attemptKey` — and therefore the idempotency key — stayed the same, so the server answered
+    // 409 IdempotencyConflict and the booking could only be abandoned, never retried (Inv-2/3).
+    const { submitBooking } = await import("../../../features/bookings/submit");
+    const { createGuestContact } = await import("../../../features/bookings/guestContact");
+    const submit = vi.mocked(submitBooking);
+    const mint = vi.mocked(createGuestContact);
+    submit.mockReset();
+    mint.mockReset();
+    submit.mockRejectedValue(new Error("network dropped"));
+    let n = 0;
+    mint.mockImplementation(async () => ({ contact_ref: `gc_${++n}` }) as never);
+
+    open();
+    fireEvent.change(screen.getByPlaceholderText("Search or add a customer"), {
+      target: { value: "Priya" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("+61400111222"), {
+      target: { value: "+61400111222" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+
+    // Minted once for the attempt, not once per submit.
+    expect(mint).toHaveBeenCalledTimes(1);
+
+    const first = submit.mock.calls[0][0] as Record<string, any>;
+    const second = submit.mock.calls[1][0] as Record<string, any>;
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+    expect(second.revision.payload_hash).toBe(first.revision.payload_hash);
+  });
+
+  // ── The unmatched-prefill warning must stop claiming nothing was chosen ────────────────────
+
+  it("drops the unmatched-prefill warning once the operator picks a service", () => {
+    open({ prefill: { serviceId: "itm_missing", name: "Priya" } as never });
+
+    expect(screen.getByText(/is not in the service/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^Service/), { target: { value: "itm_gel" } });
+
+    // The warning's own words are "nothing has been chosen for you" — which stops being true.
+    expect(screen.queryByText(/is not in the service/i)).not.toBeInTheDocument();
   });
 });

@@ -31,11 +31,19 @@ export type ValidateChangeResponse =
  *
  * The headers ride on every call rather than only on mutations: they are inert for a create,
  * and a conditional here would be one more place to get the condition wrong.
+ *
+ * `grantId` is the OTHER half of that door, and it is not optional in practice. The asserted-role
+ * path is gated on `Authorization:AllowAssertedStaffRole`, which defaults to Development only, so
+ * outside Development a mutation that presents no grant is refused however good its actor headers
+ * are. Without this parameter a caller that completed step-up had nowhere to put the grant: the
+ * console could satisfy the booking READ and then be refused on the WRITE forever, re-prompting
+ * for a fresh verification code on every attempt.
  */
-export function submitBooking(request: SubmitConfirmedIntentRequest) {
+export function submitBooking(request: SubmitConfirmedIntentRequest, grantId?: string) {
   return fetchApi<OperationAccepted>("/api/Bookings", {
     method: "POST",
     actor: true,
+    grantId,
     body: JSON.stringify(request),
   });
 }

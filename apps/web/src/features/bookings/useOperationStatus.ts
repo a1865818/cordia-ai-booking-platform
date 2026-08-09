@@ -46,12 +46,39 @@ export function isBooked(status: OperationStatusView | undefined): boolean {
   return status?.status === "booked" && status?.terminal === true;
 }
 
+/**
+ * Terminal outcomes that are FAILURES — not merely "not booked".
+ *
+ * Mirrors the server's own split: `OperationStateMachine.TerminalFailureStates` excludes
+ * `waitlisted`, which is terminal and a perfectly good result ("You've been added to the
+ * waitlist."). Treating every terminal non-booked status as a failure showed a successful
+ * waitlisting as a red error with a Retry that would mint a second, independent operation for a
+ * guest who is already on the list.
+ *
+ * `alternatives_required` is deliberately absent as well: it is a request for a decision, not a
+ * failure to retry.
+ */
+const TERMINAL_FAILURE_STATUSES = new Set(["rejected", "expired", "failed"]);
+
+export function isTerminalFailure(status: OperationStatusView | undefined): boolean {
+  return status?.terminal === true
+    && typeof status.status === "string"
+    && TERMINAL_FAILURE_STATUSES.has(status.status);
+}
+
 export interface OperationPollState {
   status: OperationStatusView | undefined;
   isPolling: boolean;
   /** Set when polling stopped without reaching a terminal state. */
   timedOut: boolean;
   error: unknown;
+  /**
+   * Re-reads the operation after a FAILED status read.
+   *
+   * The poll stops on error, so without this the caller can only show a dead end: the operation
+   * is still running server-side but the screen has no way to find out how it ended.
+   */
+  refetch: () => void;
 }
 
 export function useOperationStatus(
@@ -80,6 +107,7 @@ export function useOperationStatus(
     isPolling: Boolean(operationId) && !terminal && elapsed <= POLL_TIMEOUT_MS && !query.isError,
     timedOut: Boolean(operationId) && !terminal && elapsed > POLL_TIMEOUT_MS,
     error: query.error,
+    refetch: () => void query.refetch(),
   };
 }
 

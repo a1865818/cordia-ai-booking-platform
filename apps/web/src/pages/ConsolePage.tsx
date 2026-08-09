@@ -576,6 +576,7 @@ export function ConsolePage() {
     // Drop any pending step-up: it belonged to the booking being closed, and leaving it set
     // would make the gate reappear on whichever booking is opened next.
     setCancelAwaitingGrant(null);
+    setRescheduleAwaitingGrant(null);
     setDrawer(d => ({ ...d, kind: null }));
   };
   const startReschedule = (id: string) => setDrawer({ kind: 'reschedule', bookingId: id });
@@ -626,6 +627,21 @@ export function ConsolePage() {
    * is no submit-then-recover path — the grant must exist before the first request.
    */
   const [cancelAwaitingGrant, setCancelAwaitingGrant] = useState<string | null>(null);
+
+  /**
+   * A reschedule held up by step-up verification.
+   *
+   * `submitReschedule` reads the booking's current version before it can build the payload, and
+   * `GET /api/Bookings/{id}` answers `requires_verification` (a typed 403) for a gated booking. The
+   * staff-role headers authorize the WRITE; they do not authorize this preceding READ. So a gated
+   * booking could not be rescheduled at all — the read threw, the generic handler said "couldn't
+   * change this booking", and nothing on screen led anywhere.
+   *
+   * The patch is held with it so the move can be replayed verbatim once a grant exists.
+   */
+  const [rescheduleAwaitingGrant, setRescheduleAwaitingGrant] = useState<
+    { id: string; patch: { day: number; start: number; staff: string; dur: number } } | null
+  >(null);
 
   function cancelBooking(id: string) {
     if (cancelMutation.isPending) return;
@@ -709,11 +725,26 @@ export function ConsolePage() {
     void submitReschedule(id, patch, before);
   }
 
+  /** Re-runs a reschedule that was held up by step-up, now that a grant exists. */
+  function submitRescheduleWithGrant(
+    id: string,
+    patch: { day: number; start: number; staff: string; dur: number },
+    grantId: string
+  ) {
+    setRescheduleAwaitingGrant(null);
+    closeDrawer();
+    const before = bookings.find(b => b.id === id);
+    setBookings(bs => bs.map(b => b.id === id ? { ...b, ...patch } : b));
+    void submitReschedule(id, patch, before, grantId);
+  }
+
   async function submitReschedule(
     id: string,
     patch: { day: number; start: number; staff: string; dur: number },
     /** The row as it was before the optimistic move, for putting back on a refusal. */
-    before?: Booking
+    before?: Booking,
+    /** A spec-08 `modify` grant, when this booking's read needed step-up. */
+    grantId?: string
   ) {
     // Anchored to the DISPLAYED week, not the current one: dragging a booking while viewing
     // next week must submit next week's date.
@@ -738,7 +769,11 @@ export function ConsolePage() {
       // What this leans on: the console's staff identity is the documented X-Actor shim, which
       // is only trustworthy in Development. That is the known console-authentication exception,
       // not a second one.
-      const details = await getBookingDetails(id);
+      // The grant travels on the READ as well as the write. `GET /api/Bookings/{id}` answers
+      // `requires_verification` as a typed 403 for a gated booking, and the staff-role headers
+      // that authorize the mutation do not authorize this read — the same asymmetry the
+      // cancellation path already handles by passing its grant here.
+      const details = await getBookingDetails(id, grantId);
       const version = details.booking?.version;
       if (version === null || version === undefined) {
         toast({
@@ -818,7 +853,14 @@ export function ConsolePage() {
         }
       );
 
-      const accepted = await submitBooking(request);
+      // The grant travels on the WRITE too, not only on the read above.
+      //
+      // Outside Development the asserted-role path is off (`Authorization:AllowAssertedStaffRole`
+      // defaults to `IsDevelopment()`), so a reschedule with no grant is refused however good the
+      // actor headers are. Forwarding it only to the read made the step-up flow a loop: the read
+      // succeeded, the write 403'd `verification_required` again, the gate reappeared, and the
+      // operator burned a verification code per attempt without ever moving the booking.
+      const accepted = await submitBooking(request, grantId);
 
       const operationId = accepted.operation_id;
       let settled = false;
@@ -847,6 +889,21 @@ export function ConsolePage() {
       // Abandoned polling is not a failure: the screen went away, the operation did not.
       // Keep the attempt identity so a retry replays the same key against the same payload.
       if (controller.signal.aborted) return;
+
+      // A `verification_required` 403 is RESOLVABLE, so it gets the step-up flow rather than a
+      // message the operator can only stare at. The row goes back first, then the booking is
+      // opened with the gate showing — the drag path has no drawer of its own, so the detail
+      // drawer is the surface that already knows how to host one (the cancel flow uses it too).
+      if (isApiVerificationRequiredError(error)) {
+        if (before) setBookings(bs => bs.map(b => b.id === id ? before : b));
+        setRescheduleAwaitingGrant({ id, patch });
+        setDrawer({ kind: 'detail', bookingId: id });
+        toast({
+          message: 'This booking needs the guest verified before it can be moved.',
+          duration: 6000,
+        });
+        return;
+      }
 
       toast({ message: writeFailureMessage(error, 'change this booking'), duration: 6000 });
       if (isRetryableWithNewAttempt(error)) resetAttempt(attemptKey);
@@ -1376,6 +1433,16 @@ export function ConsolePage() {
               purpose="cancel this booking"
               onGranted={(grantId) => submitCancelWithGrant(cancelAwaitingGrant, grantId)}
               onCancel={() => setCancelAwaitingGrant(null)}
+            />
+          ) : rescheduleAwaitingGrant && activeBooking?.id === rescheduleAwaitingGrant.id ? (
+            <VerificationGate
+              action="modify"
+              targetBookingId={rescheduleAwaitingGrant.id}
+              purpose="move this booking"
+              onGranted={(grantId) => submitRescheduleWithGrant(
+                rescheduleAwaitingGrant.id, rescheduleAwaitingGrant.patch, grantId
+              )}
+              onCancel={() => setRescheduleAwaitingGrant(null)}
             />
           ) : undefined
         }

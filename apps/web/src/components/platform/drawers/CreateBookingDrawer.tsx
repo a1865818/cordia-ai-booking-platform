@@ -17,7 +17,7 @@ import { submitBooking } from "../../../features/bookings/submit";
 import { createGuestContact } from "../../../features/bookings/guestContact";
 import { isRetryableWithNewAttempt } from "../../../features/bookings/mutations";
 import {
-  isBooked, normalizedStatusLabel, useOperationStatus,
+  isBooked, isTerminalFailure, normalizedStatusLabel, useOperationStatus,
 } from "../../../features/bookings/useOperationStatus";
 import { getActor } from "../../../api/config";
 
@@ -27,6 +27,16 @@ const inputStyle: React.CSSProperties = {
   fontSize: 14, color: '#0A0A0A', background: '#fff', outline: 'none',
 };
 const selectStyle: React.CSSProperties = { ...inputStyle, appearance: 'none', cursor: 'pointer', paddingRight: 34 };
+
+/**
+ * The floor the API actually states, enforced in code rather than only as an HTML attribute.
+ *
+ * There is deliberately NO ceiling. `BookingRequest.party_size` is `{"type":"integer",
+ * "exclusiveMinimum": 0}` — a lower bound and nothing else — so a hard client maximum would
+ * refuse a booking the platform accepts and state a limit no spec has set. A venue taking a
+ * function for sixty must not find Confirm permanently disabled by a number invented here.
+ */
+const MIN_PARTY_SIZE = 1;
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -200,6 +210,10 @@ export function CreateBookingDrawer({
   // the operator had already typed.
   const defaultDayIndex = todayIndexAt(week) ?? 0;
   const [day, setDay] = useState(String(defaultDayIndex));
+  // Read by the reset effect WITHOUT being a dependency of it — the value changes at midnight and
+  // on week navigation, and neither may reset a form the operator is filling in.
+  const defaultDayIndexRef = useRef(defaultDayIndex);
+  defaultDayIndexRef.current = defaultDayIndex;
   const [time, setTime] = useState('600');
   // Party size is required by the API's BookingRequest; the mock form never collected it.
   const [partySize, setPartySize] = useState('2');
@@ -226,12 +240,68 @@ export function CreateBookingDrawer({
   // material makes an edited form a new attempt. `name` is deliberately absent: it never enters
   // the canonical payload, so changing it must NOT invalidate a live attempt.
   const [attemptNonce, setAttemptNonce] = useState(() => String(Date.now()));
+
+  // Resolved BEFORE `attemptKey`, which reads its duration.
+  //
+  // Declaration order is load-bearing here, not cosmetic: `attemptKey` is a `useMemo` whose
+  // factory closes over `service`, and a `const` referenced above its own declaration is a
+  // TDZ error the compiler catches as TS2448 — which is exactly how CI failed when the
+  // duration was first added to the key.
+  const serviceOptions = services ?? [];
+  const servicesLoaded = services !== undefined;
+  const hasServices = serviceOptions.length > 0;
+  // NO fallback to serviceOptions[0].
+  //
+  // `submit()` sends `svc` but reads `durationMinutes` from `service`, so falling back would
+  // durably record a payload naming one service and reserving another's duration — and the
+  // confirm panel would show the substitute's name, so the operator could not see it happen.
+  // A refetch (a publish landing, or refetchOnWindowFocus) can retire the selected item at any
+  // moment, so this is reachable without anyone doing anything wrong.
+  const service = serviceOptions.find(s => s.id === svc);
+  // The pick is gone from the catalog. Not the same as "still loading" (services undefined) or
+  // "venue has none" (hasServices false) — those have their own branches.
+  const selectionRetired = servicesLoaded && hasServices && svc !== '' && service === undefined;
+
+  /**
+   * The party size the API will actually accept.
+   *
+   * The `<input type="number" min={1} max={50}>` attributes are decoration here: the confirm
+   * button is not a form submit, so the browser never runs constraint validation, and the gate
+   * only asked whether the string was non-empty. `0`, `-1`, `51` and `2.5` all passed it and were
+   * sent as `Number(partySize)` — a durable booking for nobody, or for a party the venue never
+   * agreed to. Checked in one place and enforced both on the button and inside `submit()`.
+   */
+  const partySizeNumber = Number(partySize);
+  const partySizeValid = partySize.trim() !== ''
+    && Number.isInteger(partySizeNumber)
+    && partySizeNumber >= MIN_PARTY_SIZE;
+
   const attemptKey = useMemo(
-    () => `create:${attemptNonce}|${svc}|${day}|${time}|${partySize}|${phone.trim()}|${service?.durationMinutes ?? ''}`,
-    [attemptNonce, svc, day, time, partySize, phone, service]
+    // `durationMinutes` is part of the key because it is part of the PAYLOAD.
+    //
+    // `buildSubmission` writes `duration_minutes` into the canonical payload whenever the catalog
+    // states one, and a republish can change a service's duration while keeping its id. Keyed on
+    // the id alone, the first submit fails, the catalog refetches with a new duration, and the
+    // operator's Retry then presents the SAME idempotency key with a DIFFERENT payload hash — a
+    // 409 IdempotencyConflict that no amount of retrying clears (Inv-3). A changed duration is a
+    // different booking, so it mints a different identity.
+    () => `create:${attemptNonce}|${svc}|${service?.durationMinutes ?? 'nodur'}|${day}|${time}|${partySize}|${phone.trim()}`,
+    [attemptNonce, svc, service?.durationMinutes, day, time, partySize, phone]
   );
   // Guards the one-shot 'booking confirmed' announcement; see the effect below.
   const announcedRef = useRef<string | null>(null);
+  /**
+   * The guest-contact ref already minted for this attempt.
+   *
+   * `POST /api/guest-contacts` returns a NEW opaque ref on every call, and that ref is inside the
+   * hashed canonical payload. Minting a fresh one on retry therefore changed `payload_hash` while
+   * `attemptKey` — and so the idempotency key — stayed the same, which the server answers with a
+   * 409 IdempotencyConflict: a booking whose first submit failed after the mint could not be
+   * retried at all, only abandoned. Caching it per attempt makes the retry a true replay (Inv-2/3);
+   * editing the phone changes `attemptKey`, so the cache misses and a new ref is minted, which is
+   * exactly right because that is a different booking.
+   */
+  const contactRefCache = useRef<{ key: string; ref: string } | null>(null);
 
   const poll = useOperationStatus(operationId, startedAt);
   const booked = isBooked(poll.status);
@@ -268,20 +338,39 @@ export function CreateBookingDrawer({
     setSvc(unmatched ? '' : (prefilledService ?? options[0]?.id ?? ''));
   }, [prefill]);
 
-  // Reset on open. Deliberately NOT keyed on `services` — see `servicesRef` above.
+  /**
+   * Reset only on the CLOSED→OPEN transition (or a genuinely new prefill).
+   *
+   * `if (open)` alone made the reset fire on any dependency change while the drawer was already
+   * open, and `defaultDayIndex` is recomputed from the clock on every render — so a drawer left
+   * open across local midnight wiped the operator's typed name, phone, service, time and party
+   * size mid-session, and re-minted `attemptNonce`, discarding the operation identity the form was
+   * about to submit under (Inv-2/3).
+   *
+   * The prefill is still honoured while open, because "book this waitlisted guest" can be clicked
+   * with the drawer already up and must load that guest — but it is compared by identity, so
+   * nothing else can trigger a reset.
+   */
+  const wasOpenRef = useRef(false);
+  const lastPrefillRef = useRef<CreatePrefill | undefined>(undefined);
   useEffect(() => {
-    if (open) {
-      setName(prefill?.name ?? ''); setPhone(''); setCustomerSearch('');
-      chooseInitialService(servicesRef.current ?? []);
-      setDay(String(prefill?.day ?? defaultDayIndex));
-      setTime(String(prefill?.start ?? 600));
-      setPartySize(String(prefill?.partySize ?? 2));
-      setPhase('form'); setShowDropdown(false);
-      setSubmitError(null); setOperationId(null); setStartedAt(null);
-      announcedRef.current = null;
-      setAttemptNonce(String(Date.now()));
-    }
-  }, [open, defaultDayIndex, prefill, chooseInitialService]);
+    const justOpened = open && !wasOpenRef.current;
+    const prefillChanged = open && prefill !== lastPrefillRef.current;
+    wasOpenRef.current = open;
+    lastPrefillRef.current = prefill;
+    if (!justOpened && !prefillChanged) return;
+
+    setName(prefill?.name ?? ''); setPhone(''); setCustomerSearch('');
+    chooseInitialService(servicesRef.current ?? []);
+    setDay(String(prefill?.day ?? defaultDayIndexRef.current));
+    setTime(String(prefill?.start ?? 600));
+    setPartySize(String(prefill?.partySize ?? 2));
+    setPhase('form'); setShowDropdown(false);
+    setSubmitError(null); setOperationId(null); setStartedAt(null);
+    announcedRef.current = null;
+    contactRefCache.current = null;
+    setAttemptNonce(String(Date.now()));
+  }, [open, prefill, chooseInitialService]);
 
   // Catch-up for the drawer opened before the catalog answered: choose a service once options
   // exist, and only while none is chosen, so a later refetch cannot move the operator's pick.
@@ -289,21 +378,6 @@ export function CreateBookingDrawer({
     if (!open || svc !== '' || !services || services.length === 0) return;
     chooseInitialService(services);
   }, [open, svc, services, chooseInitialService]);
-
-  const serviceOptions = services ?? [];
-  const servicesLoaded = services !== undefined;
-  const hasServices = serviceOptions.length > 0;
-  // NO fallback to serviceOptions[0].
-  //
-  // `submit()` sends `svc` but reads `durationMinutes` from `service`, so falling back would
-  // durably record a payload naming one service and reserving another's duration — and the
-  // confirm panel would show the substitute's name, so the operator could not see it happen.
-  // A refetch (a publish landing, or refetchOnWindowFocus) can retire the selected item at any
-  // moment, so this is reachable without anyone doing anything wrong.
-  const service = serviceOptions.find(s => s.id === svc);
-  // The pick is gone from the catalog. Not the same as "still loading" (services undefined) or
-  // "venue has none" (hasServices false) — those have their own branches.
-  const selectionRetired = servicesLoaded && hasServices && svc !== '' && service === undefined;
 
   // The booking only counts as made when the server says so (Inv-16). Until then the
   // drawer stays in its submitting state, however long that takes.
@@ -329,6 +403,39 @@ export function CreateBookingDrawer({
     });
   }, [booked, phase, attemptKey, day, staff, time, svc, service, name, onCreated]);
 
+  /**
+   * A TERMINAL non-booked outcome ends the operation, so the drawer has to hand control back.
+   *
+   * The failure was rendered inline while `phase` stayed `confirming` — which keeps the footer a
+   * disabled busy button and the form hidden, so there was no retry, no correction and no way
+   * forward at all: the operator's only move was to close the drawer and retype the whole booking.
+   *
+   * Returning to `form` is what makes the existing inline error and its Retry reachable. The
+   * attempt identity is SPENT rather than reused: the operation reached a terminal failure, so
+   * replaying its key would return that same failure forever — a retry has to be a new operation
+   * (§13.4).
+   */
+  useEffect(() => {
+    if (phase !== 'confirming' || !poll.status?.terminal || booked) return;
+
+    // Terminal but NOT a failure — `waitlisted` is a real, successful outcome. It settles the
+    // drawer so the footer becomes a usable Done button, and it must never be dressed as an error
+    // with a Retry: retrying mints a fresh identity and enrols the guest a second time.
+    if (!isTerminalFailure(poll.status)) {
+      setPhase('done');
+      return;
+    }
+
+    setSubmitError(new Error(
+      poll.status.customer_message ?? 'This booking could not be completed.'
+    ));
+    setPhase('form');
+    setOperationId(null);
+    setStartedAt(null);
+    resetAttempt(attemptKey);
+    setAttemptNonce(String(Date.now()));
+  }, [phase, poll.status, booked, attemptKey]);
+
 
   // The tenant's real customers once loaded; the mock array only while the list has never
   // loaded, and then labelled — the command palette was fixed the same way. Offering six
@@ -347,8 +454,10 @@ export function CreateBookingDrawer({
 
   async function submit() {
     // `!service` is the load-bearing half: without it a retired pick would be submitted with
-    // another service's duration.
-    if (phase !== 'form' || !name.trim() || !hasServices || !service) return;
+    // another service's duration. `!partySizeValid` is enforced here as well as on the button,
+    // because the button is not a form submit and the input's `min`/`max` are therefore never
+    // applied by the browser.
+    if (phase !== 'form' || !name.trim() || !hasServices || !service || !partySizeValid) return;
 
     setPhase('confirming');
     setSubmitError(null);
@@ -374,9 +483,14 @@ export function CreateBookingDrawer({
       // many digits to be a phone) so the server still produces its own 400 with the right message
       // rather than this silently skipping the mint.
       const typedPhone = phone.trim();
-      const contactRef = typedPhone
-        ? (await createGuestContact({ phoneE164: normalisePhone(typedPhone) ?? typedPhone })).contact_ref
-        : undefined;
+      let contactRef: string | undefined;
+      if (typedPhone) {
+        // Reused across retries of the SAME attempt — see `contactRefCache`.
+        contactRef = contactRefCache.current?.key === attemptKey
+          ? contactRefCache.current.ref
+          : (await createGuestContact({ phoneE164: normalisePhone(typedPhone) ?? typedPhone })).contact_ref;
+        contactRefCache.current = { key: attemptKey, ref: contactRef };
+      }
 
       const request = await buildSubmission(
         {
@@ -451,7 +565,7 @@ export function CreateBookingDrawer({
       ? <PrimaryButton
           full
           busy={phase === 'confirming'}
-          disabled={!name.trim() || !partySize || !service || phase !== 'form'}
+          disabled={!name.trim() || !partySizeValid || !service || phase !== 'form'}
           onClick={() => { void submit(); }}
         >
           {phase === 'confirming' ? 'Submitting' : 'Confirm booking'}
@@ -509,23 +623,51 @@ export function CreateBookingDrawer({
               Still working. You can close this — the booking will appear in the queue when it settles.
             </div>
           )}
-          {poll.status?.terminal && !booked && (
+          {poll.error != null && (
             <div className="mt-[14px]">
+              {/*
+                The STATUS READ failed — not the booking.
+                `useOperationStatus` stops polling on a failed read, so without this the drawer sat
+                on a spinner and "accepted and being confirmed" forever: the operator could not
+                learn the outcome and had no way to ask again, short of closing the drawer and
+                losing the thread entirely. The operation is still running server-side, so the
+                honest offer is another read.
+              */}
               <ErrorState
                 inline
-                error={new Error(poll.status?.customer_message ?? 'This booking could not be completed.')}
-                title={normalizedStatusLabel(poll.status?.status)}
+                error={poll.error}
+                title="Couldn’t check this booking’s progress."
+                onRetry={poll.refetch}
               />
             </div>
           )}
         </div>
       ) : phase === 'done' ? (
         <div className="text-center py-6 px-2">
-          <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
-            <Icon name="check" size={26} strokeWidth={2.4} color="#15924B" />
+          {/*
+            "Booking confirmed" is a claim, and it is only true for a terminal `booked`.
+            A terminal `waitlisted` settles here too — a real outcome, but not a booking — so it
+            gets the server's own wording and a neutral mark rather than a green tick asserting a
+            reservation the venue never made (Inv-16).
+          */}
+          <span
+            className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]"
+            style={{ background: booked ? '#E7F6EC' : '#F2F2F0' }}
+          >
+            <Icon
+              name={booked ? 'check' : 'clock'}
+              size={26}
+              strokeWidth={2.4}
+              color={booked ? '#15924B' : '#55554F'}
+            />
           </span>
-          <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Booking confirmed</div>
+          <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">
+            {booked ? 'Booking confirmed' : normalizedStatusLabel(poll.status?.status)}
+          </div>
           <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
+            {!booked && poll.status?.customer_message && (
+              <>{poll.status.customer_message}<br /></>
+            )}
             {name} · {service?.name}<br />
             {shortDayLabel(week, Number(day))} at {fmtT(Number(time))}
           </div>
@@ -653,7 +795,10 @@ export function CreateBookingDrawer({
           <Field label="Service" hint="From this venue’s published catalog.">
             <SelectField
               value={svc}
-              onChange={setSvc}
+              // Clears the unmatched-prefill warning: it says "nothing has been chosen for you",
+              // which stops being true the moment the operator chooses. Leaving it up told them no
+              // choice had been made while the picker plainly showed one.
+              onChange={v => { setSvc(v); if (v) setUnmatchedService(null); }}
               options={serviceOptions.map(s => ({
                 value: s.id,
                 // The duration is appended only when the catalog states one — an item with no
@@ -675,12 +820,17 @@ export function CreateBookingDrawer({
             </div>
           </div>
           <AvailabilityNote slots={availability} week={week} dayIndex={Number(day)} />
-          <Field label="Party size" hint="How many people the booking is for.">
+          <Field
+            label="Party size"
+            hint={partySizeValid
+              ? 'How many people the booking is for.'
+              : `Enter a whole number of ${MIN_PARTY_SIZE} or more.`}
+          >
             <input
               type="number"
-              min={1}
-              max={50}
+              min={MIN_PARTY_SIZE}
               value={partySize}
+              aria-invalid={!partySizeValid}
               onChange={e => setPartySize(e.target.value)}
               className="w-full h-[42px] border border-cd-border rounded-[10px] px-3 text-[14px] text-ink outline-none focus:border-[#2F6BEB] transition-colors"
               style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
