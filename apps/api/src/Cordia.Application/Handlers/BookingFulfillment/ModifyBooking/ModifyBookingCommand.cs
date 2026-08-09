@@ -645,8 +645,17 @@ public sealed class ModifyBookingCommandHandler(
             // Re-read inside the transaction: the version moved if the amendment raced anything
             // else, and a stale token would silently no-op. Only ModificationPending is cleared —
             // a booking Cancelled underneath us must stay cancelled.
+            //
+            // And only THIS operation's own pending state. `ModificationPending` has one writer,
+            // `POST /api/Bookings/{id}/modifications`, which always creates a `Modify` — a
+            // RESCHEDULE rides the spec-04 acceptance door and parks nothing, so a reschedule
+            // finding the booking pending is looking at somebody else's in-flight modification.
+            // Clearing it there announced "no change outstanding" while that modification was
+            // still running. `BookingPendingLifecycle` owns the operation-type → parked-state map
+            // so the success and failure paths cannot disagree about who parked what.
             var freshBooking = await bookingRepo.GetByIdAsync(tenantId, booking.BookingId, ct2);
-            if (freshBooking is { LifecycleStatus: BookingLifecycleStatus.ModificationPending })
+            if (BookingPendingLifecycle.PendingStateFor(freshOp) == BookingLifecycleStatus.ModificationPending
+                && freshBooking is { LifecycleStatus: BookingLifecycleStatus.ModificationPending })
             {
                 // Losing this race is benign and needs no branch: the only other writer of this
                 // row is settling the same booking, and the operation transition above already

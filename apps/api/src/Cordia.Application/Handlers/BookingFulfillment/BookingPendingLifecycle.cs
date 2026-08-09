@@ -44,8 +44,22 @@ public static class BookingPendingLifecycle
         => op.OperationType switch
         {
             Domain.Generated.OperationTypeEnum.Cancel => BookingLifecycleStatus.CancellationPending,
-            Domain.Generated.OperationTypeEnum.Modify
-                or Domain.Generated.OperationTypeEnum.Reschedule => BookingLifecycleStatus.ModificationPending,
+            Domain.Generated.OperationTypeEnum.Modify => BookingLifecycleStatus.ModificationPending,
+
+            // A RESCHEDULE parks nothing, so it may retract nothing.
+            //
+            // `ModificationPending` has exactly one writer — `POST /api/Bookings/{id}/modifications`
+            // — and a reschedule does not go through it. `SubmitModificationInput` carries no field
+            // for a new time, so a reschedule rides the spec-04 acceptance door instead and the
+            // booking stays `Confirmed` for the whole operation.
+            //
+            // Mapping it here therefore did not undo its own work; it undid somebody else's. A
+            // reschedule failing against a booking an INDEPENDENT modification had parked cleared
+            // that modification's pending state back to `Confirmed`, while the modification was
+            // still in flight — the same cross-operation clobber this type exists to prevent, just
+            // one level further out.
+            Domain.Generated.OperationTypeEnum.Reschedule => null,
+
             _ => null,
         };
 

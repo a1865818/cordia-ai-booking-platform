@@ -83,9 +83,13 @@ public class ResolveManualReviewCommandHandlerTests
     /// read `failed_final` while the booking row told every reader a change was still outstanding,
     /// permanently. Failed means nothing happened, so the booking reverts to Confirmed.</para>
     /// </summary>
+    /// <remarks>
+    /// Reschedule is deliberately absent: it parks nothing (it rides the spec-04 acceptance door,
+    /// not `POST .../modifications`), so it may retract nothing — see
+    /// <see cref="Handle_Failed_Reschedule_LeavesAnIndependentModificationPendingAlone"/>.
+    /// </remarks>
     [Theory]
     [InlineData(Domain.Generated.OperationTypeEnum.Modify, BookingLifecycleStatus.ModificationPending)]
-    [InlineData(Domain.Generated.OperationTypeEnum.Reschedule, BookingLifecycleStatus.ModificationPending)]
     [InlineData(Domain.Generated.OperationTypeEnum.Cancel, BookingLifecycleStatus.CancellationPending)]
     public async Task Handle_FailedFinal_RevertsThePendingLifecycleOfTheBookingItWasActingOn(
         Domain.Generated.OperationTypeEnum type, BookingLifecycleStatus parked)
@@ -627,7 +631,9 @@ public class ResolveManualReviewCommandHandlerTests
 
         var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
         op.BookingId = bookingId;
-        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+        // MODIFY, not Reschedule: `ModificationPending` is parked only by `POST .../modifications`,
+        // so only a Modify may clear it — and therefore only a Modify can be refused for failing to.
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Modify;
 
         _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
         _opRepo.Setup(r => r.TryTransitionStatusAsync(
@@ -842,5 +848,56 @@ public class ResolveManualReviewCommandHandlerTests
         _capacity.Verify(c => c.FinalizeAgainstOperationAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A failed RESCHEDULE must not clear a modification's pending state.
+    ///
+    /// <para>`ModificationPending` has one writer — `POST /api/Bookings/{id}/modifications` — and a
+    /// reschedule does not go through it: `SubmitModificationInput` carries no field for a new
+    /// time, so a reschedule rides the acceptance door and the booking stays `Confirmed`
+    /// throughout. Reverting on that status therefore undid an INDEPENDENT modification's parking
+    /// while that modification was still in flight.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Failed_Reschedule_LeavesAnIndependentModificationPendingAlone()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-resched-fail";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 2);
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+        op.BookingId = bookingId;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 2,
+                OperationStatus.ManualReview, OperationStatus.FailedFinal,
+                "manual_resolved_failed", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        // Parked by a DIFFERENT operation — a modification this reschedule knows nothing about.
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.ModificationPending,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

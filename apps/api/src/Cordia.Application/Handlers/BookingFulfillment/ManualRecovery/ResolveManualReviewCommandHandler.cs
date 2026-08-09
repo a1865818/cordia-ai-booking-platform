@@ -202,7 +202,16 @@ public sealed class ResolveManualReviewCommandHandler(
                                 + "recorded as booked.");
                         }
 
-                        if (target.LifecycleStatus == BookingLifecycleStatus.ModificationPending)
+                        // Only THIS operation's own pending state may be cleared.
+                        //
+                        // `ModificationPending` has a single writer — `POST .../modifications`,
+                        // which always creates a `Modify` — so a RESCHEDULE finding the booking
+                        // pending is looking at an independent modification that is still running.
+                        // Clearing it announced "no change outstanding" on that other operation's
+                        // behalf; refusing on a lost race was worse still, failing this resolution
+                        // over a row it had no business touching.
+                        if (BookingPendingLifecycle.PendingStateFor(opInTxn) == BookingLifecycleStatus.ModificationPending
+                            && target.LifecycleStatus == BookingLifecycleStatus.ModificationPending)
                         {
                             // A modified booking is still confirmed — what moved lives on the revision.
                             //
