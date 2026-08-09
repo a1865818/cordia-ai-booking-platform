@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildWeek, dayLabel, dayOptions, shiftWeekWindow, shortDayLabel } from "./week";
+import { buildWeek, dayLabel, dayOptions, shiftWeekWindow, shortDayLabel, todayIndexAt } from "./week";
 import { toIsoInstant } from "./buildSubmission";
 import { weekWindow } from "./adapters";
 
@@ -115,5 +115,49 @@ describe("submission uses the displayed week", () => {
     expect(instant.getDate()).toBe(12);
     expect(instant.getMonth()).toBe(7);
     expect(instant.getHours()).toBe(10);
+  });
+});
+
+describe("todayIndexAt", () => {
+  /**
+   * The console is a screen people leave open all day — including past midnight.
+   *
+   * `ConsoleWeek.todayIndex` is frozen when the week is built from the schedule window, and the
+   * week is rebuilt only when a parent state change moves that window. So after midnight the
+   * now-line stayed drawn on yesterday's column and the "remaining" tile went on counting against
+   * a day that had ended, while the real current day was treated as an ordinary column.
+   */
+  it("advances across local midnight without the week being rebuilt", () => {
+    const week = buildWeek(windowFrom(2026, 8, 3), new Date(2026, 7, 6, 23, 30));
+
+    expect(week.todayIndex).toBe(3); // Thursday, frozen at build time
+
+    // 23:30 Thursday -> still Thursday.
+    expect(todayIndexAt(week, new Date(2026, 7, 6, 23, 30))).toBe(3);
+    // 00:05 Friday -> the column moves, though `week` never changed.
+    expect(todayIndexAt(week, new Date(2026, 7, 7, 0, 5))).toBe(4);
+    expect(week.todayIndex).toBe(3);
+  });
+
+  it("returns null once midnight rolls the day out of the displayed week", () => {
+    const week = buildWeek(windowFrom(2026, 8, 3), new Date(2026, 7, 9, 23, 30));
+
+    expect(todayIndexAt(week, new Date(2026, 7, 9, 23, 30))).toBe(6); // Sunday
+    // Monday belongs to the NEXT week — nothing in this one is today.
+    expect(todayIndexAt(week, new Date(2026, 7, 10, 0, 5))).toBeNull();
+  });
+
+  it("compares calendar days, so a DST transition cannot shift the answer", () => {
+    // 2026-04-05 is a DST boundary; one local day is 23 or 25 hours long, which is why this
+    // counts calendar days rather than dividing a millisecond offset.
+    const week = buildWeek(windowFrom(2026, 3, 30), new Date(2026, 2, 30, 12, 0));
+
+    expect(todayIndexAt(week, new Date(2026, 3, 5, 12, 0))).toBe(6);
+    expect(todayIndexAt(week, new Date(2026, 3, 4, 12, 0))).toBe(5);
+  });
+
+  it("is null for an unusable instant rather than guessing a column", () => {
+    const week = buildWeek(windowFrom(2026, 8, 3), new Date(2026, 7, 6, 15, 0));
+    expect(todayIndexAt(week, new Date("nonsense"))).toBeNull();
   });
 });

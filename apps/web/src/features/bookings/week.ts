@@ -107,6 +107,39 @@ export function buildWeek(windowFrom: string, now: Date = new Date()): ConsoleWe
   };
 }
 
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+/**
+ * Index of today within `week`, evaluated against `at` — **not** frozen at build time.
+ *
+ * `ConsoleWeek.todayIndex` is computed once, when the week is built from the schedule window, and
+ * `week` is only rebuilt when a parent state change moves the window. A console left open across
+ * local midnight therefore kept yesterday's column marked as today: the now-line stayed drawn on
+ * it and the "remaining" tile went on counting against a day that had ended, while the real current
+ * day was treated as an ordinary column. The screen already ticks a clock every 30 seconds, so
+ * asking this question against that clock costs nothing and answers correctly within one tick.
+ *
+ * Returns null when the displayed week does not contain `at` — including the case where midnight
+ * rolled the day out of the displayed week entirely, which is the honest answer rather than
+ * clamping to an edge column.
+ *
+ * Compares local calendar days rather than millisecond offsets, for the reason `buildWeek`
+ * documents: a DST transition makes one local day 23 or 25 hours long.
+ */
+export function todayIndexAt(week: ConsoleWeek, at: Date | number = new Date()): number | null {
+  const when = typeof at === "number" ? new Date(at) : at;
+  if (Number.isNaN(when.getTime())) return null;
+
+  const index = week.dates.findIndex((date) => isSameLocalDay(date, when));
+  return index === -1 ? null : index;
+}
+
 /** `Thu, 6 August` — the header/drawer form. */
 export function dayLabel(week: ConsoleWeek, index: number): string {
   const date = week.dates[index];

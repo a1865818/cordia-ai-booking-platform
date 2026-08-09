@@ -745,6 +745,10 @@ export function ConsolePage() {
           message: 'This booking has no confirmed record yet, so it cannot be changed.',
           duration: 6000,
         });
+        // Put the row back, the same as the refusal and error branches below. The optimistic move
+        // is already on the grid, so returning without it left the booking sitting in a slot the
+        // platform had just declined to move it to — indefinitely, if the refetch also failed.
+        if (before) setBookings(bs => bs.map(b => b.id === id ? before : b));
         invalidateBookingViews();
         return;
       }
@@ -1062,6 +1066,11 @@ export function ConsolePage() {
   const loadFailures = [
     { label: 'today’s bookings', query: scheduleQuery },
     { label: 'the queue', query: operationsQuery },
+    // The work items are a SECOND request behind the same board. When it alone failed, the queue
+    // rendered as fully loaded while every escalation quietly lost its reason, SLA deadline and
+    // assignee — the `workItem` block simply did not appear, with no error and no retry. A
+    // partially-answered queue must say so, exactly like a wholly unanswered one.
+    { label: 'the recovery queue’s details', query: workItemsQuery },
     { label: 'conversations', query: sessionsQuery },
     { label: 'the waitlist', query: waitlistQuery },
     { label: 'customers', query: customersQuery },

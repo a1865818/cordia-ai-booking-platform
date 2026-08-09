@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CUSTOMERS, fmtT, fmtDur, TIME_SLOTS, Booking, type Customer } from "../../../data/console";
 import type { BookableService } from "../../../features/bookings/services";
 import { UNASSIGNED_RESOURCE_ID } from "../../../features/bookings/resources";
-import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
+import { dayOptions, shortDayLabel, todayIndexAt, type ConsoleWeek } from "../../../features/bookings/week";
 import type { AvailableSlot } from "../../../features/bookings/availability";
 import type { CreatePrefill } from "../../../features/waitlist/prefill";
 import { Drawer } from "../../ui/Drawer";
@@ -188,8 +188,18 @@ export function CreateBookingDrawer({
   // The grid lane the optimistic row is drawn on — a coordinate, not an assignment. There is
   // no resource dimension server-side and nothing here is submitted (see ./resources.ts).
   const staff = UNASSIGNED_RESOURCE_ID;
-  // Defaults to today's column when the displayed week is the current one, else Monday.
-  const [day, setDay] = useState(String(week.todayIndex ?? 0));
+  // Today's column when the displayed week is the current one, else Monday.
+  //
+  // Asked of the clock rather than of `week.todayIndex`, which is frozen when the week is built:
+  // on a console left open across midnight the drawer opened pre-filled with YESTERDAY. No ticking
+  // clock is needed — this only has to be right when the drawer opens.
+  //
+  // Held as a NUMBER the reset effect below depends on. Depending on `week` itself would re-run the
+  // reset on every week navigation — `week` is memoised on the schedule window, so its identity
+  // changes with the arrows and with `bookFromWaitlist` — wiping a name, phone, time and party size
+  // the operator had already typed.
+  const defaultDayIndex = todayIndexAt(week) ?? 0;
+  const [day, setDay] = useState(String(defaultDayIndex));
   const [time, setTime] = useState('600');
   // Party size is required by the API's BookingRequest; the mock form never collected it.
   const [partySize, setPartySize] = useState('2');
@@ -263,7 +273,7 @@ export function CreateBookingDrawer({
     if (open) {
       setName(prefill?.name ?? ''); setPhone(''); setCustomerSearch('');
       chooseInitialService(servicesRef.current ?? []);
-      setDay(String(prefill?.day ?? week.todayIndex ?? 0));
+      setDay(String(prefill?.day ?? defaultDayIndex));
       setTime(String(prefill?.start ?? 600));
       setPartySize(String(prefill?.partySize ?? 2));
       setPhase('form'); setShowDropdown(false);
@@ -271,7 +281,7 @@ export function CreateBookingDrawer({
       announcedRef.current = null;
       setAttemptNonce(String(Date.now()));
     }
-  }, [open, week.todayIndex, prefill, chooseInitialService]);
+  }, [open, defaultDayIndex, prefill, chooseInitialService]);
 
   // Catch-up for the drawer opened before the catalog answered: choose a service once options
   // exist, and only while none is chosen, so a later refetch cannot move the operator's pick.

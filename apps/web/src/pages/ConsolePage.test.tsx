@@ -28,6 +28,7 @@ vi.mock("../features/operations/api", async (importOriginal) => ({
   // `statusFromResponse` stays real: the follow-up toasts echo what it reads from the body.
   ...(await importOriginal<typeof import("../features/operations/api")>()),
   listOperations: vi.fn(),
+  listOpenWorkItems: vi.fn(),
   requestOperationCancellation: vi.fn(),
   resumeOperation: vi.fn(),
   resolveOperation: vi.fn(),
@@ -49,7 +50,8 @@ vi.mock("../features/reporting/api", async (importOriginal) => ({
 import { ConsolePage } from "./ConsolePage";
 import { getBookingSchedule } from "../features/bookings/api";
 import {
-  listOperations, requestOperationCancellation, resolveOperation, respondToAlternatives,
+  listOpenWorkItems, listOperations, requestOperationCancellation, resolveOperation,
+  respondToAlternatives,
 } from "../features/operations/api";
 import { listSessions } from "../features/conversations/api";
 import { listCustomers } from "../features/customers/api";
@@ -71,6 +73,9 @@ function Providers({ children }: { children: ReactNode }) {
 function allEmpty() {
   vi.mocked(getBookingSchedule).mockResolvedValue({ bookings: [], truncated: false } as never);
   vi.mocked(listOperations).mockResolvedValue({ operations: [] } as never);
+  // The board's SECOND request. Left unmocked it fails in jsdom, and the queue then reports
+  // incomplete recovery data on every test — which is the point of wiring it into `loadFailures`.
+  vi.mocked(listOpenWorkItems).mockResolvedValue({ work_items: [] } as never);
   vi.mocked(listSessions).mockResolvedValue({ sessions: [] } as never);
   vi.mocked(listCustomers).mockResolvedValue({ customers: [], truncated: false } as never);
   vi.mocked(listEnrollments).mockResolvedValue({ enrollments: [] } as never);
@@ -181,6 +186,23 @@ describe("ConsolePage — a failed load is named, never rendered as an empty scr
 
     await waitFor(() =>
       expect(screen.getByText(/Couldn’t load today’s bookings and customers/)).toBeInTheDocument()
+    );
+  });
+
+  /**
+   * The work items are a SECOND request behind the same board.
+   *
+   * When it alone failed the queue rendered as fully loaded while every escalation quietly lost its
+   * reason, SLA deadline and assignee — the `workItem` block simply did not appear, with no error
+   * and no retry path. A partially-answered queue has to say so, exactly like a wholly
+   * unanswered one.
+   */
+  it("names the recovery-queue details when only that request fails", async () => {
+    vi.mocked(listOpenWorkItems).mockRejectedValue(new Error("boom"));
+    renderConsole();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Couldn’t load the recovery queue’s details/)).toBeInTheDocument()
     );
   });
 });

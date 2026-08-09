@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Booking, statusMeta, fmtT, fmtRange } from "../../../data/console";
 import type { GridResource } from "../../../features/bookings/resources";
-import { dayLabel, type ConsoleWeek } from "../../../features/bookings/week";
+import { dayLabel, todayIndexAt, type ConsoleWeek } from "../../../features/bookings/week";
 import { useTickingNow } from "../../../hooks/useTickingNow";
 import { Icon } from "../../ui/Icon";
 
@@ -865,7 +865,16 @@ export function TodayScreen({
   // that SettingsScreen renders under a "no operating-hours endpoint yet" badge. Telling an
   // operator their venue is closed on the strength of that is the same fabrication, unbadged,
   // on the live schedule.
-  const isToday = week.todayIndex === selDay;
+  // Which column IS today, asked of the ticking clock rather than of the week as it was built.
+  //
+  // `week.todayIndex` is computed when the week is built from the schedule window, and the week is
+  // rebuilt only when a parent state change moves that window. A console left open across local
+  // midnight therefore kept yesterday's column marked as today — the now-line stayed on it and the
+  // "remaining" tile went on counting against a day that had ended, while the real current day was
+  // treated as an ordinary column. `now` already ticks every 30 seconds, so this corrects itself
+  // within one tick with no new timer.
+  const todayIndex = todayIndexAt(week, now);
+  const isToday = todayIndex === selDay;
   const dayBookings = bookings.filter(b => b.day === selDay && isActive(b.status));
 
   // ── Phone: simplified card list ──────────────────────────────────────────
@@ -1058,8 +1067,9 @@ export function TodayScreen({
               {week.dows.map((dw, i) => {
                 const sel     = i === selDay;
                 // Null in any week that isn't the current one — nothing is marked "today"
-                // in a week that does not contain today.
-                const isTodayColumn = i === week.todayIndex;
+                // in a week that does not contain today. From the ticking clock, so the highlight
+                // moves with midnight like the now-line above it.
+                const isTodayColumn = i === todayIndex;
                 return (
                   <button
                     key={i}
