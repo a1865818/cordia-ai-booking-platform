@@ -442,7 +442,7 @@ submit→poll as one mutation). **Reschedule is live as of 2026-08-06**
 `ModifyBookingCommandHandler`, which amends the existing booking in one provider call and
 preserves the original reservation until the amendment is secured (spec 08 §9.4.8). Note the
 change request itself travels through the acceptance front door
-(`POST /api/bookings` with `operation: "reschedule"` + `target_booking_id`), **not** through
+(`POST /api/Bookings` with `operation: "reschedule"` + `target_booking_id`), **not** through
 `POST /api/Bookings/{id}/modifications` — see §13 C6.
 
 **Waitlist** — list, remove (optimistic with single-row rollback), offer accept/decline
@@ -591,7 +591,7 @@ That distinction is what stops "why can't we just call it?" being re-asked every
 | C4 | `POST /api/conversation-sessions/{sessionId}/transcript-turns` | Agent-lane ingest. A transcript is **evidence of what was said** (Inv-1: evidence, not a command). The console writing turns would fabricate conversation history, and that history is what the audit trail and any later dispute rest on | **No.** If an operator needs to record something about a conversation, that is an *operator note* — a different record with a different meaning, attributed to the operator, not words attributed to the guest |
 | C5 | `POST /api/conversation-sessions/{sessionId}/consent` | Consent is the **guest's**, captured in-channel with recorded evidence (spec 14 §3.1). An operator asserting it on the guest's behalf is precisely what that spec forbids, and it is the record that later proves recording/messaging was permitted | **No.** A guest who wants to consent must do so in-channel. An operator-facing surface could at most *display* the recorded `ConsentState`, which the session list already carries |
 
-| C6 | `POST /api/Bookings/{id}/modifications` | **It cannot carry the change.** `SubmitModificationInput` is `additionalProperties: false` and has **no field for the changed data** — it confirms a revision that was already submitted, so there is no way to put a new time in it. A reschedule therefore goes through the acceptance front door (`POST /api/bookings` with `operation: "reschedule"` and a `target_booking_id`), which is the only path that actually transports the new time; `SubmitConfirmedIntentValidator` requires `target_booking_id` for exactly the modify/cancel/reschedule operations | **Only if the contract changes.** This is not a trust boundary like C1–C5 — it is a shape problem. Were the input to gain the changed fields it would become wireable, but then it would duplicate the front door, which is why nothing is planned |
+| C6 | `POST /api/Bookings/{id}/modifications` | **It cannot carry the change.** `SubmitModificationInput` is `additionalProperties: false` and has **no field for the changed data** — it confirms a revision that was already submitted, so there is no way to put a new time in it. A reschedule therefore goes through the acceptance front door (`POST /api/Bookings` with `operation: "reschedule"` and a `target_booking_id`), which is the only path that actually transports the new time; `SubmitConfirmedIntentValidator` requires `target_booking_id` for exactly the modify/cancel/reschedule operations | **Only if the contract changes.** This is not a trust boundary like C1–C5 — it is a shape problem. Were the input to gain the changed fields it would become wireable, but then it would duplicate the front door, which is why nothing is planned |
 
 `GET /api/Ping` and `GET /api/Health` are diagnostics and are not counted in any group.
 `POST /api/model-traces` (the **write**) is agent-lane, like the two `conversation-sessions`
@@ -747,7 +747,7 @@ hand-seeded canonical payloads carrying `booking_id`, `business_name`, `booking_
 while the endpoint did not work — for the agent lane too. Those fixtures now use real
 `BookingRequest` fields (`booking_id` comes from the operation row; `booking_date`/`approx_time`
 are derived from `starts_at`), and `GuestIdentityOnBookingTests` drives the real
-`POST /api/bookings` instead of seeding rows.
+`POST /api/Bookings` instead of seeding rows.
 
 **Fixed — `GET /api/Bookings?phone_e164=` returns candidates.** It was blocked on two causes, both
 now closed. `BookingReadRepository.ToProjection` only emits a `ManageBookingCandidate` when the
@@ -766,7 +766,7 @@ would show a guest a slug. The Venue name panel says so in as many words, which 
 is presented as a real setup step rather than cosmetic.
 
 Under the out-of-band contact shape (§14) the match is by `contact_ref` rather than by the number
-itself: `GET /api/bookings?phone_e164=` resolves the hint to the refs it maps to and matches those,
+itself: `GET /api/Bookings?phone_e164=` resolves the hint to the refs it maps to and matches those,
 so an erased contact correctly stops being findable — that is what erasure means. Email hints
 resolve the same way.
 
@@ -1060,7 +1060,7 @@ Both were latent while the engine refused every modify. Making it work made them
 **1. The acceptance front door authorized nothing.** Spec 08 §12 is explicit — *"every mutation
 accept requires a valid `verification_grant` (or authenticated owner role) scoped to (tenant,
 customer, target booking, action, expiry)"*. `POST /api/Bookings/{id}/cancellations` and
-`.../modifications` both consume a grant. `POST /api/bookings` required **neither**, and it is the
+`.../modifications` both consume a grant. `POST /api/Bookings` required **neither**, and it is the
 door a reschedule has to use: `SubmitModificationInput` is `additionalProperties: false` and has no
 field for the changed data, so the manage-booking door cannot transport a new time. Anyone who knew
 a booking id could move someone else's booking.
@@ -1138,10 +1138,12 @@ amendment stays cancelled.
 
 ## 18. Post-implementation audit (2026-08-06) — what is actually left to worry about
 
-Answering directly: **beyond the six group-C endpoints and the no-authentication-outside-
-Development caveat, nothing is unbuilt.** Three things remain *undecided*, and all three now have
-the engineering half done — see "Made observable" below. What is left in each case is a ruling, not
-code.
+Answering directly: **beyond the six group-C endpoints, the no-authentication-outside-Development
+caveat, and gaps 2, 5 and 9 in the table below — deposits/payments, menu artifact upload, and the
+resource/staff model — nothing is unbuilt.** Those three are whole capabilities the platform does
+not have, not wiring the console is missing; they are listed under "Remaining §12 gaps" with what
+each would take. Three further things remain *undecided*, and all three now have the engineering
+half done — see "Made observable" below. What is left in each of those is a ruling, not code.
 
 ### The one that is not written down anywhere else
 
@@ -1235,8 +1237,10 @@ Consequences worth knowing:
 ### Made observable — the engineering half of the three open decisions
 
 Each of the three had the same shape: **the platform knew something and said nothing**, which is
-what let all three sit undecided. A decision cannot be made on data nobody has. None of these
-changes behaviour, and none touches a frozen decision.
+what let all three sit undecided. A decision cannot be made on data nobody has. **The three
+counters below** change no behaviour, and none of this touches a frozen decision — but the
+monitor described further down *does*: it settles catalogs that were previously stuck in
+`extracting` indefinitely into `extract_failed`, which is a terminal status change.
 
 | Signal | Counter | What it makes decidable |
 |---|---|---|
@@ -1376,7 +1380,7 @@ diverge again. Widening costs the derived-key path nothing: a blind retry re-sen
 fields, so it still deduplicates; it only stops a different request being taken for that retry.
 
 **A second server-side defect was fixed alongside it (Inv-16).** The replay path answered on key
-+ hash alone, without checking that the recorded enrolment still existed. So enrol → remove → re-enrol
+and hash alone, without checking that the recorded enrolment still existed. So enrol → remove → re-enrol
 with the same details returned the **cancelled** enrolment's id and wrote nothing: the console
 toasted success, the `active_only` list showed nothing, and the guest was on no waitlist. The
 1-hour derived-key window narrowed this but never closed it — a remove-then-re-add takes seconds.
