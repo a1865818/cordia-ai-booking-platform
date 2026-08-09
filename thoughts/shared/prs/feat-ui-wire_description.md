@@ -245,6 +245,78 @@ fixture); the pre-commit hook ran the .NET unit suite and formatting on every co
   half-typed booking form on any week navigation.
 - **No new migration, no contract change**, so nothing regenerates.
 
+---
+
+## Update — 2026-08-09 PII minimisation + console truthfulness (`b7d876a`…`4837748`)
+
+A security-focused pass over the branch returned **one HIGH finding**, independently confirming what
+an earlier `/code-review high` had raised and I had deferred as "needs a product decision". It is now
+closed rather than deferred. Alongside it, ten console defects and three places where this document
+had stopped describing the code.
+
+### The load-bearing finding — `customer_ref` was not opaque
+
+`customer_ref` is documented as an opaque handle. It is not.
+`FinalizeBookingCommandHandler` resolves `bookings.customer_id` through
+`customer_id → contact_ref → caller_id → phone_e164 → email`, and
+`waitlist_enrollments.customer_ref` is the value `NotificationRecipientResolver` hands to the
+SMS/email adapter **as the send destination**. The console mints an opaque `contact_ref` before it
+hashes a payload — but the **agent lane never does** (`contact_ref` appears once in `cordia_agent`,
+as a field declaration nothing populates) and carries `phone_e164` inline.
+
+So every agent-created booking put a raw phone number in that column, and four reads returned it to
+any caller holding tenant scope — **no grant, no actor, no reason code, no audit row**:
+`GET /api/customers`, `GET /api/Bookings/schedule`, `GET /api/conversation-sessions`,
+`GET /api/waitlist/enrollments`. That is a strictly lower bar than the transcript read of the same
+data class, which demands a `read_sensitive` grant or operator+reason and audits allow **and** deny.
+`?query=+614` worked as a phone-prefix search. `CustomersController`'s own doc comment claimed the
+endpoint exposed "no name, phone or email (spec 14 minimisation, Inv-12)".
+
+**Fixed at the read boundary.** `ContactMinimisation.Mask` runs at the point of emission on all four:
+a phone leaves as `•••222`, an email as `p•••@example.com`, and anything that is not a deliverable
+address passes through untouched. The search matches the masked value, removing the oracle — the
+console never used the parameter (`useCustomers("", 50)` is its only call site), so no working
+behaviour is lost. Grouping still uses the **raw** key, so per-guest counts stay exact. The un-masked
+contact remains behind the grant-gated `GET /api/Bookings/{bookingId}`.
+
+**Still open at the source, and recorded as such:** minting a `contact_ref` in the agent lane so the
+column stops being an address at all. This closes the exposure, not its origin.
+
+### What else changed
+
+| Area | Fix |
+|---|---|
+| Modify vs cancel | The in-transaction guard rejected only `Cancelled`, so a booking parked at `CancellationPending` still booked its amendment and told the guest it moved while another operation was removing it. Now an allow-list of the two settleable states, so a lifecycle value added later fails closed |
+| Accepted-operation identity | The create drawer described an accepted operation from the LIVE form, and guarded `onCreated` by the form-derived `attemptKey` — so a catalog republish re-fired it and appended the booking twice. Both now use a snapshot frozen at submit time, guarded by the operation id |
+| In-flight submissions | A submission surviving a close-and-reopen applied itself to the new form. A token invalidates it; an abandoned-but-**accepted** operation is reported to the console so it surfaces in the queue rather than inviting a duplicate |
+| `composeReason` | The Latin-1 substitution ran before the whitespace collapse, and `[^ -ÿ]` matches CR/LF/TAB — every line break in an audit note became a literal `?`. Had no tests; has six now |
+| `canonicalHash` | Trimmed timestamps with `String.trim()` while the server trims by `char.IsWhiteSpace` — the U+0085/U+FEFF divergence the file's own header names. A padded timestamp hashed differently on the two sides and 422'd |
+| Six smaller console defects | Unclickable unfinalised bars in Diagram view; `TIME_SLOTS` covering only 09:00–17:30 (blank picker for out-of-hours bookings); the waitlist countdown running on accepted/expired offers; the menu draft editor savable after Approve; a 409 telling operators to blind-retry; demo customers rendering as real after the live list arrived |
+
+### Gates
+
+| Lane | Unit | Integration | Lint | Build |
+|---|---|---|---|---|
+| api | 1456 | **568** (1 pre-existing skip) | ✅ | ✅ |
+| web | 636 | — | 0/0 | ✅ |
+| langgraph | 1023 | 51 | ✅ | — |
+
+The integration suites ran for the first time in these passes (a local Postgres was available), which
+closes the coverage caveat the previous two updates carried.
+
+### Reviewer notes
+
+- **A test caught a bug in the security fix itself.** `PhoneMatching.Normalise` discards every
+  non-digit — it exists to match numbers a human typed — so it "normalised" `gc_9f2c41ab8e004d10` to
+  `9241800410` and masked it. Every opaque console label would have become `•••410`. A shape check
+  (a letter or underscore means handle, not number) runs before the normaliser.
+- **All 568 integration tests passed both before and after the masking change.** Nothing had pinned
+  the raw value, which is precisely why the exposure survived this long.
+- **This document was wrong in three places** and is corrected: §17 and §18 both asserted that no
+  reschedule `VerificationGate` was wired and that this was the right answer. True for a *pre-emptive*
+  gate; false absolutely, because the staff role authorizes the write and never the gated booking-details
+  read that precedes it. §8 now records that the grant travels on **both** calls.
+
 
 ## Type of change
 
