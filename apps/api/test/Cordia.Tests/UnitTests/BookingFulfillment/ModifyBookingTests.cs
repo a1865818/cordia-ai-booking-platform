@@ -738,6 +738,94 @@ public class ModifyBookingTests
         Assert.Contains("c1", sent.CanonicalPayloadJson);
     }
 
+    /// <summary>
+    /// The strip must not FALL BACK to the unredacted payload when it cannot read one field.
+    ///
+    /// <para><c>confirmation.identity</c> was read with <c>GetValue&lt;string&gt;()</c>, which
+    /// throws on a non-string node. The throw landed in a catch that returned the ORIGINAL
+    /// payload — but <c>grant_id</c> had already been removed from the copy, so a partially
+    /// applied strip was discarded and the live grant shipped to the provider anyway. A payload
+    /// whose <c>identity</c> is a number, an object or null is unusual, not impossible, and it
+    /// defeated the control completely rather than degrading it.</para>
+    ///
+    /// <para>Theory rather than one case, because each JSON kind took the same broken path and
+    /// any of them alone would have kept the bug alive.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("42")]
+    [InlineData("null")]
+    [InlineData("{\"kind\":\"staff\"}")]
+    [InlineData("[\"a\"]")]
+    [InlineData("true")]
+    public async Task Modify_StillStripsTheGrant_WhenConfirmationIdentityIsNotAString(string identityJson)
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload =
+                    $$"""{"target_booking_id":"bk-mod","grant_id":"grant_secret","confirmation":{"identity":{{identityJson}},"confirmation_id":"c1"},"expected_booking_version":3}""",
+                PayloadHash = "h2",
+            });
+
+        ProviderBookingRequest? sent = null;
+        _adapter.Setup(a => a.ModifyBookingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ProviderBookingRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, ProviderBookingRequest, CancellationToken>(
+                (_, _, req, _) => sent = req)
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Created, ProviderRef));
+
+        await RunAsync();
+
+        Assert.NotNull(sent);
+        Assert.DoesNotContain("grant_secret", sent!.CanonicalPayloadJson);
+        // Still a modify, not a gutted one: the non-string identity is left exactly as it was,
+        // because it is not a grant — only the credential is removed.
+        Assert.Contains("bk-mod", sent.CanonicalPayloadJson);
+        Assert.Contains("c1", sent.CanonicalPayloadJson);
+    }
+
+    /// <summary>An unparseable payload is passed through untouched — a strip must never fail a modify.</summary>
+    [Fact]
+    public async Task Modify_PassesAnUnparseablePayloadThrough_RatherThanFailing()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload = "{not json at all",
+                PayloadHash = "h2",
+            });
+
+        ProviderBookingRequest? sent = null;
+        _adapter.Setup(a => a.ModifyBookingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ProviderBookingRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, ProviderBookingRequest, CancellationToken>(
+                (_, _, req, _) => sent = req)
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Created, ProviderRef));
+
+        await RunAsync();
+
+        Assert.NotNull(sent);
+        Assert.Equal("{not json at all", sent!.CanonicalPayloadJson);
+    }
+
     // ── A seat is handed on only when it is known where it WENT ──────────────────────────────────
 
     /// <summary>

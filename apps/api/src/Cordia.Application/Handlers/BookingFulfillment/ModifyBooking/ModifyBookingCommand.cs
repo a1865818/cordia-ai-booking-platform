@@ -251,36 +251,45 @@ public sealed class ModifyBookingCommandHandler(
         if (string.IsNullOrWhiteSpace(canonicalPayload))
             return canonicalPayload;
 
+        // Parsing is the ONLY step allowed to throw, and it happens before anything is removed.
+        //
+        // The removals used to sit inside the same try, and `confirmation["identity"]` was read
+        // with `GetValue<string>()`, which THROWS on a non-string node. So for a payload whose
+        // `confirmation.identity` was a number, an object or null, the throw landed in a catch that
+        // returned the ORIGINAL payload — after `grant_id` had already been removed from the copy.
+        // A partially-applied strip fell back to the unredacted original and shipped the live grant
+        // to the provider: precisely the disclosure this method exists to prevent, reachable by the
+        // one input shape it did not expect.
+        //
+        // Nothing after the parse can throw now (`TryGetValue` reports rather than raises), so the
+        // original is returned only where no removal was ever attempted.
+        System.Text.Json.Nodes.JsonNode? parsed;
         try
         {
-            if (System.Text.Json.Nodes.JsonNode.Parse(canonicalPayload)
-                is not System.Text.Json.Nodes.JsonObject root)
-            {
-                return canonicalPayload;
-            }
-
-            var removed = root.Remove("grant_id");
-
-            if (root["confirmation"] is System.Text.Json.Nodes.JsonObject confirmation
-                && confirmation["identity"]?.GetValue<string>() is { } identity
-                && identity.StartsWith("grant_", StringComparison.Ordinal))
-            {
-                confirmation.Remove("identity");
-                removed = true;
-            }
-
-            return removed ? root.ToJsonString() : canonicalPayload;
+            parsed = System.Text.Json.Nodes.JsonNode.Parse(canonicalPayload);
         }
         catch (JsonException)
         {
+            // Unreadable: nothing could be removed, so nothing was. Passed through, because a
+            // payload we cannot parse must never fail a modify.
             return canonicalPayload;
         }
-        catch (InvalidOperationException)
+
+        if (parsed is not System.Text.Json.Nodes.JsonObject root)
+            return canonicalPayload;
+
+        var removed = root.Remove("grant_id");
+
+        if (root["confirmation"] is System.Text.Json.Nodes.JsonObject confirmation
+            && confirmation["identity"] is System.Text.Json.Nodes.JsonValue identityNode
+            && identityNode.TryGetValue<string>(out var identity)
+            && identity.StartsWith("grant_", StringComparison.Ordinal))
         {
-            // `GetValue<string>()` on a non-string node. Same disposition: a payload we cannot
-            // read is passed through rather than failing the modify.
-            return canonicalPayload;
+            confirmation.Remove("identity");
+            removed = true;
         }
+
+        return removed ? root.ToJsonString() : canonicalPayload;
     }
 
     /// <summary>Create-or-load the "modify" workflow step so a redelivery reuses it (Inv-5).</summary>
@@ -294,7 +303,7 @@ public sealed class ModifyBookingCommandHandler(
 
             // GetOrAddAsync, not read-then-add: two concurrent deliveries both saw no step and both
             // inserted, and the loser's 23505 aborted this whole transaction rather than loading the
-            // winner's row â€” a normal redelivery failing the modify instead of resuming it.
+            // winner's row — a normal redelivery failing the modify instead of resuming it.
             step = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
                 TenantId = tenantId,
