@@ -130,21 +130,63 @@ public class HardeningRegressionTests
     [InlineData("{not json")]
     public void DeriveFromCanonicalPayload_TreatsAnUnusablePayloadAsUntracked(string payload)
     {
-        var (capacity, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(payload);
+        var (capacity, capacityIsExplicit, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(payload);
 
         Assert.Equal(1, capacity);
+        Assert.False(capacityIsExplicit);
         Assert.Null(slotId);
     }
 
     [Fact]
     public void DeriveFromCanonicalPayload_ReadsPartySizeAndSlotFromAWellFormedPayload()
     {
-        var (capacity, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(
+        var (capacity, capacityIsExplicit, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(
             """{"party_size":4,"resource_id":"r1","starts_at":"2026-09-02T09:00:00.000Z"}""");
 
         Assert.Equal(4, capacity);
+        Assert.True(capacityIsExplicit);
         Assert.NotNull(slotId);
         Assert.StartsWith("r1|", slotId);
+    }
+
+    /// <summary>
+    /// A defaulted party size must be distinguishable from a stated one.
+    ///
+    /// <para>The fallback of 1 is right for a CREATE and catastrophic as the new size of a booking
+    /// that already exists: <c>AbsorbSameSlotAsync</c> takes it as the authoritative total, so a
+    /// party of four amended without restating its size was resized to one and three seats it was
+    /// still occupying went back on sale. `party_size` is optional in the shared schema and can
+    /// arrive absent, as an explicit null, or as a TriState string — every one of those shapes.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("""{"resource_id":"r1","starts_at":"2026-09-02T09:00:00.000Z"}""")]
+    [InlineData("""{"party_size":null,"resource_id":"r1","starts_at":"2026-09-02T09:00:00.000Z"}""")]
+    [InlineData("""{"party_size":"unknown","resource_id":"r1","starts_at":"2026-09-02T09:00:00.000Z"}""")]
+    [InlineData("""{"party_size":0,"resource_id":"r1","starts_at":"2026-09-02T09:00:00.000Z"}""")]
+    public void DeriveFromCanonicalPayload_ReportsADefaultedPartySizeAsNotExplicit(string payload)
+    {
+        var (capacity, capacityIsExplicit, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(payload);
+
+        Assert.Equal(1, capacity);
+        Assert.False(capacityIsExplicit);
+        Assert.NotNull(slotId);
+    }
+
+    /// <summary>
+    /// A `SubmitModificationInput` canonical payload carries no time, resource or size dimension,
+    /// so it derives NO slot — "not first-party tracked", never "a different slot". The modify
+    /// lanes rely on that distinction: releasing the previous owner's finalized hold on a null key
+    /// put a confirmed booking's seats back on sale while the guest still held the table.
+    /// </summary>
+    [Fact]
+    public void DeriveFromCanonicalPayload_DerivesNoSlotForAModificationPayload()
+    {
+        var (capacity, capacityIsExplicit, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(
+            """{"target_booking_id":"bk_1","expected_booking_version":3,"grant_id":"g1","intent_payload_hash":"h"}""");
+
+        Assert.Equal(1, capacity);
+        Assert.False(capacityIsExplicit);
+        Assert.Null(slotId);
     }
 
     // ── Email as a DESTINATION, not merely a non-blank string ───────────────────────────────────

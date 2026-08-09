@@ -61,7 +61,8 @@ public sealed class ReserveCapacityCommandHandler(
         // Parse canonical payload BEFORE the transaction: stateless + no DB write.
         // Any missing/unparseable field is treated as "non-tracked" (see below).
         var rev = await intentRepo.GetRevisionAsync(tenantId, op.IntentId, op.IntentRevision, ct);
-        var (requestedCapacity, slotId) = CapacitySlotKey.DeriveFromCanonicalPayload(rev?.CanonicalPayload);
+        var (requestedCapacity, capacityIsExplicit, slotId) =
+            CapacitySlotKey.DeriveFromCanonicalPayload(rev?.CanonicalPayload);
 
         // An amendment that does not MOVE the booking reserves only what is genuinely NEW.
         //
@@ -77,9 +78,23 @@ public sealed class ReserveCapacityCommandHandler(
         // survives. Reserving a delta WITHOUT that absorb would leave two, and a later cancellation
         // releases only the newest — which is why neither half is correct on its own.
         var previousCapacity = await ReadSameSlotCapacityAsync(op, slotId, ct);
-        var capacityToReserve = previousCapacity is null
+
+        // An amendment that does not RESTATE the party size does not change it.
+        //
+        // `party_size` is optional in the shared schema and can arrive absent, as an explicit null,
+        // or as a TriState string — all of which derive the fallback of 1. Taken as the new size,
+        // an amendment to a party of four computed a delta of `1 - 4 = -3` here and handed three
+        // seats back to the venue that the guests were still sitting in. The default belongs to a
+        // CREATE, which has no current size to keep; here the booking's own contribution is the
+        // truth unless the payload says otherwise. `AbsorbSameSlotAsync` at commit is sized from
+        // the same rule, so the two halves stay in step.
+        var targetCapacity = capacityIsExplicit || previousCapacity is null
             ? requestedCapacity
-            : requestedCapacity - previousCapacity.Value;
+            : previousCapacity.Value;
+
+        var capacityToReserve = previousCapacity is null
+            ? targetCapacity
+            : targetCapacity - previousCapacity.Value;
 
         var expiresAt = DateTimeOffset.UtcNow + capacityOptions.Value.HoldTtl;
 

@@ -3,6 +3,25 @@
 namespace Cordia.Domain.Capacity;
 
 /// <summary>
+/// What a canonical payload asks of the capacity ledger: how many units, whether the payload
+/// actually SAID so, and which first-party slot they are wanted against.
+/// </summary>
+/// <param name="RequestedCapacity">Units wanted; 1 when the payload states no party size.</param>
+/// <param name="CapacityIsExplicit">
+/// Whether <paramref name="RequestedCapacity"/> came from the payload rather than the default.
+/// A caller resizing an existing booking MUST keep the current size when this is false — see
+/// <see cref="CapacitySlotKey.DeriveFromCanonicalPayload"/>.
+/// </param>
+/// <param name="SlotId">
+/// The first-party slot key, or <see langword="null"/> when the payload carries no
+/// resource/time dimension — "not tracked", never "a different slot".
+/// </param>
+public readonly record struct CapacityRequest(
+    int RequestedCapacity,
+    bool CapacityIsExplicit,
+    string? SlotId);
+
+/// <summary>
 /// Pure helper that derives a deterministic first-party slot key from canonical payload fields
 /// (spec 07 open-decision §4 / plan §2.4).
 /// <para>
@@ -94,11 +113,20 @@ public static class CapacitySlotKey
     /// <para>Every field is optional and every failure is soft: an unparseable payload is
     /// "not tracked", never an exception. A read of a historical revision must not be able to fail
     /// an operation.</para>
+    ///
+    /// <para><b><see cref="CapacityRequest.CapacityIsExplicit"/> is not a detail.</b>
+    /// <see cref="CapacityRequest.RequestedCapacity"/> falls back to 1, which is right for a
+    /// CREATE — a booking always needs at least one unit — and wrong as the authoritative new size
+    /// of a booking that already exists. `party_size` is optional in the shared schema and may
+    /// arrive as an explicit null or as a TriState string (`"unknown"`), so a party of four
+    /// amended without restating its size derived 1 and shrank the booking by three seats. Any
+    /// caller RESIZING an existing booking must check this flag and keep the current size when it
+    /// is false; only a caller sizing a new reservation may take the default.</para>
     /// </summary>
-    public static (int RequestedCapacity, string? SlotId) DeriveFromCanonicalPayload(string? json)
+    public static CapacityRequest DeriveFromCanonicalPayload(string? json)
     {
         if (string.IsNullOrEmpty(json) || json == "{}")
-            return (1, null);
+            return new CapacityRequest(1, false, null);
 
         try
         {
@@ -113,19 +141,21 @@ public static class CapacitySlotKey
             // reading it. The whole contract of this method is that a payload it cannot understand
             // degrades to "no slot", so the guard belongs here rather than in every caller.
             if (root.ValueKind != JsonValueKind.Object)
-                return (1, null);
+                return new CapacityRequest(1, false, null);
 
             // party_size — default 1 (a booking always needs >= 1 unit).
             // Guard ValueKind == Number FIRST: a real canonical payload serializes an absent
             // party_size as explicit JSON null, and JsonElement.TryGetInt32() THROWS
             // (InvalidOperationException, not JsonException) on a non-Number element.
             var requestedCapacity = 1;
+            var capacityIsExplicit = false;
             if (root.TryGetProperty("party_size", out var partySizeEl)
                 && partySizeEl.ValueKind == JsonValueKind.Number
                 && partySizeEl.TryGetInt32(out var ps)
                 && ps > 0)
             {
                 requestedCapacity = ps;
+                capacityIsExplicit = true;
             }
 
             var resourceId = TryGetString(root, "resource_id");
@@ -149,14 +179,17 @@ public static class CapacitySlotKey
             }
             else
             {
-                return (requestedCapacity, null);
+                return new CapacityRequest(requestedCapacity, capacityIsExplicit, null);
             }
 
-            return (requestedCapacity, Derive(resourceId, serviceId, locationId, startsAt));
+            return new CapacityRequest(
+                requestedCapacity,
+                capacityIsExplicit,
+                Derive(resourceId, serviceId, locationId, startsAt));
         }
         catch (JsonException)
         {
-            return (1, null);
+            return new CapacityRequest(1, false, null);
         }
     }
 

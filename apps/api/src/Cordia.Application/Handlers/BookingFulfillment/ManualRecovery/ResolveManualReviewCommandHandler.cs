@@ -178,6 +178,27 @@ public sealed class ResolveManualReviewCommandHandler(
                             command.TenantId, opInTxn, previousOwner, ct2);
                     }
                 }
+                else
+                {
+                    // A CREATE resolved as Booked has a seat to settle too.
+                    //
+                    // The mutation branch above was given one and this one was not, but the leak is
+                    // the same shape: an operation that reached ManualReview never ran
+                    // `FinalizeBookingCommandHandler`, so its hold on the slot is still ACTIVE.
+                    // Declaring the operation Booked and stopping there leaves the expiry sweeper to
+                    // drop that hold, after which the slot reports the seats FREE while a terminal
+                    // Booked operation occupies them — and no later cancellation can give them back,
+                    // because releasing resolves the newest booked operation and finds nothing
+                    // finalized under it.
+                    //
+                    // Best-effort by design: the operator has already confirmed with the provider
+                    // that the booking exists, so there is no refusal available here. A hold the
+                    // sweeper already reclaimed answers `HoldNoLongerValid` and leaves the ledger
+                    // where it was — the discrepancy stays with the operator already looking at this
+                    // operation rather than blocking a resolution that is otherwise correct.
+                    await capacityReservation.FinalizeAgainstOperationAsync(
+                        command.TenantId, command.OperationId, "create", ct2);
+                }
 
                 // Inv-8: outcome in the same transaction. Spec 11 §5.3: a pre-order op signals the
                 // saga instead of notifying the customer directly.

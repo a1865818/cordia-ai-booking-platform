@@ -687,4 +687,166 @@ public class ModifyBookingTests
         Assert.Contains(targetSlotId, slotIds!);
         Assert.Equal(2, slotIds!.Where(s => !string.IsNullOrEmpty(s)).Distinct().Count());
     }
+
+    // ── Authorization material does not cross to the provider ───────────────────────────────────
+
+    /// <summary>
+    /// A spec-08 verification grant must not be shipped to a third-party booking provider.
+    ///
+    /// <para>The canonical payload of an operation accepted through
+    /// <c>POST /api/Bookings/{id}/modifications</c> is a serialized <c>SubmitModificationInput</c>,
+    /// which carries <c>grant_id</c>; <c>confirmation.identity</c> holds a <c>grant_</c>-prefixed
+    /// id on the agent lane. Both are the credential that authorizes reading and mutating the
+    /// booking (<c>X-Grant-Id</c>), and both were passed to the provider verbatim on every modify,
+    /// landing in that provider's request logs.</para>
+    /// </summary>
+    [Fact]
+    public async Task Modify_DoesNotSendTheVerificationGrantToTheProvider()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload =
+                    """{"target_booking_id":"bk-mod","grant_id":"grant_secret","confirmation":{"identity":"grant_secret","confirmation_id":"c1"},"expected_booking_version":3}""",
+                PayloadHash = "h2",
+            });
+
+        ProviderBookingRequest? sent = null;
+        _adapter.Setup(a => a.ModifyBookingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ProviderBookingRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, ProviderBookingRequest, CancellationToken>(
+                (_, _, req, _) => sent = req)
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Created, ProviderRef));
+
+        await RunAsync();
+
+        Assert.NotNull(sent);
+        Assert.DoesNotContain("grant_secret", sent!.CanonicalPayloadJson);
+        // The rest of the payload still travels — this strips credentials, it does not gut the body.
+        Assert.Contains("bk-mod", sent.CanonicalPayloadJson);
+        Assert.Contains("c1", sent.CanonicalPayloadJson);
+    }
+
+    // ── A seat is handed on only when it is known where it WENT ──────────────────────────────────
+
+    /// <summary>
+    /// A modification payload derives NO slot, and that must not be read as "a different slot".
+    ///
+    /// <para><c>POST /api/Bookings/{id}/modifications</c> stores <c>SubmitModificationInput</c> as
+    /// its canonical payload; that type carries no <c>starts_at</c>, no resource dimension and no
+    /// <c>party_size</c>, so every such operation derives <c>(1, null)</c>. Guarded only on
+    /// "not the same slot", the settlement then released the previous owner's FINALIZED hold as
+    /// <c>Superseded</c> while this operation had reserved nothing of its own — the seats of a
+    /// confirmed booking went back on sale with the guest still at the table.</para>
+    /// </summary>
+    [Fact]
+    public async Task Modify_DoesNotReleaseATrackedSeat_WhenThePayloadNamesNoTargetSlot()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload =
+                    """{"target_booking_id":"bk-mod","expected_booking_version":3,"grant_id":"g1"}""",
+                PayloadHash = "h2",
+            });
+
+        _ops.Setup(o => o.GetBookedOperationForBookingAsync(
+                TenantId, BookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingOperation
+            {
+                TenantId = TenantId,
+                OperationId = "op_create_original",
+                BookingId = BookingId,
+                Status = OperationStatus.Booked,
+                OperationType = OperationTypeEnum.Create,
+            });
+
+        // The previous owner is sitting on a REAL first-party slot — there is a seat to lose.
+        _holds.Setup(h => h.GetLatestByOperationAndStepAsync(
+                TenantId, "op_create_original", "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacityHold
+            {
+                TenantId = TenantId,
+                HoldId = "hold_previous_owner",
+                OperationId = "op_create_original",
+                WorkflowStep = "create",
+                SlotId = "slot_old",
+                ReservedCapacity = 4,
+                Status = HoldStatus.Finalized,
+            });
+
+        await RunAsync();
+
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+                TenantId, "op_create_original", ReleaseReason.Superseded, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A same-slot amendment that does not restate <c>party_size</c> does not change it.
+    ///
+    /// <para><c>AbsorbSameSlotAsync</c> takes its size argument as the AUTHORITATIVE total, and
+    /// <c>party_size</c> is optional in the shared schema — absent, explicit null and the TriState
+    /// string <c>"unknown"</c> all derive the fallback of 1. Passed through, a party of four was
+    /// resized to one and three seats it still occupied became sellable.</para>
+    /// </summary>
+    [Fact]
+    public async Task SameSlotModify_KeepsTheCurrentPartySize_WhenThePayloadDoesNotRestateIt()
+    {
+        GivenOperation();
+        GivenBooking();
+        GivenProvider(ProviderResultKind.Created);
+
+        var slotId = GivenSameSlotAmendment("op_create_original");
+
+        // Same slot, same booking — but the amendment says nothing about the party size.
+        _intents.Setup(i => i.GetRevisionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = TenantId,
+                IntentId = "int-1",
+                Revision = 2,
+                CanonicalPayload =
+                    $$"""{"operation":"modify","service_id":"{{SameSlotService}}","starts_at":"2026-09-02T09:00:00.000Z","party_size":"unknown","special_requests":"window seat"}""",
+                PayloadHash = "h2",
+            });
+
+        int? absorbedTo = null;
+
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                TenantId, OperationId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.Finalized);
+
+        _capacity.Setup(c => c.AbsorbSameSlotAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string, string, int, CancellationToken>(
+                (_, _, _, _, _, capacity, _) => absorbedTo = capacity)
+            .ReturnsAsync(true);
+
+        await RunAsync();
+
+        Assert.NotNull(slotId);
+        // The previous owner's finalized hold is for 2 (see GivenSameSlotAmendment) — the booking
+        // keeps the size it has. It was resized to the defaulted 1 before this.
+        Assert.Equal(2, absorbedTo);
+    }
 }

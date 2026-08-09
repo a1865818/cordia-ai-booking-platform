@@ -171,7 +171,7 @@ public sealed class ModifyBookingCommandHandler(
                     // and a redelivery must present the same key so the provider can dedupe.
                     operationId,
                     revision.PayloadHash,
-                    revision.CanonicalPayload),
+                    StripAuthorizationMaterial(revision.CanonicalPayload)),
                 ct);
 
             // Ambiguous outcomes must reconcile before anything else happens (Inv-7): we do not
@@ -228,6 +228,58 @@ public sealed class ModifyBookingCommandHandler(
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Removes AUTHORIZATION material from the payload handed to the booking provider.
+    ///
+    /// <para>The canonical payload of an operation accepted through
+    /// <c>POST /api/Bookings/{id}/modifications</c> is a serialized <c>SubmitModificationInput</c>,
+    /// which carries <c>grant_id</c> — and <c>confirmation.identity</c> holds a
+    /// <c>grant_</c>-prefixed id on the agent lane. Those are the spec-08 credentials that
+    /// authorize reading and mutating a booking (<c>X-Grant-Id</c>), so shipping them verbatim
+    /// handed a live verification grant to a third party on every modify, where it lands in that
+    /// provider's request logs. The provider has no use for either: it is being asked to amend a
+    /// reservation, not to prove the caller was allowed to ask.</para>
+    ///
+    /// <para>Everything else is passed through untouched, and a payload that is not a JSON object
+    /// (or carries neither field) is returned as-is — this must never be able to fail a modify.</para>
+    /// </summary>
+    private static string? StripAuthorizationMaterial(string? canonicalPayload)
+    {
+        if (string.IsNullOrWhiteSpace(canonicalPayload))
+            return canonicalPayload;
+
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(canonicalPayload)
+                is not System.Text.Json.Nodes.JsonObject root)
+            {
+                return canonicalPayload;
+            }
+
+            var removed = root.Remove("grant_id");
+
+            if (root["confirmation"] is System.Text.Json.Nodes.JsonObject confirmation
+                && confirmation["identity"]?.GetValue<string>() is { } identity
+                && identity.StartsWith("grant_", StringComparison.Ordinal))
+            {
+                confirmation.Remove("identity");
+                removed = true;
+            }
+
+            return removed ? root.ToJsonString() : canonicalPayload;
+        }
+        catch (JsonException)
+        {
+            return canonicalPayload;
+        }
+        catch (InvalidOperationException)
+        {
+            // `GetValue<string>()` on a non-string node. Same disposition: a payload we cannot
+            // read is passed through rather than failing the modify.
+            return canonicalPayload;
         }
     }
 
@@ -324,12 +376,43 @@ public sealed class ModifyBookingCommandHandler(
                     tenantId, previousOwner.OperationId, "create", ct2)
                 : null;
 
-            var (targetCapacity, targetSlotId) =
+            var (requestedCapacity, capacityIsExplicit, targetSlotId) =
                 CapacitySlotKey.DeriveFromCanonicalPayload(revision.CanonicalPayload);
 
             var sameSlot = previousHold is { Status: HoldStatus.Finalized }
                            && previousHold.SlotId is not null
                            && previousHold.SlotId == targetSlotId;
+
+            // Handing the seat on requires knowing where it WENT. "Not the same slot" is not that.
+            //
+            // A payload carrying no slot dimension derives a NULL key, which means "not
+            // first-party tracked" — not "a different slot". `POST /api/Bookings/{id}/modifications`
+            // stores `SubmitModificationInput` as its canonical payload, and that type has no
+            // `starts_at`, no `party_size` and no resource/service/location field, so EVERY
+            // modification accepted through that door derives `(1, null)` here. With only
+            // `!sameSlot` guarding the release below, each one reserved nothing of its own and then
+            // released the live booking's FINALIZED hold as `Superseded`: the seats of a confirmed
+            // booking went back on sale while the guest still held the table.
+            //
+            // So the release is withheld in exactly one case: a previous owner sitting on a REAL
+            // first-party slot, with no idea where the booking went. Keeping the original seat is
+            // the right way round to fail there — an operator can reconcile a seat that is still
+            // held, but a table resold underneath a confirmed guest is a double-booking nobody can
+            // undo. Everything else is unchanged: when the previous owner holds no first-party slot
+            // (an untracked venue, or an external-only hold) there is nothing to lose and the
+            // release stays the no-op it always was.
+            var movedToKnownSlot = !sameSlot
+                                   && (targetSlotId is not null || previousHold?.SlotId is null);
+
+            // The size the slot must end up carrying for this booking. `AbsorbSameSlotAsync` takes
+            // it as the AUTHORITATIVE total, so a defaulted 1 does not mean "unspecified" there —
+            // it means "resize this booking down to one". `party_size` is optional and may arrive
+            // as null or as a TriState string, so an amendment that never mentioned it shrank a
+            // party of four to one and put three phantom seats back on sale. An amendment that does
+            // not restate the size keeps the size the booking already has.
+            var targetCapacity = capacityIsExplicit || previousHold is null
+                ? requestedCapacity
+                : previousHold.ReservedCapacity;
 
             // ── Acquire EVERY capacity row this transaction will touch, in canonical order. ──
             //
@@ -521,7 +604,7 @@ public sealed class ModifyBookingCommandHandler(
                 return;
             }
 
-            if (!sameSlot && previousOwner is not null && previousOwner.OperationId != operationId)
+            if (movedToKnownSlot && previousOwner is not null && previousOwner.OperationId != operationId)
             {
                 // `Superseded`, not `ProviderReleased`: the seat is not being given back to the
                 // venue, it is being handed from the old slot to the new one by this very

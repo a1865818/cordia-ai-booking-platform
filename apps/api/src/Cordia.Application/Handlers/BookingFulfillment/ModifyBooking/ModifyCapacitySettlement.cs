@@ -53,7 +53,7 @@ public sealed class ModifyCapacitySettlement(
             return;
 
         var revision = await intentRepo.GetRevisionAsync(tenantId, op.IntentId, op.IntentRevision, ct);
-        var (targetCapacity, targetSlotId) =
+        var (requestedCapacity, capacityIsExplicit, targetSlotId) =
             CapacitySlotKey.DeriveFromCanonicalPayload(revision?.CanonicalPayload);
 
         var previousHold = previousOwner is not null && previousOwner.OperationId != op.OperationId
@@ -67,6 +67,24 @@ public sealed class ModifyCapacitySettlement(
         var sameSlot = previousHold is { Status: HoldStatus.Finalized }
                        && previousHold.SlotId is not null
                        && previousHold.SlotId == targetSlotId;
+
+        // And where did it move TO? A null key is "not first-party tracked", not "a different
+        // slot" — a `SubmitModificationInput` canonical payload carries no time or resource
+        // dimension at all, so it derives null for every modification. Releasing the previous
+        // owner's finalized hold on that basis puts a confirmed booking's seats back on sale
+        // while the guest still occupies them. Withheld only where there is a real first-party seat
+        // to lose: a previous owner holding no slot has nothing to give up, so that path is
+        // untouched. The automatic lane makes the same distinction for the same reason; these two
+        // must not drift.
+        var movedToKnownSlot = !sameSlot
+                               && (targetSlotId is not null || previousHold?.SlotId is null);
+
+        // An amendment that does not restate the party size does not change it — `AbsorbSameSlotAsync`
+        // reads this as the authoritative total, so the fallback of 1 would resize the booking down.
+        // Same rule as the automatic lane and as the reserve step that sized the delta.
+        var targetCapacity = capacityIsExplicit || previousHold is null
+            ? requestedCapacity
+            : previousHold.ReservedCapacity;
 
         // Acquire every capacity row this settlement will touch, in canonical order — the same
         // acquisition the automatic lane makes, for the same two cycles (hold↔slot between modify
@@ -123,7 +141,7 @@ public sealed class ModifyCapacitySettlement(
                 tenantId, previousOwner!.OperationId, op.OperationId, CreateStep,
                 previousHold!.SlotId!, targetCapacity, ct);
         }
-        else if (previousOwner is not null && previousOwner.OperationId != op.OperationId)
+        else if (movedToKnownSlot && previousOwner is not null && previousOwner.OperationId != op.OperationId)
         {
             // `Superseded`, not `ProviderReleased`: the seat is handed from the old slot to the new
             // one by this operation, not given back to the venue. Reached only when the new seat is
