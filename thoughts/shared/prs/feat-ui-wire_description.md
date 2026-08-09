@@ -122,6 +122,74 @@ than argued.
   acquisition (unit), the primitive sorts any input (unit), and sorted acquisition cannot cycle while
   unsorted provably does (integration, real Postgres).
 
+---
+
+## Update — 2026-08-09 asserted-role gate + review batch (`6b288de`…`88d3281`)
+
+Started as one small hardening — the `X-Tenant-Id` shim logs a loud startup warning when enabled
+outside Development and `Authorization:AllowAssertedStaffRole` did not, so nobody could tell it had
+been switched on in production. The `/code-review high` pass that followed reviewed the whole branch
+and surfaced a defect family worth fixing with it. Five commits, split by lane so each builds and
+tests on its own.
+
+### The load-bearing finding
+
+The warning would have been **half true**. `POST /api/Bookings/{id}/changes:validate` accepts the
+same grant-or-staff-role door as the mutation it precedes, but its role branch carried no
+`AllowAssertedStaffRole` gate. So where a deployment had closed the role branch, the pre-flight
+stayed open: a caller could aim it at any booking id in the tenant and read back `stale_version` vs
+`ok` — an existence-and-version oracle over the venue's bookings, reached with a tenant header and
+nothing else (Inv-11). A pre-flight may be no stricter than the change it de-risks; it must not be
+looser either.
+
+### What changed
+
+| Area | Fix |
+|---|---|
+| Startup posture | `Authorization:AllowAssertedStaffRole` now announces itself exactly as the tenant shim does — info in Development, **`LogWarning` outside it**, info when disabled |
+| Pre-flight authz | `ValidateBookingChangeQueryHandler`'s role branch gated on the same flag (+3 unit tests) |
+| Modify capacity | A payload with no time/resource dimension derives a **null** slot key — "not tracked", not "a different slot". Read as a move, the settlement released a confirmed booking's finalized hold and its seats went back on sale under a seated guest. Every `/modifications` op hit this, since `SubmitModificationInput` carries no such field |
+| Party size | `party_size` is optional and arrives absent / null / TriState — all falling back to `1`, which `AbsorbSameSlotAsync` takes as the authoritative **total**. A party of four amended without restating its size was resized to one; reserve computed a delta of `1 - 4 = -3`. The derivation now reports whether the size was *stated* |
+| Manual recovery | A **create** resolved as Booked finalized no hold, so the sweeper freed the slot under a terminal Booked operation |
+| Terminal failures | `Modification`/`CancellationPending` had no clearer on any failure route (policy rejection, declined alternatives, both compensation outcomes) — the operation read `failed_final` while the booking row claimed a change was still in flight, permanently |
+| Provider disclosure | `grant_id` and a `grant_`-prefixed `confirmation.identity` were shipped verbatim to the booking provider on every modify — a live spec-08 credential in a third party's request logs |
+| langgraph | `customer` was missing from `_MATERIAL_FIELDS` despite a comment claiming otherwise, so projecting the guest onto the request never superseded the revision. The guest was dropped from the submitted payload — no notification destination, unfindable by `?phone_e164=` |
+| web idempotency | `pollToTerminal` returns a **non-terminal** status on its 60s budget timeout, but cancel and reschedule reset the attempt identity regardless — the ordinary "still working" path let a second click mint a duplicate operation (Inv-2) |
+| web audit | The transcript query key omitted `reasonCode` under `staleTime: Infinity`, so a re-opened session prompted for a purpose and then served cache — PII disclosed under a purpose that never reached the server and produced no audit row |
+| web truthfulness | `threads.find(…) || threads[0]` rendered a real guest session nothing else knew was open: no transcript fetched, no purpose asked, empty message map — a confident, blank conversation. A conflicting drag was a silent no-op |
+
+### Gates
+
+| Lane | Result |
+|---|---|
+| api | 1435 unit · lint · build |
+| web | 610 tests · lint 0/0 · typecheck |
+| langgraph | 1023 unit · lint |
+
+Integration suites were **not** re-run in this pass (they need the Postgres fixture); the pre-commit
+hook ran the .NET unit suite and formatting on every commit.
+
+### Reviewer notes
+
+- **Two review findings were rejected on inspection, not fixed.** The claimed waitlist decline/expire
+  hold race does not exist — both are fenced by `TryResolveAsync(Offered → …)` with a version guard
+  and `Accepted` is terminal, so neither can win after an accept.
+- **Three are deliberately left for a product/spec decision, not silently changed:**
+  - Marking a waitlist enrollment fulfilled on `ManualReview` and treating an expired derived
+    idempotency key as a live replay both **reverse decisions the code documents with an Inv-16
+    rationale** — each naive fix trades a double-offer for stranding a guest with nothing.
+  - `GET /api/customers` exposes `bookings.customer_id`, which falls back to raw phone/email, as a
+    substring search behind only the tenant header. Real, but fixing it changes what a shipped
+    endpoint returns.
+  - `hasConflict` treats *any* venue overlap as a conflict because every booking maps to one lane
+    (gap 9: no resource model). Whether overlaps should block at all is a product question — this
+    pass only made the refusal **visible** rather than silently permitting them.
+- **No new migration, no contract change**, so nothing regenerates and the type-generation blast
+  radius is empty. `CapacityRequest` is a new internal Domain record, not a shared schema.
+- **`docs/frontend-api-wiring.md`** records the gate and the pre-flight's matching lock beside the
+  reschedule authorization section, so the console-authentication exception stays a single
+  documented boundary rather than two.
+
 
 ## Type of change
 
