@@ -421,6 +421,76 @@ was frozen into the catalog. Adding it surfaced five more:
   not — it used the fixture's `description: ""`, which the old comparison already handled — so it
   was rewritten against a `null`, which is what the generated contract actually permits.
 
+---
+
+## Update — 2026-08-09 the draft diff tells the truth about long text (`44cf93c`)
+
+A follow-up on the draft editor's approval preview. One reported finding, five more from the
+review it triggered, and they are all the same failure wearing different clothes: **the diff
+describing something other than what will be written.**
+
+### The reported one
+
+`flatten` head-truncated each value independently at 40 characters, so two descriptions sharing a
+long opening clause rendered as `“…same prefix…” → “…same prefix…”` — identical text on both sides
+of an arrow, on the screen whose only job is to show an owner what they are about to approve. The
+full replacement was saved regardless, so the preview was not merely unhelpful, it was **wrong**.
+
+Raising the limit only moves the threshold; any fixed width has a description that defeats it.
+`diffWindow` computes the shared prefix and suffix and windows **both** values around the span that
+differs, so the two sides are cut at the same logical place and the surviving fragments line up for
+comparison, with a little unchanged context either side so the change reads in situ.
+
+### What the review then found
+
+| # | Finding |
+|---|---|
+| 1 | **A deletion was announced as an addition.** Testing `!before` ahead of `before === after` sent whitespace-only values down the "added" branch, so deleting an extractor-produced `"  "` rendered `description added: “”` — a destructive removal reported as an addition of nothing, which is exactly the removal-vs-correction distinction those lines exist to draw |
+| 2 | **The row heading and `describeEdit` disagreed about "empty".** The heading used raw truthiness, so a staged `" "` was accepted as a name and the row rendered with a blank title, while `describeEdit` — which flattens — called the same value empty and claimed a name had been added |
+| 3 | **`window` shadowed the DOM global** in a React component file |
+| 4 | **A dead `end <= start` guard** read as load-bearing but was unreachable; the invariant that makes it so is now stated where it sat |
+| 5 | **A test that did not discriminate** — see below |
+
+### Grapheme handling, and a comment that overclaimed
+
+I first wrote that code points fix emoji splitting. They do not, and the comment said otherwise.
+Slicing by UTF-16 unit leaves a lone surrogate that renders as a replacement glyph; `Array.from`
+fixes that much and no more. 👨‍👩‍👧 is **five** code points, a flag is two, an accent can be
+separated from its letter — so a code-point cut still drops the father and leaves the joiner
+dangling (`…‍👩‍👧`). `Intl.Segmenter` is the only thing that matches what is on screen, with a
+code-point fallback for a runtime without it.
+
+Its type is declared locally rather than by raising the app's `lib`: `apps/web` compiles against
+`lib: ES2020`, and moving the whole app to reach one runtime API would change the emit target for
+every file — a real blast radius for a diff-preview helper.
+
+### Three tests initially passed for the wrong reason
+
+Worth stating plainly, because it is the same trap twice and both were caught only by reverting the
+fix and re-running:
+
+- The **emoji** test asserted `c.length === 1` for validity — but spreading by code points makes a
+  *valid* surrogate pair a 2-length string, so the assertion was inverted.
+- The **ZWJ** test passed against both implementations, because its padding put the window boundary
+  *outside* the family.
+- The **surrogate** test still did not discriminate after that: the review confirmed it passed
+  against a UTF-16 implementation for *every* padding from 0 to 79.
+
+For each I searched for lengths where the boundary actually lands inside the cluster — 40 chars for
+the ZWJ family, 32 for the pizza — and pinned those, with comments saying the numbers are chosen
+rather than arbitrary. Shift them and the tests silently stop testing anything.
+
+Every fix in this batch was verified by reverting it and confirming the new test fails.
+
+### Gates
+
+| Lane | Unit | Lint | Typecheck | Build |
+|---|---|---|---|---|
+| web | **683** | 0/0 | ✅ | ✅ |
+
+api and langgraph are untouched by this diff; their figures are unchanged from the previous update
+(1462 unit / 573 integration, and 1023).
+
 
 ## Type of change
 
