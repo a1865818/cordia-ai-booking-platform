@@ -30,17 +30,29 @@ namespace Cordia.Application.Handlers.BookingFulfillment;
 public static class BookingPendingLifecycle
 {
     /// <summary>
-    /// The operation types that park a pending lifecycle. A create has no existing booking to park.
+    /// The pending lifecycle THIS operation type parks — and therefore the only one it may clear.
+    ///
+    /// <para>Matching the type matters: a booking carries one lifecycle, and two different
+    /// operations can be in flight against it. A failed <c>Modify</c> whose booking had since been
+    /// moved to <c>CancellationPending</c> by a newer cancellation used to be pushed back to
+    /// <c>Confirmed</c>, silently undoing that unrelated cancellation and leaving the cancel
+    /// operation running against a booking that no longer said a cancellation was pending. The
+    /// inverse happened for a failed <c>Cancel</c> against a booking now in
+    /// <c>ModificationPending</c>. An operation may only retract the state it itself parked.</para>
     /// </summary>
-    public static bool IsMutation(BookingOperation op)
-        => op.OperationType is Domain.Generated.OperationTypeEnum.Cancel
-            or Domain.Generated.OperationTypeEnum.Modify
-            or Domain.Generated.OperationTypeEnum.Reschedule;
+    public static BookingLifecycleStatus? PendingStateFor(BookingOperation op)
+        => op.OperationType switch
+        {
+            Domain.Generated.OperationTypeEnum.Cancel => BookingLifecycleStatus.CancellationPending,
+            Domain.Generated.OperationTypeEnum.Modify
+                or Domain.Generated.OperationTypeEnum.Reschedule => BookingLifecycleStatus.ModificationPending,
+            _ => null,
+        };
 
     /// <summary>
     /// Reverts <paramref name="op"/>'s booking to Confirmed if this operation is a mutation and the
-    /// booking is still parked pending. No-op for a create, for an operation with no booking, and
-    /// for a booking that is not pending.
+    /// booking is still parked in the pending state THIS operation type parks. No-op for a create,
+    /// for an operation with no booking, and for a booking parked by (or settled by) anyone else.
     /// </summary>
     public static async Task RevertOnFailureAsync(
         IBookingRepository bookingRepo,
@@ -49,19 +61,14 @@ public static class BookingPendingLifecycle
         DateTimeOffset now,
         CancellationToken ct)
     {
-        if (!IsMutation(op) || string.IsNullOrWhiteSpace(op.BookingId))
+        var expected = PendingStateFor(op);
+        if (expected is null || string.IsNullOrWhiteSpace(op.BookingId))
             return;
 
         var target = await bookingRepo.GetByIdAsync(tenantId, op.BookingId, ct);
 
-        if (target is not
-            {
-                LifecycleStatus: BookingLifecycleStatus.ModificationPending
-                        or BookingLifecycleStatus.CancellationPending
-            })
-        {
+        if (target is null || target.LifecycleStatus != expected.Value)
             return;
-        }
 
         await bookingRepo.TryTransitionLifecycleAsync(
             tenantId, target.BookingId, target.Version,

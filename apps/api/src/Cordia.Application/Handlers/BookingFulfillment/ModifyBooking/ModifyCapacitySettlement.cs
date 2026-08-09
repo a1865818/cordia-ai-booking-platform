@@ -131,6 +131,23 @@ public sealed class ModifyCapacitySettlement(
         if (finalizeOutcome == FinalizeOutcome.HoldNoLongerValid)
             return;
 
+        // `NotTracked` is not a successful finalization — it means NO first-party hold was ever
+        // created for this operation, so there is no destination seat at all.
+        //
+        // The same reasoning as `HoldNoLongerValid` immediately above, and it was missed because
+        // both non-Finalized outcomes look alike from the outside. A reschedule whose old slot is
+        // tracked and finalized but whose new slot never got a hold still derives a non-null
+        // `targetSlotId`, so `movedToKnownSlot` was true and the previous owner's FINALIZED hold
+        // was released: the confirmed booking ended up with no capacity on either slot and its
+        // secured seat went back on sale.
+        //
+        // Only the RELEASE is gated. The absorb below is a same-slot resize that does not depend on
+        // a new hold, and an operation whose previous owner holds no first-party seat has nothing to
+        // lose — that path stays exactly as it was, so an untracked venue is unaffected.
+        var destinationSecuredOrNothingToLose =
+            finalizeOutcome == FinalizeOutcome.Finalized
+            || previousHold is not { Status: HoldStatus.Finalized, SlotId: not null };
+
         if (sameSlot)
         {
             // Exactly one finalized hold survives, sized to the whole booking. A refusal here
@@ -141,11 +158,14 @@ public sealed class ModifyCapacitySettlement(
                 tenantId, previousOwner!.OperationId, op.OperationId, CreateStep,
                 previousHold!.SlotId!, targetCapacity, ct);
         }
-        else if (movedToKnownSlot && previousOwner is not null && previousOwner.OperationId != op.OperationId)
+        else if (movedToKnownSlot
+                 && destinationSecuredOrNothingToLose
+                 && previousOwner is not null
+                 && previousOwner.OperationId != op.OperationId)
         {
             // `Superseded`, not `ProviderReleased`: the seat is handed from the old slot to the new
             // one by this operation, not given back to the venue. Reached only when the new seat is
-            // actually secured — the guard above is what makes "handed" true rather than "dropped".
+            // actually secured — the guards above are what make "handed" true rather than "dropped".
             await capacityReservation.ReleaseFinalizedByOperationAsync(
                 tenantId, previousOwner.OperationId, ReleaseReason.Superseded, ct);
         }

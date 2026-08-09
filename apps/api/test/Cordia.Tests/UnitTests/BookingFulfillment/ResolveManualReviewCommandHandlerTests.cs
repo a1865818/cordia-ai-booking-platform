@@ -30,6 +30,15 @@ public class ResolveManualReviewCommandHandlerTests
                 It.IsAny<Func<CancellationToken, Task>>(),
                 It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
+
+        // The uncontended lifecycle transition SUCCEEDS — Moq's default of 0 means "a concurrent
+        // writer moved the booking", which the handler now treats as a refusal rather than
+        // ignoring. Tests that want the lost race override this explicitly.
+        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
     }
 
     private readonly Mock<IBookingRepository> _bookingRepo = new();
@@ -464,5 +473,374 @@ public class ResolveManualReviewCommandHandlerTests
         _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
             tenantId, previousOwnerId, ReleaseReason.Superseded, It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // -- A resolution may not claim more than actually happened ------------------------------
+
+    /// <summary>
+    /// A CANCEL resolved as Booked must not commit success while the booking is still live.
+    ///
+    /// <para>The lifecycle transition was reached only when the booking was CancellationPending and
+    /// its result was ignored, so outside that state the block was skipped entirely: the operation
+    /// recorded Booked and the outbox announced the cancellation had succeeded while the booking
+    /// stayed live - a guest told their booking was cancelled, sitting in a slot the venue still
+    /// has reserved.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_Cancel_RefusesWhenTheBookingCannotBeCancelled()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-cancel";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Cancel;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.Confirmed,
+                Version = 9,
+            });
+
+        // A concurrent writer moved the booking - the cancellation does not land.
+        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
+                tenantId, bookingId, 9, BookingLifecycleStatus.Cancelled,
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await Assert.ThrowsAsync<OperationConflictException>(() =>
+            CreateHandler().Handle(
+                new ResolveManualReviewCommand(
+                    tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+                CancellationToken.None));
+
+        // Nothing may claim the cancellation succeeded.
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>An already-cancelled booking is idempotent, not a conflict - another writer did it.</summary>
+    [Fact]
+    public async Task Handle_Booked_Cancel_AcceptsABookingAlreadyCancelled()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-cancel-2";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Cancel;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.Cancelled,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// A MODIFY resolved as Booked must refuse once the booking has been cancelled underneath it.
+    ///
+    /// <para>A concurrent cancellation can win the booking row while the review waits for a human.
+    /// The settlement went on to finalize the new hold, release the previous owner's seat, record
+    /// the operation Booked and emit a CONFIRMED outcome - for a booking that is cancelled.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_Modify_RefusesWhenTheBookingWasCancelledUnderneath()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify-2";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.Cancelled,
+                Version = 9,
+            });
+
+        await Assert.ThrowsAsync<OperationConflictException>(() =>
+            CreateHandler().Handle(
+                new ResolveManualReviewCommand(
+                    tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+                CancellationToken.None));
+
+        // Refused BEFORE any capacity or outbox write.
+        _capacity.Verify(c => c.FinalizeAgainstOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A lost race on the pending-change clear refuses, rather than settling capacity and
+    /// committing Booked over a booking still claiming a change is outstanding.
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_Modify_RefusesWhenThePendingChangeCannotBeCleared()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify-3";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.ModificationPending,
+                Version = 9,
+            });
+
+        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
+                tenantId, bookingId, 9, BookingLifecycleStatus.Confirmed,
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await Assert.ThrowsAsync<OperationConflictException>(() =>
+            CreateHandler().Handle(
+                new ResolveManualReviewCommand(
+                    tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+                CancellationToken.None));
+
+        _capacity.Verify(c => c.FinalizeAgainstOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A failed MODIFY must not retract a cancellation someone else parked.
+    ///
+    /// <para>The revert used to fire on either pending state, so a failed Modify whose booking had
+    /// since been moved to CancellationPending by a newer cancellation was pushed back to Confirmed
+    /// - silently undoing an unrelated in-flight cancellation.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Failed_Modify_LeavesAnUnrelatedCancellationPendingAlone()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify-4";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Modify;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.FailedFinal,
+                "manual_resolved_failed", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        // A NEWER cancellation parked the booking. This failed modify must not touch it.
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.CancellationPending,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// `NotTracked` is not a successful finalization, and the old seat must survive it.
+    ///
+    /// <para>It means NO first-party hold was ever created for this operation, so there is no
+    /// destination seat at all - the same substantive position as `HoldNoLongerValid`, which the
+    /// settlement already refuses on. Because a cross-slot reschedule still derives a non-null
+    /// target slot key, the release fired anyway and the confirmed booking ended up counted against
+    /// neither slot: the seat the guest actually occupies back on sale, nothing recorded on the slot
+    /// they moved to.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_DoesNotFreeTheOldSeatWhenTheNewSlotWasNeverTracked()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify-5";
+        const string previousOwnerId = "op_create_original";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _opRepo.Setup(r => r.GetBookedOperationForBookingAsync(
+                tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, previousOwnerId, OperationStatus.Booked));
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.ModificationPending,
+                Version = 9,
+            });
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        // The destination payload derives a real slot key, so `movedToKnownSlot` is true...
+        _intents.Setup(r => r.GetRevisionAsync(
+                tenantId, "int-1", 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = tenantId,
+                IntentId = "int-1",
+                Revision = 1,
+                CanonicalPayload =
+                    """{"operation":"reschedule","service_id":"svc-1","starts_at":"2026-09-02T09:00:00.000Z","party_size":2}""",
+                PayloadHash = "h",
+            });
+
+        // ...and the PREVIOUS owner holds a real first-party seat there is something to lose.
+        _holds.Setup(r => r.GetLatestByOperationAndStepAsync(
+                tenantId, previousOwnerId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CapacityHold
+            {
+                TenantId = tenantId,
+                HoldId = "hold_previous",
+                OperationId = previousOwnerId,
+                WorkflowStep = "create",
+                SlotId = "slot_old",
+                ReservedCapacity = 2,
+                Status = HoldStatus.Finalized,
+            });
+
+        // But this operation never had a hold of its own on the destination.
+        _capacity.Setup(c => c.FinalizeAgainstOperationAsync(
+                tenantId, operationId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Cordia.Domain.Capacity.FinalizeOutcome.NotTracked);
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(
+                tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        // The guest keeps the seat they are actually sitting in.
+        _capacity.Verify(c => c.ReleaseFinalizedByOperationAsync(
+            tenantId, previousOwnerId, ReleaseReason.Superseded, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An amendment may not be declared booked while a CANCELLATION is in flight either.
+    ///
+    /// <para>`CancellationPending` is what `POST .../cancellations` parks, and it is the third
+    /// lifecycle state this branch can meet. Refusing only on `Cancelled` let the resolution
+    /// finalize the new hold, release the previous owner's seat and emit a CONFIRMED outcome on top
+    /// of a booking another operation was actively removing.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_Booked_Modify_RefusesWhileACancellationIsInFlight()
+    {
+        const string tenantId = "t1";
+        const string operationId = "op-modify-6";
+        const string bookingId = "bk-1";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 4);
+        op.BookingId = bookingId;
+        op.OperationType = Cordia.Domain.Generated.OperationTypeEnum.Reschedule;
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, 4,
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                "manual_resolved_booked", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _bookingRepo.Setup(r => r.GetByIdAsync(tenantId, bookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = tenantId,
+                BookingId = bookingId,
+                LifecycleStatus = BookingLifecycleStatus.CancellationPending,
+                Version = 9,
+            });
+
+        await Assert.ThrowsAsync<OperationConflictException>(() =>
+            CreateHandler().Handle(
+                new ResolveManualReviewCommand(
+                    tenantId, operationId, ManualReviewResolution.Booked, "ext_ref", "rpl_1", "ops", "rc", "operator"),
+                CancellationToken.None));
+
+        _capacity.Verify(c => c.FinalizeAgainstOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

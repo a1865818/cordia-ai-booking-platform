@@ -604,7 +604,28 @@ public sealed class ModifyBookingCommandHandler(
                 return;
             }
 
-            if (movedToKnownSlot && previousOwner is not null && previousOwner.OperationId != operationId)
+            // `NotTracked` is not a secured destination — the SAME distinction the manual lane
+            // makes, kept here so the two cannot drift.
+            //
+            // `HoldNoLongerValid` already returned above, so the outcomes reaching here are
+            // Finalized or NotTracked, and only the first means this operation actually holds the
+            // new seat. NotTracked means no first-party hold was ever created — the destination slot
+            // was never declared — while a cross-slot payload still derives a non-null
+            // `targetSlotId`, so `movedToKnownSlot` was true and the previous owner's FINALIZED hold
+            // was released anyway: the booking committed Booked with capacity on neither slot, and
+            // the seat the guest actually occupies went back on sale.
+            //
+            // Only the release is gated, and only where there is a real first-party seat to lose —
+            // a previous owner holding none has nothing to give up, so an untracked venue behaves
+            // exactly as before.
+            var destinationSecuredOrNothingToLose =
+                finalizeOutcome == FinalizeOutcome.Finalized
+                || previousHold is not { Status: HoldStatus.Finalized, SlotId: not null };
+
+            if (movedToKnownSlot
+                && destinationSecuredOrNothingToLose
+                && previousOwner is not null
+                && previousOwner.OperationId != operationId)
             {
                 // `Superseded`, not `ProviderReleased`: the seat is not being given back to the
                 // venue, it is being handed from the old slot to the new one by this very
