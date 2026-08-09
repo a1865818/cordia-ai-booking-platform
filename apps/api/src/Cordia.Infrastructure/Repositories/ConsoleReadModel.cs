@@ -178,7 +178,9 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             .Select(s => new ConversationSessionSummary(
                 s.SessionId,
                 s.Channel,
-                s.CustomerRef,
+                // Masked: this read is tenant-scoped but carries no grant, actor or reason code,
+                // and `customer_ref` is a real address for any agent-created session.
+                ContactMinimisation.Mask(s.CustomerRef),
                 s.ConsentState,
                 s.RecordingAllowed,
                 s.StartedAt,
@@ -227,7 +229,9 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                 latestByEnrollment.TryGetValue(e.EnrollmentId, out var offer);
                 return new WaitlistEnrollmentSummary(
                     e.EnrollmentId,
-                    e.CustomerRef,
+                    // Masked. `NotificationRecipientResolver.AsDeliverable` reads this exact column
+                    // as the SMS/email destination, so it is an address by construction.
+                    ContactMinimisation.Mask(e.CustomerRef),
                     e.ServiceId,
                     e.LocationId,
                     e.PartySize,
@@ -267,10 +271,17 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             .Where(x => !string.IsNullOrWhiteSpace(x.CustomerRef))
             .ToList();
 
+        // Matched against the MASKED value, not the raw one.
+        //
+        // A substring match over the raw column made this endpoint a phone-prefix oracle: `?query=`
+        // of `+614` returned every guest whose number starts with it, on a read that needs nothing
+        // but tenant scope. The console never uses the parameter (`useCustomers("", 50)` is its only
+        // call site), so matching the masked form costs no working behaviour and removes the probe.
         var filtered = string.IsNullOrWhiteSpace(query)
             ? withCustomer
             : withCustomer
-                .Where(x => x.CustomerRef!.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Where(x => ContactMinimisation.Mask(x.CustomerRef)!
+                    .Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
         return new CustomerListResult(
@@ -281,7 +292,9 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                     // Rows arrive newest-first, so the first entry is the most recent activity.
                     var newest = g.First().Parsed;
                     return new CustomerSummary(
-                        g.Key,
+                        // Grouped on the RAW key above, so the counts stay exact; only the label
+                        // that leaves the API is minimised.
+                        ContactMinimisation.Mask(g.Key)!,
                         g.Select(x => x.Parsed.Key).Distinct(StringComparer.Ordinal).Count(),
                         g.Min(x => x.Parsed.Row.CreatedAt),
                         g.Max(x => x.Parsed.Row.UpdatedAt),
@@ -572,7 +585,11 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
     {
         var (row, payload, bookingId, _) = parsed;
         var stateRow = state.Row;
-        var customerRef = identity.CustomerRef;
+        // Masked at the point of emission. The schedule grid is a tenant-scoped read with no
+        // grant, actor or reason code, and `identity.CustomerRef` is `bookings.customer_id` —
+        // which falls back through `caller_id → phone_e164 → email`, so it is a raw address for
+        // any booking the agent lane created. The grid only ever renders it as a label.
+        var customerRef = ContactMinimisation.Mask(identity.CustomerRef);
 
         return new ScheduledBooking(
             bookingId,
