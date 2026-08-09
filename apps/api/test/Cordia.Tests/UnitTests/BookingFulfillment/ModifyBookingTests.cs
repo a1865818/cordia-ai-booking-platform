@@ -849,4 +849,52 @@ public class ModifyBookingTests
         // keeps the size it has. It was resized to the defaulted 1 before this.
         Assert.Equal(2, absorbedTo);
     }
+
+    /// <summary>
+    /// A modify may not settle as Booked while a CANCELLATION is in flight.
+    ///
+    /// <para>The in-transaction guard rejected only `Cancelled`, so a booking parked at
+    /// `CancellationPending` by `POST .../cancellations` sailed through: the modify finalized its
+    /// hold, settled capacity, committed `Booked` and emitted the `modified` notification — telling
+    /// the guest their booking had moved while another operation was actively removing it.</para>
+    ///
+    /// <para>Same disposition as `Cancelled`: reconcile, and let a human establish which of the two
+    /// actually happened.</para>
+    /// </summary>
+    [Fact]
+    public async Task Modify_RoutesToReconciling_WhenACancellationIsInFlight()
+    {
+        GivenOperation();
+        GivenProvider(ProviderResultKind.Created);
+
+        // Live when the handler starts...
+        _bookings.SetupSequence(b => b.GetByIdAsync(TenantId, BookingId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Booking
+            {
+                TenantId = TenantId,
+                BookingId = BookingId,
+                BookingReference = "CORD-1",
+                ProviderReference = ProviderRef,
+                LifecycleStatus = BookingLifecycleStatus.Confirmed,
+                Version = 1,
+            })
+            // ...and parked for cancellation by the time the settlement transaction re-reads it.
+            .ReturnsAsync(new Booking
+            {
+                TenantId = TenantId,
+                BookingId = BookingId,
+                BookingReference = "CORD-1",
+                ProviderReference = ProviderRef,
+                LifecycleStatus = BookingLifecycleStatus.CancellationPending,
+                Version = 2,
+            });
+
+        await RunAsync();
+
+        Assert.Equal(OperationStatus.Reconciling, _settledTo);
+        Assert.Equal("modify_target_cancellation_in_flight", _settledReason);
+
+        // Nothing may tell the guest the booking moved.
+        Assert.Empty(_emitted);
+    }
 }

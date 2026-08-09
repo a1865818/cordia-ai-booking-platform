@@ -495,13 +495,33 @@ public sealed class ModifyBookingCommandHandler(
             // else here would notice. Without this the modify booked itself against a cancelled
             // booking, finalized a hold nothing would ever release, and told the guest their
             // booking had moved moments after they cancelled it.
+            //
+            // Stated as an ALLOW-LIST of the states an amendment may settle from, not as a
+            // block-list of `Cancelled`. `CancellationPending` is what `POST .../cancellations`
+            // parks while a cancellation is in flight, and it passed the old check — so a modify
+            // could finalize as Booked, settle capacity and tell the guest their booking moved
+            // while another operation was actively removing it. It takes the same disposition as
+            // `Cancelled`: reconcile, and let a human decide which of the two actually happened.
+            // A lifecycle value added later fails closed here rather than slipping through.
             var bookingNow = await bookingRepo.GetByIdAsync(tenantId, booking.BookingId, ct2);
-            if (bookingNow is null || bookingNow.LifecycleStatus == BookingLifecycleStatus.Cancelled)
+            var amendable = bookingNow is
             {
+                LifecycleStatus: BookingLifecycleStatus.Confirmed
+                        or BookingLifecycleStatus.ModificationPending
+            };
+
+            if (!amendable)
+            {
+                var blockedReason = bookingNow is null
+                    ? "modify_target_missing_in_flight"
+                    : bookingNow.LifecycleStatus == BookingLifecycleStatus.Cancelled
+                        ? "modify_target_cancelled_in_flight"
+                        : "modify_target_cancellation_in_flight";
+
                 await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, freshOp.Version,
                     OperationStatus.Finalizing, OperationStatus.Reconciling,
-                    reason: "modify_target_cancelled_in_flight", ct: ct2);
+                    reason: blockedReason, ct: ct2);
 
                 // The hold this call just finalized belongs to an amendment that must not stand.
                 if (finalizeOutcome == FinalizeOutcome.Finalized)
@@ -519,7 +539,13 @@ public sealed class ModifyBookingCommandHandler(
                     SubjectRef = booking.BookingId,
                     CorrelationId = operationId,
                     OperationId = operationId,
-                    Metadata = JsonSerializer.Serialize(new { reason = "target_cancelled_in_flight" }),
+                    // The event type is kept stable for anything already querying it; the exact
+                    // state that blocked the amendment travels in the metadata.
+                    Metadata = JsonSerializer.Serialize(new
+                    {
+                        reason = blockedReason,
+                        lifecycle = bookingNow?.LifecycleStatus.ToString(),
+                    }),
                     OccurredAt = now,
                 }, ct2);
 
