@@ -13,7 +13,7 @@ from cordia_agent.revisions.manager import (
     is_material_change,
     supersede_revision,
 )
-from cordia_agent.state import BookingRequest, OperationType
+from cordia_agent.state import BookingRequest, CustomerRef, OperationType
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +170,36 @@ def test_is_material_change_special_requests_only_not_material() -> None:
     old = _create_request(service_id="svc_1", special_requests=[])
     new = _create_request(service_id="svc_1", special_requests=["window seat"])
     assert is_material_change(old, new) is False
+
+
+@pytest.mark.unit
+def test_is_material_change_detects_customer_projection() -> None:
+    """Projecting the guest onto a request that had none is a material change → True.
+
+    ``read_back`` fills ``request.customer`` from the ambient guest when the request
+    carries none, and its comment claims that "counts as a material change below and
+    supersedes the revision".  While ``customer`` was absent from ``_MATERIAL_FIELDS``
+    that was false: the projection changed the request and left the revision holding
+    ``customer=None``, and since the projection only runs while ``request.customer`` is
+    None it never fired again.  The two diverged permanently — the guest was dropped
+    from the submitted payload and any lane sending ``draft.request`` with the stale
+    ``payload_hash`` got a 422.
+    """
+    old = _create_request(service_id="svc_1")
+    new = _create_request(
+        service_id="svc_1",
+        customer=CustomerRef(phone_e164="+61400000000"),
+    )
+    assert old.customer is None
+    assert is_material_change(old, new) is True
+
+
+@pytest.mark.unit
+def test_is_material_change_detects_customer_replacement() -> None:
+    """Booking for a DIFFERENT guest is material — it moves the notification destination."""
+    old = _create_request(customer=CustomerRef(phone_e164="+61400000000"))
+    new = _create_request(customer=CustomerRef(phone_e164="+61400000001"))
+    assert is_material_change(old, new) is True
 
 
 @pytest.mark.unit

@@ -92,6 +92,20 @@ _MATERIAL_FIELDS: tuple[str, ...] = (
     "party_size",
     "duration_minutes",
     "target_booking_id",
+    # WHO the booking is for is material.
+    #
+    # ``read_back`` projects the ambient guest onto ``draft.request`` when the request carries
+    # none, and its comment stated that doing so "counts as a material change below and
+    # supersedes the revision" — which was not true while ``customer`` was missing from this
+    # tuple.  The projection therefore changed the request and left the revision behind holding
+    # ``customer=None``, and because the projection only runs while ``request.customer`` is None
+    # it never fired again: the two diverged permanently, the guest was dropped from the
+    # submitted payload (no notification destination, unfindable by ``?phone_e164=``), and any
+    # lane sending ``draft.request`` alongside the stale ``payload_hash`` earned a 422.
+    #
+    # It is also material on the merits: the customer is the notification destination and the
+    # manage-booking lookup key, so changing it changes what the guest is confirming (§2.3).
+    "customer",
 )
 
 
@@ -99,7 +113,7 @@ def is_material_change(old: BookingRequest, new: BookingRequest) -> bool:
     """Return True if any material booking field changed between two requests.
 
     Material fields: operation, service_id, location_id, starts_at, party_size,
-    duration_minutes, target_booking_id.  Non-material fields such as
+    duration_minutes, target_booking_id, customer.  Non-material fields such as
     ``special_requests`` or ``target_booking_version`` are intentionally ignored
     (a change in ``special_requests`` alone does NOT trigger a new revision).
     """
