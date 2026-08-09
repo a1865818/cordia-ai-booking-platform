@@ -317,6 +317,110 @@ closes the coverage caveat the previous two updates carried.
   gate; false absolutely, because the staff role authorizes the write and never the gated booking-details
   read that precedes it. §8 now records that the grant travels on **both** calls.
 
+---
+
+## Update — 2026-08-09 concurrency, honesty and the draft editor (`1c9ef50`…`caa2ab6`)
+
+Three review rounds, eight commits. Two findings turned out to be a **defect class rather than a
+defect**, and in both the fix as proposed would not have worked.
+
+### `GetOrAddAsync` — one bug, eight handlers, and a remedy that had to be the other one
+
+A reviewer flagged that `ModifyBookingCommand.CreateOrLoadStepAsync` does an unlocked read then an
+insert, so two concurrent deliveries both insert and one hits `uq_workflow_step_per_type`. Correct
+— but the suggested remedy (catch the violation, re-read) **cannot work here**: PostgreSQL aborts
+the WHOLE ambient transaction on a constraint violation, so by the time 23505 surfaces the
+re-read *and the commit* fail with `current transaction is aborted`. This repo had already hit
+that and documents it in three places; the working primitive is `ON CONFLICT DO NOTHING`.
+
+It also was not one call site. The identical read-then-add appears in **eight** handlers, and in
+`Validate` and `ReserveCapacity` it is worse than in `Modify`: the step insert shares its
+transaction with the operation's own status transition, so a routine redelivery **rolled the
+operation back** instead of advancing it. `AddAsync` is gone from `IWorkflowStepRepository` — an
+unguarded insert on that interface is this bug offered to the next caller.
+
+A conflict whose winner cannot then be read now **throws** rather than returning the candidate.
+That was a review finding on my own fix, and the reasoning is the point: returning a
+`workflow_step_id` that exists nowhere means the finalize lane calls the provider, its
+version-guarded transition affects zero rows and reads as an ordinary lost race, and the retry
+scheduler schedules against a phantom step — a booking created at the provider with the operation
+stranded in `Finalizing`. The read-then-add it replaced failed loudly there.
+
+### Security: a partially-applied grant strip fell back to the raw payload
+
+`StripAuthorizationMaterial` removes the spec-08 credential before the payload goes to a
+third-party booking provider. It read `confirmation.identity` with `GetValue<string>()`, which
+**throws on a non-string node**, and the throw landed in a catch that returned the ORIGINAL
+payload — after `grant_id` had already been removed from the copy. A payload whose `identity` was
+a number, object, array, bool or null therefore shipped the live verification grant to the
+provider, where it lands in that provider's request logs. The one input shape the method did not
+expect defeated it completely rather than degrading it. Parsing is now the only step that can
+throw, and it happens before anything is removed.
+
+### Console honesty
+
+| Area | Fix |
+|---|---|
+| Scan ceiling | `ScanAsync` reported `truncated` whenever the loop hit `MaxScan`, without asking whether anything was left. A tenant with exactly 20,000 rows had been read in **full** and was still told its grid might be missing bookings, and its customer search might be missing a guest who does not exist. "Possibly incomplete" is the one answer an operator cannot act on |
+| Catalog list | A failed `GET /api/menu/catalogs` was indistinguishable from a tenant with no catalogs — the operator was told there was nothing to approve when the truth was that we could not find out, with no retry. Loading and error states now render alongside the session-confirmed rows |
+| Merge order | Session-tracked rows seeded the map first and kept their positions, so a catalog created seconds ago on another machine rendered **below** rows from an old session. The endpoint's order is the only ordering signal there is; it is now the spine of the merge |
+| 403 headings | `ErrorState` said "Verification needed" for **every** 403, but `toApiError` already distinguishes a verification requirement from a role refusal — and the role refusal is the console's most common 403 by far. Those operators were being pointed at a flow that cannot fix their problem |
+| Wiring guide | Four corrected claims: a "nothing is unbuilt" headline contradicted by its own gap table, a "changes no behaviour" line covering a monitor that settles catalogs terminally, five lowercase `/api/bookings`, and a stray `+` breaking a paragraph into a list item |
+
+### The catalog draft editor: a race, and a field that was never there
+
+**Save and Approve could run at once.** `in_review` carries both `canApprove` and `canEdit`, so
+they sit on the same row with separate pending flags. An owner could stage a price correction,
+click Save, and click Approve before it returned; if Approve won, the catalog left `in_review`,
+the editor unmounted, the edit was refused and **its error went with the unmounted component** —
+the operator watched the row turn Approved with no reason to doubt the corrections landed. Items
+cannot change after approval, so that is not recoverable.
+
+The race runs **both** ways — Save was disabled only by its own `edit.isPending`, so it stayed
+clickable during an Approve — so this is a two-way handshake. Three further doors each reopened
+it on their own: the failure panel's "Try again" (guarded on entry but not on the stored retry),
+the editor's own `Close` (unmounting mid-save let Approve go live while the POST was on the
+wire), and `GhostButton`, which **declared `disabled` in its props and silently ignored it**.
+
+**The description field did not exist.** `CatalogItemEdit` has carried `description` and
+`pending` has staged it since the editor was written — there was simply no input, so the branch
+was unreachable and a wrong extracted description could be neither seen nor corrected before it
+was frozen into the catalog. Adding it surfaced five more:
+
+- `null` and `''` both mean "no value" but were compared as different, so touching an empty field
+  staged a write that changes nothing — for `description` **and** `name`;
+- a description CLEAR and a description EDIT rendered byte-identical text in the diff, so the
+  approval surface could not tell a destructive removal from a correction;
+- `before`/`after` were computed unconditionally, so a description-only edit struck through the
+  old price beside an identical new one — asserting a price change nobody made;
+- clearing a NAME produced no explanation and no row heading: the most destructive edit was
+  described the least;
+- an item whose `item_id` is null was staged into the batch, where one unmatched edit makes
+  `ApplyItemEditsAsync` throw and roll back **every other correction in the save**.
+
+### Gates
+
+| Lane | Unit | Integration | Lint | Typecheck | Build |
+|---|---|---|---|---|---|
+| api | **1462** | **573** (1 pre-existing skip) | ✅ | — | ✅ |
+| web | **676** | — | 0/0 | ✅ | ✅ |
+| langgraph | **1023** | 51 | ✅ | — | — |
+
+### Reviewer notes
+
+- **Two proposed fixes were wrong for this codebase, and the commits say why** — the catch-23505
+  approach (Postgres aborts the transaction) and `return page.Count < PageSize` (`page` is scoped
+  inside the loop). Both are commented so the next person does not retry them.
+- **A test file was exercising a real `fetch` that jsdom rejects.** `MenuCatalogPanel`'s discovery
+  read was never mocked, so the panel rendered its error path throughout and the assertions passed
+  only because the empty state did not distinguish "failed" from "empty" — the same defect being
+  fixed in the component, mirrored in its tests.
+- **`ErrorState` had no tests at all** despite being the failure surface for sixteen call sites,
+  which is how the 403 heading survived. It has fifteen now.
+- Each new test was checked to **fail against the old code**. The first null-vs-empty test did
+  not — it used the fixture's `description: ""`, which the old comparison already handled — so it
+  was rewritten against a `null`, which is what the generated contract actually permits.
+
 
 ## Type of change
 
