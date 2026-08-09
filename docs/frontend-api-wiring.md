@@ -1068,7 +1068,17 @@ Three details that are load-bearing:
   up in `verification_grants` and must be unexpired and in scope; an invented one authorizes
   nothing. It is the same field the assurance derivation above already reads.
 - **The console's half rests on the `X-Actor` shim**, which is only trustworthy in Development.
-  That is the known console-authentication exception — not a second one.
+  That is the known console-authentication exception — not a second one. It is gated exactly like
+  the tenant shim: `Authorization:AllowAssertedStaffRole` defaults to `IsDevelopment()`, so outside
+  Development the role branch is **off** and a reschedule needs a real server-issued grant. The API
+  now logs that posture once at startup and **warns loudly** when the flag is set explicitly outside
+  Development, so nobody turns it on in production silently.
+- **The pre-flight carries the same lock as the mutation.** `POST .../changes:validate` accepts the
+  same grant-or-staff-role door, and its role branch is gated on the same flag. Ungated it stayed
+  open in production after the mutation it precedes had closed, which left an existence-and-version
+  oracle (`stale_version` vs `ok`) over every booking id in the tenant, reachable with a tenant
+  header and nothing else. A pre-flight may be no stricter than the change it de-risks; it must not
+  be looser either.
 
 **No `VerificationGate` was wired for reschedule, and that is now the right answer rather than a
 gap.** The console operator *is* the authorization. Cancel takes the grant path because

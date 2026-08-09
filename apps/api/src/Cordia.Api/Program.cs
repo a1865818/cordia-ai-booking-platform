@@ -46,10 +46,12 @@ builder.Services.AddApplication();
 // reason: neither is proven, and outside Development both are unauthenticated access to another
 // party's data (Inv-11/Inv-13). Default ON in Development, OFF elsewhere; an explicit
 // `Authorization:AllowAssertedStaffRole` overrides. Superseded by signed actor context (spec 08/15).
+// Resolved once here and announced at startup below, so the log reports the value actually bound.
+var allowAssertedStaffRole = builder.Configuration.GetValue(
+    "Authorization:AllowAssertedStaffRole",
+    builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
-    o.AllowAssertedStaffRole = builder.Configuration.GetValue(
-        "Authorization:AllowAssertedStaffRole",
-        builder.Environment.IsDevelopment()));
+    o.AllowAssertedStaffRole = allowAssertedStaffRole);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // --- Web ---
@@ -231,6 +233,42 @@ else
     // A silently absent shim looks exactly like a broken tenant lookup.
     app.Logger.LogInformation(
         "X-Tenant-Id header shim is disabled ({Environment}); tenant must come from a verified X-Tenant-Context.",
+        app.Environment.EnvironmentName);
+}
+
+// The sibling gate, announced the same way and for the same reason.
+//
+// `Authorization:AllowAssertedStaffRole` was the silent one: the tenant shim above says at startup
+// that callers name their own tenant, but a deployment that switched the asserted-role branch on
+// outside Development said nothing at all. Wherever it is enabled, `X-Actor-Role` — an unproven
+// client string — stands in for a verification grant, so anyone who knows a booking id can assert
+// `operator` and mutate that booking with no grant (Inv-11). That is expected on a developer
+// machine and in the test host; anywhere else it must be findable by grepping startup.
+if (allowAssertedStaffRole)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "Asserted X-Actor-Role authorization is ENABLED ({Environment}); an asserted staff role "
+            + "stands in for a verification grant. Expected on a developer machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "Asserted X-Actor-Role authorization is ENABLED OUTSIDE DEVELOPMENT ({Environment}) "
+            + "because Authorization:AllowAssertedStaffRole was set explicitly. Any caller who knows "
+            + "a booking id can assert a staff role and mutate that booking with no verification "
+            + "grant (Inv-11). Turn it off unless a signed actor-context issuer is genuinely "
+            + "unavailable.",
+            app.Environment.EnvironmentName);
+    }
+}
+else
+{
+    // A silently absent role branch looks exactly like a broken console authorization.
+    app.Logger.LogInformation(
+        "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
         app.Environment.EnvironmentName);
 }
 
