@@ -290,15 +290,12 @@ public sealed class ModifyBookingCommandHandler(
         WorkflowStep? step = null;
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            var existing = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, ModifyStepType, ct2);
-            if (existing is not null)
-            {
-                step = existing;
-                return;
-            }
-
             var now = DateTimeOffset.UtcNow;
-            step = new WorkflowStep
+
+            // GetOrAddAsync, not read-then-add: two concurrent deliveries both saw no step and both
+            // inserted, and the loser's 23505 aborted this whole transaction rather than loading the
+            // winner's row â€” a normal redelivery failing the modify instead of resuming it.
+            step = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
                 TenantId = tenantId,
                 WorkflowStepId = $"ws_{Guid.NewGuid():N}",
@@ -310,8 +307,7 @@ public sealed class ModifyBookingCommandHandler(
                 Version = 0,
                 CreatedAt = now,
                 UpdatedAt = now,
-            };
-            await stepRepo.AddAsync(step, ct2);
+            }, ct2);
         }, ct);
 
         return step;

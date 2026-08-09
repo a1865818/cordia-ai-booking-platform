@@ -141,15 +141,8 @@ public sealed class CancelBookingCommandHandler(
         WorkflowStep? step = null;
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            var existing = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, CancelStepType, ct2);
-            if (existing is not null)
-            {
-                step = existing;
-                return;
-            }
-
             var now = DateTimeOffset.UtcNow;
-            step = new WorkflowStep
+            step = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
                 TenantId = tenantId,
                 WorkflowStepId = $"ws_{Guid.NewGuid():N}",
@@ -163,8 +156,7 @@ public sealed class CancelBookingCommandHandler(
                 Version = 0,
                 CreatedAt = now,
                 UpdatedAt = now,
-            };
-            await stepRepo.AddAsync(step, ct2);
+            }, ct2);
         }, ct);
 
         return step;

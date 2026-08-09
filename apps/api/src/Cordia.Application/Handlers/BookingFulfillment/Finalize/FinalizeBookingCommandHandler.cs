@@ -316,35 +316,31 @@ public sealed class FinalizeBookingCommandHandler(
 
             // Create-or-load the finalize WorkflowStep (store reference so circuit/retry have the id).
             var now = DateTimeOffset.UtcNow;
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct2);
-            if (existingStep is null)
+            var step = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var newStep = new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = StepType,
-                    Status = WorkflowStepStatus.InProgress,
-                    ProviderIdempotencyKey = providerKey,
-                    AttemptCount = 1,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                };
-                await stepRepo.AddAsync(newStep, ct2);
-                finalizeStep = newStep;
-            }
-            else
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = StepType,
+                Status = WorkflowStepStatus.InProgress,
+                ProviderIdempotencyKey = providerKey,
+                AttemptCount = 1,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
+
+            // A step this call did not create may still be Pending — that is where the sweeper
+            // parks one for a scheduled retry. A freshly inserted step is already InProgress, so
+            // this is a no-op on the create path.
+            if (step.Status == WorkflowStepStatus.Pending)
             {
-                if (existingStep.Status == WorkflowStepStatus.Pending)
-                {
-                    await stepRepo.TryTransitionStatusAsync(
-                        tenantId, existingStep.WorkflowStepId, existingStep.Version,
-                        WorkflowStepStatus.Pending, WorkflowStepStatus.InProgress, ct2);
-                }
-                finalizeStep = existingStep;
+                await stepRepo.TryTransitionStatusAsync(
+                    tenantId, step.WorkflowStepId, step.Version,
+                    WorkflowStepStatus.Pending, WorkflowStepStatus.InProgress, ct2);
             }
+
+            finalizeStep = step;
 
             // Insert a Planned attempt row.
             var latestAttemptNumber = (await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct2))?.AttemptNumber ?? 0;

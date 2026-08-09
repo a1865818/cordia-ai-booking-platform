@@ -77,23 +77,23 @@ public sealed class ValidateOperationCommandHandler(
             }
 
             // Create-or-skip the "validate" workflow step (internal step, no external call).
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, "validate", ct2);
-            if (existingStep is null)
+            //
+            // The step insert shares this transaction with the Accepted→Validating transition above,
+            // so a losing read-then-add did not just fail to reuse the winner's step — its 23505
+            // aborted the transition too, and the operation rolled back to Accepted.
+            var now = DateTimeOffset.UtcNow;
+            await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var now = DateTimeOffset.UtcNow;
-                await stepRepo.AddAsync(new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = "validate",
-                    Status = WorkflowStepStatus.Succeeded,
-                    AttemptCount = 0,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                }, ct2);
-            }
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = "validate",
+                Status = WorkflowStepStatus.Succeeded,
+                AttemptCount = 0,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
 
             // Step 2: Validating → ReservingCapacity.
             // Read fresh to get the current version (may have been bumped by step 1 above).

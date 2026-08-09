@@ -85,10 +85,14 @@ public class CompensateOperationTests
                 It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
 
-        // Step repo: no existing compensate step (so it gets created).
+        // Step repo: no existing compensate step (so it gets created). Create-or-load is the
+        // repository's job now (GetOrAddAsync, ON CONFLICT DO NOTHING); returning the candidate is
+        // "nobody raced us".
         _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), "compensate", It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
 
         _stepRepo.Setup(r => r.TryTransitionStatusAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),

@@ -61,23 +61,19 @@ public sealed class RequestPaymentCommandHandler(
                 }
 
                 // Create-or-skip request_payment step (Succeeded immediately — no external call).
-                var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct2);
-                if (existingStep is null)
+                var now2 = DateTimeOffset.UtcNow;
+                await stepRepo.GetOrAddAsync(new WorkflowStep
                 {
-                    var now2 = DateTimeOffset.UtcNow;
-                    await stepRepo.AddAsync(new WorkflowStep
-                    {
-                        TenantId = tenantId,
-                        WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                        OperationId = operationId,
-                        StepType = StepType,
-                        Status = WorkflowStepStatus.Succeeded,
-                        AttemptCount = 0,
-                        Version = 0,
-                        CreatedAt = now2,
-                        UpdatedAt = now2,
-                    }, ct2);
-                }
+                    TenantId = tenantId,
+                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                    OperationId = operationId,
+                    StepType = StepType,
+                    Status = WorkflowStepStatus.Succeeded,
+                    AttemptCount = 0,
+                    Version = 0,
+                    CreatedAt = now2,
+                    UpdatedAt = now2,
+                }, ct2);
 
                 var rows = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, current.Version,
@@ -111,22 +107,18 @@ public sealed class RequestPaymentCommandHandler(
 
             // Create-or-skip request_payment step (Succeeded — the LINK request; waiting for payment
             // is external so the sweeper must not re-drive an AwaitingPayment operation).
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct2);
-            if (existingStep is null)
+            await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                await stepRepo.AddAsync(new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = StepType,
-                    Status = WorkflowStepStatus.Succeeded,
-                    AttemptCount = 0,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                }, ct2);
-            }
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = StepType,
+                Status = WorkflowStepStatus.Succeeded,
+                AttemptCount = 0,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
 
             // Held → AwaitingPayment (version-guarded CAS — must happen BEFORE DepositSession).
             var rows = await opRepo.TryTransitionStatusAsync(

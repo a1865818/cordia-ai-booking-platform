@@ -6,7 +6,26 @@ namespace Cordia.Domain.Interfaces;
 /// <summary>Repository for workflow steps; version-token transitions use the §22.1 helper.</summary>
 public interface IWorkflowStepRepository
 {
-    Task AddAsync(WorkflowStep step, CancellationToken ct = default);
+    // NOTE: there is deliberately no plain `AddAsync` — the same reasoning as
+    // IOperationWorkItemRepository, and for the same index.
+    //
+    // Every writer here is racing a redelivery or the step sweeper for the same operation, and
+    // `uq_workflow_step_per_type` makes a losing INSERT raise 23505 — which aborts the WHOLE
+    // ambient transaction. All eight creation paths were read-then-add, so a race did not merely
+    // fail to reuse the winner's step: it took down whatever else that transaction was writing.
+    // In Validate and ReserveCapacity that is the operation's own status transition, so a normal
+    // redelivery rolled the operation back to its previous state instead of advancing it.
+    //
+    // GetOrAddAsync below lets the database absorb the conflict, so the transaction stays clean
+    // and a lost race is the benign "reuse the winner's step" it always claimed to be.
+
+    /// <summary>
+    /// Returns the existing step for (tenant, operation, stepType), or inserts
+    /// <paramref name="step"/> and returns it. Idempotent under concurrency: the insert is
+    /// <c>ON CONFLICT DO NOTHING</c>, so a caller that loses the race reads the winner's row back
+    /// instead of raising a constraint violation that would poison the ambient transaction.
+    /// </summary>
+    Task<WorkflowStep> GetOrAddAsync(WorkflowStep step, CancellationToken ct = default);
 
     Task<WorkflowStep?> GetAsync(string workflowStepId, CancellationToken ct = default);
 

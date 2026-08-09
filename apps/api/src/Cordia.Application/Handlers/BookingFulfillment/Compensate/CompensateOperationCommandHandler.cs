@@ -70,29 +70,20 @@ public sealed class CompensateOperationCommandHandler(
         WorkflowStep? compensateStep = null;
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, CompensateStepType, ct2);
-            if (existingStep is null)
+            var now = DateTimeOffset.UtcNow;
+            compensateStep = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var now = DateTimeOffset.UtcNow;
-                compensateStep = new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = CompensateStepType,
-                    Status = WorkflowStepStatus.InProgress,
-                    ProviderIdempotencyKey = string.Empty,
-                    AttemptCount = 1,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                };
-                await stepRepo.AddAsync(compensateStep, ct2);
-            }
-            else
-            {
-                compensateStep = existingStep;
-            }
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = CompensateStepType,
+                Status = WorkflowStepStatus.InProgress,
+                ProviderIdempotencyKey = string.Empty,
+                AttemptCount = 1,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
         }, ct);
 
         if (compensateStep is null)

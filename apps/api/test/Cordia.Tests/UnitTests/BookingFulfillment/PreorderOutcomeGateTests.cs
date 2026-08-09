@@ -107,6 +107,8 @@ public class PreorderOutcomeGateTests
                 .ReturnsAsync(Op(OperationStatus.Validating, isPreorder));
             Steps.Setup(s => s.GetByOperationAndTypeAsync(TenantId, OperationId, "validate", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new WorkflowStep { TenantId = TenantId, OperationId = OperationId, StepType = "validate" });
+            Steps.Setup(s => s.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
             Verification.Setup(v => v.RequiresUserActionAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(false);
             Policy.Setup(p => p.CheckAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))

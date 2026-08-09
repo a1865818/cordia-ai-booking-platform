@@ -46,6 +46,10 @@ public class CancelBookingTests
         _steps.Setup(s => s.GetByOperationAndTypeAsync(
                 TenantId, OperationId, "cancel", It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
+        // Create-or-load is the repository's job now (GetOrAddAsync, ON CONFLICT DO NOTHING), so
+        // the default is "nobody raced us": the candidate comes straight back.
+        _steps.Setup(s => s.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
 
         _ops.Setup(o => o.GetBookedOperationForBookingAsync(
                 TenantId, BookingId, It.IsAny<CancellationToken>()))
@@ -336,8 +340,12 @@ public class CancelBookingTests
         ArrangeHappyPath();
         _adapter.Setup(a => a.CancelBookingAsync("default", ProviderRef, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ProviderResult(ProviderResultKind.Created));
-        _steps.Setup(s => s.GetByOperationAndTypeAsync(
-                TenantId, OperationId, "cancel", It.IsAny<CancellationToken>()))
+        // The reuse itself now happens INSIDE the repository (GetOrAddAsync is a single
+        // ON CONFLICT DO NOTHING insert plus a read-back), because a read-then-add in the handler
+        // let two concurrent deliveries both insert and aborted the loser's whole transaction.
+        // So what this test pins at the handler level is the half the handler still owns: it must
+        // settle the step it was HANDED, never a second one of its own minting.
+        _steps.Setup(s => s.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new WorkflowStep
             {
                 TenantId = TenantId,
@@ -352,7 +360,15 @@ public class CancelBookingTests
 
         await CreateHandler().Handle(new CancelBookingCommand(TenantId, OperationId), CancellationToken.None);
 
-        _steps.Verify(s => s.AddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()), Times.Never);
+        _steps.Verify(
+            s => s.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _steps.Verify(
+            s => s.TryTransitionStatusAsync(
+                TenantId, "ws_existing", It.IsAny<long>(),
+                WorkflowStepStatus.InProgress, WorkflowStepStatus.Succeeded,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     // ---------------------------------------------------------------------

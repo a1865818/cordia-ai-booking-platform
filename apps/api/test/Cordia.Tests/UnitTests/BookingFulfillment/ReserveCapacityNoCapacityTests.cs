@@ -46,8 +46,8 @@ public class ReserveCapacityNoCapacityTests
         _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), "reserve_capacity", It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
-        _stepRepo.Setup(r => r.AddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
 
         // Default scheduled job repo: AddAsync succeeds.
         _scheduledJobRepo.Setup(r => r.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()))

@@ -51,8 +51,10 @@ public class ModifyBookingTests
         _steps.Setup(s => s.GetByOperationAndTypeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
-        _steps.Setup(s => s.AddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        // Create-or-load is the repository's job now (GetOrAddAsync, ON CONFLICT DO NOTHING), so
+        // the default is "nobody raced us": the candidate comes straight back.
+        _steps.Setup(s => s.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
         _steps.Setup(s => s.TryTransitionStatusAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
                 It.IsAny<WorkflowStepStatus>(), It.IsAny<WorkflowStepStatus>(), It.IsAny<CancellationToken>()))

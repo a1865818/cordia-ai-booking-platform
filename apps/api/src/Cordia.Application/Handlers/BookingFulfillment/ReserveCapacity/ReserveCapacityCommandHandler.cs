@@ -103,23 +103,22 @@ public sealed class ReserveCapacityCommandHandler(
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
             // 1. Create-or-skip the "reserve_capacity" workflow step.
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, "reserve_capacity", ct2);
-            if (existingStep is null)
+            // GetOrAddAsync: this transaction also carries the hold and the operation transition
+            // below, so a losing read-then-add aborted all of it on a race whose correct outcome
+            // was "someone else already created this step".
+            var now2 = DateTimeOffset.UtcNow;
+            await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var now2 = DateTimeOffset.UtcNow;
-                await stepRepo.AddAsync(new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = "reserve_capacity",
-                    Status = WorkflowStepStatus.Succeeded,
-                    AttemptCount = 0,
-                    Version = 0,
-                    CreatedAt = now2,
-                    UpdatedAt = now2,
-                }, ct2);
-            }
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = "reserve_capacity",
+                Status = WorkflowStepStatus.Succeeded,
+                AttemptCount = 0,
+                Version = 0,
+                CreatedAt = now2,
+                UpdatedAt = now2,
+            }, ct2);
 
             // 2. Re-read op inside txn; bail if not in the expected state (lost-race guard).
             var current = await opRepo.GetAsync(operationId, ct2);
