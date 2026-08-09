@@ -146,7 +146,14 @@ function tryNormalizeTimestamp(raw: string): string | undefined {
   // trailing whitespace (verified on net10.0), so " 2026-06-15T18:00:00Z" is a timestamp to
   // the server. An anchored match on the raw string would miss it, fall through to the
   // general string path, and emit a different canonical value — a 422 on submit.
-  const match = ISO_WITH_OFFSET.exec(raw.trim());
+  //
+  // Trimmed with WHITESPACE_EDGES, not `String.trim()`. `trim()` uses JavaScript's whitespace
+  // class, which omits U+0085 and adds U+FEFF — precisely the two code points this file's header
+  // calls out as the runtimes' disagreement, and precisely what WHITESPACE_EDGES exists to model.
+  // `"﻿2026-06-15T18:00:00Z"` was trimmed here into a timestamp while the server left it a
+  // plain string, and `"...Z"` diverged the other way: either way a different
+  // `payload_hash`, and a 422 the operator cannot act on.
+  const match = ISO_WITH_OFFSET.exec(raw.replace(WHITESPACE_EDGES, ""));
   if (!match) return undefined;
 
   const [, y, mo, d, h, mi, s, frac, , sign, offH, offM] = match;

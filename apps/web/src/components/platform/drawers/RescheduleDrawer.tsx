@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Booking, fmtT, TIME_SLOTS } from "../../../data/console";
 import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
@@ -62,6 +62,21 @@ export function RescheduleDrawer({ open, device, week, booking, onClose, onDone 
     }
   }, [open, booking?.id]);
 
+  /**
+   * The slot list, guaranteed to contain the booking's CURRENT start.
+   *
+   * A `<select>` whose value matches no `<option>` renders blank, so a booking outside the fixed
+   * list showed an empty "New time" and the operator could not even see what they were moving
+   * from. Widening `TIME_SLOTS` covers the ordinary cases; this covers the rest — an overnight
+   * booking, or one made before the list was widened — without inventing a venue constraint.
+   */
+  const timeOptions = useMemo(() => {
+    const current = b ? String(b.start) : null;
+    if (current === null || TIME_SLOTS.some(o => o.value === current)) return TIME_SLOTS;
+    return [...TIME_SLOTS, { value: current, label: fmtT(b!.start) }]
+      .sort((x, y) => Number(x.value) - Number(y.value));
+  }, [b]);
+
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Reschedule">{null}</Drawer>;
 
   // No local phase, no local timer and no local "done".
@@ -109,7 +124,7 @@ export function RescheduleDrawer({ open, device, week, booking, onClose, onDone 
             </div>
             <div className="flex-1">
               <Field label="New time">
-                <SelectField value={time} onChange={setTime} options={TIME_SLOTS} />
+                <SelectField value={time} onChange={setTime} options={timeOptions} />
               </Field>
             </div>
           </div>

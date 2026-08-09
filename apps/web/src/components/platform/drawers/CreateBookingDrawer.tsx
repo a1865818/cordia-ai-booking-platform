@@ -102,6 +102,17 @@ interface CreateBookingDrawerProps {
    * only — the operator can change anything before submitting.
    */
   prefill?: CreatePrefill;
+  /**
+   * The drawer was closed and reopened while a submission was in flight, and the server accepted
+   * it anyway.
+   *
+   * The operation is real and durable, but it belongs to a form that is no longer on screen, so
+   * this drawer cannot poll it or claim its outcome. Left entirely unsaid, the operator would see a
+   * blank form and could submit the same booking again under a freshly minted key the server has no
+   * reason to deduplicate. The parent refreshes its views so the accepted operation shows up where
+   * operations belong — the queue and the grid — rather than vanishing.
+   */
+  onSubmissionAbandoned?: (operationId: string) => void;
 }
 
 /**
@@ -181,9 +192,24 @@ function localTimeLabel(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** An accepted submission, frozen so later panels describe what was sent, not what is on screen. */
+interface SubmittedBooking {
+  /** The submission this belongs to; a stale one is discarded. */
+  token: number;
+  /** The key the identity was minted under, so the right one is spent when it settles. */
+  attemptKey: string;
+  operationId: string;
+  day: string;
+  time: string;
+  serviceId: string;
+  serviceName: string;
+  durationMinutes: number | null;
+  guestName: string;
+}
+
 export function CreateBookingDrawer({
   open, device, week, onClose, onCreated, services, servicesFailed, onRetryServices, customers,
-  availability, prefill,
+  availability, prefill, onSubmissionAbandoned,
 }: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
   // The guest's phone, unlike their name, DOES reach the platform — but NOT through the payload.
@@ -223,6 +249,26 @@ export function CreateBookingDrawer({
   const [unmatchedService, setUnmatchedService] = useState<string | null>(null);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  /**
+   * What was actually SUBMITTED, frozen at submit time.
+   *
+   * Everything after acceptance — the Done panel and the optimistic row handed to `onCreated` —
+   * reads from here rather than from the live form. Reading the form meant the outcome described
+   * whatever the fields happened to hold when the operation settled, which is not necessarily what
+   * was sent: the catalog can republish and retire the chosen service, and a reopened drawer can
+   * have entirely different values in it.
+   */
+  const [submitted, setSubmitted] = useState<SubmittedBooking | null>(null);
+  /**
+   * Invalidates any submission still in flight.
+   *
+   * Bumped by the reset effect, so a promise that resolves after the drawer was closed and
+   * reopened cannot apply its result to the new form. Without it the old `submitBooking` resolved
+   * straight into `setOperationId`, the poll restarted for an operation the new form knew nothing
+   * about, and the booked effect appended a fabricated row built from the NEW field values before
+   * moving the freshly opened drawer to Done.
+   */
+  const submissionToken = useRef(0);
 
   // One attempt identity per open drawer PER PAYLOAD. The operation id and idempotency key are
   // minted before the first call and reused on every retry (Inv-2), so a retry of the same
@@ -367,6 +413,9 @@ export function CreateBookingDrawer({
     setPartySize(String(prefill?.partySize ?? 2));
     setPhase('form'); setShowDropdown(false);
     setSubmitError(null); setOperationId(null); setStartedAt(null);
+    setSubmitted(null);
+    // Anything already awaiting a response belongs to the drawer that is going away.
+    submissionToken.current += 1;
     announcedRef.current = null;
     contactRefCache.current = null;
     setAttemptNonce(String(Date.now()));
@@ -386,22 +435,29 @@ export function CreateBookingDrawer({
   // parent render, and StrictMode double-invokes effects against the same state snapshot,
   // so a `phase === 'done'` check alone would let the booking be appended twice.
   useEffect(() => {
-    if (!booked || announcedRef.current === attemptKey) return;
-    announcedRef.current = attemptKey;
+    // Guarded by the OPERATION ID, which cannot change once the server has accepted.
+    //
+    // It used to be guarded by `attemptKey`, which is derived from the form — including the
+    // selected service's duration. A catalog refetch that republished that service changed the key
+    // while `booked` stayed true, so the guard missed, the effect re-fired, and `onCreated`
+    // appended the same booking a second time. Every further duration change appended another.
+    if (!booked || !submitted || announcedRef.current === submitted.operationId) return;
+    announcedRef.current = submitted.operationId;
     setPhase('done');
-    resetAttempt(attemptKey);
+    resetAttempt(submitted.attemptKey);
     onCreated({
-      day: Number(day), staff, start: Number(time), service: svc,
-      serviceName: service?.name ?? svc,
+      // From the SNAPSHOT, not the live form: this describes what was submitted.
+      day: Number(submitted.day), staff, start: Number(submitted.time), service: submitted.serviceId,
+      serviceName: submitted.serviceName,
       // `prov: 'unknown'` even though this operator just made it: the schedule projection
       // carries no provenance, so the server's row will claim none. Saying "Booked by you"
       // here would make the row change its story the moment the refetch lands.
-      name: name.trim(), prov: 'unknown', status: 'confirmed', channel: null,
+      name: submitted.guestName, prov: 'unknown', status: 'confirmed', channel: null,
       // `dep: 0` — the catalog models no deposit and the platform takes none (spec 09 deferred).
       // `dur` falls back to the grid's default block only for LAYOUT; nothing was submitted.
-      dep: 0, transcript: null, dur: service?.durationMinutes ?? 60,
+      dep: 0, transcript: null, dur: submitted.durationMinutes ?? 60,
     });
-  }, [booked, phase, attemptKey, day, staff, time, svc, service, name, onCreated]);
+  }, [booked, submitted, staff, onCreated]);
 
   /**
    * A TERMINAL non-booked outcome ends the operation, so the drawer has to hand control back.
@@ -418,10 +474,20 @@ export function CreateBookingDrawer({
   useEffect(() => {
     if (phase !== 'confirming' || !poll.status?.terminal || booked) return;
 
+    // The key to spend is the one this OPERATION was submitted under, not whatever the form
+    // currently derives — the two diverge as soon as the catalog republishes.
+    const spentKey = submitted?.attemptKey ?? attemptKey;
+
     // Terminal but NOT a failure — `waitlisted` is a real, successful outcome. It settles the
     // drawer so the footer becomes a usable Done button, and it must never be dressed as an error
     // with a Retry: retrying mints a fresh identity and enrols the guest a second time.
+    //
+    // The attempt is still SPENT. The operation is over either way, so leaving the identity in
+    // sessionStorage strands it there for the life of the tab — the booked and failure paths both
+    // release theirs, and a run of waitlisted outcomes would otherwise accumulate entries against
+    // the origin's storage quota, degrading the idempotency persistence everything else relies on.
     if (!isTerminalFailure(poll.status)) {
+      resetAttempt(spentKey);
       setPhase('done');
       return;
     }
@@ -432,9 +498,10 @@ export function CreateBookingDrawer({
     setPhase('form');
     setOperationId(null);
     setStartedAt(null);
-    resetAttempt(attemptKey);
+    setSubmitted(null);
+    resetAttempt(spentKey);
     setAttemptNonce(String(Date.now()));
-  }, [phase, poll.status, booked, attemptKey]);
+  }, [phase, poll.status, booked, attemptKey, submitted]);
 
 
   // The tenant's real customers once loaded; the mock array only while the list has never
@@ -461,6 +528,12 @@ export function CreateBookingDrawer({
 
     setPhase('confirming');
     setSubmitError(null);
+
+    // The submission this call belongs to. The drawer can be closed and reopened while the request
+    // is in flight, and the reset bumps this — so everything below re-checks it before touching
+    // state that now belongs to a different booking.
+    const token = submissionToken.current;
+    const submittedKey = attemptKey;
 
     // Reusing the stored identity is what makes a retry safe: the same key + same payload
     // replays the original acceptance rather than creating a second operation (§13.4).
@@ -489,6 +562,13 @@ export function CreateBookingDrawer({
         contactRef = contactRefCache.current?.key === attemptKey
           ? contactRefCache.current.ref
           : (await createGuestContact({ phoneE164: normalisePhone(typedPhone) ?? typedPhone })).contact_ref;
+        // The drawer may have been closed and reopened during the mint. Caching the ref against a
+        // new drawer's attempt would bind it to a booking it was never made for. Nothing was
+        // submitted, so the identity is simply released.
+        if (submissionToken.current !== token) {
+          resetAttempt(submittedKey);
+          return;
+        }
         contactRefCache.current = { key: attemptKey, ref: contactRef };
       }
 
@@ -543,9 +623,45 @@ export function CreateBookingDrawer({
       );
 
       const accepted = await submitBooking(request);
-      setOperationId(accepted.operation_id ?? null);
+
+      // The drawer was closed and reopened while this was in flight — the operation is real and the
+      // server owns it, but it belongs to a booking this form is no longer showing. Applying it
+      // here would restart polling under the new form and, on success, append a row built from
+      // whatever the operator has since typed.
+      //
+      // Discarded is not the same as ignored. The identity is released so it cannot sit unreachable
+      // in sessionStorage, and the parent is told so the accepted operation surfaces in the queue
+      // and the grid — otherwise the console would never mention a booking the server had taken,
+      // and the operator would key the whole thing in again under a key nothing deduplicates.
+      if (submissionToken.current !== token) {
+        resetAttempt(submittedKey);
+        if (accepted.operation_id) onSubmissionAbandoned?.(accepted.operation_id);
+        return;
+      }
+
+      const acceptedId = accepted.operation_id ?? null;
+      setOperationId(acceptedId);
       setStartedAt(Date.now());
+      setSubmitted(acceptedId === null ? null : {
+        token,
+        attemptKey: submittedKey,
+        operationId: acceptedId,
+        day,
+        time,
+        serviceId: svc,
+        serviceName: service?.name ?? svc,
+        durationMinutes: service?.durationMinutes ?? null,
+        guestName: name.trim(),
+      });
     } catch (error) {
+      // A failure that belongs to a drawer the operator has already closed must not surface on the
+      // new one, which is showing an unrelated, untouched form. The identity is still released:
+      // nothing will ever retry it.
+      if (submissionToken.current !== token) {
+        resetAttempt(submittedKey);
+        return;
+      }
+
       // A conflict means this key is already bound to a different request — retrying with it can
       // never succeed, so the attempt is freed and the next submit mints a fresh identity.
       //
@@ -561,52 +677,26 @@ export function CreateBookingDrawer({
 
   const footer = phase === 'done'
     ? <PrimaryButton full onClick={onClose}>Done</PrimaryButton>
+    // A live operation keeps its busy button even if the catalog empties underneath it. Falling
+    // through to `hasServices` meant a service unpublished from another tab removed the footer
+    // entirely mid-submission: no outcome, no retry, no Done — only the close icon.
+    : phase === 'confirming'
+    ? <PrimaryButton full busy disabled>Submitting</PrimaryButton>
+    // Only `form` reaches here — the two settled phases are handled above — so the busy state and
+    // the "Submitting" label belong to those branches, not to this one.
     : hasServices
       ? <PrimaryButton
           full
-          busy={phase === 'confirming'}
-          disabled={!name.trim() || !partySizeValid || !service || phase !== 'form'}
+          disabled={!name.trim() || !partySizeValid || !service}
           onClick={() => { void submit(); }}
         >
-          {phase === 'confirming' ? 'Submitting' : 'Confirm booking'}
+          Confirm booking
         </PrimaryButton>
       : undefined;
 
   return (
     <Drawer open={open} onClose={onClose} device={device} eyebrow="Manual booking" title="New booking" footer={footer}>
-      {!hasServices ? (
-        /*
-          Three distinct situations, told apart rather than collapsed into one "no services".
-          The old drawer fell back to the mock catalogue here, which meant a failed or empty
-          catalog still offered five bookable-looking services whose ids exist on no server.
-        */
-        <div className="py-10 text-center">
-          {servicesFailed ? (
-            <ErrorState
-              inline
-              error={new Error('The service catalog could not be loaded.')}
-              title="Couldn’t load this venue’s services."
-              onRetry={onRetryServices}
-            />
-          ) : !servicesLoaded ? (
-            <>
-              <div className="text-[14px] font-semibold text-ink">Loading services…</div>
-              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
-                Reading this venue’s catalog.
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="text-[14px] font-semibold text-ink">No bookable services</div>
-              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
-                This venue’s catalog has no published items, so there is nothing to book against
-                yet. Publish a menu catalog first — a booking must name a service the venue
-                actually has.
-              </div>
-            </>
-          )}
-        </div>
-      ) : phase === 'confirming' ? (
+      {phase === 'confirming' ? (
         <div className="text-center py-8 px-2">
           <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#F2F2F0' }}>
             <Spinner size={22} color="#0A0A0A" track="rgba(10,10,10,0.18)" />
@@ -668,13 +758,50 @@ export function CreateBookingDrawer({
             {!booked && poll.status?.customer_message && (
               <>{poll.status.customer_message}<br /></>
             )}
-            {name} · {service?.name}<br />
-            {shortDayLabel(week, Number(day))} at {fmtT(Number(time))}
+            {/*
+              From the SUBMITTED snapshot. Reading the live form and catalog here meant the outcome
+              described the current fields — and a service republished (or unpublished) while the
+              operation was settling left this panel naming nothing at all.
+            */}
+            {(submitted?.guestName ?? name)} · {(submitted?.serviceName ?? service?.name)}<br />
+            {shortDayLabel(week, Number(submitted?.day ?? day))} at {fmtT(Number(submitted?.time ?? time))}
           </div>
           {/* No deposit line. This panel renders only after a terminal `booked` status, and the
               deposit here comes from the hand-written mock catalog — the platform defers
               payments (spec 09) and never requested or collected anything. Telling the
               operator a hold is pending would be a fabricated fact about money. */}
+        </div>
+      ) : !hasServices ? (
+        /*
+          Three distinct situations, told apart rather than collapsed into one "no services".
+          The old drawer fell back to the mock catalogue here, which meant a failed or empty
+          catalog still offered five bookable-looking services whose ids exist on no server.
+        */
+        <div className="py-10 text-center">
+          {servicesFailed ? (
+            <ErrorState
+              inline
+              error={new Error('The service catalog could not be loaded.')}
+              title="Couldn’t load this venue’s services."
+              onRetry={onRetryServices}
+            />
+          ) : !servicesLoaded ? (
+            <>
+              <div className="text-[14px] font-semibold text-ink">Loading services…</div>
+              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
+                Reading this venue’s catalog.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-[14px] font-semibold text-ink">No bookable services</div>
+              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
+                This venue’s catalog has no published items, so there is nothing to book against
+                yet. Publish a menu catalog first — a booking must name a service the venue
+                actually has.
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <fieldset className="border-none p-0 m-0">

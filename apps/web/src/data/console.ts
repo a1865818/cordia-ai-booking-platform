@@ -630,8 +630,20 @@ export function dayBounds(dayIdx: number): { start: number; end: number; closed:
   return { start: parseTime(h.open), end: parseTime(h.close), closed: !h.on };
 }
 
+/**
+ * The bookable times the pickers offer, 08:00-20:00 in half-hour steps.
+ *
+ * Widened from 09:00-17:30. The schedule grid frames 08:00-20:00 by default (`DEFAULT_WINDOW` in
+ * TodayScreen) and stretches further for any booking outside it, so the narrower list could not
+ * even express times the grid was already drawing: a 19:00 booking opened the reschedule drawer on
+ * a `<select>` whose value matched no `<option>`, rendering blank, and the only moves on offer
+ * pulled the booking INTO business hours.
+ *
+ * Still a fixed list rather than the venue's hours — no operating-hours endpoint exists (see
+ * SettingsScreen's own badge), so anything narrower would be a constraint invented here.
+ */
 export const TIME_SLOTS = (() => {
   const o: { value: string; label: string }[] = [];
-  for (let m = 540; m <= 1050; m += 30) o.push({ value: String(m), label: fmtT(m) });
+  for (let m = 480; m <= 1200; m += 30) o.push({ value: String(m), label: fmtT(m) });
   return o;
 })();

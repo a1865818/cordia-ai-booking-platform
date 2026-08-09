@@ -182,6 +182,29 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
     if (sort === 'noshows') setSort('default');
   }, [live, customerFilter, sort]);
 
+  /**
+   * The OPEN PROFILE must not survive it either.
+   *
+   * `sel` holds a whole `Customer` object, not an id, so a profile opened against the demo rows
+   * went on rendering that invented person's name, phone, visit count and note after the real
+   * list arrived — presented as this venue's account data, which is the exact fabrication the
+   * `DemoBadge` and the `live` gate exist to prevent. Filters and sort were already reset here for
+   * the same reason; the selection was simply missed.
+   *
+   * Re-resolved by id rather than cleared outright, so an operator who happened to open a customer
+   * that also exists in the live list keeps their place and sees the real record.
+   *
+   * Runs only on the demo→live TRANSITION: `source` is a new array on every refetch, so depending
+   * on it would re-resolve (and could close) the profile whenever the list refreshed.
+   */
+  const wasLiveRef = useRef(false);
+  useEffect(() => {
+    const becameLive = live && !wasLiveRef.current;
+    wasLiveRef.current = live;
+    if (!becameLive) return;
+    setSel(current => (current ? source.find(c => c.id === current.id) ?? null : null));
+  }, [live, source]);
+
   let list = source.filter(c => c.name.toLowerCase().includes(q.toLowerCase()));
   if (customerFilter === 'vip') list = list.filter(c => c.visits >= 5);
   if (customerFilter === 'at-risk') list = list.filter(c => c.noShows >= 2);

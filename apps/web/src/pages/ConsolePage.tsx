@@ -1459,6 +1459,17 @@ export function ConsolePage() {
         customers={customersQuery.data ? liveCustomers : undefined}
         availability={availableSlots}
         prefill={createPrefill}
+        // The drawer was reopened while a submission was in flight and the server accepted it
+        // anyway. The drawer cannot poll an operation that belongs to a form it no longer shows,
+        // so the console refreshes instead: the accepted operation appears in the queue and the
+        // grid rather than vanishing, which is what stops the operator keying it in a second time.
+        onSubmissionAbandoned={() => {
+          invalidateBookingViews();
+          toast({
+            message: 'That booking was already accepted — it will appear in the queue as it settles.',
+            duration: 6000,
+          });
+        }}
       />
       <RescheduleDrawer
         open={drawer.kind === 'reschedule'}

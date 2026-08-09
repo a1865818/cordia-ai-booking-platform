@@ -122,7 +122,11 @@ export function menuActionFailureMessage(error: unknown, action: string): string
     return "The platform refused this — menu management needs the owner role, and this session's role was not accepted.";
   }
   if (isApiError(error) && error.status === 409) {
-    return "The catalog isn't in the right state for that yet — extraction may still be running, or another action already moved it. There is no status endpoint to check, so try again shortly.";
+    // "There is no status endpoint to check" stopped being true when `GET /api/menu/catalogs`
+    // landed — and this mutation has just invalidated it, so the panel beside this message is
+    // already showing the real status. Telling the operator to blind-retry sent them at an action
+    // that cannot succeed (another session published the catalog) while the answer was on screen.
+    return "The catalog isn't in the right state for that — extraction may still be running, or another session already moved it. The list beside this has just been refreshed, so check the catalog's current status before trying again.";
   }
   if (isApiError(error) && error.status === 404) {
     return "That catalog no longer exists on the platform.";

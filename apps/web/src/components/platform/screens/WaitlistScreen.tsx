@@ -108,7 +108,17 @@ export function WaitlistScreen({
                       {/* `now` comes from the screen's single clock, so the countdown and the
                           accept/decline gate above can never disagree about the same instant. */}
                       Offer {w.offerStatus}
-                      <Countdown expiresAt={w.offerExpiresAt} now={now} prefix=" · " />
+                      {/*
+                        Only a LIVE offer has time left to count.
+                        `offerStatus` merely says an offer exists — `toWaitlistItem` passes
+                        `latest_offer_expires_at` through for every status — so an offer accepted two
+                        minutes into a 60-minute lifetime rendered "Offer accepted · expires in 58
+                        min", and an expired one rendered "Offer expired · expired". The buttons
+                        below already gate on `offerActionable`; the countdown has to agree with them.
+                      */}
+                      {offerActionable && (
+                        <Countdown expiresAt={w.offerExpiresAt} now={now} prefix=" · " />
+                      )}
                     </div>
                   )}
                 </div>

@@ -58,7 +58,18 @@ export function isBooked(status: OperationStatusView | undefined): boolean {
  * `alternatives_required` is deliberately absent as well: it is a request for a decision, not a
  * failure to retry.
  */
-const TERMINAL_FAILURE_STATUSES = new Set(["rejected", "expired", "failed"]);
+const TERMINAL_FAILURE_STATUSES = new Set([
+  "rejected",
+  "expired",
+  // The D2 normalized value, which is what `GET /api/booking-operations/{id}` returns.
+  "failed",
+  // The D1 DOMAIN value. `GetOperationStatusQuery` maps `FailedFinal -> Failed`, so this endpoint
+  // never emits it — but `GET /api/booking-operations` (the queue list) returns raw 16-value D1
+  // statuses, and a cached or hand-built `OperationStatusView` can carry one. Accepting both
+  // vocabularies costs nothing and removes the chance of a terminal failure being read as a
+  // success by whichever caller arrives with the raw value.
+  "failed_final",
+]);
 
 export function isTerminalFailure(status: OperationStatusView | undefined): boolean {
   return status?.terminal === true

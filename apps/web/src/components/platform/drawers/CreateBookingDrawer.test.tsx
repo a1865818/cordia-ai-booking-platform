@@ -418,4 +418,93 @@ describe("CreateBookingDrawer", () => {
     // The warning's own words are "nothing has been chosen for you" — which stops being true.
     expect(screen.queryByText(/is not in the service/i)).not.toBeInTheDocument();
   });
+
+  // ── An accepted operation is described by what was SUBMITTED ───────────────────────────────
+
+  it("keeps the outcome panel and its Done button when the catalog empties mid-operation", async () => {
+    // A service unpublished from another tab empties the catalog. The `!hasServices` branch used to
+    // outrank both phase branches, so the polling screen and the done screen were replaced by
+    // "No bookable services" and the footer became `undefined` — no outcome, no retry, no Done,
+    // only the close icon, while the operation settled and `onCreated` fired regardless.
+    const { submitBooking } = await import("../../../features/bookings/submit");
+    const submit = vi.mocked(submitBooking);
+    submit.mockReset();
+    submit.mockResolvedValue({ operation_id: "op_1" } as never);
+
+    const { rerender } = render(
+      <CreateBookingDrawer
+        open device="desktop" week={WEEK}
+        onClose={() => {}} onCreated={() => {}} services={CATALOG}
+      />,
+      { wrapper: Providers }
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Search or add a customer"), {
+      target: { value: "Priya" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+
+    // The catalog empties underneath the live operation.
+    rerender(
+      <CreateBookingDrawer
+        open device="desktop" week={WEEK}
+        onClose={() => {}} onCreated={() => {}} services={[]}
+      />
+    );
+
+    // Still the operation's screen — not "No bookable services".
+    expect(screen.queryByText(/No bookable services/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /submitting/i })).toBeInTheDocument();
+  });
+
+  it("does not apply an in-flight submission to a drawer that was closed and reopened", async () => {
+    // The old promise still resolves. It used to call `setOperationId` unconditionally, so polling
+    // restarted under the NEW form and a success appended a row built from whatever had since been
+    // typed — a booking the operator never made.
+    const { submitBooking } = await import("../../../features/bookings/submit");
+    const submit = vi.mocked(submitBooking);
+    submit.mockReset();
+
+    let release!: (v: unknown) => void;
+    submit.mockImplementation(() => new Promise(res => { release = res; }) as never);
+
+    const onCreated = vi.fn();
+    const { rerender } = render(
+      <CreateBookingDrawer
+        open device="desktop" week={WEEK}
+        onClose={() => {}} onCreated={onCreated} services={CATALOG}
+      />,
+      { wrapper: Providers }
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Search or add a customer"), {
+      target: { value: "Priya" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+
+    // Closed, then reopened — a fresh form.
+    rerender(
+      <CreateBookingDrawer
+        open={false} device="desktop" week={WEEK}
+        onClose={() => {}} onCreated={onCreated} services={CATALOG}
+      />
+    );
+    rerender(
+      <CreateBookingDrawer
+        open device="desktop" week={WEEK}
+        onClose={() => {}} onCreated={onCreated} services={CATALOG}
+      />
+    );
+
+    // The abandoned submission now resolves.
+    release({ operation_id: "op_stale" });
+    // Let the continuation run; the reopened form must be unaffected by it.
+    await waitFor(() => expect(screen.getByPlaceholderText("Search or add a customer")).toHaveValue(""));
+
+    // The reopened drawer is untouched: still the form, nothing appended.
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Booking confirmed/i)).not.toBeInTheDocument();
+  });
 });

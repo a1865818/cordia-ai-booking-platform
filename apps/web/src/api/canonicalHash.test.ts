@@ -153,3 +153,31 @@ describe("canonicalJson", () => {
     expect(a.value).toHaveLength(64);
   });
 });
+
+describe("timestamp trimming matches .NET, not JavaScript", () => {
+  /**
+   * The server hands the untrimmed string to `DateTimeOffset.TryParse`, which trims by
+   * `char.IsWhiteSpace`. `String.prototype.trim()` uses JavaScript's class instead — it omits
+   * U+0085 and adds U+FEFF, the exact two code points this module's header names as the runtimes'
+   * disagreement. Either divergence changes `payload_hash` and the submit 422s with a
+   * `ConfirmationHashMismatchException` the operator cannot act on.
+   */
+  const TS = "2026-06-15T18:00:00Z";
+
+  it("does NOT treat a U+FEFF-padded value as a timestamp — .NET does not trim it", () => {
+    // JS `trim()` strips U+FEFF, so this used to normalise to a UTC instant while the server kept
+    // a plain string.
+    expect(canonicalJson({ at: `\uFEFF${TS}` })).not.toBe(canonicalJson({ at: TS }));
+  });
+
+  it("DOES treat a U+0085-padded value as a timestamp — .NET trims it", () => {
+    // JS `trim()` does not strip U+0085, so this used to fall through to the string path while the
+    // server parsed it as an instant.
+    expect(canonicalJson({ at: `${TS}\u0085` })).toBe(canonicalJson({ at: TS }));
+    expect(canonicalJson({ at: `\u0085${TS}` })).toBe(canonicalJson({ at: TS }));
+  });
+
+  it("still trims the ordinary spaces both runtimes agree on", () => {
+    expect(canonicalJson({ at: `  ${TS}  ` })).toBe(canonicalJson({ at: TS }));
+  });
+});

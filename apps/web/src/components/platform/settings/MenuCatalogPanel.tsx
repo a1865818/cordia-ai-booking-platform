@@ -342,7 +342,15 @@ export function MenuCatalogPanel() {
                   )}
                 </div>
 
-                {openDraft === catalog.catalogId && (
+                {/*
+                  ANDed with `canEdit`, not keyed on `openDraft` alone.
+                  `in_review` carries both `canApprove` and `canEdit`, so an operator could open
+                  "Review items", stage a price edit, and click Approve on the same row: the status
+                  moved to `approved`, the toggle disappeared, and the editor stayed mounted with
+                  "Save N changes" still enabled — a call the server refuses with
+                  `CatalogNotEditableException`. QueueScreen guards its row actions the same way.
+                */}
+                {actions.canEdit && openDraft === catalog.catalogId && (
                   <div className="w-full">
                     <CatalogDraftEditor
                       catalogId={catalog.catalogId}

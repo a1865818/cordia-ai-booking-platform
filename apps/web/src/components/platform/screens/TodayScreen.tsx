@@ -340,9 +340,13 @@ function DiagramView({
       e.stopPropagation();
       const b = bookings.find(x => x.id === id);
       if (!b) return;
-      // An unfinalised operation has no booking to move — `id` is an operation id. Dragging it
-      // would snap the row to a new time and silently snap back a round trip later.
-      if (b.isBooking === false) return;
+      // An unfinalised operation is still CLICKABLE, and that matters: the diagram bar has no
+      // `onClick` at all — opening a booking happens in this drag's `onUp` (`if (!d.moved)`). So
+      // returning here made a click on an accepted-but-unfinalised row a completely silent no-op in
+      // the default view, while the same row opened fine from the list and side panels.
+      //
+      // Refusing the MOVE is still right, and it is `ConsolePage.onRescheduleDone` that does it —
+      // before touching the grid, with a toast explaining why. Nothing snaps back.
       const d: DragState = {
         id, mode,
         mx0: e.clientX, my0: e.clientY,

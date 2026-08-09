@@ -55,10 +55,16 @@ export function composeReason(code: string, note: string): string {
     .replace(/[“”]/g, '"')
     .replace(/[–—]/g, '-')
     .replace(/…/g, '...')
+    // Collapses the CR/LF a textarea produces, along with tabs and runs of spaces.
+    //
+    // BEFORE the Latin-1 substitution, not after. `[^ -y]` (written with the real character
+    // in the code below) matches everything outside U+0020-U+00FF, which includes the CR, LF
+    // and TAB a textarea produces - so running it first turned every line break into a literal
+    // `?` and left this collapse nothing to do. A two-line note was submitted as
+    // `Called the venue?They said closed`, and a CRLF became `??`.
+    .replace(/\s+/g, ' ')
     // Anything still outside Latin-1 (emoji, CJK, …) cannot be a header value at all.
     .replace(/[^ -ÿ]/g, '?')
-    // Collapses the CR/LF a textarea produces, along with tabs and runs of spaces.
-    .replace(/\s+/g, ' ')
     .trim();
 
   const composed = flattened ? `${code}: ${flattened}` : code;
