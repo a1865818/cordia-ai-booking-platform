@@ -64,9 +64,34 @@ public static class BookingPendingLifecycle
         };
 
     /// <summary>
+    /// Whether <paramref name="op"/> may release the pending state <paramref name="booking"/> is
+    /// currently parked in — i.e. whether it is the operation that parked it.
+    ///
+    /// <para>Matching the operation TYPE is not enough, because two operations of the same type can
+    /// both be live against one booking. <c>POST /api/Bookings/{id}/modifications</c> parks under a
+    /// version-only guard with no "booking must be Confirmed" precondition, and the transition sets
+    /// the next status unconditionally, so a second modify presenting the current (already
+    /// <c>ModificationPending</c>) version parks the booking again — legitimately. Modify A failing
+    /// afterwards then read <c>ModificationPending</c> with a matching version, saw its own type's
+    /// state, and reverted the booking to <c>Confirmed</c> while Modify B was genuinely in flight.
+    /// The row told every reader no change was outstanding, and a third writer could enter on that
+    /// Confirmed version — defeating the serialization the pending state exists to provide. Two
+    /// overlapping cancels behave the same way.</para>
+    ///
+    /// <para>An UNOWNED pending state (<c>null</c>) still releases. Rows parked before
+    /// <see cref="Booking.PendingOperationId"/> existed name nobody, and refusing them would strand
+    /// the permanently-pending booking this whole type exists to release (Inv-7/Inv-8) — the worse
+    /// of the two failures, and the one that is not self-correcting. Everything parked since carries
+    /// its parker, so the race is closed for all new traffic.</para>
+    /// </summary>
+    public static bool MayReleasePendingState(Booking booking, BookingOperation op)
+        => booking.PendingOperationId is null
+            || string.Equals(booking.PendingOperationId, op.OperationId, StringComparison.Ordinal);
+
+    /// <summary>
     /// Reverts <paramref name="op"/>'s booking to Confirmed if this operation is a mutation and the
-    /// booking is still parked in the pending state THIS operation type parks. No-op for a create,
-    /// for an operation with no booking, and for a booking parked by (or settled by) anyone else.
+    /// booking is still parked in the pending state THIS operation parked. No-op for a create, for
+    /// an operation with no booking, and for a booking parked by (or settled by) anyone else.
     /// </summary>
     public static async Task RevertOnFailureAsync(
         IBookingRepository bookingRepo,
@@ -82,6 +107,11 @@ public static class BookingPendingLifecycle
         var target = await bookingRepo.GetByIdAsync(tenantId, op.BookingId, ct);
 
         if (target is null || target.LifecycleStatus != expected.Value)
+            return;
+
+        // Read and checked against the same version the update below is guarded on, so a parker
+        // arriving between the two makes this affect zero rows rather than clobber them.
+        if (!MayReleasePendingState(target, op))
             return;
 
         await bookingRepo.TryTransitionLifecycleAsync(

@@ -156,6 +156,99 @@ public class BookingPersistenceTests(PostgresFixture fixture)
         }
     }
 
+    /// <summary>
+    /// The pending state must carry the operation that parked it, and lose it on release.
+    ///
+    /// <para>The lifecycle status alone cannot say WHO is in flight, and two mutations of the same
+    /// type can be: the modification door parks under a version-only guard with no "must be
+    /// Confirmed" precondition, so a second modify presenting the already-pending version parks the
+    /// booking again. Without the parker on the row, whichever one ended first cleared the other's
+    /// parking and announced "no change outstanding" over a live operation.</para>
+    /// </summary>
+    [Fact]
+    public async Task ParkAndRelease_RecordAndClearTheOwningOperation()
+    {
+        var tenantId = $"t8-booking-fence-{Guid.NewGuid():N}";
+        var bookingId = "bk-fence";
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var booking = MakeBooking(tenantId, bookingId, "CORD-FENCE", "cust-fence");
+            booking.Version = 3;
+
+            ctx.Bookings.Add(booking);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var parked = await new BookingRepository(ctx).TryParkPendingAsync(
+                tenantId,
+                bookingId,
+                expectedVersion: 3,
+                BookingLifecycleStatus.ModificationPending,
+                pendingOperationId: "op-modify-A",
+                DateTimeOffset.UtcNow);
+
+            Assert.Equal(1, parked);
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var reloaded = await ctx.Bookings.AsNoTracking()
+                .SingleAsync(b => b.TenantId == tenantId && b.BookingId == bookingId);
+
+            Assert.Equal(BookingLifecycleStatus.ModificationPending, reloaded.LifecycleStatus);
+            Assert.Equal("op-modify-A", reloaded.PendingOperationId);
+            Assert.Equal(4, reloaded.Version);
+        }
+
+        // A second modification parks it again — legitimately, and under ITS id. This is the step
+        // that made the same-type clobber reachable.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var reparked = await new BookingRepository(ctx).TryParkPendingAsync(
+                tenantId,
+                bookingId,
+                expectedVersion: 4,
+                BookingLifecycleStatus.ModificationPending,
+                pendingOperationId: "op-modify-B",
+                DateTimeOffset.UtcNow);
+
+            Assert.Equal(1, reparked);
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var reloaded = await ctx.Bookings.AsNoTracking()
+                .SingleAsync(b => b.TenantId == tenantId && b.BookingId == bookingId);
+
+            Assert.Equal("op-modify-B", reloaded.PendingOperationId);
+        }
+
+        // Releasing drops the owner in the same statement as the status.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var released = await new BookingRepository(ctx).TryTransitionLifecycleAsync(
+                tenantId,
+                bookingId,
+                expectedVersion: 5,
+                BookingLifecycleStatus.Confirmed,
+                DateTimeOffset.UtcNow);
+
+            Assert.Equal(1, released);
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            var reloaded = await ctx.Bookings.AsNoTracking()
+                .SingleAsync(b => b.TenantId == tenantId && b.BookingId == bookingId);
+
+            Assert.Equal(BookingLifecycleStatus.Confirmed, reloaded.LifecycleStatus);
+            Assert.Null(reloaded.PendingOperationId);
+        }
+    }
+
     [Fact]
     public async Task BookingReference_IsUniqueWithinTenant()
     {

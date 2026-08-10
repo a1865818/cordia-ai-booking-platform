@@ -210,8 +210,15 @@ public sealed class ResolveManualReviewCommandHandler(
                         // Clearing it announced "no change outstanding" on that other operation's
                         // behalf; refusing on a lost race was worse still, failing this resolution
                         // over a row it had no business touching.
+                        //
+                        // And only the parking this operation made. A second modification can park
+                        // the booking again while this one waits for a human, so a same-type match
+                        // is not proof of ownership — clearing there would retract a modification
+                        // that is still running, and refusing on its lost race would fail this
+                        // resolution over a row it does not own. Skipping is right on both counts.
                         if (BookingPendingLifecycle.PendingStateFor(opInTxn) == BookingLifecycleStatus.ModificationPending
-                            && target.LifecycleStatus == BookingLifecycleStatus.ModificationPending)
+                            && target.LifecycleStatus == BookingLifecycleStatus.ModificationPending
+                            && BookingPendingLifecycle.MayReleasePendingState(target, opInTxn))
                         {
                             // A modified booking is still confirmed — what moved lives on the revision.
                             //

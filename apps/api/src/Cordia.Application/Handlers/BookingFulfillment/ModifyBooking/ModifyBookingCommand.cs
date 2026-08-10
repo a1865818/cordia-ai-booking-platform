@@ -684,9 +684,16 @@ public sealed class ModifyBookingCommandHandler(
             // Clearing it there announced "no change outstanding" while that modification was
             // still running. `BookingPendingLifecycle` owns the operation-type → parked-state map
             // so the success and failure paths cannot disagree about who parked what.
+            //
+            // And only the parking THIS OPERATION made. Matching the type is not enough: the
+            // modification door has no "must be Confirmed" precondition, so a second modify can
+            // park the booking again while this one is still running, and this success then
+            // cleared that newer operation's parking — announcing "no change outstanding" over a
+            // modification still in flight. `MayReleasePendingState` owns that check.
             var freshBooking = await bookingRepo.GetByIdAsync(tenantId, booking.BookingId, ct2);
             if (BookingPendingLifecycle.PendingStateFor(freshOp) == BookingLifecycleStatus.ModificationPending
-                && freshBooking is { LifecycleStatus: BookingLifecycleStatus.ModificationPending })
+                && freshBooking is { LifecycleStatus: BookingLifecycleStatus.ModificationPending }
+                && BookingPendingLifecycle.MayReleasePendingState(freshBooking, freshOp))
             {
                 // Losing this race is benign and needs no branch: the only other writer of this
                 // row is settling the same booking, and the operation transition above already

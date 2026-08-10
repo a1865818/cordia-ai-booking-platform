@@ -19,6 +19,24 @@ public class Booking : ITenantScoped
 
     public BookingLifecycleStatus LifecycleStatus { get; set; }
 
+    /// <summary>
+    /// The operation that parked <see cref="BookingLifecycleStatus.ModificationPending"/> or
+    /// <see cref="BookingLifecycleStatus.CancellationPending"/> here, and therefore the only one
+    /// entitled to release it. <c>null</c> whenever nothing is parked.
+    ///
+    /// <para>The lifecycle status alone cannot say WHO is in flight, and two operations of the same
+    /// type can be. <c>POST /api/Bookings/{id}/modifications</c> parks under a version-only guard
+    /// with no "must be Confirmed" precondition, so a second modify presenting the already-pending
+    /// version parks the booking again — after which the first one failing found its own type's
+    /// pending state, matched, and cleared the SECOND one's parking. This column is the identity
+    /// that check was missing.</para>
+    ///
+    /// <para>Written only by the two front doors that park (via
+    /// <c>IBookingRepository.TryParkPendingAsync</c>) and cleared by every lifecycle transition out
+    /// of a pending state.</para>
+    /// </summary>
+    public string? PendingOperationId { get; set; }
+
     public string CustomerId { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; set; }

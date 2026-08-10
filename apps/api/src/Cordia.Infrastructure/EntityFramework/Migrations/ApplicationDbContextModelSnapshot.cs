@@ -132,6 +132,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("booking_lifecycle_status_enum")
                         .HasColumnName("lifecycle_status");
 
+                    b.Property<string>("PendingOperationId")
+                        .HasColumnType("text")
+                        .HasColumnName("pending_operation_id");
+
                     b.Property<string>("ProviderReference")
                         .HasColumnType("text")
                         .HasColumnName("provider_reference");

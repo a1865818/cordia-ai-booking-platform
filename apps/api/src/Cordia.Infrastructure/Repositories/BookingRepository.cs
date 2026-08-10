@@ -30,6 +30,8 @@ public class BookingRepository(ApplicationDbContext db) : IBookingRepository
             existing.BookingReference = booking.BookingReference;
             existing.ProviderReference = booking.ProviderReference;
             existing.LifecycleStatus = BookingLifecycleStatus.Confirmed;
+            // Materializing as Confirmed is a release like any other: nothing is outstanding.
+            existing.PendingOperationId = null;
             existing.CustomerId = booking.CustomerId;
             existing.UpdatedAt = booking.UpdatedAt;
         }
@@ -95,6 +97,27 @@ public class BookingRepository(ApplicationDbContext db) : IBookingRepository
             b => b.TenantId == tenantId && b.BookingId == bookingId,
             s => s
                 .SetProperty(b => b.LifecycleStatus, next)
+                // Released in the same statement as the status it belongs to, so no committed row
+                // can ever name a parker for a state that is no longer parked.
+                .SetProperty(b => b.PendingOperationId, (string?)null)
+                .SetProperty(b => b.UpdatedAt, updatedAt),
+            ct);
+
+    public Task<int> TryParkPendingAsync(
+        string tenantId,
+        string bookingId,
+        long expectedVersion,
+        BookingLifecycleStatus next,
+        string pendingOperationId,
+        DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+        => VersionTokenUpdate.UpdateAsync<Booking>(
+            db,
+            expectedVersion,
+            b => b.TenantId == tenantId && b.BookingId == bookingId,
+            s => s
+                .SetProperty(b => b.LifecycleStatus, next)
+                .SetProperty(b => b.PendingOperationId, pendingOperationId)
                 .SetProperty(b => b.UpdatedAt, updatedAt),
             ct);
 }
