@@ -36,7 +36,7 @@ import {
   isRetryableWithNewAttempt, offerFailureMessage, pollToTerminal, useAcceptOffer,
   useCancelBooking, useDeclineOffer, useRemoveFromWaitlist, writeFailureMessage,
 } from "../features/bookings/mutations";
-import { normalizedStatusLabel } from "../features/bookings/useOperationStatus";
+import { isBooked, normalizedStatusLabel } from "../features/bookings/useOperationStatus";
 import { VerificationGate } from "../features/verification/VerificationGate";
 import { SENSITIVE_READ_PURPOSES, type SensitiveReadPurpose } from "../features/conversations/purposes";
 import { getActor } from "../api/config";
@@ -864,10 +864,12 @@ export function ConsolePage() {
 
       const operationId = accepted.operation_id;
       let settled = false;
+      let moved = false;
       if (operationId) {
         toast({ message: 'Change submitted — confirming…', duration: 3000 });
         const status = await pollToTerminal(operationId, controller.signal);
         settled = status.terminal === true;
+        moved = isBooked(status);
         toast({
           message: settled
             ? `Change: ${normalizedStatusLabel(status.status, 'reschedule').toLowerCase()}`
@@ -884,6 +886,20 @@ export function ConsolePage() {
       // idempotency key for a reschedule the server was still working on, and accepted it as a
       // second, independent operation. Keeping the identity makes the retry a replay (Inv-2).
       if (settled) resetAttempt(attemptKey);
+
+      // A terminal answer that is not `booked` is a REFUSAL, and gets the same revert every other
+      // refusal branch does. The server declining the move (rejected / failed / expired) or
+      // answering with something that is not the move the operator drew (waitlisted,
+      // alternatives_required) all leave the booking where it was — but the optimistic row is
+      // already drawn in the new slot, and `invalidateBookingViews()` is not a revert: it marks the
+      // query stale, so the bar sits in the refused slot until the refetch lands, and indefinitely
+      // if that refetch fails too. This was the one refusal path that reverted nothing while its
+      // own toast read "Change: declined".
+      //
+      // A NON-terminal answer is deliberately left alone: "still confirming" means the operation is
+      // still running, and reverting would show the booking back in its old slot while the platform
+      // is still moving it (Inv-16).
+      if (settled && !moved && before) setBookings(bs => bs.map(b => b.id === id ? before : b));
       invalidateBookingViews();
     } catch (error) {
       // Abandoned polling is not a failure: the screen went away, the operation did not.

@@ -34,6 +34,16 @@ vi.mock("../features/operations/api", async (importOriginal) => ({
   resolveOperation: vi.fn(),
   respondToAlternatives: vi.fn(),
 }));
+// Both spread the original: `preflight` re-exports `refusalMessage`, and `submit` still owns
+// `submitCancellation` for the cancel path — stubbing the whole module would break either.
+vi.mock("../features/bookings/preflight", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/bookings/preflight")>()),
+  preflightReschedule: vi.fn(),
+}));
+vi.mock("../features/bookings/submit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/bookings/submit")>()),
+  submitBooking: vi.fn(),
+}));
 vi.mock("../features/conversations/api", () => ({ listSessions: vi.fn(), getTranscript: vi.fn() }));
 vi.mock("../features/customers/api", () => ({ listCustomers: vi.fn() }));
 vi.mock("../features/waitlist/api", () => ({
@@ -48,7 +58,9 @@ vi.mock("../features/reporting/api", async (importOriginal) => ({
 }));
 
 import { ConsolePage } from "./ConsolePage";
-import { getBookingSchedule } from "../features/bookings/api";
+import { getBookingDetails, getBookingSchedule, getOperationStatus } from "../features/bookings/api";
+import { preflightReschedule } from "../features/bookings/preflight";
+import { submitBooking } from "../features/bookings/submit";
 import {
   listOpenWorkItems, listOperations, requestOperationCancellation, resolveOperation,
   respondToAlternatives,
@@ -458,5 +470,64 @@ describe("ConsolePage — operator follow-ups are wired end to end", () => {
 
     // The drawer is the real enrolment surface; its title proves the wiring, not a toast.
     await waitFor(() => expect(screen.getByText("Add a guest")).toBeInTheDocument());
+  });
+});
+
+describe("ConsolePage — a refused reschedule puts the booking back", () => {
+  /**
+   * The diagram bar. Its `aria-label` carries the start time, which is exactly what a move
+   * changes — so the label is the assertion for "which slot is this booking drawn in".
+   */
+  const bar = () => screen.getAllByRole("button", { name: /^cust_move — / })[0];
+
+  it("reverts the optimistic move when the platform terminally declines it", async () => {
+    // Noon, so a one-hour move stays well inside the grid's rendered window.
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+
+    // The FIRST schedule read answers; every refetch after it hangs.
+    //
+    // That is the window the defect lived in. `invalidateBookingViews()` is not a revert — it
+    // marks the query stale, and local state changes only when the refetch lands. Pinning the
+    // refetch open is what makes this test able to tell a real revert from a refetch that
+    // happens to put the booking back, and it is also the real failure mode: an operator on a
+    // flaky connection would have been left staring at the booking in the refused slot.
+    vi.mocked(getBookingSchedule)
+      .mockResolvedValueOnce({
+        bookings: [{
+          operation_id: "op_move", booking_id: "bk_move", booking_reference: "MOVE1",
+          starts_at: noon.toISOString(), service_id: "itm_gel", customer_ref: "cust_move",
+          party_size: 2, duration_minutes: 60,
+          lifecycle_status: "confirmed", operation_status: "booked",
+        }],
+        truncated: false,
+      } as never)
+      .mockImplementation(() => new Promise(() => {}) as never);
+    vi.mocked(getBookingDetails).mockResolvedValue({
+      booking: { version: 4, party_size: 2 },
+    } as never);
+    vi.mocked(preflightReschedule).mockResolvedValue(null);
+    vi.mocked(submitBooking).mockResolvedValue({ operation_id: "op_rs" } as never);
+    // Accepted (202), then terminally refused — the case the operator sees as "Change: declined".
+    vi.mocked(getOperationStatus).mockResolvedValue({
+      operation_id: "op_rs", status: "rejected", terminal: true,
+    } as never);
+
+    renderConsole();
+    await waitFor(() => expect(bar()).toBeInTheDocument());
+    const original = bar().getAttribute("aria-label");
+
+    // Drag it an hour later: the grid is 68 px per 15 minutes.
+    fireEvent.mouseDown(bar(), { clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(window, { clientX: 100 + 4 * 68, clientY: 20 });
+    fireEvent.mouseUp(window);
+
+    // The optimistic move lands immediately — that is what makes dragging feel direct.
+    expect(bar().getAttribute("aria-label")).not.toBe(original);
+
+    await waitFor(() => expect(screen.getByText(/Change: declined/)).toBeInTheDocument(),
+      { timeout: 3000 });
+    // And the refusal puts it back, without waiting on a refetch that is never going to land.
+    await waitFor(() => expect(bar().getAttribute("aria-label")).toBe(original));
   });
 });
