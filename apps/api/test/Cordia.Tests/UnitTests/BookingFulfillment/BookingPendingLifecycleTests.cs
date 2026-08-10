@@ -51,10 +51,21 @@ public class BookingPendingLifecycleTests
             _bookings.Object, TenantId, op, DateTimeOffset.UnixEpoch, CancellationToken.None);
 
     private void VerifyReverted(Times times) =>
-        _bookings.Verify(r => r.TryTransitionLifecycleAsync(
+        _bookings.Verify(r => r.TryReleasePendingAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
                 BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             times);
+
+    /// <summary>
+    /// The release must never go out through the unconditional transition — that one clears the
+    /// pending state on a version match alone, which is the write this fence exists to prevent.
+    /// </summary>
+    private void VerifyNeverReleasedUnconditionally() =>
+        _bookings.Verify(r => r.TryTransitionLifecycleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
 
     /// <summary>
     /// The defect: Modify A parks (v→V+1), Modify B parks again on V+1 (v→V+2) and runs, A then
@@ -95,10 +106,58 @@ public class BookingPendingLifecycleTests
 
         await WhenFailed(MakeOp("op-modify-A", OperationTypeEnum.Modify));
 
-        _bookings.Verify(r => r.TryTransitionLifecycleAsync(
+        _bookings.Verify(r => r.TryReleasePendingAsync(
                 TenantId, BookingId, 9,
+                BookingLifecycleStatus.ModificationPending, "op-modify-A",
                 BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Once);
+        VerifyNeverReleasedUnconditionally();
+    }
+
+    /// <summary>
+    /// The fence has to travel WITH the write, not just precede it.
+    ///
+    /// <para>The in-memory check reads a snapshot; between it and the UPDATE another operation can
+    /// park the booking. A version guard only closes that window for writers that bump the version,
+    /// so the release must carry its own <c>pending_operation_id</c> predicate and let the database
+    /// decide. Pinning the exact arguments is the only way to assert that from a unit test: the
+    /// statement must name the state it expects to find and the operation it claims to be.</para>
+    /// </summary>
+    [Fact]
+    public async Task RevertOnFailure_ReleasesConditionallyOnTheOwnerAndTheParkedState()
+    {
+        GivenBooking(BookingLifecycleStatus.CancellationPending, pendingOperationId: "op-cancel-A", version: 3);
+
+        await WhenFailed(MakeOp("op-cancel-A", OperationTypeEnum.Cancel));
+
+        _bookings.Verify(r => r.TryReleasePendingAsync(
+                TenantId, BookingId, 3,
+                // The state this operation parked, and the operation itself — both become WHERE
+                // clauses, so a row that has since moved or changed hands matches nothing.
+                BookingLifecycleStatus.CancellationPending, "op-cancel-A",
+                BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        VerifyNeverReleasedUnconditionally();
+    }
+
+    /// <summary>
+    /// A lost CAS is a benign no-op, not an escalation. Zero rows means the booking moved, was
+    /// settled, or changed hands — in every case the pending state stopped being this operation's
+    /// to retract, and the terminal transition that called us already carried the outcome.
+    /// </summary>
+    [Fact]
+    public async Task RevertOnFailure_SwallowsALostRelease()
+    {
+        GivenBooking(BookingLifecycleStatus.ModificationPending, pendingOperationId: "op-modify-A");
+        _bookings.Setup(r => r.TryReleasePendingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await WhenFailed(MakeOp("op-modify-A", OperationTypeEnum.Modify));
+
+        VerifyReverted(Times.Once());
     }
 
     /// <summary>

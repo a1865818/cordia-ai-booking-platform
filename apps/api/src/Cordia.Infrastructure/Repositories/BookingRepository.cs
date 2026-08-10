@@ -103,6 +103,37 @@ public class BookingRepository(ApplicationDbContext db) : IBookingRepository
                 .SetProperty(b => b.UpdatedAt, updatedAt),
             ct);
 
+    public Task<int> TryReleasePendingAsync(
+        string tenantId,
+        string bookingId,
+        long expectedVersion,
+        BookingLifecycleStatus expectedStatus,
+        string releasingOperationId,
+        BookingLifecycleStatus next,
+        DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+        => VersionTokenUpdate.UpdateAsync<Booking>(
+            db,
+            expectedVersion,
+            // The status and the owner are PREDICATES, not facts the caller asserts. Both were
+            // previously evaluated in C# against a row read moments earlier and only the version
+            // made it into the WHERE clause, which fenced the write against writers that bump the
+            // version and against nothing else. Here they are part of the same conditional UPDATE,
+            // so the row this statement matches is provably still the row the caller reasoned about.
+            //
+            // `pending_operation_id IS NULL` is the deliberate legacy fail-open: rows parked before
+            // the column existed name nobody, and stranding them at a pending status forever is a
+            // worse and permanent failure (Inv-7/Inv-8).
+            b => b.TenantId == tenantId
+                && b.BookingId == bookingId
+                && b.LifecycleStatus == expectedStatus
+                && (b.PendingOperationId == null || b.PendingOperationId == releasingOperationId),
+            s => s
+                .SetProperty(b => b.LifecycleStatus, next)
+                .SetProperty(b => b.PendingOperationId, (string?)null)
+                .SetProperty(b => b.UpdatedAt, updatedAt),
+            ct);
+
     public Task<int> TryParkPendingAsync(
         string tenantId,
         string bookingId,

@@ -227,8 +227,17 @@ public sealed class ResolveManualReviewCommandHandler(
                             // proceeding then settled capacity and committed the operation as Booked
                             // while the booking stayed at ModificationPending forever — the outbox
                             // announcing success over a row still claiming a change was outstanding.
-                            var cleared = await bookingRepo.TryTransitionLifecycleAsync(
+                            //
+                            // The owner is re-tested inside the UPDATE, so a second modification
+                            // that parked the booking between the read above and this write also
+                            // yields zero rows. That is the same conflict as a lost version race and
+                            // takes the same exit: the check above already skipped the case where we
+                            // KNOW the state is not ours, so reaching here and losing means the row
+                            // changed hands underneath this resolution, which must not be reported
+                            // as settled.
+                            var cleared = await bookingRepo.TryReleasePendingAsync(
                                 command.TenantId, target.BookingId, target.Version,
+                                BookingLifecycleStatus.ModificationPending, opInTxn.OperationId,
                                 BookingLifecycleStatus.Confirmed, now, ct2);
 
                             if (cleared == 0)

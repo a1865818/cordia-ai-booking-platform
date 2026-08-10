@@ -39,6 +39,15 @@ public class ResolveManualReviewCommandHandlerTests
                 It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
+
+        // Same for the ownership-guarded release. Zero rows there means the booking moved OR changed
+        // hands, and the Booked path treats both as the conflict it must not resolve through.
+        _bookingRepo.Setup(r => r.TryReleasePendingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
     }
 
     private readonly Mock<IBookingRepository> _bookingRepo = new();
@@ -119,11 +128,12 @@ public class ResolveManualReviewCommandHandlerTests
             });
 
         BookingLifecycleStatus? settledTo = null;
-        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
-                tenantId, bookingId, 9, It.IsAny<BookingLifecycleStatus>(),
+        _bookingRepo.Setup(r => r.TryReleasePendingAsync(
+                tenantId, bookingId, 9, parked, operationId,
+                It.IsAny<BookingLifecycleStatus>(),
                 It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, long, BookingLifecycleStatus, DateTimeOffset, CancellationToken>(
-                (_, _, _, next, _, _) => settledTo = next)
+            .Callback<string, string, long, BookingLifecycleStatus, string, BookingLifecycleStatus, DateTimeOffset, CancellationToken>(
+                (_, _, _, _, _, next, _, _) => settledTo = next)
             .ReturnsAsync(1);
 
         _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
@@ -195,6 +205,11 @@ public class ResolveManualReviewCommandHandlerTests
 
         _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _bookingRepo.Verify(r => r.TryReleasePendingAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
             It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -651,8 +666,10 @@ public class ResolveManualReviewCommandHandlerTests
                 Version = 9,
             });
 
-        _bookingRepo.Setup(r => r.TryTransitionLifecycleAsync(
-                tenantId, bookingId, 9, BookingLifecycleStatus.Confirmed,
+        _bookingRepo.Setup(r => r.TryReleasePendingAsync(
+                tenantId, bookingId, 9,
+                BookingLifecycleStatus.ModificationPending, It.IsAny<string>(),
+                BookingLifecycleStatus.Confirmed,
                 It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(0);
 
@@ -710,8 +727,9 @@ public class ResolveManualReviewCommandHandlerTests
                 tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
             CancellationToken.None);
 
-        _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
+        _bookingRepo.Verify(r => r.TryReleasePendingAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
                 BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -895,8 +913,9 @@ public class ResolveManualReviewCommandHandlerTests
                 tenantId, operationId, ManualReviewResolution.FailedFinal, null, "rpl_1", "ops", "rc", "operator"),
             CancellationToken.None);
 
-        _bookingRepo.Verify(r => r.TryTransitionLifecycleAsync(
+        _bookingRepo.Verify(r => r.TryReleasePendingAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
                 BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }

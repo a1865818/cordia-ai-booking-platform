@@ -83,6 +83,17 @@ public static class BookingPendingLifecycle
     /// the permanently-pending booking this whole type exists to release (Inv-7/Inv-8) — the worse
     /// of the two failures, and the one that is not self-correcting. Everything parked since carries
     /// its parker, so the race is closed for all new traffic.</para>
+    ///
+    /// <para>This is a PRE-CHECK on a snapshot, not the fence. It answers the question against the
+    /// row as it was read, which is exactly what a caller needs to decide whether to attempt a
+    /// release at all — and exactly what it must not rely on to perform one. Between the read and
+    /// the write the owner can change, and a version guard only covers that window for writers that
+    /// bump the version. The authoritative test is the <c>pending_operation_id</c> predicate inside
+    /// <c>IBookingRepository.TryReleasePendingAsync</c>, which evaluates ownership in the same
+    /// statement that clears the state; every caller of this method MUST release through it and
+    /// treat 0 rows as "somebody else owns this now". Kept because skipping a doomed round-trip is
+    /// worth one cheap comparison, and because a caller that must distinguish "not mine" from "lost
+    /// a race" can only do so before the attempt.</para>
     /// </summary>
     public static bool MayReleasePendingState(Booking booking, BookingOperation op)
         => booking.PendingOperationId is null
@@ -109,13 +120,19 @@ public static class BookingPendingLifecycle
         if (target is null || target.LifecycleStatus != expected.Value)
             return;
 
-        // Read and checked against the same version the update below is guarded on, so a parker
-        // arriving between the two makes this affect zero rows rather than clobber them.
+        // Cheap pre-check: skip the round-trip when the snapshot already says this pending state
+        // belongs to somebody else. It is not the fence — the release below re-tests ownership in
+        // the statement that performs it, so a parker arriving between this read and that write
+        // affects zero rows instead of clobbering them.
         if (!MayReleasePendingState(target, op))
             return;
 
-        await bookingRepo.TryTransitionLifecycleAsync(
+        // Losing is benign and needs no branch: 0 rows means the booking moved, changed hands, or
+        // was already settled, and in each case the pending state is no longer this operation's to
+        // retract. The terminal transition that called us already carried the authoritative outcome.
+        await bookingRepo.TryReleasePendingAsync(
             tenantId, target.BookingId, target.Version,
+            expected.Value, op.OperationId,
             BookingLifecycleStatus.Confirmed, now, ct);
     }
 }

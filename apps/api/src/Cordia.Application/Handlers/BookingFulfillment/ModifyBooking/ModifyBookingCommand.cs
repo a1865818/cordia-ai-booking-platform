@@ -698,8 +698,13 @@ public sealed class ModifyBookingCommandHandler(
                 // Losing this race is benign and needs no branch: the only other writer of this
                 // row is settling the same booking, and the operation transition above already
                 // carried the authoritative outcome.
-                await bookingRepo.TryTransitionLifecycleAsync(
+                //
+                // Released through the CAS so the ownership test the line above made against a
+                // snapshot is re-made inside the UPDATE. The re-read narrows the window; only the
+                // conditional write closes it.
+                await bookingRepo.TryReleasePendingAsync(
                     tenantId, freshBooking.BookingId, freshBooking.Version,
+                    BookingLifecycleStatus.ModificationPending, freshOp.OperationId,
                     BookingLifecycleStatus.Confirmed, now, ct2);
             }
 

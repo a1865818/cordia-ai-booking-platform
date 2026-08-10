@@ -81,6 +81,17 @@ public class ModifyBookingTests
                 (_, _, _, next, _, _) => _lifecycleSetTo = next)
             .ReturnsAsync(1);
 
+        // Releasing a pending state the operation parked goes out through the CAS, which re-tests the
+        // owner in the statement that clears it. Recorded into the same field: these tests care which
+        // lifecycle the booking was moved to, not which overload carried it.
+        _bookings.Setup(b => b.TryReleasePendingAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, long, BookingLifecycleStatus, string, BookingLifecycleStatus, DateTimeOffset, CancellationToken>(
+                (_, _, _, _, _, next, _, _) => _lifecycleSetTo = next)
+            .ReturnsAsync(1);
+
         _intents.Setup(i => i.GetRevisionAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BookingIntentRevision
@@ -468,6 +479,11 @@ public class ModifyBookingTests
         Assert.Null(_lifecycleSetTo);
         _bookings.Verify(b => b.TryTransitionLifecycleAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _bookings.Verify(b => b.TryReleasePendingAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
             It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }

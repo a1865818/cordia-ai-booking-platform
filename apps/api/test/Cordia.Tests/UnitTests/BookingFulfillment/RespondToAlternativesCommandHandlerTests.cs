@@ -150,8 +150,13 @@ public class RespondToAlternativesCommandHandlerTests
             new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline),
             CancellationToken.None);
 
-        _bookingRepo.Verify(b => b.TryTransitionLifecycleAsync(
-                tenantId, "bk-1", 7, BookingLifecycleStatus.Confirmed,
+        // Released through the CAS, so the pending state is retracted only if this operation still
+        // owns it — a second modification parking the booking in the meantime affects zero rows
+        // rather than having its parking cleared out from under it.
+        _bookingRepo.Verify(b => b.TryReleasePendingAsync(
+                tenantId, "bk-1", 7,
+                BookingLifecycleStatus.ModificationPending, operationId,
+                BookingLifecycleStatus.Confirmed,
                 It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -171,8 +176,9 @@ public class RespondToAlternativesCommandHandlerTests
             new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline),
             CancellationToken.None);
 
-        _bookingRepo.Verify(b => b.TryTransitionLifecycleAsync(
+        _bookingRepo.Verify(b => b.TryReleasePendingAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+                It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
                 It.IsAny<BookingLifecycleStatus>(), It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
