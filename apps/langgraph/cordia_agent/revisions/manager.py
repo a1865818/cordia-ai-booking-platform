@@ -2,21 +2,22 @@
 
 All functions are pure and deterministic.  No LLM, no I/O.
 
-NOTE: ``canonical_payload_hash`` is a deterministic stand-in.  Ticket 04 owns
-the real algorithm (§10.2); this implementation is intentionally compatible with
-the frozen 04 contract (sha256 over canonical JSON) so tests can pin hashes.
+``canonical_payload_hash`` re-exports the canon.v1 hasher owned by spec 04 §5
+(:mod:`cordia_agent.revisions.canonical`).  It MUST agree byte for byte with the
+API's ``CanonicalRequestHasher``: the API re-derives the hash from the submitted
+``revision.canonical_payload`` and rejects any submission whose
+``confirmation.intent_payload_hash`` differs (§8.8, Inv-1).
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import TYPE_CHECKING
 
 from cordia_agent.models.intent import (  # noqa: F401
     IntentRevision,
     confirmation_binds_revision,
 )
+from cordia_agent.revisions.canonical import canonical_payload_hash as _canon_hash
 
 
 if TYPE_CHECKING:
@@ -26,19 +27,15 @@ if TYPE_CHECKING:
 
 
 def canonical_payload_hash(payload: BookingRequest) -> str:
-    """Deterministic sha256 content hash of a BookingRequest.
+    """Return the canon.v1 SHA-256 hex digest of a ``BookingRequest`` (spec 04 §5).
 
-    Algorithm: ``sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True,
-    separators=(",",":")))``
+    Args:
+        payload: The canonical booking request to hash.
 
-    NOTE (stub): Ticket 04 owns the canonical algorithm (§10.2).  This is a
-    deterministic stand-in that produces stable, reproducible hashes so the
-    §8.8 binding invariant can be tested end-to-end before 04 lands.
+    Returns:
+        A 64-character lowercase hex digest that the API reproduces exactly.
     """
-    serialized = json.dumps(
-        payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(serialized.encode()).hexdigest()
+    return _canon_hash(payload)
 
 
 def build_revision(
