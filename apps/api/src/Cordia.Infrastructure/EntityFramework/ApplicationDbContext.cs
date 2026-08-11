@@ -53,6 +53,8 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<OperationWorkItem> OperationWorkItems => Set<OperationWorkItem>();
 
+    public DbSet<HandoffWorkItem> HandoffWorkItems => Set<HandoffWorkItem>();
+
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     public DbSet<ConsumerInbox> ConsumerInbox => Set<ConsumerInbox>();

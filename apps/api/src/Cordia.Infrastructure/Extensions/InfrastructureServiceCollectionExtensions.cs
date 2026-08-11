@@ -84,6 +84,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IWorkflowStepRepository, WorkflowStepRepository>();
         services.AddScoped<IWorkflowAttemptRepository, WorkflowAttemptRepository>();
         services.AddScoped<IOperationWorkItemRepository, OperationWorkItemRepository>();
+        services.AddScoped<IHandoffWorkItemRepository, HandoffWorkItemRepository>();
         services.AddScoped<IOutboxRepository, OutboxRepository>();
         services.AddScoped<IInboxRepository, InboxRepository>();
         services.AddScoped<IDeadLetterRepository, DeadLetterRepository>();

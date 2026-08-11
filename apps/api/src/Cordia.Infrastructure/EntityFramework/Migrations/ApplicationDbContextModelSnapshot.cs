@@ -707,6 +707,83 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("deposit_sessions", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.HandoffWorkItem", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("WorkItemId")
+                        .HasColumnType("text")
+                        .HasColumnName("work_item_id");
+
+                    b.Property<string>("Assignee")
+                        .HasColumnType("text")
+                        .HasColumnName("assignee");
+
+                    b.Property<string>("CausationId")
+                        .HasColumnType("text")
+                        .HasColumnName("causation_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("HandoffIdempotencyKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("handoff_idempotency_key");
+
+                    b.Property<string>("Queue")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("queue");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("RecommendedAction")
+                        .HasColumnType("text")
+                        .HasColumnName("recommended_action");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
+                    b.HasKey("TenantId", "WorkItemId")
+                        .HasName("pk_handoff_work_items");
+
+                    b.HasIndex("TenantId", "HandoffIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_handoff_idempotency_key");
+
+                    b.HasIndex("TenantId", "SessionId")
+                        .HasDatabaseName("ix_handoff_work_items_session");
+
+                    b.ToTable("handoff_work_items", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.IdempotencyRecord", b =>
                 {
                     b.Property<string>("TenantId")
