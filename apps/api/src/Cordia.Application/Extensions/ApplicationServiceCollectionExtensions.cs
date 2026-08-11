@@ -65,6 +65,12 @@ public static class ApplicationServiceCollectionExtensions
         });
         services.AddValidatorsFromAssembly(assembly);
 
+        // Whether an ASSERTED staff role may stand in for a verification grant (Inv-11).
+        // Bound here, defaulted OFF: a deployment that does not opt in gets the fail-closed
+        // posture, and Program.cs turns it on for Development the way the tenant shim is.
+        services.AddOptions<Common.Authorization.AssertedActorOptions>()
+            .BindConfiguration(Common.Authorization.AssertedActorOptions.SectionName);
+
         // Consumer dispatch seam (§3, OD-1): registry is a singleton catalog written once at startup;
         // dispatcher is scoped because IMediator is scoped.
         // The booking driver consumer is pre-registered for the two message types that trigger
@@ -161,6 +167,13 @@ public static class ApplicationServiceCollectionExtensions
             registry.Register("notification.deposit_expired.v1",
                 env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
                     NotificationEvent.FinalFailure, MessagePriority.High, env.CorrelationId));
+            // Spec 08 §5.3 — the customer-facing "your cancellation is confirmed" message. The
+            // catalogue event already exists (cancel_or_modify_confirmed); only the emission was
+            // missing, so no enum or template change is needed.
+            registry.Register(
+                Handlers.BookingFulfillment.CancelBooking.CancelBookingCommandHandler.CancelConfirmedEventType,
+                env => new SendNotificationCommand(env.TenantId, env.OperationId ?? "", env.MessageId,
+                    NotificationEvent.CancelOrModifyConfirmed, MessagePriority.High, env.CorrelationId));
             // Spec 11 §21.4 — operator cancel of a ManualReview-parked pre-order. The booking is
             // already committed and stays confirmed; only the food order is cancelled, so this maps
             // to the dedicated PreorderCancelled template, never FinalFailure.
@@ -309,6 +322,9 @@ public static class ApplicationServiceCollectionExtensions
         // Spec 06 T6 retry/escalation helpers — scoped (share the ambient DbContext / UoW).
         services.AddScoped<RetryScheduler>();
         services.AddScoped<ManualReviewEscalator>();
+        // Shared by the manual-recovery lane so a modify resolved by hand settles its seat
+        // the same way the automatic lane does (see ModifyCapacitySettlement).
+        services.AddScoped<Handlers.BookingFulfillment.ModifyBooking.ModifyCapacitySettlement>();
 
         // Spec 07 T5 — capacity expiry scheduler; scoped to share the ambient DbContext.
         services.AddScoped<CapacityExpiryScheduler>();

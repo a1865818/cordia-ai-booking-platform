@@ -7,6 +7,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Observability;
 using Cordia.Infrastructure.Observability;
 using MediatR;
+using Microsoft.Extensions.Logging;
 
 namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 
@@ -75,6 +76,8 @@ public sealed class FinalizeBookingCommandHandler(
     RetryScheduler retryScheduler,
     IUnitOfWork uow,
     ICapacityReservation capacityReservation,
+    IGuestContactRepository guestContacts,
+    ILogger<FinalizeBookingCommandHandler> logger,
     Metrics metrics)
     : IRequestHandler<FinalizeBookingCommand, StepOutcome>
 {
@@ -178,6 +181,7 @@ public sealed class FinalizeBookingCommandHandler(
                 if (recoveryHoldExpired)
                     return StepOutcome.Continue;
             }
+            await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
             return StepOutcome.Terminal;
         }
 
@@ -312,35 +316,31 @@ public sealed class FinalizeBookingCommandHandler(
 
             // Create-or-load the finalize WorkflowStep (store reference so circuit/retry have the id).
             var now = DateTimeOffset.UtcNow;
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct2);
-            if (existingStep is null)
+            var step = await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var newStep = new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = StepType,
-                    Status = WorkflowStepStatus.InProgress,
-                    ProviderIdempotencyKey = providerKey,
-                    AttemptCount = 1,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                };
-                await stepRepo.AddAsync(newStep, ct2);
-                finalizeStep = newStep;
-            }
-            else
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = StepType,
+                Status = WorkflowStepStatus.InProgress,
+                ProviderIdempotencyKey = providerKey,
+                AttemptCount = 1,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
+
+            // A step this call did not create may still be Pending — that is where the sweeper
+            // parks one for a scheduled retry. A freshly inserted step is already InProgress, so
+            // this is a no-op on the create path.
+            if (step.Status == WorkflowStepStatus.Pending)
             {
-                if (existingStep.Status == WorkflowStepStatus.Pending)
-                {
-                    await stepRepo.TryTransitionStatusAsync(
-                        tenantId, existingStep.WorkflowStepId, existingStep.Version,
-                        WorkflowStepStatus.Pending, WorkflowStepStatus.InProgress, ct2);
-                }
-                finalizeStep = existingStep;
+                await stepRepo.TryTransitionStatusAsync(
+                    tenantId, step.WorkflowStepId, step.Version,
+                    WorkflowStepStatus.Pending, WorkflowStepStatus.InProgress, ct2);
             }
+
+            finalizeStep = step;
 
             // Insert a Planned attempt row.
             var latestAttemptNumber = (await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct2))?.AttemptNumber ?? 0;
@@ -591,6 +591,12 @@ public sealed class FinalizeBookingCommandHandler(
             if (postTxnOp?.Status is OperationStatus.CompensationRequired or OperationStatus.Reconciling)
                 return StepOutcome.Continue;
 
+            // The booking is committed; hold the guest's contact until the booking has actually
+            // happened. Outside the transaction on purpose — it is a retention nicety, not part of
+            // the atomic write set, and must never be able to roll a confirmed booking back.
+            if (postTxnOp?.Status == OperationStatus.Booked)
+                await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
+
             return StepOutcome.Terminal;
         }
 
@@ -787,6 +793,54 @@ public sealed class FinalizeBookingCommandHandler(
         return StepOutcome.Continue;
     }
 
+    /// <summary>
+    /// Extends the guest contact's retention window to cover the booking that was just confirmed.
+    ///
+    /// <para>`LastUsedAt` is set when the contact is CAPTURED, and nothing touches it again between
+    /// then and the booking date. A booking taken further ahead than the retention window therefore
+    /// had its contact erased before the guest ever arrived: the confirmation and every reminder
+    /// settled with no destination, and nothing surfaced it. Pushing the clock to the booking's own
+    /// start instant means the window is measured from when the contact stops being needed.</para>
+    ///
+    /// <para>Best-effort and non-fatal: the booking is already committed at this point, and failing
+    /// a confirmed booking because a retention clock could not be nudged would be strictly worse
+    /// than holding the contact for the shorter window.</para>
+    /// </summary>
+    private async Task ExtendContactRetentionAsync(
+        string tenantId, string canonicalPayload, CancellationToken ct)
+    {
+        var contactRef = ReadFirstString(canonicalPayload, "contact_ref", "contactRef");
+        if (string.IsNullOrWhiteSpace(contactRef))
+            return;
+
+        // The same spellings the read projection accepts (CanonicalBookingPayload.StartsAtNames).
+        // A narrower list here meant a payload using one of the others silently skipped the
+        // retention extension: the contact kept its capture-time window and could be erased before
+        // a far-future booking was honoured — the exact failure this method exists to prevent,
+        // reintroduced by a list that had merely drifted.
+        var startsAtRaw = ReadFirstString(
+            canonicalPayload,
+            "starts_at", "startsAt", "start_at", "startAt", "scheduled_at", "requested_at", "requestedAt");
+        if (!DateTimeOffset.TryParse(
+                startsAtRaw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var startsAt))
+        {
+            return;
+        }
+
+        try
+        {
+            await guestContacts.TouchAsync(tenantId, contactRef, startsAt, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not extend guest-contact retention for tenant={TenantId}; the booking stands "
+                + "and the contact keeps its capture-time window.",
+                tenantId);
+        }
+    }
+
     private static Booking BuildBookingAggregate(
         string tenantId,
         BookingOperation operation,
@@ -796,10 +850,19 @@ public sealed class FinalizeBookingCommandHandler(
     {
         var bookingReference = ReadFirstString(canonicalPayload, "booking_reference", "bookingReference", "reference")
             ?? providerReference;
+        // `contact_ref` ranks directly behind an explicit customer_id and AHEAD of the legacy
+        // value-carrying keys. Under the out-of-band contact shape the payload deliberately holds
+        // no phone or email, so without it every guest-bearing booking falls through to
+        // `?? providerReference` — which then becomes the CustomerId that AuthorizeMutationAsync
+        // compares a verification grant against, locking the guest out of their own booking, and
+        // the opaque id the console renders where the guest should be. Legacy payloads carry no
+        // contact_ref, so their resolution is unchanged.
         var customerRef = ReadFirstString(
                 canonicalPayload,
                 "customer_id",
                 "customerId",
+                "contact_ref",
+                "contactRef",
                 "caller_id",
                 "callerId",
                 "phone_e164",
@@ -825,12 +888,33 @@ public sealed class FinalizeBookingCommandHandler(
         };
     }
 
-    private static string? ReadFirstString(string json, params string[] propertyNames)
+    /// <summary>
+    /// The first of <paramref name="propertyNames"/> that the payload actually carries, in the
+    /// order the CALLER listed them.
+    ///
+    /// <para>That order is the point. Every call site here passes a deliberate preference chain —
+    /// an explicit <c>customer_id</c> outranks a <c>contact_ref</c>, which outranks the legacy
+    /// value-carrying keys — but the search used to walk the DOCUMENT and return whichever listed
+    /// name it happened to meet first, descending into a property's whole subtree before even
+    /// looking at the next top-level key. The stated precedence held only because current producers
+    /// happen to emit keys in a convenient order; a nested <c>phone_e164</c> under an earlier
+    /// property would beat a top-level <c>customer_id</c>, and the resulting value becomes the
+    /// booking's <c>CustomerId</c> — the identity a verification grant is later matched against.
+    /// One name at a time makes the precedence real instead of incidental.</para>
+    /// </summary>
+    internal static string? ReadFirstString(string json, params string[] propertyNames)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
-            return ReadFirstString(doc.RootElement, propertyNames);
+            foreach (var name in propertyNames)
+            {
+                var value = FindNamed(doc.RootElement, name);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return null;
         }
         catch (JsonException)
         {
@@ -838,27 +922,52 @@ public sealed class FinalizeBookingCommandHandler(
         }
     }
 
-    private static string? ReadFirstString(JsonElement element, IReadOnlyCollection<string> propertyNames)
+    /// <summary>
+    /// Searches the document for ONE property name, shallowest match first.
+    ///
+    /// <para>A true level-order walk, not a depth-first descent with the current level checked
+    /// early. Depth-first meant a match buried under an earlier property still beat a shallow one
+    /// under a later property — so for
+    /// <c>{"preorder":{"items":[{"meta":{"customer_id":"stale"}}]},"customer":{"customer_id":"real"}}</c>
+    /// the whole <c>preorder</c> subtree was exhausted first and "stale" won. That value becomes
+    /// the booking's <c>CustomerId</c>, which a verification grant is later matched against —
+    /// locking the real guest out of their own booking.</para>
+    /// </summary>
+    private static string? FindNamed(JsonElement root, string propertyName)
     {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (propertyNames.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
-                    return StringValue(property.Value);
+        var queue = new Queue<JsonElement>();
+        queue.Enqueue(root);
 
-                var nested = ReadFirstString(property.Value, propertyNames);
-                if (!string.IsNullOrWhiteSpace(nested))
-                    return nested;
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
+        while (queue.Count > 0)
         {
-            foreach (var item in element.EnumerateArray())
+            var element = queue.Dequeue();
+
+            if (element.ValueKind == JsonValueKind.Object)
             {
-                var nested = ReadFirstString(item, propertyNames);
-                if (!string.IsNullOrWhiteSpace(nested))
-                    return nested;
+                // Every key at this depth before anything deeper.
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var value = StringValue(property.Value);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value;
+                    }
+                }
+
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        queue.Enqueue(property.Value);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (item.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        queue.Enqueue(item);
+                }
             }
         }
 

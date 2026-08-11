@@ -1,0 +1,138 @@
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
+using Cordia.Domain.Interfaces;
+
+namespace Cordia.Application.Handlers.BookingFulfillment;
+
+/// <summary>
+/// Releases the booking-row lifecycle a MUTATION parked while it was in flight, when that mutation
+/// ends without having happened.
+///
+/// <para><c>POST /api/Bookings/{id}/modifications</c> parks the booking at
+/// <see cref="BookingLifecycleStatus.ModificationPending"/> and <c>.../cancellations</c> at
+/// <see cref="BookingLifecycleStatus.CancellationPending"/>, so concurrent writers can see a change
+/// in flight. Those two front doors are the ONLY writers of those statuses, and only the success
+/// paths ever cleared them — every terminal FAILURE route left the operation reading
+/// <c>rejected</c>/<c>failed_final</c> while the booking row went on telling every reader a change
+/// was still outstanding. Nothing downstream of a terminal operation ever looks at the booking
+/// again, so it was permanent: exactly the spec-11 defect family where an operation and the row it
+/// acted on disagree about the same event (Inv-7/Inv-8).</para>
+///
+/// <para>Failed means NOTHING HAPPENED, so both revert to <see cref="BookingLifecycleStatus.Confirmed"/>:
+/// the amendment was not applied and the cancellation did not land, leaving the original booking as
+/// it was. Guarded on the pending statuses, so a booking a better-informed writer moved to
+/// <c>Cancelled</c> keeps that outcome; version-guarded, so losing a race is a benign no-op rather
+/// than an overwrite.</para>
+///
+/// <para>Call INSIDE the transition's own transaction, after the terminal transition won its rows —
+/// the operation's outcome and the booking's lifecycle must commit together or not at all.</para>
+/// </summary>
+public static class BookingPendingLifecycle
+{
+    /// <summary>
+    /// The pending lifecycle THIS operation type parks — and therefore the only one it may clear.
+    ///
+    /// <para>Matching the type matters: a booking carries one lifecycle, and two different
+    /// operations can be in flight against it. A failed <c>Modify</c> whose booking had since been
+    /// moved to <c>CancellationPending</c> by a newer cancellation used to be pushed back to
+    /// <c>Confirmed</c>, silently undoing that unrelated cancellation and leaving the cancel
+    /// operation running against a booking that no longer said a cancellation was pending. The
+    /// inverse happened for a failed <c>Cancel</c> against a booking now in
+    /// <c>ModificationPending</c>. An operation may only retract the state it itself parked.</para>
+    /// </summary>
+    public static BookingLifecycleStatus? PendingStateFor(BookingOperation op)
+        => op.OperationType switch
+        {
+            Domain.Generated.OperationTypeEnum.Cancel => BookingLifecycleStatus.CancellationPending,
+            Domain.Generated.OperationTypeEnum.Modify => BookingLifecycleStatus.ModificationPending,
+
+            // A RESCHEDULE parks nothing, so it may retract nothing.
+            //
+            // `ModificationPending` has exactly one writer — `POST /api/Bookings/{id}/modifications`
+            // — and a reschedule does not go through it. `SubmitModificationInput` carries no field
+            // for a new time, so a reschedule rides the spec-04 acceptance door instead and the
+            // booking stays `Confirmed` for the whole operation.
+            //
+            // Mapping it here therefore did not undo its own work; it undid somebody else's. A
+            // reschedule failing against a booking an INDEPENDENT modification had parked cleared
+            // that modification's pending state back to `Confirmed`, while the modification was
+            // still in flight — the same cross-operation clobber this type exists to prevent, just
+            // one level further out.
+            Domain.Generated.OperationTypeEnum.Reschedule => null,
+
+            _ => null,
+        };
+
+    /// <summary>
+    /// Whether <paramref name="op"/> may release the pending state <paramref name="booking"/> is
+    /// currently parked in — i.e. whether it is the operation that parked it.
+    ///
+    /// <para>Matching the operation TYPE is not enough, because two operations of the same type can
+    /// both be live against one booking. <c>POST /api/Bookings/{id}/modifications</c> parks under a
+    /// version-only guard with no "booking must be Confirmed" precondition, and the transition sets
+    /// the next status unconditionally, so a second modify presenting the current (already
+    /// <c>ModificationPending</c>) version parks the booking again — legitimately. Modify A failing
+    /// afterwards then read <c>ModificationPending</c> with a matching version, saw its own type's
+    /// state, and reverted the booking to <c>Confirmed</c> while Modify B was genuinely in flight.
+    /// The row told every reader no change was outstanding, and a third writer could enter on that
+    /// Confirmed version — defeating the serialization the pending state exists to provide. Two
+    /// overlapping cancels behave the same way.</para>
+    ///
+    /// <para>An UNOWNED pending state (<c>null</c>) still releases. Rows parked before
+    /// <see cref="Booking.PendingOperationId"/> existed name nobody, and refusing them would strand
+    /// the permanently-pending booking this whole type exists to release (Inv-7/Inv-8) — the worse
+    /// of the two failures, and the one that is not self-correcting. Everything parked since carries
+    /// its parker, so the race is closed for all new traffic.</para>
+    ///
+    /// <para>This is a PRE-CHECK on a snapshot, not the fence. It answers the question against the
+    /// row as it was read, which is exactly what a caller needs to decide whether to attempt a
+    /// release at all — and exactly what it must not rely on to perform one. Between the read and
+    /// the write the owner can change, and a version guard only covers that window for writers that
+    /// bump the version. The authoritative test is the <c>pending_operation_id</c> predicate inside
+    /// <c>IBookingRepository.TryReleasePendingAsync</c>, which evaluates ownership in the same
+    /// statement that clears the state; every caller of this method MUST release through it and
+    /// treat 0 rows as "somebody else owns this now". Kept because skipping a doomed round-trip is
+    /// worth one cheap comparison, and because a caller that must distinguish "not mine" from "lost
+    /// a race" can only do so before the attempt.</para>
+    /// </summary>
+    public static bool MayReleasePendingState(Booking booking, BookingOperation op)
+        => booking.PendingOperationId is null
+            || string.Equals(booking.PendingOperationId, op.OperationId, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Reverts <paramref name="op"/>'s booking to Confirmed if this operation is a mutation and the
+    /// booking is still parked in the pending state THIS operation parked. No-op for a create, for
+    /// an operation with no booking, and for a booking parked by (or settled by) anyone else.
+    /// </summary>
+    public static async Task RevertOnFailureAsync(
+        IBookingRepository bookingRepo,
+        string tenantId,
+        BookingOperation op,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var expected = PendingStateFor(op);
+        if (expected is null || string.IsNullOrWhiteSpace(op.BookingId))
+            return;
+
+        var target = await bookingRepo.GetByIdAsync(tenantId, op.BookingId, ct);
+
+        if (target is null || target.LifecycleStatus != expected.Value)
+            return;
+
+        // Cheap pre-check: skip the round-trip when the snapshot already says this pending state
+        // belongs to somebody else. It is not the fence — the release below re-tests ownership in
+        // the statement that performs it, so a parker arriving between this read and that write
+        // affects zero rows instead of clobbering them.
+        if (!MayReleasePendingState(target, op))
+            return;
+
+        // Losing is benign and needs no branch: 0 rows means the booking moved, changed hands, or
+        // was already settled, and in each case the pending state is no longer this operation's to
+        // retract. The terminal transition that called us already carried the authoritative outcome.
+        await bookingRepo.TryReleasePendingAsync(
+            tenantId, target.BookingId, target.Version,
+            expected.Value, op.OperationId,
+            BookingLifecycleStatus.Confirmed, now, ct);
+    }
+}

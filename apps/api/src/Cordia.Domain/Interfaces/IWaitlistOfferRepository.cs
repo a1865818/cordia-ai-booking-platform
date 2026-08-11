@@ -18,6 +18,30 @@ public interface IWaitlistOfferRepository
     Task<WaitlistOffer?> GetLiveByEnrollmentAsync(string enrollmentId, CancellationToken ct = default);
 
     /// <summary>
+    /// The operation ids of every ACCEPTED offer for an enrollment (usually zero or one).
+    ///
+    /// <para>Used to tell FULFILMENT from withdrawal, which the enrollment row cannot do on its
+    /// own: both are recorded by stamping <c>CancelledAt</c> — the accept-reconcile path uses it to
+    /// make a booked enrollee ineligible for a second offer, exactly as a cancel does.</para>
+    ///
+    /// <para>The offer alone is not the answer, which is why this returns ids rather than a bool.
+    /// An offer is moved to <c>Accepted</c> BEFORE the booking is confirmed and has no transition
+    /// out again, so an accepted offer whose booking then failed terminally leaves the enrollee
+    /// correctly eligible. Only the operation's own status settles it.</para>
+    /// </summary>
+    Task<IReadOnlyList<string>> GetAcceptedOfferOperationIdsAsync(
+        string tenantId, string enrollmentId, CancellationToken ct = default);
+    /// <summary>
+    /// The offer that owns an <c>op_wl_*</c> operation id, or null.
+    ///
+    /// A waitlist offer's notification carries that id even though no <c>booking_operations</c>
+    /// row exists for it until accept — so this is the only way to get from a notification back
+    /// to the enrollment that knows where to send it (spec 10 §13).
+    /// </summary>
+    Task<WaitlistOffer?> GetByOperationIdAsync(string operationId, CancellationToken ct = default);
+
+
+    /// <summary>
     /// Version-token conditional transition (§6.2): sets <paramref name="next"/> status only when
     /// the row is in <paramref name="expectedStatus"/> AND at <paramref name="expectedVersion"/>.
     /// Returns rows-affected (1 = success, 0 = lost race / wrong state → caller should reload).

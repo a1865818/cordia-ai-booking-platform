@@ -107,30 +107,44 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
         // Record-before-state: mint the booking BEFORE claiming the offer so a crash self-heals.
         await mediator.Send(submit, ct);
 
-        var won = await offerRepo.TryResolveAsync(
-            command.TenantId, command.OfferId, offer.Version,
-            WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct);
-        if (won == 0)
-        {
-            var reloaded = await offerRepo.GetAsync(command.OfferId, ct);
-            if (reloaded?.Status == WaitlistOfferStatus.Accepted)
-                return Unit.Value; // concurrent auto-accept won — same booking already minted (idempotent)
-
-            // Lost to a concurrent expire/decline after the booking was minted (rare). The spec-04 record
-            // stands (06 owns its outcome), so schedule a reconcile that settles the orphaned operation
-            // against the enrollment — booked → mark fulfilled so no re-offer; failed → stays eligible.
-            logger.LogWarning(
-                "Waitlist auto-accept: offer {OfferId} moved to {Status} after the booking was minted; scheduling reconcile.",
-                command.OfferId, reloaded?.Status);
-            await uow.ExecuteInTransactionAsync(
-                ct2 => reconcileScheduler.ScheduleAsync(
-                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId, attempt: 0, now, ct2),
-                ct);
-            return Unit.Value;
-        }
+        // The claim, the reconcile schedule and the audit commit TOGETHER — the same fix the
+        // customer accept lane needed, and this path needs it more.
+        //
+        // With the claim committing on its own, a failure before the follow-up transaction left the
+        // offer permanently Accepted with no reconcile scheduled and no `waitlist.auto_booked`
+        // record. The retry cannot repair it: the already-Accepted branch above re-submits and
+        // returns without ever reaching this code. Nothing else schedules that reconcile, so the
+        // enrollment is never marked fulfilled — and because `FindEligibleAsync` excludes only
+        // enrollments with a LIVE offer (Accepted is not live), the enrollee stays eligible
+        // forever. Under a standing AutoBookGrant the next opening books them a SECOND table with
+        // no new consent, which is the outcome §20 exists to prevent. The 5–15 minute residual
+        // double-offer window becomes unbounded.
+        var won = 0;
+        var reconcileOnly = false;
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            won = await offerRepo.TryResolveAsync(
+                command.TenantId, command.OfferId, offer.Version,
+                WaitlistOfferStatus.Offered, WaitlistOfferStatus.Accepted, now, ct2);
+
+            if (won == 0)
+            {
+                var reloaded = await offerRepo.GetAsync(command.OfferId, ct2);
+                if (reloaded?.Status == WaitlistOfferStatus.Accepted)
+                    return; // concurrent auto-accept won — same booking already minted (idempotent)
+
+                // Lost to a concurrent expire/decline after the booking was minted (rare). The spec-04
+                // record stands (06 owns its outcome), so schedule a reconcile that settles the
+                // orphaned operation against the enrollment — booked → mark fulfilled so no re-offer;
+                // failed → stays eligible.
+                reconcileOnly = true;
+                await reconcileScheduler.ScheduleAsync(
+                    command.TenantId, command.OfferId, offer.OperationId!, offer.EnrollmentId,
+                    attempt: 0, now, ct2);
+                return;
+            }
+
             // Same as the customer accept: settle the enrollment off the real 06 outcome. Once the
             // booking lands, the reconcile marks the enrollment fulfilled so the enrollee can never be
             // matched (and silently auto-booked) a second table inside their acceptance window.
@@ -157,6 +171,13 @@ public sealed class AutoAcceptWaitlistOfferCommandHandler(
                 OccurredAt = now,
             }, ct2);
         }, ct);
+
+        if (reconcileOnly)
+        {
+            logger.LogWarning(
+                "Waitlist auto-accept: offer {OfferId} moved on after the booking was minted; reconcile scheduled.",
+                command.OfferId);
+        }
 
         return Unit.Value;
     }

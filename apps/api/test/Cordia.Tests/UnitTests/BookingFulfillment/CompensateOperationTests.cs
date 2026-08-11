@@ -30,6 +30,7 @@ public class CompensateOperationTests
     private readonly Mock<IUnitOfWork> _uow = new();
     private readonly Mock<IOperationWorkItemRepository> _workItemRepo = new();
     private readonly Mock<ICapacityReservation> _capacityReservation = new();
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
 
     private ManualReviewEscalator CreateEscalator() =>
         new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object, _auditRepo.Object);
@@ -37,7 +38,8 @@ public class CompensateOperationTests
     private CompensateOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _adapter.Object, _outboxRepo.Object, _auditRepo.Object,
-            CreateEscalator(), _uow.Object, _capacityReservation.Object, new Metrics());
+            CreateEscalator(), _uow.Object, _capacityReservation.Object, _bookingRepo.Object,
+            new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId, string operationId, OperationStatus status, long version = 0,
@@ -83,10 +85,14 @@ public class CompensateOperationTests
                 It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
 
-        // Step repo: no existing compensate step (so it gets created).
+        // Step repo: no existing compensate step (so it gets created). Create-or-load is the
+        // repository's job now (GetOrAddAsync, ON CONFLICT DO NOTHING); returning the candidate is
+        // "nobody raced us".
         _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), "compensate", It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
 
         _stepRepo.Setup(r => r.TryTransitionStatusAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -194,8 +200,6 @@ public class CompensateOperationTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
 
-        _workItemRepo.Setup(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         var result = await CreateHandler().Handle(
             new CompensateOperationCommand(tenantId, opId), CancellationToken.None);

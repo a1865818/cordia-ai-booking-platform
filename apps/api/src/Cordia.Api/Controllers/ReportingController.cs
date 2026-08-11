@@ -1,5 +1,9 @@
-﻿using Cordia.Application.Handlers.Reporting.GetBookingFunnel;
+﻿using Cordia.Domain.Enums;
+using System.Text.Json.Serialization;
+using Cordia.Application.Handlers.Console.GetBookingOverview;
+using Cordia.Application.Handlers.Reporting.GetBookingFunnel;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -46,4 +50,71 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
 
         return Ok(view);
     }
+
+    /// <summary>
+    /// Per-day, per-channel and per-service aggregates over [from, to) for the console's
+    /// Analytics screen.
+    ///
+    /// Complements <c>GET /api/reporting/funnel</c>, which owns the separated funnel counts.
+    /// Deliberately carries no "agent vs human" split: nothing in the data model records who
+    /// handled a booking, and inventing that number would state a non-authoritative outcome
+    /// (Inv-16).
+    /// </summary>
+    /// <param name="from">Window start (inclusive). Default: 7 days ago.</param>
+    /// <param name="to">Window end (exclusive). Default: now.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("overview")]
+    [ProducesResponseType(typeof(BookingOverviewResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<BookingOverviewResponse>> GetOverview(
+        [FromQuery] DateTimeOffset? from,
+        [FromQuery] DateTimeOffset? to,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var resolvedTo = to ?? DateTimeOffset.UtcNow;
+        var resolvedFrom = from ?? resolvedTo.AddDays(-7);
+
+        var overview = await mediator.Send(
+            new GetBookingOverviewQuery(tenant.TenantId, resolvedFrom, resolvedTo), ct);
+
+        return Ok(new BookingOverviewResponse(
+            overview.TenantId,
+            overview.From,
+            overview.To,
+            overview.BreakdownTruncated,
+            overview.PerDay
+                .Select(d => new OverviewDayView(d.Date.ToString("yyyy-MM-dd"), d.Accepted, d.Booked))
+                .ToList(),
+            overview.Channels
+                .Select(c => new OverviewChannelView(EnumWireNames.ToWireName(c.Channel), c.Count))
+                .ToList(),
+            overview.TopServices
+                .Select(s => new OverviewServiceView(s.ServiceId, s.Count))
+                .ToList()));
+    }
 }
+
+public sealed record OverviewDayView(
+    [property: JsonPropertyName("date")] string Date,
+    [property: JsonPropertyName("accepted")] int Accepted,
+    [property: JsonPropertyName("booked")] int Booked);
+
+public sealed record OverviewChannelView(
+    [property: JsonPropertyName("channel")] string Channel,
+    [property: JsonPropertyName("count")] int Count);
+
+public sealed record OverviewServiceView(
+    [property: JsonPropertyName("service_id")] string ServiceId,
+    [property: JsonPropertyName("count")] int Count);
+
+public sealed record BookingOverviewResponse(
+    [property: JsonPropertyName("tenant_id")] string TenantId,
+    [property: JsonPropertyName("from")] DateTimeOffset From,
+    [property: JsonPropertyName("to")] DateTimeOffset To,
+    /// <summary>True when the channel/service breakdown was capped; per-day counts are exact.</summary>
+    [property: JsonPropertyName("breakdown_truncated")] bool BreakdownTruncated,
+    [property: JsonPropertyName("per_day")] IReadOnlyList<OverviewDayView> PerDay,
+    [property: JsonPropertyName("channels")] IReadOnlyList<OverviewChannelView> Channels,
+    [property: JsonPropertyName("top_services")] IReadOnlyList<OverviewServiceView> TopServices);

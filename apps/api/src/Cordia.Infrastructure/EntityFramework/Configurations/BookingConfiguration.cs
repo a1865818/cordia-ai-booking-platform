@@ -18,6 +18,10 @@ public class BookingConfiguration : IEntityTypeConfiguration<Booking>
         builder.Property(e => e.LifecycleStatus)
             .HasColumnType("booking_lifecycle_status_enum")
             .IsRequired();
+        // Nullable and unindexed by design: it is read only alongside a booking already fetched by
+        // key, never searched on, and an additive nullable column keeps this hot table's migration
+        // non-blocking.
+        builder.Property(e => e.PendingOperationId);
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.Version).IsConcurrencyToken().HasDefaultValue(0L);

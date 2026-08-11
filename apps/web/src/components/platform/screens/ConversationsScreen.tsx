@@ -1,7 +1,8 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, type ReactNode } from "react";
 import { Thread, Message, chMeta } from "../../../data/console";
 import { Chan } from "../../ui/StatusTags";
 import { Chip } from "../../ui/Chip";
+import { ConsentBadge } from "../../ui/ConsentBadge";
 import { Icon } from "../../ui/Icon";
 import { PrimaryButton } from "../../ui/Button";
 
@@ -41,14 +42,20 @@ function ThreadRow({ t, active, isDesktop, onClick }: ThreadRowProps) {
         </div>
       </div>
       <div className="text-[12.5px] text-t2 mt-[9px] leading-[1.4]">{t.preview}</div>
-      <div className="mt-[10px]">
+      {/* An ended session shows a status only when one is actually recorded. The session
+          summary carries no outcome, so live rows previously all read "Pending". */}
+      <div className="mt-[10px] flex items-center gap-[7px] flex-wrap">
         {t.live
           ? <span className="inline-flex items-center gap-[5px] text-[10.5px] font-semibold px-[9px] py-[3px] rounded-full"
               style={{ color: '#2056CC', background: '#E9F0FE' }}>
               <span className="w-[6px] h-[6px] rounded-full bg-[#2F6BEB]" />
               Live · needs you
             </span>
-          : <Chip status={t.status} />}
+          : t.status && <Chip status={t.status} />}
+        {/* The session read has always carried `consent_state`; nothing rendered it, so whether
+            the guest had consented — the record that later proves messaging or recording was
+            permitted — was invisible. Displayed only: consent is the guest's to give. */}
+        <ConsentBadge state={t.consentState} recordingAllowed={t.recordingAllowed} />
       </div>
     </button>
   );
@@ -60,9 +67,13 @@ interface ConversationThreadProps {
   msgs: Message[];
   onBack: () => void;
   onTakeOver: () => void;
+  /** Replaces the message list when the transcript could not be read. */
+  notice?: ReactNode;
+  /** True while the transcript is loading. */
+  pending?: boolean;
 }
 
-function ConversationThread({ device, thread, msgs, onBack, onTakeOver }: ConversationThreadProps) {
+function ConversationThread({ device, thread, msgs, onBack, onTakeOver, notice, pending }: ConversationThreadProps) {
   const isPhone = device === 'phone';
   const cm = chMeta(thread.channel);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -89,18 +100,27 @@ function ConversationThread({ device, thread, msgs, onBack, onTakeOver }: Conver
         <Chan channel={thread.channel} size={36} radius={10} />
         <div className="min-w-0 flex-1">
           <div className="text-[15px] font-semibold text-ink">{thread.name}</div>
+          {/* "handled by AI" is only stated for a thread that actually records provenance
+              (demo rows). Nothing server-side records who handled a session, so a live thread
+              claims nothing. */}
           <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-t3 mt-[1px] block">
-            {cm.label} · handled by AI
+            {cm.label}{thread.prov === 'ai' ? ' · handled by AI' : ''}
           </span>
         </div>
-        <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-[3px] rounded-[7px] bg-ink text-white shrink-0">
-          <Icon name="star" size={9} fill="#DDF247" />AI
-        </span>
+        {thread.prov === 'ai' && (
+          <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-[3px] rounded-[7px] bg-ink text-white shrink-0">
+            <Icon name="star" size={9} fill="#DDF247" />AI
+          </span>
+        )}
       </div>
 
       {/* Messages */}
       <div className="cd-scroll p-[15px] flex flex-col gap-[10px] flex-1 min-h-0 overflow-y-auto" style={{ background: '#FCFCFB' }}>
-        {msgs.map((m, i) => {
+        {notice}
+        {!notice && pending && (
+          <div className="text-[12.5px] text-t3 py-4 text-center">Loading the transcript…</div>
+        )}
+        {!notice && !pending && msgs.map((m, i) => {
           if (m.from === 'cust') return (
             <div key={i} className="flex justify-end">
               <div className="max-w-[82%] text-[13.5px] leading-[1.45] text-white px-[13px] py-[9px]"
@@ -160,13 +180,21 @@ function ConversationThread({ device, thread, msgs, onBack, onTakeOver }: Conver
           </PrimaryButton>
         </div>
       ) : (
-        <div className="flex items-center gap-[9px] p-[12px_14px] border-t border-hair bg-white shrink-0">
-          <div className="flex-1 h-[40px] border border-cd-border rounded-[10px] flex items-center px-[13px] text-[13px] text-t3">
-            Message {thread.name}…
+        /*
+          No composer. The input and Send button implied the operator could reply to a guest from
+          here; the button had no `onClick` at all, and there is no send-message endpoint anywhere
+          in the 50-operation contract — conversations are a read surface. An affordance that
+          silently does nothing is the same false claim as a fabricated number, made about a
+          capability instead of a fact.
+        */
+        <div className="p-[12px_14px] border-t border-hair bg-white shrink-0">
+          <div className="flex items-center gap-[8px] text-[12px] text-t3 leading-[1.5]">
+            <Icon name="alert" size={14} strokeWidth={2} color="#9A9A9A" />
+            <span>
+              This conversation is read-only. Replying from the console isn’t available yet —
+              the platform has no endpoint for it.
+            </span>
           </div>
-          <button className="w-[40px] h-[40px] border-none rounded-[10px] bg-ink cursor-pointer flex items-center justify-center shrink-0">
-            <Icon name="send" size={16} strokeWidth={2.2} color="#fff" />
-          </button>
         </div>
       )}
     </div>
@@ -182,11 +210,31 @@ interface ConversationsScreenProps {
   openConv: (id: string) => void;
   backConv: () => void;
   takeOver: () => void;
+  /**
+   * Rendered in place of the message list when the transcript could not be read.
+   *
+   * Without this the pane fell back to the mock `MESSAGES` map, which has no entry for a real
+   * session id — so a failed or forbidden read of the most sensitive data in the product
+   * displayed a clean, empty, confident conversation.
+   */
+  transcriptError?: ReactNode;
+  /** Shown while the transcript for an open live session is loading. */
+  transcriptPending?: boolean;
 }
 
-export function ConversationsScreen({ device, threads, messages, convOpen, convView, openConv, backConv, takeOver }: ConversationsScreenProps) {
+export function ConversationsScreen({
+  device, threads, messages, convOpen, convView, openConv, backConv, takeOver,
+  transcriptError, transcriptPending,
+}: ConversationsScreenProps) {
   const isDesktop = device !== 'phone';
-  const active = threads.find(t => t.id === convOpen) || threads[0];
+  // No fallback to `threads[0]`.
+  //
+  // Substituting a different thread than the one `convOpen` names rendered a REAL guest session
+  // that nothing else in the page knew was open: no transcript was fetched for it, no purpose was
+  // asked for, the message map had no entry, and it displayed as a confident empty conversation.
+  // "Take over" recorded `convOpen` too, so the Live dot never cleared. The caller resolves the
+  // selection to a thread that actually exists; here, an id that matches nothing renders nothing.
+  const active = threads.find(t => t.id === convOpen);
   const showList = isDesktop || convView === 'list';
   const showThread = isDesktop || convView === 'thread';
 
@@ -212,6 +260,8 @@ export function ConversationsScreen({ device, threads, messages, convOpen, convV
           msgs={messages[active.id] || []}
           onBack={backConv}
           onTakeOver={takeOver}
+          notice={transcriptError}
+          pending={transcriptPending}
         />
       )}
     </div>

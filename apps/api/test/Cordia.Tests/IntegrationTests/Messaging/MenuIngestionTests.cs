@@ -102,9 +102,9 @@ public class MenuIngestionTests(PostgresFixture fixture)
     private async Task<(string tenantId, string catalogId, string messageId)> SeedUploadedCatalogAndIngestMessageAsync(
         string sourceArtifactRef)
     {
-        var tenantId = $"t11-menu-{Guid.NewGuid():N}";
-        var catalogId = $"cat-{Guid.NewGuid():N}";
-        var messageId = $"msg-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t11-menu");
+        var catalogId = TestIds.New("cat");
+        var messageId = TestIds.New("msg");
 
         await using var seedCtx = fixture.CreateContext(tenantId);
         seedCtx.VendorCatalogs.Add(new VendorCatalog
@@ -237,7 +237,7 @@ public class MenuIngestionTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task ExtractionFailure_StaysExtracting_AuditAndOwnerAlert_NoItems()
+    public async Task ExtractionFailure_SettlesExtractFailed_AuditAndOwnerAlert_NoItems()
     {
         await NeutralizeExistingUnpublishedAsync();
         // Clean artifact (scan passes → Extracting), but the extractor throws.
@@ -248,10 +248,14 @@ public class MenuIngestionTests(PostgresFixture fixture)
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
-        // No extract_failed state (frozen D4): the catalog is left stuck in Extracting, never DraftReady/Published.
+        // Settled terminally AT THE POINT OF FAILURE (D4 amendment, owner ruling 2026-08-06) —
+        // not left in Extracting for MenuIngestionMonitor to infer from a staleness threshold.
+        // The handler already knew the extraction had failed; reporting "being read" for another
+        // fifteen minutes was a confident falsehood about a fact in hand. Never DraftReady or
+        // Published.
         var catalog = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
             .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
-        Assert.Equal(CatalogStatus.Extracting, catalog.Status);
+        Assert.Equal(CatalogStatus.ExtractFailed, catalog.Status);
 
         var itemCount = await assertCtx.VendorCatalogItems.AsNoTracking().IgnoreQueryFilters()
             .CountAsync(i => i.TenantId == tenantId && i.CatalogId == catalogId);

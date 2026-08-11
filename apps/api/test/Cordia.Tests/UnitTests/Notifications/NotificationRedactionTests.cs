@@ -89,7 +89,7 @@ public class NotificationRedactionTests
 
         _recipientResolver
             .Setup(r => r.ResolveAsync(TenantId, OperationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ResolvedRecipient(OpaqueRecipientRef, NotificationChannel.Sms, "en"));
+            .ReturnsAsync(new ResolvedRecipient(OpaqueRecipientRef, NotificationChannel.Sms, "en", Destination: "+61400000000"));
 
         _consentGate
             .Setup(c => c.CheckAsync(TenantId, OpaqueRecipientRef, NotificationChannel.Sms, It.IsAny<CancellationToken>()))

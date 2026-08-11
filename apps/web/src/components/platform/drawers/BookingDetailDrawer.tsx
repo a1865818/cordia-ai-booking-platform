@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import { useEffect, useState, useRef } from "react";
-import { Booking, WEEK, staffById, chMeta, fmtRange, idemKey } from "../../../data/console";
+import { Booking, chMeta, fmtRange } from "../../../data/console";
+import { dayLabel as weekDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
 import { Drawer } from "../../ui/Drawer";
 import { Chip } from "../../ui/Chip";
 import { DepTag, ProvTag } from "../../ui/StatusTags";
@@ -30,17 +32,25 @@ function MetaRow({ label, children, top }: MetaRowProps) {
 interface BookingDetailDrawerProps {
   open: boolean;
   device: 'phone' | 'desktop';
+  /** The displayed week, so the booking's date is the real one rather than a fixed literal. */
+  week: ConsoleWeek;
   booking: Booking | null;
   onClose: () => void;
   onStartReschedule: (id: string) => void;
   onCancelBooking: (id: string) => void;
   cancelBusy: boolean;
   onViewTranscript: (tid: string) => void;
+  /**
+   * Step-up verification, rendered in place of the cancel confirmation when the platform needs
+   * a grant before it will accept the cancellation (spec 08, Inv-11). Owned by the page so the
+   * grant never has to live in this component.
+   */
+  verificationGate?: ReactNode;
 }
 
 export function BookingDetailDrawer({
-  open, device, booking, onClose,
-  onStartReschedule, onCancelBooking, cancelBusy, onViewTranscript,
+  open, device, week, booking, onClose,
+  onStartReschedule, onCancelBooking, cancelBusy, onViewTranscript, verificationGate,
 }: BookingDetailDrawerProps) {
   const b = useRetained(booking, open);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -51,13 +61,22 @@ export function BookingDetailDrawer({
 
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Booking">{null}</Drawer>;
 
-  const st = staffById(b.staff);
-  const dayLabel = WEEK.dows[b.day].charAt(0) + WEEK.dows[b.day].slice(1).toLowerCase() + ' ' + WEEK.doms[b.day] + ' ' + WEEK.month;
-  const cancellable = !['cancelled', 'failed'].includes(b.status);
+  const dayLabel = weekDayLabel(week, b.day);
+  // `isBooking === false` means the platform has accepted the request but not finalised it, so
+  // `b.id` is an OPERATION id. Cancel and reschedule both address a booking; sending an operation
+  // id would 404, and offering the buttons implies an action that cannot be taken yet.
+  const isRealBooking = b.isBooking !== false;
+  const cancellable = isRealBooking && !['cancelled', 'failed'].includes(b.status);
 
   const footer = (
     <div className="flex gap-2">
-      {confirmCancel ? (
+      {verificationGate ? (
+        // The gate owns the interaction until the server issues a grant or the operator backs
+        // out; re-offering "Confirm cancel" here would just re-submit without one.
+        <GhostButton onClick={() => setConfirmCancel(false)} style={{ flex: 1 }}>
+          Keep booking
+        </GhostButton>
+      ) : confirmCancel ? (
         <>
           <GhostButton onClick={() => setConfirmCancel(false)} style={{ flex: 1 }}>Keep booking</GhostButton>
           <PrimaryButton
@@ -79,9 +98,15 @@ export function BookingDetailDrawer({
               Cancel
             </GhostButton>
           )}
-          <PrimaryButton full icon="calClock" onClick={() => onStartReschedule(b.id)}>
-            Reschedule
-          </PrimaryButton>
+          {isRealBooking ? (
+            <PrimaryButton full icon="calClock" onClick={() => onStartReschedule(b.id)}>
+              Reschedule
+            </PrimaryButton>
+          ) : (
+            <div className="text-[12.5px] text-t2 leading-[1.5]" role="status">
+              Still being confirmed — it can be changed once the platform finishes.
+            </div>
+          )}
         </>
       )}
     </div>
@@ -92,27 +117,39 @@ export function BookingDetailDrawer({
       <div className="flex items-center gap-[9px] mb-[14px]">
         <Chip status={b.status} /><ProvTag prov={b.prov} />
       </div>
+      {verificationGate && <div className="mb-[14px]">{verificationGate}</div>}
       <div className="rounded-[13px] p-[4px_14px] mb-[14px]" style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
         <MetaRow label="Service">{b.serviceName}</MetaRow>
-        <MetaRow label="With">
-          {st.name}
-          <div className="font-mono text-[10px] text-t3 tracking-[0.06em]">{st.role}</div>
-        </MetaRow>
+        {/* No "With" row. `Booking.staff` is a grid lane, not an assignment: the platform models
+            no resource, so `adapters.ts` sets every live booking to `UNASSIGNED_RESOURCE_ID`
+            ("s1") — and `staffById("s1")` matched the mock `STAFF[0]`, so this row read
+            "With: Linh Pham · Technician · Bay 1" for EVERY real booking, naming an invented
+            person as the one who handled it. Same defect as the grid's fabricated lanes. */}
         <MetaRow label="When">
           {dayLabel}
           <div className="font-mono text-[11px] text-ink">{fmtRange(b.start, b.dur)}</div>
         </MetaRow>
-        <MetaRow label="Deposit"><DepTag dep={b.dep} /></MetaRow>
-        <MetaRow label="Booked via" top>
-          <span className="inline-flex items-center gap-[5px]">
-            <span className="w-[7px] h-[7px] rounded-full" style={{ background: chMeta(b.channel || 'phone').color }} />
-            {chMeta(b.channel || 'phone').label}
-          </span>
-        </MetaRow>
-        <div className="flex items-center justify-between gap-3 py-[11px]">
-          <span className="text-[12.5px] text-t2">Idempotency key</span>
-          <span className="font-mono text-[11px] text-t3">{idemKey(b.id)}</span>
-        </div>
+        {/* Both rows are omitted for a live booking rather than defaulted. The schedule
+            projection records no channel and no deposit, so `|| 'phone'` would report a
+            web-originated booking to the operator as a phone call, and DepTag would print a
+            payment hold that spec 09 defers and that never charged anyone. `ProvTag` already
+            renders nothing for unknown provenance; these follow it. */}
+        {b.dep > 0 && (
+          <MetaRow label="Deposit"><DepTag dep={b.dep} /></MetaRow>
+        )}
+        {b.channel && (
+          <MetaRow label="Booked via" top>
+            <span className="inline-flex items-center gap-[5px]">
+              <span className="w-[7px] h-[7px] rounded-full" style={{ background: chMeta(b.channel).color }} />
+              {chMeta(b.channel).label}
+            </span>
+          </MetaRow>
+        )}
+        {/* No "Idempotency key" row. `idemKey()` derived a plausible-looking key from a
+            character sum of the booking's DISPLAY id — it had no relationship to the key the
+            request was actually submitted under (`AttemptIdentity`, `features/bookings/identity.ts`),
+            and the schedule projection does not return one. An invented technical fact is
+            worse than a missing one: it is the field an engineer would quote in an incident. */}
       </div>
 
       {b.prov === 'ai' && (

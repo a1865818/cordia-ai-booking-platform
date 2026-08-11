@@ -53,4 +53,24 @@ public class IdempotencyRepository(ApplicationDbContext db) : IIdempotencyReposi
 
         return rows == 1;
     }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Conditional on <c>operation_id</c> so a concurrent caller cannot delete a record another
+    /// transaction has already re-bound to a fresh operation. Tenant is filtered explicitly as
+    /// well as by the global query filter, matching <see cref="GetByKeyAsync"/>.
+    /// </remarks>
+    public Task<int> TryVoidAsync(
+        string tenantId,
+        string idempotencyKey,
+        string expectedOperationId,
+        CancellationToken ct = default)
+        => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            DELETE FROM public.idempotency_records
+            WHERE tenant_id = {tenantId}
+              AND idempotency_key = {idempotencyKey}
+              AND operation_id = {expectedOperationId}
+            """,
+            ct);
 }

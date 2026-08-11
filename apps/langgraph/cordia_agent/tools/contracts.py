@@ -564,6 +564,15 @@ class BookingProjectionRef(BaseModel):
         default=None,
         description="Number of people in the booking if available.",
     )
+    version: int | None = Field(
+        default=None,
+        description=(
+            "Optimistic-concurrency token for the booking row.  Pass it back as "
+            "`expected_booking_version` on modify/cancel (spec 08 §9.4.8); a stale value "
+            "is rejected with 409 stale_version rather than overwriting a concurrent "
+            "change.  None when the caller is not authorized to see the authoritative row."
+        ),
+    )
 
 
 class BookingChangeValidation(BaseModel):

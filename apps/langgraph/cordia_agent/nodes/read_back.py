@@ -49,6 +49,27 @@ async def read_back(state: AgentState) -> dict:
     from cordia_agent.models.intent import IntentRevision
 
     draft = state.draft
+
+    # The guest is projected onto the REQUEST here, not only where the draft is created.
+    #
+    # ``build_revision`` below hashes ``draft.request``, so a customer that reaches the draft but
+    # not the request never reaches the canonical payload — the booking lands with no notification
+    # destination and cannot be found by ``GET /api/bookings?phone_e164=``. ``identify_intent``
+    # sets both, but only from ``state.customer`` as it stands on the turn the draft is FIRST
+    # created; a guest whose number arrives on a later turn (web, or a caller who volunteers it
+    # mid-dialog) was stranded, because no node writes ``request.customer`` again.
+    #
+    # This is the single funnel into the canonical payload, so doing it here catches every lane.
+    # Only fills a MISSING value: an explicitly captured customer on the request already outranks
+    # the ambient one and must not be overwritten. Changing the payload correctly counts as a
+    # material change below and supersedes the revision.
+    customer = draft.customer or state.customer
+    customer_projected = draft.request.customer is None and customer is not None
+    if customer_projected:
+        draft = draft.model_copy(
+            update={"request": draft.request.model_copy(update={"customer": customer})}
+        )
+
     req = draft.request
     mode = state.availability_mode or AvailabilityMode.INFORMATIONAL
 
@@ -121,6 +142,11 @@ async def read_back(state: AgentState) -> dict:
             state.disclosures_presented, *presented
         ),
     }
+
+    # Persist the projection, so every later node reads the same request this revision was hashed
+    # from rather than re-deriving it (or not deriving it at all).
+    if customer_projected:
+        update["draft"] = draft
 
     # Clear any stale confirmation when the revision changed (Inv-10)
     if revision_changed:

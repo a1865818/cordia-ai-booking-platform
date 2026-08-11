@@ -40,6 +40,18 @@ builder.Host.UseSerilog((context, loggerConfig) =>
 
 // --- Layers ---
 builder.Services.AddApplication();
+
+// An asserted `X-Actor-Role` may authorize a reschedule only where asserted identity is already
+// the accepted posture — the same places the `X-Tenant-Id` shim is enabled, and for the same
+// reason: neither is proven, and outside Development both are unauthenticated access to another
+// party's data (Inv-11/Inv-13). Default ON in Development, OFF elsewhere; an explicit
+// `Authorization:AllowAssertedStaffRole` overrides. Superseded by signed actor context (spec 08/15).
+// Resolved once here and announced at startup below, so the log reports the value actually bound.
+var allowAssertedStaffRole = builder.Configuration.GetValue(
+    "Authorization:AllowAssertedStaffRole",
+    builder.Environment.IsDevelopment());
+builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
+    o.AllowAssertedStaffRole = allowAssertedStaffRole);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // --- Web ---
@@ -177,7 +189,88 @@ app.UseMiddleware<Cordia.Api.Middleware.TenantContextVerificationMiddleware>();
 
 // Resolve tenant from the X-Tenant-Id header (DEV/TEST shim only). Gated so it NEVER overrides a
 // context already verified above (Inv-13); superseded by signed-context resolution (spec 08/15).
-app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
+//
+// REGISTERED ONLY WHERE IT IS MEANT TO EXIST. `X-Tenant-Id` is trusted client input: wherever this
+// runs and no signed context is present, any caller can name the tenant whose data they get. That is
+// acceptable on a developer machine and in the test host, and is unauthenticated cross-tenant access
+// anywhere else — so the shim is opt-in outside Development rather than always-on (Inv-13).
+// Deployments that still need it set Tenancy:AllowHeaderShim explicitly; the default is off.
+var allowTenantHeaderShim = app.Configuration.GetValue(
+    "Tenancy:AllowHeaderShim",
+    app.Environment.IsDevelopment());
+
+if (allowTenantHeaderShim)
+{
+    app.UseMiddleware<Cordia.Api.Middleware.TenantResolutionMiddleware>();
+
+    // Say so once at startup — and say it LOUDLY when it is dangerous.
+    //
+    // Only the disabled branch announced itself, so the one configuration that actually needs
+    // announcing was the silent one: a deployment that switched `Tenancy:AllowHeaderShim` on
+    // outside Development accepted a client-named tenant with nothing in the log to show for it.
+    // "Disabled" is the safe state and barely worth a line; "enabled in Production" is
+    // unauthenticated cross-tenant access (Inv-13) and is the thing an operator must be able to
+    // find by grepping startup.
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "X-Tenant-Id header shim is ENABLED ({Environment}); callers name their own tenant. "
+            + "Expected on a developer machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "X-Tenant-Id header shim is ENABLED OUTSIDE DEVELOPMENT ({Environment}) because "
+            + "Tenancy:AllowHeaderShim was set explicitly. Any caller can name the tenant whose "
+            + "data they receive — this is unauthenticated cross-tenant access (Inv-13). Turn it "
+            + "off unless a signed X-Tenant-Context issuer is genuinely unavailable.",
+            app.Environment.EnvironmentName);
+    }
+}
+else
+{
+    // A silently absent shim looks exactly like a broken tenant lookup.
+    app.Logger.LogInformation(
+        "X-Tenant-Id header shim is disabled ({Environment}); tenant must come from a verified X-Tenant-Context.",
+        app.Environment.EnvironmentName);
+}
+
+// The sibling gate, announced the same way and for the same reason.
+//
+// `Authorization:AllowAssertedStaffRole` was the silent one: the tenant shim above says at startup
+// that callers name their own tenant, but a deployment that switched the asserted-role branch on
+// outside Development said nothing at all. Wherever it is enabled, `X-Actor-Role` — an unproven
+// client string — stands in for a verification grant, so anyone who knows a booking id can assert
+// `operator` and mutate that booking with no grant (Inv-11). That is expected on a developer
+// machine and in the test host; anywhere else it must be findable by grepping startup.
+if (allowAssertedStaffRole)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "Asserted X-Actor-Role authorization is ENABLED ({Environment}); an asserted staff role "
+            + "stands in for a verification grant. Expected on a developer machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "Asserted X-Actor-Role authorization is ENABLED OUTSIDE DEVELOPMENT ({Environment}) "
+            + "because Authorization:AllowAssertedStaffRole was set explicitly. Any caller who knows "
+            + "a booking id can assert a staff role and mutate that booking with no verification "
+            + "grant (Inv-11). Turn it off unless a signed actor-context issuer is genuinely "
+            + "unavailable.",
+            app.Environment.EnvironmentName);
+    }
+}
+else
+{
+    // A silently absent role branch looks exactly like a broken console authorization.
+    app.Logger.LogInformation(
+        "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
+        app.Environment.EnvironmentName);
+}
 
 // --- Pipeline ---
 app.UseSerilogRequestLogging();

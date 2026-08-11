@@ -50,9 +50,9 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
     [Fact]
     public async Task PublishingV2_SupersedesV1_AndReadReturnsOnlyV2()
     {
-        var tenantId = $"t-pub-{Guid.NewGuid():N}";
-        var v1 = $"cat-v1-{Guid.NewGuid():N}";
-        var v2 = $"cat-v2-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("t-pub");
+        var v1 = TestIds.New("cat-v1");
+        var v2 = TestIds.New("cat-v2");
 
         await using (var ctx = fixture.CreateContext(tenantId))
         {

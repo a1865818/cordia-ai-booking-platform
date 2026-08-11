@@ -13,6 +13,7 @@ from cordia_agent.state import (
     BookingDraft,
     BookingRequest,
     Channel,
+    CustomerRef,
     DialogIntent,
     OperationType,
     SourceInfo,
@@ -173,6 +174,36 @@ async def test_identify_intent_builds_initial_draft_when_session_ready() -> None
     assert draft.request.operation == OperationType.create, (
         f"Fix C: initial draft.request.operation must be create; got {draft.request.operation!r}"
     )
+
+
+@pytest.mark.unit
+async def test_identify_intent_puts_the_customer_on_the_request_not_only_the_draft() -> None:
+    """The revision is built from ``draft.request`` (read_back passes it straight to
+    build_revision as the canonical payload), so a customer kept only on the draft never
+    reaches the hashed payload the API receives — the booking would land with no
+    notification destination and be unfindable by phone. identify_intent is the only site
+    that can set it.
+    """
+    customer = CustomerRef(customer_id="cust_fix", display_name="A. Guest")
+    state = AgentState(
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+        tenant_id="tenant_fix_c",
+        session_id="sess_fix_c",
+        tenant_policy_version="v1",
+        draft=None,
+        customer=customer,
+        transcript_text="I'd like to book a table",
+    )
+
+    result = await identify_intent(state)
+
+    draft = result.get("draft")
+    assert draft is not None
+    assert draft.request.customer == customer, (
+        "the customer must ride on draft.request (the hashed canonical payload), "
+        f"not only on the draft; got {draft.request.customer!r}"
+    )
+    assert draft.customer == customer
 
 
 @pytest.mark.unit

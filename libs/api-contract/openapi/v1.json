@@ -54,6 +54,45 @@
         ],
         "type": "string"
       },
+      "AvailabilityResult": {
+        "additionalProperties": false,
+        "properties": {
+          "slots": {
+            "items": {
+              "$ref": "#/components/schemas/AvailableSlot"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "AvailableSlot": {
+        "additionalProperties": false,
+        "properties": {
+          "free_capacity": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "resource_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "slot_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "total_capacity": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "BookingChangeValidation": {
         "additionalProperties": false,
         "properties": {
@@ -139,6 +178,48 @@
         },
         "type": "object"
       },
+      "BookingOverviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "breakdown_truncated": {
+            "type": "boolean"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewChannelView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "per_day": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewDayView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "top_services": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewServiceView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "BookingProjectionRef": {
         "additionalProperties": false,
         "properties": {
@@ -163,6 +244,11 @@
           "status": {
             "nullable": true,
             "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -170,6 +256,9 @@
       "BookingRequest": {
         "additionalProperties": false,
         "properties": {
+          "customer": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
           "duration_minutes": {
             "nullable": true,
             "oneOf": [
@@ -254,10 +343,98 @@
         },
         "type": "object"
       },
+      "BookingScheduleResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bookings": {
+            "items": {
+              "$ref": "#/components/schemas/ScheduledBookingView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "CancelPreorderRequest": {
         "additionalProperties": false,
         "properties": {
           "reason": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CatalogDraftItem": {
+        "additionalProperties": false,
+        "properties": {
+          "allergen_info": {
+            "nullable": true,
+            "type": "string"
+          },
+          "category": {
+            "nullable": true,
+            "type": "string"
+          },
+          "currency": {
+            "nullable": true,
+            "type": "string"
+          },
+          "description": {
+            "nullable": true,
+            "type": "string"
+          },
+          "extraction_confidence": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "item_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "price_minor": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CatalogDraftItemsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogDraftItem"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "version_label": {
             "nullable": true,
             "type": "string"
           }
@@ -283,6 +460,45 @@
             "format": "int64",
             "nullable": true,
             "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CatalogListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogs": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogSummary"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "CatalogSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "catalog_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "version_label": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -406,10 +622,125 @@
         },
         "type": "object"
       },
+      "ConversationSessionView": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "nullable": true,
+            "type": "string"
+          },
+          "consent_state": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "recording_allowed": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "session_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ConvertStandaloneRequest": {
         "additionalProperties": false,
         "properties": {
           "grant_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateSlotRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "resource_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "total_capacity": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CustomerRef": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "display_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "phone_e164": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CustomerView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_service_id": {
             "nullable": true,
             "type": "string"
           }
@@ -487,6 +818,10 @@
           "deposit_terms": {
             "$ref": "#/components/schemas/DepositTermsDto"
           },
+          "idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
           "identity_ref": {
             "nullable": true,
             "type": "string"
@@ -562,6 +897,34 @@
         ],
         "type": "string"
       },
+      "GuestContactRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "phone_e164": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "GuestContactResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_ref": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "IdempotencyConflict": {
         "additionalProperties": false,
         "properties": {
@@ -622,6 +985,74 @@
           "tenant_policy_version": {
             "nullable": true,
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ListConversationSessionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationSessionView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ListCustomersResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "customers": {
+            "items": {
+              "$ref": "#/components/schemas/CustomerView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ListOperationsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationSummaryView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ListWaitlistEnrollmentsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollments": {
+            "items": {
+              "$ref": "#/components/schemas/WaitlistEnrollmentView"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ListWorkItemsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "work_items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationWorkItemView"
+            },
+            "nullable": true,
+            "type": "array"
           }
         },
         "type": "object"
@@ -817,6 +1248,55 @@
         },
         "type": "object"
       },
+      "OperationSummaryView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "correlation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intent_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "intent_revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "is_preorder": {
+            "type": "boolean"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_type": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "OperationTypeEnum": {
         "enum": [
           "cancel",
@@ -826,6 +1306,40 @@
         ],
         "type": "string"
       },
+      "OperationWorkItemView": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sla_deadline": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_item_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Outcome": {
         "enum": [
           "alternative_offered",
@@ -834,6 +1348,52 @@
           "not_required"
         ],
         "type": "string"
+      },
+      "OverviewChannelView": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "nullable": true,
+            "type": "string"
+          },
+          "count": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "OverviewDayView": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "booked": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "date": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "OverviewServiceView": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "PingResult": {
         "additionalProperties": false,
@@ -1060,6 +1620,59 @@
         },
         "type": "object"
       },
+      "ScheduledBookingView": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "booking_reference": {
+            "nullable": true,
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "duration_minutes": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "lifecycle_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "operation_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Scope": {
         "enum": [
           "operation",
@@ -1090,6 +1703,16 @@
           },
           "recording_allowed": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "SetDisplayNameRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -1376,6 +1999,20 @@
         },
         "type": "object"
       },
+      "TenantDisplayNameResult": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "TranscriptTurnPersistedResult": {
         "additionalProperties": false,
         "properties": {
@@ -1654,6 +2291,76 @@
           }
         },
         "type": "object"
+      },
+      "WaitlistEnrollmentView": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptable_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "acceptable_to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "auto_book_authorized": {
+            "type": "boolean"
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "customer_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "enrollment_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "latest_offer_expires_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "latest_offer_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "latest_offer_status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "location_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "party_size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "service_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WaitlistLocationsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "locations": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1677,6 +2384,260 @@
   },
   "openapi": "3.0.4",
   "paths": {
+    "/api/availability": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailabilityResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailabilityResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailabilityResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Availability"
+        ]
+      }
+    },
+    "/api/availability/slots": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSlotRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSlotRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSlotRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailableSlot"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailableSlot"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailableSlot"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "tags": [
+          "Availability"
+        ]
+      }
+    },
+    "/api/booking-operations": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "needs_attention",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOperationsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "BookingOperations"
+        ]
+      }
+    },
     "/api/booking-operations/{operationId}": {
       "get": {
         "parameters": [
@@ -2163,6 +3124,65 @@
         ]
       }
     },
+    "/api/booking-operations/work-items": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkItemsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "BookingOperations"
+        ]
+      }
+    },
     "/api/Bookings": {
       "get": {
         "parameters": [
@@ -2235,6 +3255,29 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Grant-Id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/*+json": {
@@ -2294,6 +3337,26 @@
               }
             },
             "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "409": {
             "content": {
@@ -2562,6 +3625,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2781,6 +3858,81 @@
               }
             },
             "description": "Unprocessable Content"
+          }
+        },
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/api/Bookings/schedule": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingScheduleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
           }
         },
         "tags": [
@@ -3158,6 +4310,65 @@
         ]
       }
     },
+    "/api/conversation-sessions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListConversationSessionsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "ConversationSessions"
+        ]
+      }
+    },
     "/api/conversation-sessions/{sessionId}/consent": {
       "post": {
         "parameters": [
@@ -3515,6 +4726,72 @@
         ]
       }
     },
+    "/api/customers": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCustomersResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Customers"
+        ]
+      }
+    },
     "/api/dead-letter-messages/replay": {
       "post": {
         "parameters": [
@@ -3619,6 +4896,97 @@
         ]
       }
     },
+    "/api/guest-contacts": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestContactRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestContactRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestContactRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestContactResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestContactResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestContactResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "GuestContacts"
+        ]
+      }
+    },
     "/api/Health": {
       "get": {
         "responses": {
@@ -3632,6 +5000,104 @@
       }
     },
     "/api/menu/catalogs": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogListResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogListResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogListResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "tags": [
+          "Menu"
+        ]
+      },
       "post": {
         "parameters": [
           {
@@ -3983,6 +5449,126 @@
               }
             },
             "description": "Conflict"
+          }
+        },
+        "tags": [
+          "Menu"
+        ]
+      }
+    },
+    "/api/menu/catalogs/{catalogId}/items": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "catalogId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDraftItemsResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDraftItemsResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDraftItemsResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Not Found"
           }
         },
         "tags": [
@@ -4924,6 +6510,231 @@
         ]
       }
     },
+    "/api/reporting/overview": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOverviewResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Reporting"
+        ]
+      }
+    },
+    "/api/tenant-profile/display-name": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "TenantProfile"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDisplayNameRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDisplayNameRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDisplayNameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDisplayNameResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "tags": [
+          "TenantProfile"
+        ]
+      }
+    },
     "/api/verifications": {
       "post": {
         "requestBody": {
@@ -5117,11 +6928,89 @@
       }
     },
     "/api/waitlist/enrollments": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "active_only",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWaitlistEnrollmentsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Waitlist"
+        ]
+      },
       "post": {
         "parameters": [
           {
             "in": "header",
             "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
             "schema": {
               "type": "string"
             }
@@ -5193,6 +7082,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5245,6 +7148,55 @@
         ]
       }
     },
+    "/api/waitlist/locations": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitlistLocationsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitlistLocationsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitlistLocationsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Waitlist"
+        ]
+      }
+    },
     "/api/waitlist/offers/{offerId}/accept": {
       "post": {
         "parameters": [
@@ -5259,6 +7211,20 @@
           {
             "in": "header",
             "name": "X-Actor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
             "schema": {
               "type": "string"
             }
@@ -5351,6 +7317,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-Role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Reason-Code",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5432,6 +7412,9 @@
   ],
   "tags": [
     {
+      "name": "Availability"
+    },
+    {
       "name": "BookingOperations"
     },
     {
@@ -5447,7 +7430,13 @@
       "name": "ConversationSessions"
     },
     {
+      "name": "Customers"
+    },
+    {
       "name": "DeadLetterMessages"
+    },
+    {
+      "name": "GuestContacts"
     },
     {
       "name": "Health"
@@ -5475,6 +7464,9 @@
     },
     {
       "name": "TelephonyWebhook"
+    },
+    {
+      "name": "TenantProfile"
     },
     {
       "name": "Verifications"

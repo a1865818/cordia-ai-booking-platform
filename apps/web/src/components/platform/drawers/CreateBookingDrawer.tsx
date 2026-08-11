@@ -1,8 +1,25 @@
-import React, { useEffect, useState } from "react";
-import { Service, STAFF, CUSTOMERS, WEEK, fmtT, fmtDur, money, TIME_SLOTS, DAY_OPTS, Booking } from "../../../data/console";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CUSTOMERS, fmtT, fmtDur, TIME_SLOTS, Booking, type Customer } from "../../../data/console";
+import type { BookableService } from "../../../features/bookings/services";
+import { UNASSIGNED_RESOURCE_ID } from "../../../features/bookings/resources";
+import { dayOptions, shortDayLabel, todayIndexAt, type ConsoleWeek } from "../../../features/bookings/week";
+import type { AvailableSlot } from "../../../features/bookings/availability";
+import type { CreatePrefill } from "../../../features/waitlist/prefill";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
+import { Spinner } from "../../ui/Spinner";
+import { ErrorState } from "../../ui/ErrorState";
+import { buildSubmission, normalisePhone, toIsoInstant } from "../../../features/bookings/buildSubmission";
+import { PhoneInput } from "../../ui/PhoneInput";
+import { getOrCreateAttempt, resetAttempt } from "../../../features/bookings/identity";
+import { submitBooking } from "../../../features/bookings/submit";
+import { createGuestContact } from "../../../features/bookings/guestContact";
+import { isRetryableWithNewAttempt } from "../../../features/bookings/mutations";
+import {
+  isBooked, isTerminalFailure, normalizedStatusLabel, useOperationStatus,
+} from "../../../features/bookings/useOperationStatus";
+import { getActor } from "../../../api/config";
 
 const inputStyle: React.CSSProperties = {
   width: '100%', height: 42, border: '1px solid #EAEAEA', borderRadius: 10,
@@ -10,6 +27,16 @@ const inputStyle: React.CSSProperties = {
   fontSize: 14, color: '#0A0A0A', background: '#fff', outline: 'none',
 };
 const selectStyle: React.CSSProperties = { ...inputStyle, appearance: 'none', cursor: 'pointer', paddingRight: 34 };
+
+/**
+ * The floor the API actually states, enforced in code rather than only as an HTML attribute.
+ *
+ * There is deliberately NO ceiling. `BookingRequest.party_size` is `{"type":"integer",
+ * "exclusiveMinimum": 0}` — a lower bound and nothing else — so a hard client maximum would
+ * refuse a booking the platform accepts and state a limit no spec has set. A venue taking a
+ * function for sixty must not find Confirm permanently disabled by a number invented here.
+ */
+const MIN_PARTY_SIZE = 1;
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -37,89 +64,782 @@ function SelectField({ value, onChange, options }: { value: string; onChange: (v
 interface CreateBookingDrawerProps {
   open: boolean;
   device: 'phone' | 'desktop';
+  /**
+   * The displayed week. The day picker is dated from it AND the submitted instant is anchored
+   * to it — anchoring to `startOfWeek(new Date())` instead meant a booking made while viewing
+   * next week was silently submitted for this week.
+   */
+  week: ConsoleWeek;
   onClose: () => void;
   onCreated: (b: Omit<Booking, 'id'>) => void;
-  services: Service[];
+  /**
+   * The venue's bookable services, from the **live** catalog — or `undefined` while it has
+   * never loaded. There is deliberately no fall back to the mock `SERVICE_LIST`: its keys
+   * exist on no server, and submitting one writes a durable booking against a service the
+   * venue does not have. A catalog that loaded and is empty is a real answer ("nothing is
+   * bookable yet"), and the drawer says so instead of inventing options.
+   */
+  services?: BookableService[];
+  /** True when the catalog request failed, so "no services" can be told apart from "we don't know". */
+  servicesFailed?: boolean;
+  onRetryServices?: () => void;
+  /** The tenant's customers, or `undefined` while the list has never loaded. */
+  customers?: Customer[];
+  /**
+   * Slots the venue has declared for the displayed week, or `undefined` while never loaded.
+   *
+   * **Advisory, never a constraint.** The read is spec 07 `informational`: it takes no hold, so
+   * a slot it shows as free can be taken before this booking is submitted. It also cannot be
+   * made authoritative by wishing — a venue that has declared no slots returns an empty list,
+   * and treating that as "fully booked" would report a confident falsehood for every tenant
+   * that has not used the declaration surface. So it informs the operator and nothing else:
+   * the day and time pickers stay open, and the booking learns its real outcome from the
+   * operation.
+   */
+  availability?: AvailableSlot[];
+  /**
+   * Defaults to open with, e.g. when booking a specific waitlisted guest. Applied on open
+   * only — the operator can change anything before submitting.
+   */
+  prefill?: CreatePrefill;
+  /**
+   * The drawer was closed and reopened while a submission was in flight, and the server accepted
+   * it anyway.
+   *
+   * The operation is real and durable, but it belongs to a form that is no longer on screen, so
+   * this drawer cannot poll it or claim its outcome. Left entirely unsaid, the operator would see a
+   * blank form and could submit the same booking again under a freshly minted key the server has no
+   * reason to deduplicate. The parent refreshes its views so the accepted operation shows up where
+   * operations belong — the queue and the grid — rather than vanishing.
+   */
+  onSubmissionAbandoned?: (operationId: string) => void;
 }
 
-export function CreateBookingDrawer({ open, device, onClose, onCreated, services }: CreateBookingDrawerProps) {
+/**
+ * What the venue has said it can take, on the day being booked.
+ *
+ * The wording is spec 07's `informational` register throughout — "appears available", never
+ * "available". This read holds nothing, so anything stronger would promise a slot the platform
+ * has not reserved and may hand to someone else before this booking is submitted.
+ *
+ * The empty case is the one that matters most. `capacity_slots` is filled only by the owner
+ * declaration surface, so a venue that has never used it returns `[]` — which means *nothing
+ * has been declared*, not *nothing is free*. Rendering that as "fully booked" would be a
+ * confident falsehood for every such tenant, so it is stated as the absence of a declaration
+ * and the pickers stay open.
+ */
+function AvailabilityNote({ slots, week, dayIndex }: {
+  slots: AvailableSlot[] | undefined;
+  week: ConsoleWeek;
+  dayIndex: number;
+}) {
+  // Never loaded: say nothing rather than implying an answer.
+  if (slots === undefined) return null;
+
+  const box = "mb-[13px] rounded-[10px] p-[10px_12px] text-[11.5px] leading-[1.5]";
+  const style = { background: '#FBFBFA', border: '1px solid #EFEFEF', color: '#55554F' };
+
+  if (slots.length === 0) {
+    return (
+      <div className={box} style={style}>
+        This venue has <strong>declared no capacity</strong>, so nothing here is checked against
+        it. That is not the same as being fully booked — it means no slots have been set up.
+        Declare them in Settings if you want this to mean something.
+      </div>
+    );
+  }
+
+  const day = week.dates[dayIndex];
+  const onThisDay = day
+    ? slots.filter(s => sameLocalDay(new Date(s.startsAt), day))
+    : [];
+
+  if (onThisDay.length === 0) {
+    return (
+      <div className={box} style={style}>
+        No slots are declared for this day. You can still book it — the venue simply has not
+        described its capacity for that date.
+      </div>
+    );
+  }
+
+  const free = onThisDay.filter(s => s.freeCapacity > 0);
+
+  return (
+    <div className={box} style={style}>
+      {free.length === 0 ? (
+        <>Every slot declared for this day <strong>appears full</strong>. You can still submit —
+        the check happens when the booking is fulfilled.</>
+      ) : (
+        <>
+          <strong>Appears available</strong> on this day:{' '}
+          {free.map(s => `${localTimeLabel(s.startsAt)} (${s.freeCapacity} left)`).join(' · ')}.
+          {' '}Times are not held, so one can be taken before you submit.
+        </>
+      )}
+    </div>
+  );
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate();
+}
+
+function localTimeLabel(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** An accepted submission, frozen so later panels describe what was sent, not what is on screen. */
+interface SubmittedBooking {
+  /** The submission this belongs to; a stale one is discarded. */
+  token: number;
+  /** The key the identity was minted under, so the right one is spent when it settles. */
+  attemptKey: string;
+  operationId: string;
+  day: string;
+  time: string;
+  serviceId: string;
+  serviceName: string;
+  durationMinutes: number | null;
+  guestName: string;
+}
+
+export function CreateBookingDrawer({
+  open, device, week, onClose, onCreated, services, servicesFailed, onRetryServices, customers,
+  availability, prefill, onSubmissionAbandoned,
+}: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
+  // The guest's phone, unlike their name, DOES reach the platform — but NOT through the payload.
+  // It is exchanged for an opaque `contact_ref` via `POST /api/guest-contacts` (see `submit()`),
+  // and only that ref enters the hashed, immutable canonical payload. That is what gives the
+  // booking a notification destination and makes it findable by phone while keeping the number
+  // erasable (owner retention ruling 2026-08-06).
+  const [phone, setPhone] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [svc, setSvc] = useState('');
-  const [staff, setStaff] = useState('s1');
-  const [day, setDay] = useState(String(WEEK.today));
+  // The grid lane the optimistic row is drawn on — a coordinate, not an assignment. There is
+  // no resource dimension server-side and nothing here is submitted (see ./resources.ts).
+  const staff = UNASSIGNED_RESOURCE_ID;
+  // Today's column when the displayed week is the current one, else Monday.
+  //
+  // Asked of the clock rather than of `week.todayIndex`, which is frozen when the week is built:
+  // on a console left open across midnight the drawer opened pre-filled with YESTERDAY. No ticking
+  // clock is needed — this only has to be right when the drawer opens.
+  //
+  // Held as a NUMBER the reset effect below depends on. Depending on `week` itself would re-run the
+  // reset on every week navigation — `week` is memoised on the schedule window, so its identity
+  // changes with the arrows and with `bookFromWaitlist` — wiping a name, phone, time and party size
+  // the operator had already typed.
+  const defaultDayIndex = todayIndexAt(week) ?? 0;
+  const [day, setDay] = useState(String(defaultDayIndex));
+  // Read by the reset effect WITHOUT being a dependency of it — the value changes at midnight and
+  // on week navigation, and neither may reset a form the operator is filling in.
+  const defaultDayIndexRef = useRef(defaultDayIndex);
+  defaultDayIndexRef.current = defaultDayIndex;
   const [time, setTime] = useState('600');
+  // Party size is required by the API's BookingRequest; the mock form never collected it.
+  const [partySize, setPartySize] = useState('2');
   const [phase, setPhase] = useState<'form' | 'confirming' | 'done'>('form');
+  const [submitError, setSubmitError] = useState<unknown>(null);
+  /** A prefilled service id absent from this venue's list; surfaced rather than swapped. */
+  const [unmatchedService, setUnmatchedService] = useState<string | null>(null);
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  /**
+   * What was actually SUBMITTED, frozen at submit time.
+   *
+   * Everything after acceptance — the Done panel and the optimistic row handed to `onCreated` —
+   * reads from here rather than from the live form. Reading the form meant the outcome described
+   * whatever the fields happened to hold when the operation settled, which is not necessarily what
+   * was sent: the catalog can republish and retire the chosen service, and a reopened drawer can
+   * have entirely different values in it.
+   */
+  const [submitted, setSubmitted] = useState<SubmittedBooking | null>(null);
+  /**
+   * Invalidates any submission still in flight.
+   *
+   * Bumped by the reset effect, so a promise that resolves after the drawer was closed and
+   * reopened cannot apply its result to the new form. Without it the old `submitBooking` resolved
+   * straight into `setOperationId`, the poll restarted for an operation the new form knew nothing
+   * about, and the booked effect appended a fabricated row built from the NEW field values before
+   * moving the freshly opened drawer to Done.
+   */
+  const submissionToken = useRef(0);
 
+  // One attempt identity per open drawer PER PAYLOAD. The operation id and idempotency key are
+  // minted before the first call and reused on every retry (Inv-2), so a retry of the same
+  // booking replays the original acceptance instead of creating a second operation.
+  //
+  // Scoped by the payload material, not by the drawer alone — the same discipline
+  // `submitReschedule` already applies with its `modify:${id}|${startsAt}|${dur}` key. An
+  // idempotency key must never carry two different canonical payloads (Inv-3), and this form can
+  // produce two: the operator submits, the call fails, they notice the phone was wrong, correct
+  // it, and press the drawer's own Retry. A different phone mints a different `contact_ref`, so
+  // `revision.payload_hash` changes while the key would not — the server answers 409
+  // IdempotencyConflict and the correction can only be made by abandoning the booking entirely.
+  //
+  // The nonce keeps two genuinely separate bookings distinct even when every field matches; the
+  // material makes an edited form a new attempt. `name` is deliberately absent: it never enters
+  // the canonical payload, so changing it must NOT invalidate a live attempt.
+  const [attemptNonce, setAttemptNonce] = useState(() => String(Date.now()));
+
+  // Resolved BEFORE `attemptKey`, which reads its duration.
+  //
+  // Declaration order is load-bearing here, not cosmetic: `attemptKey` is a `useMemo` whose
+  // factory closes over `service`, and a `const` referenced above its own declaration is a
+  // TDZ error the compiler catches as TS2448 — which is exactly how CI failed when the
+  // duration was first added to the key.
+  const serviceOptions = services ?? [];
+  const servicesLoaded = services !== undefined;
+  const hasServices = serviceOptions.length > 0;
+  // NO fallback to serviceOptions[0].
+  //
+  // `submit()` sends `svc` but reads `durationMinutes` from `service`, so falling back would
+  // durably record a payload naming one service and reserving another's duration — and the
+  // confirm panel would show the substitute's name, so the operator could not see it happen.
+  // A refetch (a publish landing, or refetchOnWindowFocus) can retire the selected item at any
+  // moment, so this is reachable without anyone doing anything wrong.
+  const service = serviceOptions.find(s => s.id === svc);
+  // The pick is gone from the catalog. Not the same as "still loading" (services undefined) or
+  // "venue has none" (hasServices false) — those have their own branches.
+  const selectionRetired = servicesLoaded && hasServices && svc !== '' && service === undefined;
+
+  /**
+   * The party size the API will actually accept.
+   *
+   * The `<input type="number" min={1} max={50}>` attributes are decoration here: the confirm
+   * button is not a form submit, so the browser never runs constraint validation, and the gate
+   * only asked whether the string was non-empty. `0`, `-1`, `51` and `2.5` all passed it and were
+   * sent as `Number(partySize)` — a durable booking for nobody, or for a party the venue never
+   * agreed to. Checked in one place and enforced both on the button and inside `submit()`.
+   */
+  const partySizeNumber = Number(partySize);
+  const partySizeValid = partySize.trim() !== ''
+    && Number.isInteger(partySizeNumber)
+    && partySizeNumber >= MIN_PARTY_SIZE;
+
+  const attemptKey = useMemo(
+    // `durationMinutes` is part of the key because it is part of the PAYLOAD.
+    //
+    // `buildSubmission` writes `duration_minutes` into the canonical payload whenever the catalog
+    // states one, and a republish can change a service's duration while keeping its id. Keyed on
+    // the id alone, the first submit fails, the catalog refetches with a new duration, and the
+    // operator's Retry then presents the SAME idempotency key with a DIFFERENT payload hash — a
+    // 409 IdempotencyConflict that no amount of retrying clears (Inv-3). A changed duration is a
+    // different booking, so it mints a different identity.
+    () => `create:${attemptNonce}|${svc}|${service?.durationMinutes ?? 'nodur'}|${day}|${time}|${partySize}|${phone.trim()}`,
+    [attemptNonce, svc, service?.durationMinutes, day, time, partySize, phone]
+  );
+  // Guards the one-shot 'booking confirmed' announcement; see the effect below.
+  const announcedRef = useRef<string | null>(null);
+  /**
+   * The guest-contact ref already minted for this attempt.
+   *
+   * `POST /api/guest-contacts` returns a NEW opaque ref on every call, and that ref is inside the
+   * hashed canonical payload. Minting a fresh one on retry therefore changed `payload_hash` while
+   * `attemptKey` — and so the idempotency key — stayed the same, which the server answers with a
+   * 409 IdempotencyConflict: a booking whose first submit failed after the mint could not be
+   * retried at all, only abandoned. Caching it per attempt makes the retry a true replay (Inv-2/3);
+   * editing the phone changes `attemptKey`, so the cache misses and a new ref is minted, which is
+   * exactly right because that is a different booking.
+   */
+  const contactRefCache = useRef<{ key: string; ref: string } | null>(null);
+
+  const poll = useOperationStatus(operationId, startedAt);
+  const booked = isBooked(poll.status);
+
+  /**
+   * The current options, readable from the reset effect without making it depend on them.
+   *
+   * `services` is now the live catalog, so its array identity changes on every refetch — and
+   * `useCatalogItems` inherits `refetchOnWindowFocus`. Listing it as a dependency meant that
+   * alt-tabbing away and back **reset the open drawer**: the typed guest name, the chosen day,
+   * time and party size were all wiped, and `attemptKey` was re-minted, which throws away the
+   * operation identity and idempotency key the form was going to submit under (Inv-2/3).
+   * It was a stable `useState` array before, so the dependency was previously inert.
+   */
+  const servicesRef = useRef(services);
+  servicesRef.current = services;
+
+  /** Picks the initial service: the prefilled one when the catalog has it, else the first. */
+  const chooseInitialService = useCallback((options: readonly BookableService[]) => {
+    // A prefilled service that is not in the venue's catalog is REPORTED, never silently
+    // swapped. Quietly falling back to options[0] meant an operator who clicked a waitlist row
+    // reading "SNS dipping powder" submitted a durable booking for "Gel manicure", with the
+    // rest of the form prefilled and equally trustworthy-looking.
+    const prefilledService = options.find(s => s.id === prefill?.serviceId)?.id;
+    const unmatched = Boolean(prefill?.serviceId) && !prefilledService;
+    setUnmatchedService(unmatched ? prefill!.serviceId! : null);
+
+    // An unmatched prefill leaves the picker EMPTY — it does not fall through to options[0].
+    //
+    // The warning says the requested service is not in the catalog and nothing was chosen; the
+    // code was quietly choosing the first item anyway, so an operator who trusted the warning and
+    // pressed Confirm booked a service the guest never asked for. The submit gate requires a
+    // service, so an empty pick forces the deliberate choice the warning claims is needed.
+    setSvc(unmatched ? '' : (prefilledService ?? options[0]?.id ?? ''));
+  }, [prefill]);
+
+  /**
+   * Reset only on the CLOSED→OPEN transition (or a genuinely new prefill).
+   *
+   * `if (open)` alone made the reset fire on any dependency change while the drawer was already
+   * open, and `defaultDayIndex` is recomputed from the clock on every render — so a drawer left
+   * open across local midnight wiped the operator's typed name, phone, service, time and party
+   * size mid-session, and re-minted `attemptNonce`, discarding the operation identity the form was
+   * about to submit under (Inv-2/3).
+   *
+   * The prefill is still honoured while open, because "book this waitlisted guest" can be clicked
+   * with the drawer already up and must load that guest — but it is compared by identity, so
+   * nothing else can trigger a reset.
+   */
+  const wasOpenRef = useRef(false);
+  const lastPrefillRef = useRef<CreatePrefill | undefined>(undefined);
   useEffect(() => {
-    if (open) {
-      setName(''); setCustomerSearch('');
-      setSvc(services[0]?.key ?? ''); setStaff('s1');
-      setDay(String(WEEK.today)); setTime('600'); setPhase('form'); setShowDropdown(false);
+    const justOpened = open && !wasOpenRef.current;
+    const prefillChanged = open && prefill !== lastPrefillRef.current;
+    wasOpenRef.current = open;
+    lastPrefillRef.current = prefill;
+    if (!justOpened && !prefillChanged) return;
+
+    setName(prefill?.name ?? ''); setPhone(''); setCustomerSearch('');
+    chooseInitialService(servicesRef.current ?? []);
+    setDay(String(prefill?.day ?? defaultDayIndexRef.current));
+    setTime(String(prefill?.start ?? 600));
+    setPartySize(String(prefill?.partySize ?? 2));
+    setPhase('form'); setShowDropdown(false);
+    setSubmitError(null); setOperationId(null); setStartedAt(null);
+    setSubmitted(null);
+    // Anything already awaiting a response belongs to the drawer that is going away.
+    submissionToken.current += 1;
+    announcedRef.current = null;
+    contactRefCache.current = null;
+    setAttemptNonce(String(Date.now()));
+  }, [open, prefill, chooseInitialService]);
+
+  // Catch-up for the drawer opened before the catalog answered: choose a service once options
+  // exist, and only while none is chosen, so a later refetch cannot move the operator's pick.
+  useEffect(() => {
+    if (!open || svc !== '' || !services || services.length === 0) return;
+    chooseInitialService(services);
+  }, [open, svc, services, chooseInitialService]);
+
+  // The booking only counts as made when the server says so (Inv-16). Until then the
+  // drawer stays in its submitting state, however long that takes.
+  //
+  // Guarded by a ref, not by `phase`: `onCreated` is a fresh function reference on every
+  // parent render, and StrictMode double-invokes effects against the same state snapshot,
+  // so a `phase === 'done'` check alone would let the booking be appended twice.
+  useEffect(() => {
+    // Guarded by the OPERATION ID, which cannot change once the server has accepted.
+    //
+    // It used to be guarded by `attemptKey`, which is derived from the form — including the
+    // selected service's duration. A catalog refetch that republished that service changed the key
+    // while `booked` stayed true, so the guard missed, the effect re-fired, and `onCreated`
+    // appended the same booking a second time. Every further duration change appended another.
+    if (!booked || !submitted || announcedRef.current === submitted.operationId) return;
+    announcedRef.current = submitted.operationId;
+    setPhase('done');
+    resetAttempt(submitted.attemptKey);
+    onCreated({
+      // From the SNAPSHOT, not the live form: this describes what was submitted.
+      day: Number(submitted.day), staff, start: Number(submitted.time), service: submitted.serviceId,
+      serviceName: submitted.serviceName,
+      // `prov: 'unknown'` even though this operator just made it: the schedule projection
+      // carries no provenance, so the server's row will claim none. Saying "Booked by you"
+      // here would make the row change its story the moment the refetch lands.
+      name: submitted.guestName, prov: 'unknown', status: 'confirmed', channel: null,
+      // `dep: 0` — the catalog models no deposit and the platform takes none (spec 09 deferred).
+      // `dur` falls back to the grid's default block only for LAYOUT; nothing was submitted.
+      dep: 0, transcript: null, dur: submitted.durationMinutes ?? 60,
+    });
+  }, [booked, submitted, staff, onCreated]);
+
+  /**
+   * A TERMINAL non-booked outcome ends the operation, so the drawer has to hand control back.
+   *
+   * The failure was rendered inline while `phase` stayed `confirming` — which keeps the footer a
+   * disabled busy button and the form hidden, so there was no retry, no correction and no way
+   * forward at all: the operator's only move was to close the drawer and retype the whole booking.
+   *
+   * Returning to `form` is what makes the existing inline error and its Retry reachable. The
+   * attempt identity is SPENT rather than reused: the operation reached a terminal failure, so
+   * replaying its key would return that same failure forever — a retry has to be a new operation
+   * (§13.4).
+   */
+  useEffect(() => {
+    if (phase !== 'confirming' || !poll.status?.terminal || booked) return;
+
+    // The key to spend is the one this OPERATION was submitted under, not whatever the form
+    // currently derives — the two diverge as soon as the catalog republishes.
+    const spentKey = submitted?.attemptKey ?? attemptKey;
+
+    // Terminal but NOT a failure — `waitlisted` is a real, successful outcome. It settles the
+    // drawer so the footer becomes a usable Done button, and it must never be dressed as an error
+    // with a Retry: retrying mints a fresh identity and enrols the guest a second time.
+    //
+    // The attempt is still SPENT. The operation is over either way, so leaving the identity in
+    // sessionStorage strands it there for the life of the tab — the booked and failure paths both
+    // release theirs, and a run of waitlisted outcomes would otherwise accumulate entries against
+    // the origin's storage quota, degrading the idempotency persistence everything else relies on.
+    if (!isTerminalFailure(poll.status)) {
+      resetAttempt(spentKey);
+      setPhase('done');
+      return;
     }
-  }, [open, services]);
 
-  const hasServices = services.length > 0;
-  const service = services.find(s => s.key === svc) ?? services[0];
-  const eligible = STAFF; // all staff eligible across business types
+    setSubmitError(new Error(
+      poll.status.customer_message ?? 'This booking could not be completed.'
+    ));
+    setPhase('form');
+    setOperationId(null);
+    setStartedAt(null);
+    setSubmitted(null);
+    resetAttempt(spentKey);
+    setAttemptNonce(String(Date.now()));
+  }, [phase, poll.status, booked, attemptKey, submitted]);
 
-  useEffect(() => {
-    if (!eligible.find(s => s.id === staff) && eligible[0]) setStaff(eligible[0].id);
-  }, [svc]);
 
-  const suggestions = CUSTOMERS.filter(c =>
+  // The tenant's real customers once loaded; the mock array only while the list has never
+  // loaded, and then labelled — the command palette was fixed the same way. Offering six
+  // invented people as a venue's customer list is the same false claim wherever it appears.
+  const showingDemoCustomers = customers === undefined;
+  const suggestions = (customers ?? CUSTOMERS).filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) && customerSearch.length > 0
   ).slice(0, 6);
 
-  function submit() {
-    if (phase !== 'form' || !name.trim() || !hasServices) return;
+  // Advisory only — never blocks submission.
+  //
+  // Tested against the NORMALISED value, not the raw one: separators are stripped before the
+  // payload is hashed, and the server normalises both sides at lookup, so "+61 400 111 222" is
+  // perfectly findable and must not be warned about. What genuinely cannot be matched is a
+  // number with no country code, because neither side guesses one.
+
+  async function submit() {
+    // `!service` is the load-bearing half: without it a retired pick would be submitted with
+    // another service's duration. `!partySizeValid` is enforced here as well as on the button,
+    // because the button is not a form submit and the input's `min`/`max` are therefore never
+    // applied by the browser.
+    if (phase !== 'form' || !name.trim() || !hasServices || !service || !partySizeValid) return;
+
     setPhase('confirming');
-    setTimeout(() => {
-      setPhase('done');
-      onCreated({
-        day: Number(day), staff, start: Number(time), service: svc, serviceName: service.name,
-        name: name.trim(), prov: 'you', status: 'confirmed', channel: null, dep: service.dep, transcript: null,
-        dur: service.dur,
+    setSubmitError(null);
+
+    // The submission this call belongs to. The drawer can be closed and reopened while the request
+    // is in flight, and the reset bumps this — so everything below re-checks it before touching
+    // state that now belongs to a different booking.
+    const token = submissionToken.current;
+    const submittedKey = attemptKey;
+
+    // Reusing the stored identity is what makes a retry safe: the same key + same payload
+    // replays the original acceptance rather than creating a second operation (§13.4).
+    const identity = getOrCreateAttempt(attemptKey);
+
+    try {
+      // Minted BEFORE the payload is built, because the payload is hashed here and the ref has to
+      // be inside that hash. A failure here fails the booking rather than silently falling back to
+      // the inline shape: quietly writing an un-erasable phone number would defeat the point.
+      // Normalised BEFORE the mint, not sent raw.
+      //
+      // `PhoneMatching.Normalise` on the server bails to null above 64 RAW characters — a
+      // stackalloc stack-safety bound — and `GuestContactsController` answers 400 when it does. So
+      // an ordinary number carrying enough formatting or paste padding to cross that line was
+      // refused outright, even though it normalises to a perfectly good 12-digit number the server
+      // would happily store. Sending the normalised form means the console and the server agree on
+      // what is usable instead of the console tripping a bound it never sees.
+      //
+      // Falls back to the raw value when normalisation yields nothing (punctuation only, or too
+      // many digits to be a phone) so the server still produces its own 400 with the right message
+      // rather than this silently skipping the mint.
+      const typedPhone = phone.trim();
+      let contactRef: string | undefined;
+      if (typedPhone) {
+        // Reused across retries of the SAME attempt — see `contactRefCache`.
+        contactRef = contactRefCache.current?.key === attemptKey
+          ? contactRefCache.current.ref
+          : (await createGuestContact({ phoneE164: normalisePhone(typedPhone) ?? typedPhone })).contact_ref;
+        // The drawer may have been closed and reopened during the mint. Caching the ref against a
+        // new drawer's attempt would bind it to a booking it was never made for. Nothing was
+        // submitted, so the identity is simply released.
+        if (submissionToken.current !== token) {
+          resetAttempt(submittedKey);
+          return;
+        }
+        contactRefCache.current = { key: attemptKey, ref: contactRef };
+      }
+
+      const request = await buildSubmission(
+        {
+          operation: 'create',
+          serviceId: svc,
+          startsAt: toIsoInstant(week.start, Number(day), Number(time)),
+          partySize: Number(partySize),
+          // Omitted entirely when the catalog states no duration. Sending a default would
+          // durably record how long the venue is booked for on the strength of a guess.
+          durationMinutes: service?.durationMinutes ?? undefined,
+          // The guest, so the booking has somewhere to notify and can be found by phone.
+          //
+          // Submitted as an opaque REF, not as the number: the phone reaches the platform on the
+          // `POST /api/guest-contacts` call above and never enters this payload, which is hashed
+          // and immutable. That is what makes the guest erasable later (owner retention ruling
+          // 2026-08-06). Name deliberately excluded — see BookingDraft.customer.
+          customer: contactRef ? { contactRef } : undefined,
+        },
+        {
+          identity,
+          sessionId: `console:${identity.intentId}`,
+          // The OPERATOR, not the typed guest name.
+          //
+          // `Confirmation.identity` is documented as "verified identity, or the
+          // `anonymous_session` sentinel" (spec 04). A staff booking has no verified guest, and
+          // the operator is the confirming party — which is what `verification_level:
+          // `verification_level` already claims, and what cancel and reschedule already send.
+          //
+          // Sending the typed name here pushed plain-text PII into `identity_ref`, which the
+          // platform surfaces as the opaque `customer_ref` on `/api/customers` — a field spec 14
+          // minimises precisely so it cannot carry a person's name.
+          identityRef: getActor(),
+          readBackVersion: `${svc}|${day}|${time}|${partySize}`,
+          // Minted WITH the attempt, not per call — this is the whole reason
+          // `AttemptIdentity.confirmedAt` exists (Inv-2/3).
+          //
+          // Omitted, `buildSubmission` fell back to `new Date().toISOString()`, so the retry this
+          // drawer offers on failure claimed the operator had confirmed at the moment of the
+          // RETRY. `confirmed_at` and `created_at` are the recorded time of confirmation, so when
+          // a first attempt fails and a later one lands, the stored instant described something
+          // that never happened (Inv-16).
+          //
+          // Not a 409 on THIS door: `SubmitConfirmedIntent` hashes only
+          // `revision.canonical_payload`, so this field sits outside its idempotency hash. It IS a
+          // 409 on the sibling doors — `SubmitBookingCancellation` and `SubmitBookingModification`
+          // hash `SerializeToNode(request)`, whole body included — and the console must not depend
+          // on which door happens to be forgiving.
+          confirmedAt: identity.confirmedAt,
+        }
+      );
+
+      const accepted = await submitBooking(request);
+
+      // The drawer was closed and reopened while this was in flight — the operation is real and the
+      // server owns it, but it belongs to a booking this form is no longer showing. Applying it
+      // here would restart polling under the new form and, on success, append a row built from
+      // whatever the operator has since typed.
+      //
+      // Discarded is not the same as ignored. The identity is released so it cannot sit unreachable
+      // in sessionStorage, and the parent is told so the accepted operation surfaces in the queue
+      // and the grid — otherwise the console would never mention a booking the server had taken,
+      // and the operator would key the whole thing in again under a key nothing deduplicates.
+      if (submissionToken.current !== token) {
+        resetAttempt(submittedKey);
+        if (accepted.operation_id) onSubmissionAbandoned?.(accepted.operation_id);
+        return;
+      }
+
+      const acceptedId = accepted.operation_id ?? null;
+      setOperationId(acceptedId);
+      setStartedAt(Date.now());
+      setSubmitted(acceptedId === null ? null : {
+        token,
+        attemptKey: submittedKey,
+        operationId: acceptedId,
+        day,
+        time,
+        serviceId: svc,
+        serviceName: service?.name ?? svc,
+        durationMinutes: service?.durationMinutes ?? null,
+        guestName: name.trim(),
       });
-    }, 1000);
+    } catch (error) {
+      // A failure that belongs to a drawer the operator has already closed must not surface on the
+      // new one, which is showing an unrelated, untouched form. The identity is still released:
+      // nothing will ever retry it.
+      if (submissionToken.current !== token) {
+        resetAttempt(submittedKey);
+        return;
+      }
+
+      // A conflict means this key is already bound to a different request — retrying with it can
+      // never succeed, so the attempt is freed and the next submit mints a fresh identity.
+      //
+      // `isRetryableWithNewAttempt`, not a bare idempotency-conflict check: a plain 409 spends
+      // the attempt just as surely as a typed one, and the helper also knows the single 409 a new
+      // attempt CANNOT fix — an already-cancelled booking, where minting a new key just produces
+      // another operation that 409s the same way forever.
+      if (isRetryableWithNewAttempt(error)) resetAttempt(attemptKey);
+      setSubmitError(error);
+      setPhase('form');
+    }
   }
 
   const footer = phase === 'done'
     ? <PrimaryButton full onClick={onClose}>Done</PrimaryButton>
+    // A live operation keeps its busy button even if the catalog empties underneath it. Falling
+    // through to `hasServices` meant a service unpublished from another tab removed the footer
+    // entirely mid-submission: no outcome, no retry, no Done — only the close icon.
+    : phase === 'confirming'
+    ? <PrimaryButton full busy disabled>Submitting</PrimaryButton>
+    // Only `form` reaches here — the two settled phases are handled above — so the busy state and
+    // the "Submitting" label belong to those branches, not to this one.
     : hasServices
-      ? <PrimaryButton full busy={phase === 'confirming'} disabled={!name.trim() || phase !== 'form'} onClick={submit}>
-          {phase === 'confirming' ? 'Confirming' : 'Confirm booking'}
+      ? <PrimaryButton
+          full
+          disabled={!name.trim() || !partySizeValid || !service}
+          onClick={() => { void submit(); }}
+        >
+          Confirm booking
         </PrimaryButton>
       : undefined;
 
   return (
     <Drawer open={open} onClose={onClose} device={device} eyebrow="Manual booking" title="New booking" footer={footer}>
-      {!hasServices ? (
-        <div className="py-10 text-center">
-          <div className="text-[14px] font-semibold text-ink">No services yet</div>
-          <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
-            Add a service in Settings before creating a booking.
+      {phase === 'confirming' ? (
+        <div className="text-center py-8 px-2">
+          <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#F2F2F0' }}>
+            <Spinner size={22} color="#0A0A0A" track="rgba(10,10,10,0.18)" />
+          </span>
+          <div className="text-[17px] font-bold tracking-[-0.02em] text-ink" aria-live="polite">
+            {normalizedStatusLabel(poll.status?.status)}
           </div>
+          <div className="text-[12.5px] text-t2 mt-[5px] leading-[1.5]">
+            {poll.status?.customer_message
+              ?? 'The booking has been accepted and is being confirmed with the venue.'}
+          </div>
+          {poll.timedOut && (
+            <div className="text-[12px] text-t3 mt-[10px] leading-[1.5]">
+              Still working. You can close this — the booking will appear in the queue when it settles.
+            </div>
+          )}
+          {poll.error != null && (
+            <div className="mt-[14px]">
+              {/*
+                The STATUS READ failed — not the booking.
+                `useOperationStatus` stops polling on a failed read, so without this the drawer sat
+                on a spinner and "accepted and being confirmed" forever: the operator could not
+                learn the outcome and had no way to ask again, short of closing the drawer and
+                losing the thread entirely. The operation is still running server-side, so the
+                honest offer is another read.
+              */}
+              <ErrorState
+                inline
+                error={poll.error}
+                title="Couldn’t check this booking’s progress."
+                onRetry={poll.refetch}
+              />
+            </div>
+          )}
         </div>
       ) : phase === 'done' ? (
         <div className="text-center py-6 px-2">
-          <span className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]" style={{ background: '#E7F6EC' }}>
-            <Icon name="check" size={26} strokeWidth={2.4} color="#15924B" />
+          {/*
+            "Booking confirmed" is a claim, and it is only true for a terminal `booked`.
+            A terminal `waitlisted` settles here too — a real outcome, but not a booking — so it
+            gets the server's own wording and a neutral mark rather than a green tick asserting a
+            reservation the venue never made (Inv-16).
+          */}
+          <span
+            className="w-14 h-14 rounded-full inline-flex items-center justify-center mb-[14px]"
+            style={{ background: booked ? '#E7F6EC' : '#F2F2F0' }}
+          >
+            <Icon
+              name={booked ? 'check' : 'clock'}
+              size={26}
+              strokeWidth={2.4}
+              color={booked ? '#15924B' : '#55554F'}
+            />
           </span>
-          <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">Booking confirmed</div>
+          <div className="text-[18px] font-bold tracking-[-0.02em] text-ink">
+            {booked ? 'Booking confirmed' : normalizedStatusLabel(poll.status?.status)}
+          </div>
           <div className="text-[13px] text-t2 mt-[5px] leading-[1.5]">
-            {name} · {service.name}<br />
-            {DAY_OPTS[Number(day)]?.label} at {fmtT(Number(time))}
+            {!booked && poll.status?.customer_message && (
+              <>{poll.status.customer_message}<br /></>
+            )}
+            {/*
+              From the SUBMITTED snapshot. Reading the live form and catalog here meant the outcome
+              described the current fields — and a service republished (or unpublished) while the
+              operation was settling left this panel naming nothing at all.
+            */}
+            {(submitted?.guestName ?? name)} · {(submitted?.serviceName ?? service?.name)}<br />
+            {shortDayLabel(week, Number(submitted?.day ?? day))} at {fmtT(Number(submitted?.time ?? time))}
           </div>
-          <div className="inline-flex items-center gap-[6px] mt-[14px] px-[11px] py-[6px] rounded-full bg-wash2">
-            <span className="font-mono text-[10.5px] font-semibold text-ink">{money(service.dep)} deposit requested</span>
-          </div>
+          {/* No deposit line. This panel renders only after a terminal `booked` status, and the
+              deposit here comes from the hand-written mock catalog — the platform defers
+              payments (spec 09) and never requested or collected anything. Telling the
+              operator a hold is pending would be a fabricated fact about money. */}
+        </div>
+      ) : !hasServices ? (
+        /*
+          Three distinct situations, told apart rather than collapsed into one "no services".
+          The old drawer fell back to the mock catalogue here, which meant a failed or empty
+          catalog still offered five bookable-looking services whose ids exist on no server.
+        */
+        <div className="py-10 text-center">
+          {servicesFailed ? (
+            <ErrorState
+              inline
+              error={new Error('The service catalog could not be loaded.')}
+              title="Couldn’t load this venue’s services."
+              onRetry={onRetryServices}
+            />
+          ) : !servicesLoaded ? (
+            <>
+              <div className="text-[14px] font-semibold text-ink">Loading services…</div>
+              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
+                Reading this venue’s catalog.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-[14px] font-semibold text-ink">No bookable services</div>
+              <div className="text-[12.5px] text-t3 mt-[5px] leading-[1.5]">
+                This venue’s catalog has no published items, so there is nothing to book against
+                yet. Publish a menu catalog first — a booking must name a service the venue
+                actually has.
+              </div>
+            </>
+          )}
         </div>
       ) : (
-        <fieldset disabled={phase === 'confirming'} className="border-none p-0 m-0" style={{ opacity: phase === 'confirming' ? 0.6 : 1 }}>
-          {/* Customer autocomplete */}
-          <Field label="Customer">
+        <fieldset className="border-none p-0 m-0">
+          {/*
+            Customer autocomplete.
+            The NAME is still a label for this screen only: `Confirmation.identity` carries the
+            operator, and the name is deliberately kept out of the canonical payload because that
+            payload is immutable, replayed, and out of reach of the retention sweep.
+            The PHONE is different — it is exchanged for an opaque `contact_ref`
+            (`POST /api/guest-contacts`) and only that ref is submitted, which gives the booking a
+            notification destination while keeping the number erasable. Each hint says which is
+            which, so the operator is never misled about what has actually been recorded.
+          */}
+          {selectionRetired && (
+            <div
+              className="mb-[13px] rounded-[10px] p-[10px_12px] text-[12px] leading-[1.5]"
+              style={{ background: '#FBF3DF', border: '1px solid #F0DCA8', color: '#7E5606' }}
+              role="alert"
+            >
+              The service you picked is no longer in the published catalog — it was probably
+              republished while this drawer was open. Choose one below. Nothing has been
+              submitted, and nothing has been chosen for you.
+            </div>
+          )}
+          {unmatchedService && (
+            <div
+              className="mb-[13px] rounded-[10px] p-[10px_12px] text-[12px] leading-[1.5]"
+              style={{ background: '#FBF3DF', border: '1px solid #F0DCA8', color: '#7E5606' }}
+              role="status"
+            >
+              This guest asked for <strong>{unmatchedService}</strong>, which is not in the service
+              list. Pick the right service below — nothing has been chosen for you.
+            </div>
+          )}
+          <Field
+            label="Customer"
+            hint="Name is used on this screen only — the booking is recorded as confirmed by you. Add a phone below to give the guest a real identity."
+          >
             <div className="relative">
               <input
                 value={customerSearch || name}
@@ -149,7 +869,9 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
                       </span>
                       <div>
                         <div className="text-[13.5px] font-semibold text-ink">{c.name}</div>
-                        <div className="text-[11px] text-t3">{c.fav}</div>
+                        <div className="text-[11px] text-t3">
+                          {showingDemoCustomers ? 'Demo data' : (c.fav || `${c.visits} bookings`)}
+                        </div>
                       </div>
                     </button>
                   ))}
@@ -158,23 +880,64 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
                     onMouseDown={() => setShowDropdown(false)}
                     className="flex items-center gap-2 w-full px-3 py-2.5 hover:bg-wash text-left border-none border-t border-hair bg-white cursor-pointer text-[13px] text-t2 transition-colors"
                   >
-                    + New customer "{customerSearch}"
+                    + Use "{customerSearch}" as the label
                   </button>
                 </div>
               )}
             </div>
           </Field>
 
-          <Field label="Service">
-            <SelectField value={svc} onChange={setSvc} options={services.map(s => ({ value: s.key, label: `${s.name} · ${fmtDur(s.dur)}` }))} />
+          {/*
+            Unlike the name above, this IS recorded — as an opaque `contact_ref` minted by
+            `POST /api/guest-contacts` before the payload is hashed, never as the number itself.
+            Optional: a booking with no phone is still accepted, it simply has no notification
+            destination and cannot be found by phone.
+
+            E.164 still matters, but not for the reason once written here. Separators ARE
+            normalised on both sides, so "+61 400 111 222" is perfectly findable. What neither
+            side guesses is a COUNTRY CODE: a bare "0400 111 222" has no international form to
+            normalise to, so it can never match a "+61400111222" search.
+          */}
+          <Field
+            label="Guest phone"
+            hint="Optional, E.164 (e.g. +61400111222). This is what the guest gets notified on and what the booking is found by — it must be exact."
+          >
+            <PhoneInput
+              value={phone}
+              onChange={setPhone}
+              warningId="guest-phone-format"
+              placeholder="+61400111222"
+              className="w-full h-[42px] border border-cd-border rounded-[10px] px-3 text-[14px] text-ink outline-none focus:border-[#2F6BEB] transition-colors"
+              style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+              warning={
+                <>
+                  Spacing and punctuation are fine — they are tidied automatically. But without a
+                  leading <strong>+</strong> and country code this will not be found by a later
+                  phone search, because neither side guesses a country.
+                </>
+              }
+            />
           </Field>
-          <Field label="With">
-            <SelectField value={staff} onChange={setStaff} options={eligible.map(s => ({ value: s.id, label: `${s.name} — ${s.role}` }))} />
+
+          <Field label="Service" hint="From this venue’s published catalog.">
+            <SelectField
+              value={svc}
+              // Clears the unmatched-prefill warning: it says "nothing has been chosen for you",
+              // which stops being true the moment the operator chooses. Leaving it up told them no
+              // choice had been made while the picker plainly showed one.
+              onChange={v => { setSvc(v); if (v) setUnmatchedService(null); }}
+              options={serviceOptions.map(s => ({
+                value: s.id,
+                // The duration is appended only when the catalog states one — an item with no
+                // duration must not be labelled "· 1h", which reads as the venue's own figure.
+                label: s.durationMinutes === null ? s.name : `${s.name} · ${fmtDur(s.durationMinutes)}`,
+              }))}
+            />
           </Field>
           <div className="flex gap-[10px]">
             <div className="flex-1">
               <Field label="Day">
-                <SelectField value={day} onChange={setDay} options={DAY_OPTS} />
+                <SelectField value={day} onChange={setDay} options={dayOptions(week)} />
               </Field>
             </div>
             <div className="flex-1">
@@ -183,15 +946,34 @@ export function CreateBookingDrawer({ open, device, onClose, onCreated, services
               </Field>
             </div>
           </div>
-          <div className="flex items-center gap-[10px] p-[12px_13px] rounded-[11px] mt-[3px]"
-            style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
-            <Icon name="card" size={17} strokeWidth={1.9} color="#6B6B6B" />
-            <div className="flex-1">
-              <div className="text-[12.5px] font-semibold text-ink">{money(service.dep)} deposit</div>
-              <div className="text-[11px] text-t3">Mirrors your deposit policy</div>
+          <AvailabilityNote slots={availability} week={week} dayIndex={Number(day)} />
+          <Field
+            label="Party size"
+            hint={partySizeValid
+              ? 'How many people the booking is for.'
+              : `Enter a whole number of ${MIN_PARTY_SIZE} or more.`}
+          >
+            <input
+              type="number"
+              min={MIN_PARTY_SIZE}
+              value={partySize}
+              aria-invalid={!partySizeValid}
+              onChange={e => setPartySize(e.target.value)}
+              className="w-full h-[42px] border border-cd-border rounded-[10px] px-3 text-[14px] text-ink outline-none focus:border-[#2F6BEB] transition-colors"
+              style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+            />
+          </Field>
+          {submitError != null && (
+            <div className="mb-[13px]">
+              <ErrorState inline error={submitError} onRetry={() => { void submit(); }} />
             </div>
-            <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-[3px] rounded-[7px] bg-wash2 text-ink70">Auto</span>
-          </div>
+          )}
+          {/* No deposit panel. It read `{money(service.dep)} deposit — "Mirrors your deposit
+              policy"` with an "Auto" chip, from the hand-written mock catalogue. Spec 09 has
+              not shipped a payment surface, so the platform has never requested or held a
+              cent — and the confirmation panel below already omits it for exactly that reason.
+              A fabricated fact about money is no more acceptable before the operator commits
+              than after. */}
         </fieldset>
       )}
     </Drawer>

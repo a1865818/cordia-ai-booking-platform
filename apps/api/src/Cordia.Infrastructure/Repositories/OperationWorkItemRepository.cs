@@ -9,12 +9,6 @@ namespace Cordia.Infrastructure.Repositories;
 /// <summary>EF Core implementation of <see cref="IOperationWorkItemRepository"/>.</summary>
 public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWorkItemRepository
 {
-    public async Task AddAsync(OperationWorkItem workItem, CancellationToken ct = default)
-    {
-        db.OperationWorkItems.Add(workItem);
-        await db.SaveChangesAsync(ct);
-    }
-
     public Task<int> TryUpdateStateAsync(
         string tenantId,
         string workItemId,
@@ -64,6 +58,21 @@ public class OperationWorkItemRepository(ApplicationDbContext db) : IOperationWo
 
         return rows == 1;
     }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<OperationWorkItem>> ListOpenAsync(
+        string tenantId, int limit, CancellationToken ct = default)
+        // IgnoreQueryFilters with an EXPLICIT tenant predicate, matching how every other
+        // tenant-parameterised read in this project is written: the scope is stated in the query
+        // rather than inherited from ambient state, so it is visible and testable here (Inv-13).
+        => await db.OperationWorkItems
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(w => w.TenantId == tenantId && w.State == "open")
+            .OrderBy(w => w.SlaDeadline)
+            .ThenBy(w => w.WorkItemId)
+            .Take(limit)
+            .ToListAsync(ct);
 
     public Task<int> CountOpenAsync(CancellationToken ct = default)
         => db.OperationWorkItems

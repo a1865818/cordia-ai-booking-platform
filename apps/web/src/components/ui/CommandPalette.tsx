@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { IconName } from './Icon';
-import { CUSTOMERS } from '../../data/console';
+import { CUSTOMERS, type Customer } from '../../data/console';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -9,6 +9,13 @@ interface CommandPaletteProps {
   onNavigate: (screen: string) => void;
   onCreateBooking: () => void;
   onOpenCustomer: (id: string) => void;
+  /**
+   * The tenant's real customers. When this is `undefined` the list has never loaded, and the
+   * palette falls back to demo names **labelled as such** — searching the mock array
+   * unlabelled meant Cmd-K offered six fabricated people, and selecting one focused an id
+   * that exists nowhere.
+   */
+  customers?: Customer[];
 }
 
 const SCREENS: { key: string; label: string; icon: IconName; group: string }[] = [
@@ -30,7 +37,7 @@ interface Item {
   onSelect: () => void;
 }
 
-export function CommandPalette({ open, onClose, onNavigate, onCreateBooking, onOpenCustomer }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onNavigate, onCreateBooking, onOpenCustomer, customers }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -56,11 +63,14 @@ export function CommandPalette({ open, onClose, onNavigate, onCreateBooking, onO
     onSelect: () => { onNavigate(s.key); onClose(); },
   }));
 
+  const showingDemoCustomers = customers === undefined;
+  const searchable = customers ?? CUSTOMERS;
   const customerItems: Item[] = q.length > 1
-    ? CUSTOMERS.filter(c => c.name.toLowerCase().includes(q)).slice(0, 4).map(c => ({
+    ? searchable.filter(c => c.name.toLowerCase().includes(q)).slice(0, 4).map(c => ({
         icon: 'user' as IconName,
         label: c.name,
-        sub: c.fav,
+        // Demo rows say so; a live row shows what the API actually knows about them.
+        sub: showingDemoCustomers ? 'Demo data' : (c.fav || `${c.visits} bookings`),
         onSelect: () => { onOpenCustomer(c.id); onClose(); },
       }))
     : [];

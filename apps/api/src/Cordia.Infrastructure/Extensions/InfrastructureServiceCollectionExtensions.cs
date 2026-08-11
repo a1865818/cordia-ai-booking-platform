@@ -97,15 +97,19 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IWaitlistOfferRepository, WaitlistOfferRepository>();
         services.AddScoped<IWaitlistEnrollmentRepository, WaitlistEnrollmentRepository>();
         services.AddScoped<IVendorCatalogRepository, VendorCatalogRepository>();
+        services.AddScoped<IGuestContactRepository, GuestContactRepository>();
+        services.AddScoped<ITenantDisplayNameRepository, TenantDisplayNameRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
         services.AddScoped<IPreorderSagaRepository, PreorderSagaRepository>();
 
         // Spec 13 T6 — product-reporting projector (read-only funnel, Inv-16).
         services.AddScoped<IBookingFunnelReadModel, BookingFunnelReadModel>();
+        services.AddScoped<IConsoleReadModel, ConsoleReadModel>();
 
         // Spec 07 T3 — capacity slot + hold repos + first-party reservation service.
         services.AddScoped<ICapacitySlotRepository, CapacitySlotRepository>();
         services.AddScoped<ICapacityHoldRepository, CapacityHoldRepository>();
+        services.AddScoped<ICapacityLockOrder, CapacityLockOrder>();
         services.AddScoped<ICapacityReservation, FirstPartyCapacityReservation>();
 
         // Spec 07 T4 — primitive resolver + stub external adapter (spec 07 §13 open decision:
@@ -120,6 +124,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<RetentionSweepHandler>();
         // Spec 14 §24.3 — cross-tenant retention driver consumed by RetentionSweepHostedService.
         services.AddScoped<IRetentionSweeper, RetentionSweeper>();
+        services.AddScoped<IMenuIngestionMonitor, Services.Menu.MenuIngestionMonitor>();
 
         // Spec 14 — consent vertical: session consent updates + jurisdiction policy.
         services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();

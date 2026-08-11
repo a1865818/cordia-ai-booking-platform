@@ -1,6 +1,8 @@
 ﻿using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.Menu.ApproveCatalog;
 using Cordia.Application.Handlers.Menu.EditCatalogItems;
+using Cordia.Application.Handlers.Menu.GetCatalogDraftItems;
+using Cordia.Application.Handlers.Menu.ListCatalogs;
 using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Application.Handlers.Menu.ReviewCatalog;
 using Cordia.Application.Handlers.Menu.UploadMenu;
@@ -87,6 +89,73 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review" });
+    }
+
+    /// <summary>
+    /// Owner discovery read: the tenant's catalogs at any status, newest first.
+    ///
+    /// Closes docs §12 gap 3 — without it the console could only ever show catalogs started in
+    /// its own browser session, so an ingestion begun elsewhere was invisible. Each row carries
+    /// `age_seconds` — time at its CURRENT status, which is the same clock `MenuIngestionMonitor`
+    /// sweeps on, so the console's "looks stuck" warning and the server's `extract_failed` verdict
+    /// can never disagree about the same catalog. Age is the pre-verdict signal; the status is the
+    /// verdict.
+    /// </summary>
+    [HttpGet("catalogs")]
+    [ProducesResponseType(typeof(CatalogListResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<CatalogListResult>> ListCatalogs(
+        [FromQuery(Name = "limit")] int? limit,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var result = await mediator.Send(
+            new ListCatalogsQuery(
+                tenant.TenantId, ResolveActor(actor),
+                reasonCode ?? string.Empty, actorRole ?? string.Empty, limit ?? 50),
+            ct);
+
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Owner read of a catalog's items at any status, with the catalog's own status.
+    ///
+    /// The draft-scoped counterpart to the published-only catalog reads: it returns the
+    /// namespaced <c>{catalogId}:{rawId}</c> ids that <c>POST .../edit</c> requires and which no
+    /// other endpoint can surface while a catalog is <c>in_review</c> (docs §12 gap 4). The
+    /// status it carries is what lets the console observe real lifecycle progress rather than
+    /// only the statuses its own writes confirmed (gap 3).
+    ///
+    /// Typed <see cref="ActionResult{T}"/> so the generated TS contract carries a body rather
+    /// than <c>content?: never</c>.
+    /// </summary>
+    [HttpGet("catalogs/{catalogId}/items")]
+    [ProducesResponseType(typeof(CatalogDraftItemsResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CatalogDraftItemsResult>> GetDraftItems(
+        string catalogId,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var result = await mediator.Send(
+            new GetCatalogDraftItemsQuery(
+                tenant.TenantId, catalogId, ResolveActor(actor),
+                reasonCode ?? string.Empty, actorRole ?? string.Empty),
+            ct);
+
+        return Ok(result);
     }
 
     /// <summary>Edits draft items while the catalog is in_review (no status change; repeatable).</summary>

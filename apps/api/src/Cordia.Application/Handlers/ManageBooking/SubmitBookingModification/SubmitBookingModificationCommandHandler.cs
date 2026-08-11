@@ -143,11 +143,19 @@ public sealed class SubmitBookingModificationCommandHandler(
             if (!won)
                 return;
 
-            var transitioned = await bookingRepo.TryTransitionLifecycleAsync(
+            // Parked UNDER THIS OPERATION'S ID, not merely into the status.
+            //
+            // The version guard does not make this the only modification in flight: it has no
+            // "booking must be Confirmed" precondition, so a second modify presenting the current
+            // (already ModificationPending) version parks it again — which is legitimate, and is
+            // why the row has to say which operation owns the parking. Without that, whichever
+            // modification finished first cleared the state on the other one's behalf.
+            var transitioned = await bookingRepo.TryParkPendingAsync(
                 command.TenantId,
                 booking.BookingId,
                 request.ExpectedBookingVersion,
                 BookingLifecycleStatus.ModificationPending,
+                request.OperationId,
                 now,
                 ct2);
             if (transitioned == 0)

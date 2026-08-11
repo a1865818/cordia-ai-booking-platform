@@ -4,6 +4,18 @@ import { Toggle } from "../../ui/Toggle";
 import { Panel } from "../../ui/Panel";
 import { SectionLabel } from "../../ui/SectionLabel";
 import { Icon, IconName } from "../../ui/Icon";
+import { DemoBadge } from "../../ui/DemoBadge";
+import { ErrorState } from "../../ui/ErrorState";
+import { Skeleton } from "../../ui/Skeleton";
+import { MoneyAmount } from "../../ui/MoneyAmount";
+import { useCatalogItems, useConsentPolicy } from "../../../features/hooks";
+import { MenuCatalogPanel } from "../settings/MenuCatalogPanel";
+import { VenueNamePanel } from "../settings/VenueNamePanel";
+import { CapacitySlotPanel } from "../settings/CapacitySlotPanel";
+import { BookingLookupPanel } from "../operations/BookingLookupPanel";
+import { DeadLetterReplayPanel } from "../operations/DeadLetterReplayPanel";
+import { ModelTraceViewerPanel } from "../operations/ModelTraceViewerPanel";
+import { PreorderRecoveryPanel } from "../operations/PreorderRecoveryPanel";
 
 // ---- Business setup ----
 
@@ -331,18 +343,134 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
 
+  // Live, read-only surfaces the API actually exposes today.
+  const consentPolicy = useConsentPolicy('web');
+  const catalog = useCatalogItems();
+  const catalogItems = catalog.data ?? [];
+
   return (
     <div>
-      {/* Business setup */}
-      <SectionLabel>Business setup</SectionLabel>
+      {/* Business setup — local state only. `api/tenant-profile` exposes the display NAME (and
+          the panel below saves it for real); nothing there accepts a business type, so these
+          choices are not persisted. Saying "no tenant-profile endpoint" was false, and was
+          disproved nine lines further down by the venue-name panel. */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Business setup</SectionLabel>
+        <DemoBadge reason="no endpoint accepts a business type — this choice is not saved (the venue name below is)" />
+      </div>
       <BusinessSetup tenantCfg={tenantCfg} onUpdateTenant={onUpdateTenant} device={device} />
 
-      {/* Services */}
-      <SectionLabel>Services</SectionLabel>
+      {/* Consent policy — live (spec 14). Read-only: no editing endpoint exists yet. */}
+      {/* First, because leaving it unset silently breaks booking lookup by phone. */}
+      <SectionLabel>Venue name</SectionLabel>
+      <VenueNamePanel />
+
+      {/* Ships with the availability read it feeds — a read over a table nothing fills would
+          report "nothing available" for every venue that has not used this panel. */}
+      <CapacitySlotPanel />
+
+      <SectionLabel>Consent policy</SectionLabel>
+      <Panel style={{ marginBottom: 18 }}>
+        {consentPolicy.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+
+        {!consentPolicy.isPending && consentPolicy.isError && (
+          <div className="py-2">
+            <ErrorState inline error={consentPolicy.error} onRetry={() => void consentPolicy.refetch()} />
+          </div>
+        )}
+
+        {!consentPolicy.isPending && !consentPolicy.isError && (
+          <>
+            <div className="flex items-center justify-between py-3 border-b border-hair">
+              <div>
+                <div className="text-[13.5px] font-medium text-ink">Notice required before recording</div>
+                <div className="text-[11.5px] text-t3 mt-[1px]">
+                  Policy {consentPolicy.data?.consent_policy_version ?? 'unknown'}
+                  {consentPolicy.data?.jurisdiction_policy_id
+                    ? ` · ${consentPolicy.data.jurisdiction_policy_id}`
+                    : ''}
+                </div>
+              </div>
+              <span className="text-[12.5px] font-semibold text-ink">
+                {consentPolicy.data?.notice_required ? 'Yes' : 'No'}
+              </span>
+            </div>
+            {consentPolicy.data?.notice_text && (
+              <div className="py-3 text-[12.5px] text-t2 leading-[1.5]">
+                {consentPolicy.data.notice_text}
+              </div>
+            )}
+          </>
+        )}
+      </Panel>
+
+      {/* Published menu catalog — live (spec 11). */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Menu catalog</SectionLabel>
+      </div>
+      <Panel style={{ marginBottom: 18 }}>
+        {catalog.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+
+        {!catalog.isPending && catalog.isError && (
+          <div className="py-2">
+            <ErrorState inline error={catalog.error} onRetry={() => void catalog.refetch()} />
+          </div>
+        )}
+
+        {!catalog.isPending && !catalog.isError && catalogItems.length === 0 && (
+          <div className="py-4 text-[12.5px] text-t3">
+            No published items yet. Upload and publish a menu to make items bookable.
+          </div>
+        )}
+
+        {catalogItems.slice(0, 8).map((item, i) => (
+          <div key={item.item_id ?? i}
+            className="flex items-center justify-between py-[11px]"
+            style={{ borderBottom: i < Math.min(catalogItems.length, 8) - 1 ? '1px solid #EFEFEF' : 'none' }}>
+            <div className="min-w-0">
+              <div className="text-[13.5px] text-ink font-medium truncate">{item.name ?? item.item_id}</div>
+              {item.category && <div className="text-[11.5px] text-t3 mt-[1px]">{item.category}</div>}
+            </div>
+            {/* Rendered unconditionally: an item the catalog records no price for says so,
+                rather than leaving a blank that reads as a failed load. */}
+            <MoneyAmount minor={item.price_minor} currency={item.currency} />
+          </div>
+        ))}
+      </Panel>
+
+      {/* Menu catalog management — the owner upload→review→approve→publish flow (spec 11
+          §21, D4). Live writes; the read-only published list above is its outcome. */}
+      <SectionLabel>Menu catalog management</SectionLabel>
+      <MenuCatalogPanel />
+
+      {/* Operator recovery (docs §13 group A). Three endpoints that were live with no surface:
+          dead-letter replay, the audited model-trace read, and pre-order manual resolution.
+          Each is driven by an id the operator arrived with — none of the three has a list
+          endpoint, and none of these panels invents one. */}
+      {/* Identity-first lookup: the endpoint has worked all along with no screen calling it. */}
+      <SectionLabel>Find a booking</SectionLabel>
+      <BookingLookupPanel />
+
+      <SectionLabel>Operator recovery</SectionLabel>
+      <DeadLetterReplayPanel />
+      <ModelTraceViewerPanel />
+      <PreorderRecoveryPanel />
+
+      {/* Services — a local sketch, and now explicitly not what bookings are made against.
+          The create drawer books against the published Menu catalog above, so this list no
+          longer reaches any durable record at all. The badge has to say so: otherwise an
+          operator edits a service here and reasonably expects the booking form to follow. */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Services</SectionLabel>
+        <DemoBadge reason="no services endpoint — this list is not saved and is not what bookings are made against; the Menu catalog above is" />
+      </div>
       <ServicesManagement services={services} onUpdateServices={onUpdateServices} />
 
       {/* Hours */}
-      <SectionLabel>Hours</SectionLabel>
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Hours</SectionLabel>
+        <DemoBadge reason="no operating-hours endpoint yet" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         {SETTINGS.hours.map((h, i) => (
           <div key={h.d}
@@ -357,7 +485,10 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
       </Panel>
 
       {/* Deposit policy */}
-      <SectionLabel>Deposit policy</SectionLabel>
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Deposit policy</SectionLabel>
+        <DemoBadge reason="spec 09 payment surface deferred" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         <div className="flex items-center justify-between py-3 border-b border-hair">
           <div>
@@ -377,8 +508,12 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
         </div>
       </Panel>
 
-      {/* Guardrails */}
-      <SectionLabel>Agent guardrails</SectionLabel>
+      {/* Guardrails — local state only. A toggle that appears to arm or disarm a safety rule
+          while writing nothing is worse than no toggle at all. */}
+      <div className="flex items-center gap-[8px]">
+        <SectionLabel>Agent guardrails</SectionLabel>
+        <DemoBadge reason="no guardrail endpoint — these toggles are not saved" />
+      </div>
       <Panel style={{ marginBottom: 18 }}>
         {SETTINGS.guardrails.map((g, i) => (
           <div key={g.id}
@@ -405,6 +540,8 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
       }>
         Agent knowledge base
       </SectionLabel>
+      {/* Answers are held in component state; nothing persists them, so "Save" is local. */}
+      <div className="mb-[9px]"><DemoBadge reason="no knowledge-base endpoint — answers are not saved" /></div>
       <div className="flex flex-col gap-2">
         {kb.map((k, i) => (
           <div key={i}

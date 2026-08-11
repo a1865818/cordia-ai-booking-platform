@@ -121,8 +121,17 @@ public class IngestVendorMenuTests
         _scanner.Verify(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    /// <summary>
+    /// A detected extraction failure is settled HERE, not left for the staleness sweeper.
+    ///
+    /// <para>This handler already knows the extraction failed. Leaving the row in
+    /// <c>Extracting</c> for <c>MenuIngestionMonitor</c> to infer from a threshold meant the
+    /// console reported "being read" for up to StalenessSeconds after the platform had a
+    /// definite answer. The monitor remains the backstop for a worker that died before reaching
+    /// this branch at all.</para>
+    /// </summary>
     [Fact]
-    public async Task ExtractionThrows_FailsSecurely_StaysExtracting_NoThrow()
+    public async Task ExtractionThrows_SettlesExtractFailedImmediately_NoThrow()
     {
         SetupCatalog(CatalogStatus.Uploaded);
         _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
@@ -136,10 +145,45 @@ public class IngestVendorMenuTests
         _repo.Verify(r => r.AddDraftItemsAsync(It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>()), Times.Never);
         _repo.Verify(r => r.TryTransitionStatusAsync(Tenant, CatalogId, It.IsAny<long>(),
             CatalogStatus.Extracting, CatalogStatus.DraftReady, It.IsAny<CancellationToken>()), Times.Never);
+        // Settled terminally, at the version the Scanning→Extracting transition left behind.
+        _repo.Verify(r => r.TryTransitionStatusAsync(Tenant, CatalogId, 2,
+            CatalogStatus.Extracting, CatalogStatus.ExtractFailed, It.IsAny<CancellationToken>()), Times.Once);
         // The owner is alerted (Inv-14): an extraction-failed event is enqueued on the outbox.
+        // A terminal status the owner never looks at is not a notification.
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.ExtractionFailedEventType),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// Losing the settle race is not an error: the monitor or a concurrent writer already moved
+    /// the row, and that writer wins. The handler must still not throw — a throw here rolls back
+    /// the inbox admission and the message returns as poison (Inv-5).
+    ///
+    /// <para>And it must stay SILENT, like the quarantine and draft-ready paths, which gate their
+    /// side effects on the CAS. These two were emitted unconditionally, so they spoke for a
+    /// transition this call did not make: <c>MenuIngestionMonitor</c> writes the same
+    /// <c>catalog.extraction_failed</c> audit when it settles a row stalled in Extracting, so a
+    /// slow-then-failed extraction — monitor settles it, then this catch finally runs — wrote the
+    /// audit twice and sent the owner a second alert for one failure.</para>
+    /// </summary>
+    [Fact]
+    public async Task ExtractionThrows_LostSettleRace_DoesNotThrowAndLeavesTheOutcomeToTheWinner()
+    {
+        SetupCatalog(CatalogStatus.Uploaded);
+        _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
+        _extractor.Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("artifact unreadable"));
+        _repo.Setup(r => r.TryTransitionStatusAsync(Tenant, CatalogId, It.IsAny<long>(),
+                CatalogStatus.Extracting, CatalogStatus.ExtractFailed, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        _audit.Verify(a => a.AddAsync(It.Is<AuditEvent>(e => e.EventType == "catalog.extraction_failed"), It.IsAny<CancellationToken>()), Times.Never);
+        _outbox.Verify(o => o.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.ExtractionFailedEventType),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

@@ -26,6 +26,7 @@ public class PreorderRecoveryAndStandaloneTests(PostgresFixture fixture)
     private static ReconcilePreorderSagaCommandHandler ReconcileH(ApplicationDbContext ctx)
         => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx),
             new OutboxRepository(ctx), new AuditEventRepository(ctx),
+            new OperationWorkItemRepository(ctx),
             NullLogger<ReconcilePreorderSagaCommandHandler>.Instance);
 
     private async Task InTxAsync(string tenantId, Func<ApplicationDbContext, Task> body)
@@ -80,8 +81,18 @@ public class PreorderRecoveryAndStandaloneTests(PostgresFixture fixture)
                 OperationId = operationId,
                 SagaState = PreorderSagaState.CommittingBooking,
                 PreorderReference = Reference("item_1", 1500),
-                CreatedAt = DateTimeOffset.UtcNow.AddHours(-1),
-                UpdatedAt = DateTimeOffset.UtcNow.AddHours(-1), // stale
+                CreatedAt = DateTimeOffset.UtcNow.AddYears(-1),
+                // Stale, and deliberately the OLDEST stale saga in the database.
+                //
+                // `FindStuckAsync` orders by `UpdatedAt` ascending and takes a bounded batch
+                // (500). The integration database is shared and never pruned, so every previous
+                // run leaves its own stale saga behind; once that backlog reached the batch size a
+                // saga staled by only an hour fell outside the window and this test failed on a
+                // sweep that had worked perfectly — a false failure about accumulated fixtures,
+                // not about recovery. Ageing it past every plausible leftover makes the assertion
+                // depend on the sweeper's behaviour rather than on the row count of the box it
+                // runs on.
+                UpdatedAt = DateTimeOffset.UtcNow.AddYears(-1),
                 Version = 3,
             });
             await ctx.SaveChangesAsync();

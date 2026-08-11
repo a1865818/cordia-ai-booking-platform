@@ -1,6 +1,5 @@
 ﻿#pragma warning disable xUnit1051 // Use TestContext.Current.CancellationToken
 using Cordia.Application.Handlers.Waitlist;
-using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.AutoAccept;
 using Cordia.Application.Handlers.Waitlist.Cancel;
 using Cordia.Application.Handlers.Waitlist.Decline;
@@ -8,6 +7,7 @@ using Cordia.Application.Handlers.Waitlist.Enroll;
 using Cordia.Application.Handlers.Waitlist.Expire;
 using Cordia.Application.Handlers.Waitlist.Match;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -42,7 +42,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OfferExpiryScheduler(new ScheduledJobRepository(ctx)),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
@@ -53,52 +53,94 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     // mediator wired to the 04 handler + capacity/06 stack — the Phase-6 integration rewrite. The only
     // remaining caller of this builder is the (skipped) obsolete accept test; the null! mediator is never
     // dereferenced until that test is re-authored.
-    private static AcceptWaitlistOfferCommandHandler BuildAccept(ApplicationDbContext ctx)
-        => new(
-            new WaitlistOfferRepository(ctx),
-            new WaitlistEnrollmentRepository(ctx),
-            new CanonicalRequestHasher(),
-            null!, // IMediator — Phase 6 (04→06 wiring)
-            new AuditEventRepository(ctx),
-            new WaitlistAcceptReconcileScheduler(new ScheduledJobRepository(ctx)),
-            new UnitOfWork(ctx));
-
     private static DeclineWaitlistOfferCommandHandler BuildDecline(ApplicationDbContext ctx)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
+            new AuditWriter(new AuditEventRepository(ctx)),
             new UnitOfWork(ctx));
 
     private static ExpireWaitlistOfferCommandHandler BuildExpire(ApplicationDbContext ctx)
         => new(
             new WaitlistOfferRepository(ctx),
             new WaitlistEnrollmentRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
             NullLogger<ExpireWaitlistOfferCommandHandler>.Instance);
 
     private static EnrollWaitlistCommandHandler BuildEnroll(ApplicationDbContext ctx)
-        => new(new WaitlistEnrollmentRepository(ctx), new AuditEventRepository(ctx), new UnitOfWork(ctx));
+        => new(
+            new WaitlistEnrollmentRepository(ctx),
+            new WaitlistOfferRepository(ctx),
+            new BookingOperationRepository(ctx),
+            new AuditEventRepository(ctx),
+            new IdempotencyRepository(ctx),
+            new CanonicalRequestHasher(),
+            new UnitOfWork(ctx));
 
     private static CancelWaitlistEnrollmentCommandHandler BuildCancel(ApplicationDbContext ctx)
         => new(
             new WaitlistEnrollmentRepository(ctx),
             new WaitlistOfferRepository(ctx),
-            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new Cordia.Infrastructure.Observability.Metrics()),
+            new BookingOperationRepository(ctx),
+            new FirstPartyCapacityReservation(ctx, new CapacityHoldRepository(ctx), new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics()),
             new OutboxRepository(ctx),
             new AuditEventRepository(ctx),
+            new AuditWriter(new AuditEventRepository(ctx)),
             new UnitOfWork(ctx));
+
+
+    /// <summary>
+    /// Seeds a booking operation at <paramref name="status"/>, with the intent + revision its
+    /// foreign key requires. Used to stand in for the booking a waitlist accept minted.
+    /// </summary>
+    private static void SeedOperation(
+        ApplicationDbContext ctx, string tenantId, string operationId, OperationStatus status)
+    {
+        var intentId = TestIds.New("int");
+        var now = DateTimeOffset.UtcNow;
+
+        ctx.BookingIntents.Add(new BookingIntent
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            OperationType = Cordia.Domain.Generated.OperationTypeEnum.Create,
+            CreatedAt = now,
+        });
+        ctx.BookingIntentRevisions.Add(new BookingIntentRevision
+        {
+            TenantId = tenantId,
+            IntentId = intentId,
+            Revision = 1,
+            CanonicalPayload = "{}",
+            PayloadHash = TestIds.New("h"),
+            SchemaVersion = "v1",
+            TenantPolicyVersion = "v1",
+            CreatedAt = now,
+        });
+        ctx.BookingOperations.Add(new BookingOperation
+        {
+            TenantId = tenantId,
+            OperationId = operationId,
+            IntentId = intentId,
+            IntentRevision = 1,
+            OperationType = Cordia.Domain.Generated.OperationTypeEnum.Create,
+            Status = status,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+    }
 
     // ── Seeding helpers ────────────────────────────────────────────────────────────────────────
 
     private async Task<string> SeedSlotAsync(
         string tenantId, DateTimeOffset startsAt, int total, int held)
     {
-        var resourceId = $"res-{Guid.NewGuid():N}";
+        var resourceId = TestIds.New("res");
         var slotId = $"{resourceId}|{startsAt:O}";
         await using var ctx = fixture.CreateContext(tenantId);
         ctx.CapacitySlots.Add(new CapacitySlot
@@ -123,7 +165,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         AutoBookGrant? grant = null,
         DateTimeOffset? createdAt = null)
     {
-        var enrollmentId = $"wle_{Guid.NewGuid():N}";
+        var enrollmentId = TestIds.New("wle_");
         await using var ctx = fixture.CreateContext(tenantId);
         ctx.WaitlistEnrollments.Add(new WaitlistEnrollment
         {
@@ -148,9 +190,9 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     private async Task<(string offerId, string holdId, string operationId)> SeedOfferedAsync(
         string tenantId, string enrollmentId, string slotId, DateTimeOffset slotStart, int seats = 2, int reserved = 2)
     {
-        var offerId = $"wlo_{Guid.NewGuid():N}";
-        var holdId = $"hold_{Guid.NewGuid():N}";
-        var operationId = $"op_wl_{Guid.NewGuid():N}";
+        var offerId = TestIds.New("wlo_");
+        var holdId = TestIds.New("hold_");
+        var operationId = TestIds.New("op_wl_");
         var now = DateTimeOffset.UtcNow;
 
         await using var ctx = fixture.CreateContext(tenantId);
@@ -198,14 +240,14 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     }
 
     private static MatchWaitlistOfferCommand MatchCmd(string tenantId, string slotId, DateTimeOffset slotStart, int seats)
-        => new(tenantId, $"msg-{Guid.NewGuid():N}", slotId, "loc-1", "svc-1", slotId, slotStart, seats);
+        => new(tenantId, TestIds.New("msg"), slotId, "loc-1", "svc-1", slotId, slotStart, seats);
 
     // ── Enroll / Cancel ──────────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Enroll_PersistsPendingEnrollment_AndAudits()
     {
-        var tenantId = $"wl-enroll-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-enroll");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
 
         string enrollmentId;
@@ -232,12 +274,12 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Cancel_StampsCancelled_AndIsIdempotent_AndUnknown404()
     {
-        var tenantId = $"wl-cancel-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-cancel");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart);
 
         await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer"), CancellationToken.None);
+            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"), CancellationToken.None);
 
         await using (var ctx = fixture.CreateContext(tenantId))
         {
@@ -247,12 +289,12 @@ public class WaitlistFlowTests(PostgresFixture fixture)
 
         // Idempotent re-cancel: no throw.
         await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer"), CancellationToken.None);
+            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"), CancellationToken.None);
 
         // Unknown enrollment → 404.
         await using (var ctx = fixture.CreateContext(tenantId))
             await Assert.ThrowsAsync<WaitlistEnrollmentNotFoundException>(() =>
-                BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, "wle_missing", "customer"), CancellationToken.None));
+                BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, "wle_missing", "customer", "operator", "waitlist test"), CancellationToken.None));
     }
 
     [Fact]
@@ -261,14 +303,14 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         // Review 2026-07-03 C10: cancelling an enrollment that holds a live offer must re-match
         // the freed opening to the next eligible enrollee, exactly like decline/expire (§5.1/FM#1)
         // — otherwise the slot silently leaves the waitlist queue.
-        var tenantId = $"wl-cancel-live-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-cancel-live");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
         var (offerId, holdId, _) = await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
 
         await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer"), CancellationToken.None);
+            await BuildCancel(ctx).Handle(new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"), CancellationToken.None);
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -283,12 +325,108 @@ public class WaitlistFlowTests(PostgresFixture fixture)
             .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
     }
 
+    /// <summary>
+    /// A cancel must NOT pull the hold out from under an accept that has already minted its booking.
+    ///
+    /// <para>The accept lane is record-before-state: it submits through the spec-04 door FIRST and
+    /// only then claims <c>Offered → Accepted</c>. In that window — and for the whole time a
+    /// deferred auto-accept sits queued — the offer is still "live" to this handler while a booking
+    /// operation for it already exists.</para>
+    ///
+    /// <para>Releasing there is not a harmless race: the 06 engine has already reused that hold
+    /// (ReserveAsync's idempotency pre-check matches the same operation id and step), so finalize
+    /// later sees it Released, returns <c>HoldNoLongerValid</c>, and routes the operation to
+    /// <c>CompensationRequired</c> — AFTER the provider booking was created. Compensation then has
+    /// to cancel a real reservation, and an ambiguous provider answer parks it in
+    /// <c>ManualReview</c> indefinitely.</para>
+    /// </summary>
+    [Fact]
+    public async Task Cancel_DoesNotReleaseAHoldAnAcceptHasAlreadyMintedABookingFor()
+    {
+        var tenantId = TestIds.New("wl-cancel-minted");
+        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
+        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
+        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
+        var (offerId, holdId, operationId) =
+            await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
+
+        // The accept has minted its spec-04 operation but has not yet claimed the offer.
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            SeedOperation(ctx, tenantId, operationId, OperationStatus.ReservingCapacity);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+            await BuildCancel(ctx).Handle(
+                new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"),
+                CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // The enrollment is still cancelled and the offer resolved — the guest asked for that.
+        var offer = await assertCtx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(o => o.OfferId == offerId);
+        Assert.Equal(WaitlistOfferStatus.Released, offer.Status);
+
+        // But the SEAT stays with the booking: 06 owns this hold's lifecycle now.
+        var hold = await assertCtx.CapacityHolds.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Active, hold.Status);
+
+        // No re-match — the opening is not free.
+        Assert.False(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
+
+        // And the decision is recorded rather than silently taken.
+        Assert.True(await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(e => e.TenantId == tenantId && e.EventType == "waitlist.hold_retained_for_booking"));
+    }
+
+    /// <summary>
+    /// The retain guard applies to an IN-FLIGHT booking only. Once the operation has terminated,
+    /// nothing is coming to release the hold — retaining it would leave the seat reserved until the
+    /// expiry sweeper reclaimed it, when it could be freed and re-matched immediately. That would be
+    /// strictly worse than the bug the guard exists to fix.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_StillReleasesTheHoldWhenTheMintedOperationHasAlreadyFailed()
+    {
+        var tenantId = TestIds.New("wl-cancel-failed-op");
+        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
+        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
+        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
+        var (_, holdId, operationId) =
+            await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            SeedOperation(ctx, tenantId, operationId, OperationStatus.FailedFinal);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+            await BuildCancel(ctx).Handle(
+                new CancelWaitlistEnrollmentCommand(tenantId, enrollmentId, "customer", "operator", "waitlist test"),
+                CancellationToken.None);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        // The seat is genuinely free again, and the opening goes back to the queue.
+        var hold = await assertCtx.CapacityHolds.AsNoTracking().IgnoreQueryFilters()
+            .SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Released, hold.Status);
+
+        Assert.True(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId && m.MessageType == WaitlistRematchMessage.MessageType));
+    }
+
     // ── Match ──────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Match_ReservesHoldAndOffers_NextEligibleEnrollee()
     {
-        var tenantId = $"wl-match-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-match");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 0);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -319,7 +457,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Match_AutoBooks_UnderSatisfiedConsentGrant()
     {
-        var tenantId = $"wl-autobook-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-autobook");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 0);
         var grant = new AutoBookGrant(
@@ -364,7 +502,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Match_NoCapacity_SettlesWithoutOffer()
     {
-        var tenantId = $"wl-nocap-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-nocap");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 2, held: 2); // full
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -378,66 +516,23 @@ public class WaitlistFlowTests(PostgresFixture fixture)
 
     // ── Accept ───────────────────────────────────────────────────────────────────────────────
 
-    [Fact(Skip = "Phase 6: rewrite for the spec 04 → 06 accept path (divergence #1). This asserts the " +
-                 "obsolete direct-finalize + bespoke waitlist.booking_confirmed.v1 behavior; the new flow " +
-                 "mints booking_intent_revisions/intent_confirmations/booking_operations via spec 04 and " +
-                 "lets the 06 engine finalize the reused capacity hold.")]
-    public async Task Accept_FinalizesHold_ConfirmsBooking_AndIsIdempotent()
-    {
-        var tenantId = $"wl-accept-{Guid.NewGuid():N}";
-        var slotStart = DateTimeOffset.UtcNow.AddDays(1);
-        var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
-        var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
-        var (offerId, holdId, _) = await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
-
-        await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildAccept(ctx).Handle(new AcceptWaitlistOfferCommand(tenantId, offerId, "customer"), CancellationToken.None);
-
-        await using (var ctx = fixture.CreateContext(tenantId))
-        {
-            var offer = await ctx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters().SingleAsync(o => o.OfferId == offerId);
-            Assert.Equal(WaitlistOfferStatus.Accepted, offer.Status);
-
-            var hold = await ctx.CapacityHolds.AsNoTracking().IgnoreQueryFilters().SingleAsync(h => h.HoldId == holdId);
-            Assert.Equal(HoldStatus.Finalized, hold.Status);
-
-            var slot = await ctx.CapacitySlots.AsNoTracking().IgnoreQueryFilters().SingleAsync(s => s.SlotId == slotId);
-            Assert.Equal(0, slot.HeldCapacity);
-            Assert.Equal(2, slot.BookedCapacity);
-
-            Assert.True(await ctx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
-                .AnyAsync(m => m.TenantId == tenantId && m.MessageType == "waitlist.booking_confirmed.v1"));
-        }
-
-        // Idempotent: re-accept is a no-op (slot not double-moved).
-        await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildAccept(ctx).Handle(new AcceptWaitlistOfferCommand(tenantId, offerId, "customer"), CancellationToken.None);
-
-        await using (var ctx = fixture.CreateContext(tenantId))
-        {
-            var slot = await ctx.CapacitySlots.AsNoTracking().IgnoreQueryFilters().SingleAsync(s => s.SlotId == slotId);
-            Assert.Equal(2, slot.BookedCapacity);
-        }
-
-        // Unknown offer → 404.
-        await using (var ctx = fixture.CreateContext(tenantId))
-            await Assert.ThrowsAsync<WaitlistOfferNotFoundException>(() =>
-                BuildAccept(ctx).Handle(new AcceptWaitlistOfferCommand(tenantId, "wlo_missing", "customer"), CancellationToken.None));
-    }
+    // Accept is covered by WaitlistAcceptFlowTests: it now routes through spec 04 and needs a
+    // real IMediator, so it is driven through the HTTP door against the Alba host rather than a
+    // hand-built handler (this class has no host).
 
     // ── Decline ──────────────────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Decline_ReleasesHold_AndEnqueuesRematch()
     {
-        var tenantId = $"wl-decline-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-decline");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
         var (offerId, holdId, _) = await SeedOfferedAsync(tenantId, enrollmentId, slotId, slotStart, seats: 4, reserved: 2);
 
         await using (var ctx = fixture.CreateContext(tenantId))
-            await BuildDecline(ctx).Handle(new DeclineWaitlistOfferCommand(tenantId, offerId, "customer"), CancellationToken.None);
+            await BuildDecline(ctx).Handle(new DeclineWaitlistOfferCommand(tenantId, offerId, "customer", "operator", "waitlist test"), CancellationToken.None);
 
         await using var assertCtx = fixture.CreateContext(tenantId);
 
@@ -463,7 +558,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Expire_ExpiresOffer_ReleasesHold_AndRematches()
     {
-        var tenantId = $"wl-expire-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-expire");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -473,7 +568,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         {
             var handler = BuildExpire(ctx);
             await using var tx = await ctx.Database.BeginTransactionAsync();
-            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, offerId), CancellationToken.None);
+            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, TestIds.New("msg"), null, offerId), CancellationToken.None);
             await tx.CommitAsync();
         }
 
@@ -497,7 +592,7 @@ public class WaitlistFlowTests(PostgresFixture fixture)
     [Fact]
     public async Task Expire_OnAlreadyResolvedOffer_SettlesNoop()
     {
-        var tenantId = $"wl-expire-noop-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("wl-expire-noop");
         var slotStart = DateTimeOffset.UtcNow.AddDays(1);
         var slotId = await SeedSlotAsync(tenantId, slotStart, total: 4, held: 2);
         var enrollmentId = await SeedEnrollmentAsync(tenantId, slotStart, partySize: 2);
@@ -516,12 +611,388 @@ public class WaitlistFlowTests(PostgresFixture fixture)
         {
             var handler = BuildExpire(ctx);
             await using var tx = await ctx.Database.BeginTransactionAsync();
-            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, $"msg-{Guid.NewGuid():N}", null, offerId), CancellationToken.None);
+            await handler.Handle(new ExpireWaitlistOfferCommand(tenantId, TestIds.New("msg"), null, offerId), CancellationToken.None);
             await tx.CommitAsync();
         }
 
         await using var assertCtx = fixture.CreateContext(tenantId);
         var offer = await assertCtx.WaitlistOffers.AsNoTracking().IgnoreQueryFilters().SingleAsync(o => o.OfferId == offerId);
         Assert.Equal(WaitlistOfferStatus.Accepted, offer.Status); // unchanged — expiry was a no-op
+    }
+
+    // -------------------------------------------------------------------------
+    // Duplicate protection (docs §12 gap 6).
+    //
+    // Enrolment had none. An ambiguous network failure plus an operator retry produced a second
+    // wle_* row, so the guest sat on the waitlist twice — two offers, two holds against the same
+    // capacity, and no error anywhere to notice it by.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task EnrollingTwiceWithTheSameDetailsYieldsOneEnrollment()
+    {
+        var tenantId = TestIds.New("wl-idem");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var handler = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await handler.Handle(command, TestContext.Current.CancellationToken);
+        // The retry an operator makes after an ambiguous failure — same details, no key.
+        var second = await handler.Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(first, second);
+        var rows = ctx.WaitlistEnrollments.Where(e => e.TenantId == tenantId).ToList();
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ADeliberatelyDifferentEnrollmentIsStillAllowed()
+    {
+        // Only an IDENTICAL repeat is deduplicated. A guest asking for a different party size is
+        // a second, real enrolment and must not be swallowed.
+        var tenantId = TestIds.New("wl-idem2");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var handler = BuildEnroll(ctx);
+
+        var first = await handler.Handle(EnrollCommandFor(tenantId), TestContext.Current.CancellationToken);
+        var second = await handler.Handle(
+            EnrollCommandFor(tenantId) with { PartySize = 6 }, TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(first, second);
+        Assert.Equal(2, ctx.WaitlistEnrollments.Count(e => e.TenantId == tenantId));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReusingAKeyForDifferentDetailsIsAConflict()
+    {
+        // Inv-3: one key must never be bound to two different requests. Silently returning the
+        // first enrolment would tell the operator their second, different request succeeded.
+        var tenantId = TestIds.New("wl-idem3");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var handler = BuildEnroll(ctx);
+
+        await handler.Handle(
+            EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-1" },
+            TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<IdempotencyConflictException>(() => handler.Handle(
+            EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-1", PartySize = 9 },
+            TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("channel")]
+    [InlineData("lifetime")]
+    [InlineData("autobook")]
+    public async Task ReusingAKeyForADifferentValueOfANYMaterialFieldIsAConflict(string field)
+    {
+        // The hash used to cover six of the twelve material fields, so a same-key request that
+        // differed only in an UNhashed one matched, was answered as a replay, and silently
+        // discarded the change. `notification_channel` decides where the offer is delivered and
+        // `offer_lifetime_seconds` when it expires — neither is cosmetic, and both are editable
+        // in the console's own drawer, so "correct it and retry" hit exactly this path.
+        //
+        // The pre-existing conflict test only ever varied PartySize, which was inside the hash,
+        // so it passed throughout and proved nothing about the other six.
+        var tenantId = TestIds.New($"wl-hash-{field}");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var handler = BuildEnroll(ctx);
+        var first = EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-hash" };
+
+        await handler.Handle(first, TestContext.Current.CancellationToken);
+
+        var second = field switch
+        {
+            "channel" => first with { NotificationChannel = "email" },
+            "lifetime" => first with { OfferLifetimeSeconds = 1800 },
+            _ => first with
+            {
+                AutoBook = new AutoBookGrant(
+                    "consent-1", DateTimeOffset.UtcNow, 4,
+                    first.AcceptableFrom, first.AcceptableTo, 0, "AUD"),
+            },
+        };
+
+        await Assert.ThrowsAsync<IdempotencyConflictException>(
+            () => handler.Handle(second, TestContext.Current.CancellationToken));
+
+        // And nothing was written for the rejected request.
+        Assert.Single(ctx.WaitlistEnrollments.Where(e => e.TenantId == tenantId));
+    }
+
+    // -------------------------------------------------------------------------
+    // Replaying a key whose enrolment was CANCELLED (Inv-16).
+    //
+    // The derived key is a hash of the guest's own details, so the console's own
+    // remove-then-re-add flow collides with the enrolment it just reversed — in SECONDS, well
+    // inside any dedup window. Answering that replay with the cancelled id reported "added to
+    // the waitlist" for a guest sitting on no list, and nothing anywhere raised an error.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReEnrollingAfterRemovalIsANewEnrollmentNotACancelledReplay()
+    {
+        var tenantId = TestIds.New("wl-idem4");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+        await BuildCancel(ctx).Handle(
+            new CancelWaitlistEnrollmentCommand(tenantId, first, "operator@venue", "operator", "waitlist test"),
+            TestContext.Current.CancellationToken);
+
+        // Same details, no key — exactly what the console sends when an operator re-adds a guest.
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(first, second);
+
+        var live = ctx.WaitlistEnrollments
+            .Where(e => e.TenantId == tenantId && e.CancelledAt == null)
+            .ToList();
+        Assert.Single(live);
+        Assert.Equal(second, live[0].EnrollmentId);
+    }
+
+    /// <summary>
+    /// A retry of an enrolment whose guest is now BOOKED must not put them back on the waitlist.
+    ///
+    /// <para>Fulfilment and withdrawal are recorded the same way — both stamp
+    /// <c>CancelledAt</c>, because the accept-reconcile path uses it to make a booked enrollee
+    /// ineligible for another offer. Treating that as a spent fence re-elected a fresh
+    /// <c>wle_*</c> row, so an identical retry left a guest who already has a table waiting for a
+    /// second one: eligible for another offer, or under an AutoBookGrant a silent second booking.
+    /// The accepted offer is the evidence that tells the two apart — a withdrawal RELEASES its live
+    /// offer, it never accepts one.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RetryingAnEnrolmentThatWasFulfilledReturnsItRatherThanWaitlistingTheGuestAgain()
+    {
+        var tenantId = TestIds.New("wl-fulfilled");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // The enrollee accepted an offer and was booked: the offer is Accepted, the operation it
+        // minted reached Booked, and the reconcile path has marked the enrollment terminal so it is
+        // never re-offered. The BOOKED operation is the load-bearing part — an accepted offer alone
+        // is not fulfilment, because an accept whose booking later failed leaves the enrollee
+        // correctly eligible.
+        var bookedOperationId = TestIds.New("op_wl");
+        ctx.WaitlistOffers.Add(new WaitlistOffer
+        {
+            TenantId = tenantId,
+            OfferId = TestIds.New("wlo"),
+            EnrollmentId = first,
+            OperationId = bookedOperationId,
+            Status = WaitlistOfferStatus.Accepted,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        SeedOperation(ctx, tenantId, bookedOperationId, OperationStatus.Booked);
+        var enrollment = ctx.WaitlistEnrollments.Single(e => e.EnrollmentId == first);
+        enrollment.CancelledAt = DateTimeOffset.UtcNow;
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // The recorded enrolment comes back — no second row, so no second offer and no second book.
+        Assert.Equal(first, second);
+        Assert.Single(ctx.WaitlistEnrollments.Where(e => e.TenantId == tenantId).ToList());
+    }
+
+    /// <summary>
+    /// The converse, and the reason the fulfilment test above needs a BOOKED operation: an offer
+    /// that was accepted but whose booking then failed is NOT a fulfilment.
+    ///
+    /// <para>An offer is claimed <c>Accepted</c> before the booking is confirmed and has no
+    /// transition out again, so it lingers accepted after a terminal failure — where
+    /// <c>ReconcileWaitlistAcceptCommandHandler</c> deliberately leaves the enrollee eligible. If
+    /// the guest then withdraws and re-enrols, treating the stale accepted offer as fulfilment
+    /// would hand back the CANCELLED id and report "added to the waitlist" for a guest on no list.
+    /// </para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AnAcceptedOfferWhoseBookingFailedDoesNotCountAsFulfilment()
+    {
+        var tenantId = TestIds.New("wl-acc-failed");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-acc-failed" };
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        var failedOperationId = TestIds.New("op_wl");
+        ctx.WaitlistOffers.Add(new WaitlistOffer
+        {
+            TenantId = tenantId,
+            OfferId = TestIds.New("wlo"),
+            EnrollmentId = first,
+            OperationId = failedOperationId,
+            Status = WaitlistOfferStatus.Accepted,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        SeedOperation(ctx, tenantId, failedOperationId, OperationStatus.FailedFinal);
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        // The guest gives up and withdraws, then changes their mind and re-enrols identically.
+        await BuildCancel(ctx).Handle(
+            new CancelWaitlistEnrollmentCommand(tenantId, first, "operator@venue", "operator", "waitlist test"),
+            TestContext.Current.CancellationToken);
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // A genuine withdrawal, so the fence is voided and they really are back on the list.
+        Assert.NotEqual(first, second);
+        var live = ctx.WaitlistEnrollments
+            .Where(e => e.TenantId == tenantId && e.CancelledAt == null)
+            .ToList();
+        Assert.Single(live);
+        Assert.Equal(second, live[0].EnrollmentId);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReEnrollingAfterRemovalWithAnExplicitKeyIsAlsoANewEnrollment()
+    {
+        // An explicit key gets the 365-day window, so without the liveness check this case was
+        // the worst of the two — a cancelled enrolment could be replayed back for a year.
+        var tenantId = TestIds.New("wl-idem5");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId) with { IdempotencyKey = "op-key-reused" };
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+        await BuildCancel(ctx).Handle(
+            new CancelWaitlistEnrollmentCommand(tenantId, first, "operator@venue", "operator", "waitlist test"),
+            TestContext.Current.CancellationToken);
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(first, second);
+        Assert.Single(ctx.WaitlistEnrollments.Where(
+            e => e.TenantId == tenantId && e.CancelledAt == null));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ADerivedKeyPastItsWindowLetsAGenuinelySecondEnrolmentThrough()
+    {
+        // The window says "after an hour, identical details are a NEW intent, not a retry". But
+        // the expired record still holds unique(tenant_id, idempotency_key), so simply ignoring
+        // it made the creator election lose on conflict and hand back the FIRST enrolment — the
+        // window had no effect at all until the retention sweep happened to prune the row, which
+        // is a background job and cannot be what makes the next request correct.
+        var tenantId = TestIds.New("wl-idem7");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        // Age the fence past the derived-key window rather than waiting an hour for it.
+        var record = ctx.IdempotencyRecords.Single(r => r.TenantId == tenantId);
+        record.CreatedAt = DateTimeOffset.UtcNow.AddHours(-2);
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        ctx.ChangeTracker.Clear();
+
+        var second = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(first, second);
+        // Both are live: neither was cancelled, so this is two real enrolments, not a replay.
+        Assert.Equal(2, ctx.WaitlistEnrollments.Count(e => e.TenantId == tenantId && e.CancelledAt == null));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReplayingALiveEnrollmentStillReturnsTheRecordedId()
+    {
+        // The other half of the same rule, pinned separately: the liveness check must NOT relax
+        // spec 04's disposition for an operation whose product still exists. A retry of a LIVE
+        // enrolment is still answered with the enrolment already minted, and writes nothing.
+        var tenantId = TestIds.New("wl-idem6");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var enroll = BuildEnroll(ctx);
+        var command = EnrollCommandFor(tenantId);
+
+        var first = await enroll.Handle(command, TestContext.Current.CancellationToken);
+        var replay = await enroll.Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(first, replay);
+        Assert.Single(ctx.WaitlistEnrollments.Where(e => e.TenantId == tenantId));
+    }
+
+    private static EnrollWaitlistCommand EnrollCommandFor(string tenantId)
+        => new(
+            TenantId: tenantId,
+            Actor: "operator@venue",
+            CustomerRef: "+61400111222",
+            AcceptableFrom: new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero),
+            AcceptableTo: new DateTimeOffset(2026, 9, 1, 17, 0, 0, TimeSpan.Zero),
+            PartySize: 2,
+            LocationId: "loc-1",
+            ServiceId: "svc-1",
+            OfferLifetimeSeconds: 900,
+            Deposit: null,
+            NotificationChannel: "sms",
+            AutoBook: null);
+
+    // -------------------------------------------------------------------------
+    // Locations in use (docs §12 gap 7).
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListsTheLocationsAVenueActuallyUses()
+    {
+        var tenantId = TestIds.New("wl-loc");
+        await using var ctx = fixture.CreateContext(tenantId);
+        var handler = BuildEnroll(ctx);
+
+        await handler.Handle(EnrollCommandFor(tenantId), TestContext.Current.CancellationToken);
+        await handler.Handle(
+            EnrollCommandFor(tenantId) with { LocationId = "loc-2", PartySize = 3 },
+            TestContext.Current.CancellationToken);
+        // A repeat of an existing location must not appear twice.
+        await handler.Handle(
+            EnrollCommandFor(tenantId) with { PartySize = 5 },
+            TestContext.Current.CancellationToken);
+
+        var locations = await new WaitlistEnrollmentRepository(ctx).ListLocationsInUseAsync(tenantId);
+
+        Assert.Equal(new[] { "loc-1", "loc-2" }, locations);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ANewVenueHasNoLocationsYetAndThatIsARealAnswer()
+    {
+        // Which is exactly why an unrecognised location must WARN rather than block: the first
+        // enrolment at a venue can never be in the list.
+        var tenantId = TestIds.New("wl-loc-empty");
+        await using var ctx = fixture.CreateContext(tenantId);
+
+        Assert.Empty(await new WaitlistEnrollmentRepository(ctx).ListLocationsInUseAsync(tenantId));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task DoesNotListAnotherTenantsLocations()
+    {
+        var tenantA = TestIds.New("wl-loc-a");
+        var tenantB = TestIds.New("wl-loc-b");
+        await using (var ctxA = fixture.CreateContext(tenantA))
+            await BuildEnroll(ctxA).Handle(EnrollCommandFor(tenantA), TestContext.Current.CancellationToken);
+
+        await using var ctxB = fixture.CreateContext(tenantB);
+        Assert.Empty(await new WaitlistEnrollmentRepository(ctxB).ListLocationsInUseAsync(tenantB));
     }
 }

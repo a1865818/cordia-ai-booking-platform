@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { CAMPAIGNS, campStatusMeta, chMeta } from "../../../data/console";
 import { PrimaryButton, GhostButton } from "../../ui/Button";
 import { SectionLabel } from "../../ui/SectionLabel";
+import { DemoBadge } from "../../ui/DemoBadge";
 
 const inputStyle: React.CSSProperties = {
   width: '100%', border: '1px solid #EAEAEA', borderRadius: 10,
@@ -36,6 +37,8 @@ export function CampaignsScreen() {
 
   return (
     <div>
+      {/* MOCK: no endpoint yet — no backend and no spec owns campaigns. */}
+      <div className="mb-3"><DemoBadge reason="no backend and no spec owns campaigns" /></div>
       {awaiting.length > 0 && (
         <>
           <SectionLabel line>{awaiting.length} awaiting your approval</SectionLabel>

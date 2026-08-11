@@ -114,7 +114,7 @@ def _make_confirmation(rev: IntentRevision) -> Confirmation:
         confirmed_at=_NOW,
         source_turn_id="turn_rr_001",
         read_back_version="hash_rr_001",
-        verification_level="none",
+        verification_level="unverified",
     )
 
 

@@ -220,7 +220,7 @@ override any stale mention; if you find a spec disagreeing, the spec is wrong.
 | D1 | `operation_status` = `accepted, validating, awaiting_user_action, reserving_capacity, held, awaiting_payment, finalizing, booked, alternatives_required, reconciling, compensation_required, manual_review, rejected, expired, waitlisted, failed_final` |
 | D2 | `NormalizedOperationStatus` = `accepted, in_progress, awaiting_user_action, alternatives_required, booked, waitlisted, rejected, expired, failed` (internal substates collapse before crossing the service boundary) |
 | D3 | `idempotency_status` = `in_progress, completed, failed` |
-| D4 | `catalog_status` = `uploaded, scanning, quarantined, extracting, draft_ready, in_review, approved, published, superseded` |
+| D4 | `catalog_status` = `uploaded, scanning, quarantined, extracting, draft_ready, in_review, approved, published, superseded, extract_failed` — **amended 2026-08-06 (owner ruling)**: `extract_failed` added as a tenth, terminal value. The original nine had no way to say an extraction had stopped, so a stalled ingestion was indistinguishable from a slow one forever, and the §5.2 diagram's `ExtractFailed` terminal could not be modelled. Appended, never reordered — a pg-enum's declared order is its sort order. Recovery is a fresh upload, which supersedes. |
 | D5 | `verification_action` = `read_sensitive, modify, cancel, use_payment_method, refund, owner_override` |
 | D6 | Durable-acceptance SLO = **p95 < 300 ms, p99 < 500 ms** (owned by 13; ~80 ms inner DB txn is a *component*) |
 | D7 | Create = `POST /api/bookings` → 202 + operation_id; status = `GET /api/booking-operations/{operationId}`; command = `SubmitConfirmedIntentCommand` |

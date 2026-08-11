@@ -38,5 +38,9 @@ public sealed class GetModelTraceValidator : AbstractValidator<GetModelTraceQuer
         RuleFor(x => x.TraceId).NotEmpty()
             .Must(ObjectStoreSegment.IsValid)
             .WithMessage("TraceId contains characters not allowed in a storage path segment.");
+        // NOTE: deliberately no ratified-purpose rule here. Model-trace reads are referenced to
+        // an incident ("incident_42"), not drawn from a category list — a closed vocabulary would
+        // replace a specific pointer with a vague label. The transcript read, whose purposes ARE
+        // categorical, is where SensitiveReadPurpose is enforced.
     }
 }

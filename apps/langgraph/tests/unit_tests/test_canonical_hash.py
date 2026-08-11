@@ -1,132 +1,170 @@
-"""canon.v1 canonicalization + cross-language parity (spec 04 §5, Inv-1/Inv-2).
+"""Shared cross-language canon.v1 corpus (spec 04 §5, Inv-2/Inv-3).
 
-The fixtures in :data:`PARITY_CASES` are duplicated verbatim — payload AND
-expected digest — in
-``apps/api/test/Cordia.Tests/UnitTests/Idempotency/CanonicalHashCrossLanguageParityTests.cs``.
-If ``cordia_agent/revisions/canonical.py`` or
-``Cordia.Infrastructure.Services.CanonicalRequestHasher`` drifts, exactly one of
-the two suites goes red — which is the point: a silent divergence means every
-submission is rejected at the §8.8 hash gate.
+The expected hashes in ``tools/config/canon-v1-test-vectors.json`` were produced by
+the authoritative C# implementation and are asserted there by
+``CanonV1GoldenVectorTests`` and in the web app by ``canonicalHash.test.ts``.  A change
+in any lane that diverges fails that lane's suite, so the three canonicalisers cannot
+silently drift.
+
+This matters because ``POST /api/bookings`` rejects a submission whose client-computed
+``confirmation.intent_payload_hash`` does not equal the server's recomputed hash (422
+``ConfirmationHashMismatchException``) — a drifted lane cannot book at all.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from cordia_agent.revisions.canonical import (
-    CANONICALIZER_VERSION,
+from cordia_agent.revisions.canonical_hash import (
+    CANON_VERSION,
+    canonical_hash,
     canonical_json,
-    canonical_payload_hash,
 )
 
 
-# (label, payload, canonical json, sha-256 hex) — mirrored in the C# suite.
-PARITY_CASES = [
-    pytest.param(
-        {
-            "operation": "create",
-            "service_id": "svc_001",
-            "location_id": "loc_001",
-            "starts_at": "2026-08-10T19:00:00Z",
-            "party_size": 4,
-            "duration_minutes": None,
-            "special_requests": ["high chair"],
-            "preorder": None,
-            "target_booking_id": None,
-            "target_booking_version": None,
-        },
-        '{"location_id":"loc_001","operation":"create","party_size":4,'
-        '"service_id":"svc_001","special_requests":["high chair"],'
-        '"starts_at":"2026-08-10T19:00:00.000Z"}',
-        "9efa756fc92721ac095d700d7467e30161781146f53f7295a24db182009ec45e",
-        id="real_agent_submission",
-    ),
-    pytest.param(
-        {
-            "starts_at": "2026-06-15T20:30:00.9999+10:00",
-            "requested_at": "2026-06-15T10:30:00.000Z",
-        },
-        '{"requested_at":"2026-06-15T10:30:00.000Z",'
-        '"starts_at":"2026-06-15T10:30:00.999Z"}',
-        "3d639d40fbfb2c2593276fa26c93b42592b99ce406b56539b13d0cbc651c2960",
-        id="offset_folding_and_sub_ms_truncation",
-    ),
-    pytest.param(
-        {"note": "café &  bar <b>  ", "emoji": "\U0001f600"},
-        '{"emoji":"\\uD83D\\uDE00","note":"caf\\u00E9 \\u0026 bar \\u003Cb\\u003E"}',
-        "04bf740fcec16aa06f12e2b8cd5b1f67f09c614763825ac57dbdb665ca9d619d",
-        id="dotnet_default_escaping",
-    ),
-    pytest.param(
-        {"a": 500, "b": 500.0, "c": 500.5, "d": 0},
-        '{"a":500,"b":500,"c":500.5,"d":0}',
-        "30397cf077921abd5085b51d9f0c78ffb2eebf3d1ebe86acf46246b59a1a2ed8",
-        id="number_normalization",
-    ),
-    pytest.param(
-        {
-            "lines": [
-                {"item_id": "b", "modifier_id": "2"},
-                {"item_id": "a", "modifier_id": "1"},
-            ],
-            "tags": ["z", "a"],
-            "empty": [],
-        },
-        '{"lines":[{"item_id":"a","modifier_id":"1"},'
-        '{"item_id":"b","modifier_id":"2"}],"tags":["a","z"]}',
-        "bf1d43afd874fef6a23e7e4cd31f1664cbc3b2a13e0266f7bd84b419070b92e8",
-        id="list_ordering_and_empty_omission",
-    ),
-]
+def _repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "nx.json").exists():
+            return parent
+    raise AssertionError("repo root (nx.json) not found")
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(("payload", "expected_json", "expected_hash"), PARITY_CASES)
-def test_canon_v1_parity_with_dotnet(
-    payload: dict, expected_json: str, expected_hash: str
-) -> None:
-    """Both the canonical form and the digest must match the C# hasher exactly."""
-    assert canonical_json(payload) == expected_json
-    assert canonical_payload_hash(payload) == expected_hash
+_CORPUS = json.loads(
+    (_repo_root() / "tools" / "config" / "canon-v1-test-vectors.json").read_text(
+        encoding="utf-8"
+    )
+)
+_VECTORS = _CORPUS["vectors"]
 
 
-@pytest.mark.unit
-def test_absent_and_explicit_null_hash_identically() -> None:
-    """§5: absent and explicit null are the same canonical form."""
-    assert canonical_payload_hash({"a": 1, "b": None}) == canonical_payload_hash({"a": 1})
+def test_corpus_loads() -> None:
+    assert _CORPUS["version"] == CANON_VERSION
+    assert len(_VECTORS) > 40
 
 
-@pytest.mark.unit
-def test_key_order_does_not_affect_the_hash() -> None:
-    """§5: object key order is not preserved from the wire."""
-    assert canonical_payload_hash({"b": 2, "a": 1}) == canonical_payload_hash(
-        {"a": 1, "b": 2}
+@pytest.mark.parametrize(
+    ("name", "payload", "expected"),
+    [(v["name"], v["payload"], v["expected"]) for v in _VECTORS],
+    ids=[v["name"] for v in _VECTORS],
+)
+def test_golden_vector(name: str, payload: str, expected: str) -> None:
+    result = canonical_hash(json.loads(payload))
+    assert result.version == CANON_VERSION
+    assert result.value == expected, f"{name}: canonical json was {canonical_json(json.loads(payload))}"
+
+
+def test_equivalence_groups_agree() -> None:
+    groups: dict[str, tuple[str, str]] = {}
+    for vector in _VECTORS:
+        value = canonical_hash(json.loads(vector["payload"])).value
+        label = vector["equivalence"]
+        if label in groups:
+            first_name, first_hash = groups[label]
+            assert value == first_hash, (
+                f"equivalence '{label}': {vector['name']} vs {first_name}"
+            )
+        else:
+            groups[label] = (vector["name"], value)
+    assert groups
+
+
+# --- properties the corpus alone would not make obvious -----------------------
+
+
+def test_sorts_keys_and_drops_nulls() -> None:
+    assert canonical_json({"z": 1, "a": 2, "m": None}) == '{"a":2,"z":1}'
+
+
+def test_drops_empty_collections_recursively() -> None:
+    assert canonical_json({"a": 1, "b": {}, "c": [], "d": {"e": []}}) == '{"a":1}'
+
+
+def test_keeps_nulls_inside_arrays() -> None:
+    assert canonical_json({"a": [None, 1]}) == '{"a":[1,null]}'
+
+
+def test_escapes_non_ascii_as_uppercase_hex_unlike_json_dumps() -> None:
+    assert canonical_json({"name": "café"}) == '{"name":"caf\\u00E9"}'
+    assert json.dumps({"name": "café"}) != canonical_json({"name": "café"})
+
+
+def test_escapes_html_sensitive_ascii() -> None:
+    assert (
+        canonical_json({"s": "a<b>c&d'e+f\"g`h"})
+        == '{"s":"a\\u003Cb\\u003Ec\\u0026d\\u0027e\\u002Bf\\u0022g\\u0060h"}'
     )
 
 
-@pytest.mark.unit
-def test_whitespace_is_trimmed_and_collapsed_but_case_is_preserved() -> None:
-    """§5: NFC + trim + collapse, and identifiers are NOT lowercased."""
-    assert canonical_json({"n": "  Jane   Doe  "}) == '{"n":"Jane Doe"}'
-    assert canonical_payload_hash({"n": "Svc_001"}) != canonical_payload_hash(
-        {"n": "svc_001"}
+def test_escapes_backslash_as_double_backslash() -> None:
+    assert canonical_json({"s": "a\\b"}) == '{"s":"a\\\\b"}'
+
+
+def test_emits_surrogate_pairs_as_two_escapes() -> None:
+    assert canonical_json({"s": "\U0001f600"}) == '{"s":"\\uD83D\\uDE00"}'
+
+
+def test_collapses_whitespace_preserving_case() -> None:
+    assert canonical_json({"s": "  Window   Seat  "}) == '{"s":"Window Seat"}'
+
+
+def test_nel_is_whitespace_but_bom_is_not() -> None:
+    assert canonical_json({"s": "xy"}) == '{"s":"x y"}'
+    assert canonical_json({"s": "x﻿y"}) == '{"s":"x\\uFEFFy"}'
+
+
+def test_integer_forms_canonicalise_identically() -> None:
+    assert canonical_json({"n": 500}) == '{"n":500}'
+    assert canonical_json({"n": 500.0}) == '{"n":500}'
+    assert canonical_json({"n": 5e2}) == '{"n":500}'
+    assert canonical_json({"n": -0.0}) == '{"n":0}'
+
+
+def test_fractions_have_no_exponent() -> None:
+    assert canonical_json({"n": 1e-7}) == '{"n":0.0000001}'
+    assert canonical_json({"n": 500.5}) == '{"n":500.5}'
+    assert canonical_json({"n": -12.25}) == '{"n":-12.25}'
+
+
+def test_large_integers_have_no_exponent() -> None:
+    assert canonical_json({"n": 1e21}) == '{"n":1000000000000000000000}'
+
+
+def test_timestamp_offset_normalises_to_utc_with_truncation() -> None:
+    assert (
+        canonical_json({"t": "2026-08-01T20:30:00+02:00"})
+        == '{"t":"2026-08-01T18:30:00.000Z"}'
+    )
+    assert (
+        canonical_json({"t": "2026-08-01T18:30:59.9995Z"})
+        == '{"t":"2026-08-01T18:30:59.999Z"}'
     )
 
 
-@pytest.mark.unit
-def test_null_payload_hashes_as_the_empty_object() -> None:
-    """A null/empty payload is deterministic, matching the API's behaviour."""
-    assert canonical_json(None) == "{}"
-    assert canonical_payload_hash(None) == canonical_payload_hash({})
+def test_tristate_markers_and_bare_dates_stay_plain_strings() -> None:
+    assert canonical_json({"t": "absent"}) == '{"t":"absent"}'
+    assert canonical_json({"d": "2026-06-15"}) == '{"d":"2026-06-15"}'
+    assert canonical_json({"t": "2026-08-01T18:30:00"}) == '{"t":"2026-08-01T18:30:00"}'
 
 
-@pytest.mark.unit
-def test_nulls_inside_arrays_are_preserved() -> None:
-    """Only object properties drop nulls; array elements keep them."""
-    assert canonical_json({"a": [1, None]}) == '{"a":[1,null]}'
+def test_object_arrays_sort_by_natural_key() -> None:
+    unsorted = {
+        "lines": [
+            {"item_id": "b", "quantity": 1},
+            {"item_id": "a", "modifier_id": "z"},
+            {"item_id": "a", "modifier_id": "a"},
+        ]
+    }
+    assert canonical_json(unsorted) == (
+        '{"lines":[{"item_id":"a","modifier_id":"a"},'
+        '{"item_id":"a","modifier_id":"z"},'
+        '{"item_id":"b","quantity":1}]}'
+    )
 
 
-@pytest.mark.unit
-def test_canonicalizer_version_label() -> None:
-    """The version label is stored on the API's idempotency record (§5)."""
-    assert CANONICALIZER_VERSION == "canon.v1"
+def test_none_and_empty_payload_hash_identically() -> None:
+    assert canonical_hash(None).value == canonical_hash({}).value
+    assert len(canonical_hash(None).value) == 64

@@ -31,6 +31,7 @@ public class RetryNotificationTests
     private readonly Mock<INotificationRepository> _retryNotifRepo = new();
     private readonly Mock<IAuditEventRepository> _retryAuditRepo = new();
     private readonly Mock<INotificationTemplateResolver> _templateResolver = new();
+    private readonly Mock<INotificationRecipientResolver> _recipientResolver = new();
 
     public RetryNotificationTests()
     {
@@ -44,6 +45,14 @@ public class RetryNotificationTests
                 It.IsAny<NotificationEvent>(), It.IsAny<NotificationChannel>(),
                 It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new NotificationTemplate("v1", "stub-body"));
+
+        // Default: the operation's revision carries a guest, so a resend has somewhere to go.
+        // Without a Destination the handler settles InvalidRecipient instead of calling the
+        // adapter — deliberately, so a resend can never claim a delivery it did not attempt.
+        _recipientResolver.Setup(r => r.ResolveAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_abc123", NotificationChannel.Sms, "en", Destination: "+61400000000"));
     }
 
     private NotificationRetryScheduler BuildScheduler() =>
@@ -52,6 +61,7 @@ public class RetryNotificationTests
 
     private RetryNotificationCommandHandler BuildHandler() =>
         new(
+            _recipientResolver.Object,
             _repo.Object,
             new[] { _smsAdapter.Object },
             _auditRepo.Object,
@@ -236,6 +246,7 @@ public class RetryNotificationTests
 
         // Build handler with NO adapters
         var handler = new RetryNotificationCommandHandler(
+            _recipientResolver.Object,
             _repo.Object,
             Array.Empty<INotificationProviderAdapter>(),
             _auditRepo.Object,
@@ -370,5 +381,81 @@ public class RetryNotificationTests
         Assert.NotNull(capturedMessage);
         // F10: body must not be empty — it must be the template body.
         Assert.Equal(expectedBody, capturedMessage!.Body);
+    }
+
+    // ── Waitlist recovery: OperationId is NULL by design (spec 10) ───────────────────────────────
+
+    /// <summary>
+    /// The retry lane carried the identical defect the reconcile lane did, and it was missed
+    /// because both were untested for this shape: a waitlist offer/expiry row stores
+    /// <c>OperationId = null</c> (spec 10, "null for non-operation messages"), so gating resolution
+    /// on it sent every waitlist retry to the no-destination guard and settled
+    /// <c>InvalidRecipient</c> — terminal. The enrollment id on <c>correlation_id</c> still reaches
+    /// the guest.
+    /// </summary>
+    [Fact]
+    public async Task WaitlistRow_NullOperation_ResolvesDestinationFromEnrollmentCorrelation()
+    {
+        const string enrollmentId = "wle_retry_abc";
+
+        var n = MakeFailedTransientNotification(version: 2);
+        n.OperationId = null;
+        n.CorrelationId = enrollmentId;
+        n.EventType = NotificationEvent.WaitlistOffer;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+        _repo.Setup(r => r.TryTransitionStateAsync(TenantId, NotificationId, 2L,
+                NotificationState.FailedTransient, NotificationState.Sending, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _repo.Setup(r => r.MarkAcceptedAsync(TenantId, NotificationId, 3L,
+                NotificationState.Sending, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _recipientResolver.Setup(r => r.ResolveByEnrollmentAsync(
+                TenantId, enrollmentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResolvedRecipient(
+                "recip_enrollment", NotificationChannel.Sms, "en", Destination: "+61400111222"));
+
+        _smsAdapter.Setup(a => a.SendAsync(ProviderKey, It.IsAny<RenderedMessage>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationSendResult(NotificationSendOutcome.Accepted, "pmsg_wl", null));
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        _smsAdapter.Verify(a => a.SendAsync(ProviderKey, It.Is<RenderedMessage>(
+            m => m.Destination == "+61400111222"), It.IsAny<CancellationToken>()), Times.Once);
+
+        _repo.Verify(r => r.MarkFailedAsync(TenantId, NotificationId, It.IsAny<long>(),
+            It.IsAny<NotificationState>(), NotificationState.InvalidRecipient,
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>Fails closed: no operation and no correlation still means nowhere to deliver.</summary>
+    [Fact]
+    public async Task WaitlistRow_NullOperation_NoCorrelation_StillSettlesInvalidRecipient()
+    {
+        var n = MakeFailedTransientNotification(version: 2);
+        n.OperationId = null;
+        n.CorrelationId = null;
+        n.EventType = NotificationEvent.WaitlistOffer;
+
+        _repo.Setup(r => r.GetAsync(TenantId, NotificationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(n);
+        _repo.Setup(r => r.TryTransitionStateAsync(TenantId, NotificationId, 2L,
+                NotificationState.FailedTransient, NotificationState.Sending, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _repo.Setup(r => r.MarkFailedAsync(TenantId, NotificationId, 3L,
+                NotificationState.Sending, NotificationState.InvalidRecipient,
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await BuildHandler().Handle(DefaultCommand(), CancellationToken.None);
+
+        // Inv-16: never claim a delivery that was not attempted.
+        _smsAdapter.Verify(a => a.SendAsync(It.IsAny<string>(), It.IsAny<RenderedMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        _repo.Verify(r => r.MarkFailedAsync(TenantId, NotificationId, 3L,
+            NotificationState.Sending, NotificationState.InvalidRecipient,
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

@@ -111,7 +111,7 @@ public class MetricEmissionTests : IDisposable
             .ReturnsAsync(new NotificationTemplate("v1", "body"));
 
         recipientResolver.Setup(r => r.ResolveAsync("t1", "op1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ResolvedRecipient("+1234", NotificationChannel.Sms, "en"));
+            .ReturnsAsync(new ResolvedRecipient("recip_1234", NotificationChannel.Sms, "en", Destination: "+1234"));
 
         // Existing row → insert returns false (duplicate)
         repo.Setup(r => r.TryInsertAsync(It.IsAny<Notification>(), It.IsAny<CancellationToken>()))

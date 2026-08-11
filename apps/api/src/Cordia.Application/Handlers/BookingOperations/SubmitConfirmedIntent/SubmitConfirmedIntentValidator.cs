@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Generated;
+﻿using Cordia.Application.Common;
+using Cordia.Domain.Generated;
 using FluentValidation;
 
 namespace Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
@@ -70,9 +71,27 @@ public sealed class SubmitConfirmedIntentValidator : AbstractValidator<SubmitCon
                 RuleFor(x => x.Request.Confirmation.ReadBackVersion)
                     .NotEmpty()
                     .WithMessage("confirmation.read_back_version is required.");
+                // NotEmpty is not enough. MapVerificationLevel falls through to Unverified for
+                // anything it does not recognise, so an off-vocabulary value was silently
+                // DOWNGRADED — the platform recorded "unverified" for a customer a lane had
+                // actually identity-verified, and nothing anywhere said so (R15). The agent lane
+                // was sending "none", which is not a member, so every agent submission landed
+                // unverified. Reject it up front instead, exactly as the waitlist enrol
+                // validator already does.
                 RuleFor(x => x.Request.Confirmation.VerificationLevel)
                     .NotEmpty()
-                    .WithMessage("confirmation.verification_level is required.");
+                    .WithMessage("confirmation.verification_level is required.")
+                    .Must(ConfirmationMappings.IsKnownVerificationLevel)
+                    // ApplyConditionTo.CurrentValidator is load-bearing: the DEFAULT applies a
+                    // condition to every validator earlier in the chain, so a bare .When() here
+                    // silently disabled the NotEmpty() above and an empty value stopped being a
+                    // 400 — the opposite of what this rule is for.
+                    .When(
+                        x => !string.IsNullOrWhiteSpace(x.Request.Confirmation.VerificationLevel),
+                        ApplyConditionTo.CurrentValidator)
+                    .WithMessage(
+                        "confirmation.verification_level must be one of: unverified, "
+                        + "channel_verified, identity_verified, high_assurance.");
             });
 
             // Confirmation structural binding: confirmation must be bound to the same

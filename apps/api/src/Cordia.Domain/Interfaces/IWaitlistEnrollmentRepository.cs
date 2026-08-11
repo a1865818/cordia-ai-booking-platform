@@ -18,6 +18,25 @@ public interface IWaitlistEnrollmentRepository
     /// or <c>null</c> when absent.
     /// </summary>
     Task<WaitlistEnrollment?> GetAsync(string enrollmentId, CancellationToken ct = default);
+    /// <summary>
+    /// Distinct <c>location_id</c> values this tenant has actually enrolled against, ascending.
+    ///
+    /// The matcher compares locations by exact string (<c>e.LocationId == criteria.LocationId</c>),
+    /// so a typo produces an enrolment that can never be matched and reports no error anywhere —
+    /// docs §12 gap 7. There is no locations registry to validate against, and inventing one is
+    /// spec 12's call, so this surfaces the only un-invented source available: the values already
+    /// in use. Enough to catch a typo, and honest about being a usage list rather than a registry.
+    /// </summary>
+    /// <param name="tenantId">
+    /// AUTHORITATIVE, not merely ambient. Every other read added alongside this one takes an
+    /// explicit tenant and re-asserts it, because leaning on the global query filter means a
+    /// caller in a background scope with an unset <c>ITenantContext</c> either throws or — worse —
+    /// returns another venue's rows. These are real location handles for a real venue (Inv-13),
+    /// and the doc comment above says "this tenant's" while the old signature had no way to say
+    /// which tenant that was.
+    /// </param>
+    Task<IReadOnlyList<string>> ListLocationsInUseAsync(string tenantId, CancellationToken ct = default);
+
 
     /// <summary>
     /// Version-token conditional cancel (§22.1, Inv-6): stamps <paramref name="cancelledAt"/> only

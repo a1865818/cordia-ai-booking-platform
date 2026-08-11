@@ -38,6 +38,24 @@ public interface IVendorCatalogRepository
         IReadOnlyCollection<string> itemIds, CancellationToken ct = default);
 
     /// <summary>
+    /// All items on a catalog, at ANY status — the draft-scoped counterpart to
+    /// <see cref="GetPublishedItemsAsync"/>. Returns the namespaced <c>{catalogId}:{rawId}</c>
+    /// ids that <c>POST /menu/catalogs/{id}/edit</c> keys on, which the published-scoped reads
+    /// cannot surface while a catalog is in_review. Tenant-scoped, AsNoTracking.
+    /// </summary>
+    Task<IReadOnlyList<VendorCatalogItem>> GetDraftItemsAsync(
+        string catalogId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The tenant's catalogs, newest first, at any status.
+    ///
+    /// This is the DISCOVERY read: without it the console could only ever show catalogs started
+    /// from its own session, so an ingestion begun elsewhere (or before a refresh) was invisible
+    /// — docs §12 gap 3. Tenant-scoped, AsNoTracking.
+    /// </summary>
+    Task<IReadOnlyList<VendorCatalog>> ListAsync(int limit = 50, CancellationToken ct = default);
+
+    /// <summary>
     /// Loads a catalog by id (any status), tenant-scoped via the global query filter,
     /// or <c>null</c> when absent. Used by the ingestion / review lifecycle handlers.
     /// </summary>

@@ -37,13 +37,11 @@ public sealed class RecordDeliveryReceiptCommandHandler(
     Metrics metrics)
     : IRequestHandler<RecordDeliveryReceiptCommand, ReceiptOutcome>
 {
-    private static readonly HashSet<NotificationState> _terminalStates = new()
-    {
-        NotificationState.Delivered,
-        NotificationState.FailedPermanent,
-        NotificationState.SuppressedDuplicate,
-        NotificationState.InvalidRecipient,
-    };
+    // Asked of NotificationStateMachine, which now exposes the query. This handler kept its own
+    // copy of the machine's four terminals purely because there was no method to call — the
+    // classic way a duplicate is born: not carelessness, but a missing authority.
+    private static readonly IReadOnlySet<NotificationState> _terminalStates =
+        NotificationStateMachine.TerminalStates;
 
     public async Task<ReceiptOutcome> Handle(
         RecordDeliveryReceiptCommand command,

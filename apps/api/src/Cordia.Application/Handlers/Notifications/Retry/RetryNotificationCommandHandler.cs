@@ -23,6 +23,7 @@ namespace Cordia.Application.Handlers.Notifications.Retry;
 /// <c>sendingVersion</c>.</para>
 /// </summary>
 public sealed class RetryNotificationCommandHandler(
+    INotificationRecipientResolver recipientResolver,
     INotificationRepository repo,
     IEnumerable<INotificationProviderAdapter> adapters,
     IAuditEventRepository auditRepo,
@@ -116,38 +117,68 @@ public sealed class RetryNotificationCommandHandler(
 
         // 6. Resolve template + send (F10: render a real body on retry resend).
         var template = await templateResolver.ResolveAsync(n.EventType, n.Channel, "en", ct);
+        // Re-resolve the destination rather than reading it off the row: it is deliberately not
+        // persisted, so a retry must go through the same single resolver the first attempt used.
+        // Without this a retry would render a message with nowhere to deliver.
+        //
+        // A null OperationId means "non-operation message" (spec 10), not "no recipient". Every
+        // waitlist offer/expiry row has one, so gating on it alone sent each of them straight to
+        // the no-destination guard below and settled InvalidRecipient — terminal, and wrong: the
+        // enrollment id on correlation_id still reaches the guest. Same fallback as the reconcile
+        // lane, and it fails closed for any row whose correlation is not an enrollment.
+        var retryRecipient = await ResolveDestinationAsync(n, ct);
         var rendered = new RenderedMessage(
             TemplateVersion: n.TemplateVersion,
             Channel: n.Channel,
             Locale: "en",
             Body: template.BodyTemplate,
-            MinimizedRecipient: n.RecipientRef);
+            MinimizedRecipient: n.RecipientRef,
+            Destination: retryRecipient?.Destination);
 
         NotificationSendResult result;
-        try
+        if (retryRecipient?.Destination is null)
         {
-            result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // F9: guard against adapter exceptions — treat as transient failure so the inbox
-            // transaction COMMITS (row settles to FailedTransient + durable retry scheduled)
-            // rather than rolling back and causing a poison redelivery loop.
-            logger.LogWarning(ex,
-                "RetryNotification: adapter.SendAsync threw for {NotificationId}; treating as transient.",
+            // Nowhere to deliver. The FIRST send settles this as invalid_recipient; without the
+            // same guard here a transient failure followed by a retry would sail past it and
+            // settle as delivered — reporting a delivery that never happened (Inv-16).
+            // Settled through the existing switch rather than thrown: this handler runs inside
+            // the inbox transaction, and throwing for an expected terminal outcome rolls back
+            // admission and causes poison redelivery.
+            logger.LogInformation(
+                "RetryNotification: no destination for {NotificationId}; settling InvalidRecipient.",
                 notificationId);
-            var reloadedOnEx = await repo.GetAsync(tenantId, notificationId, ct);
-            if (reloadedOnEx is not null)
+            result = new NotificationSendResult(
+                NotificationSendOutcome.InvalidRecipient,
+                ProviderMessageId: null,
+                FailureCategory: "no_destination");
+        }
+        else
+        {
+            try
             {
-                await retryScheduler.HandleTransientAsync(reloadedOnEx, expectedVersion: sendingVersion, "send_exception", ct);
+                result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct);
             }
-            else
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogWarning(
-                    "RetryNotification: could not reload notification_id={NotificationId} after send exception.",
+                // F9: guard against adapter exceptions — treat as transient failure so the inbox
+                // transaction COMMITS (row settles to FailedTransient + durable retry scheduled)
+                // rather than rolling back and causing a poison redelivery loop.
+                logger.LogWarning(ex,
+                    "RetryNotification: adapter.SendAsync threw for {NotificationId}; treating as transient.",
                     notificationId);
+                var reloadedOnEx = await repo.GetAsync(tenantId, notificationId, ct);
+                if (reloadedOnEx is not null)
+                {
+                    await retryScheduler.HandleTransientAsync(reloadedOnEx, expectedVersion: sendingVersion, "send_exception", ct);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "RetryNotification: could not reload notification_id={NotificationId} after send exception.",
+                        notificationId);
+                }
+                return Unit.Value;
             }
-            return Unit.Value;
         }
 
         switch (result.Outcome)
@@ -238,6 +269,29 @@ public sealed class RetryNotificationCommandHandler(
         }
 
         return Unit.Value;
+    }
+
+    /// <summary>
+    /// The destination for a retry, from whichever link the row actually carries: the booking
+    /// operation when there is one, else the enrollment id on <c>correlation_id</c> for a waitlist
+    /// offer/expiry (whose <c>op_wl_*</c> id is deliberately not persisted — spec 10).
+    ///
+    /// <para>Gated on the EVENT TYPE as well as the null operation, for the reason spelled out on
+    /// the reconcile lane's copy: <c>correlation_id</c> is a generic column, and without the gate
+    /// the next <c>RequiresOperation: false</c> registration would silently resolve a destination
+    /// from an unrelated enrollment.</para>
+    /// </summary>
+    private async Task<ResolvedRecipient?> ResolveDestinationAsync(Notification n, CancellationToken ct)
+    {
+        if (n.OperationId is not null)
+            return await recipientResolver.ResolveAsync(n.TenantId, n.OperationId, ct);
+
+        if (n.EventType is not (NotificationEvent.WaitlistOffer or NotificationEvent.WaitlistOfferExpired))
+            return null;
+
+        return string.IsNullOrWhiteSpace(n.CorrelationId)
+            ? null
+            : await recipientResolver.ResolveByEnrollmentAsync(n.TenantId, n.CorrelationId, ct);
     }
 
     private Task EmitAuditAsync(Notification n, string eventType, object metadata, CancellationToken ct)

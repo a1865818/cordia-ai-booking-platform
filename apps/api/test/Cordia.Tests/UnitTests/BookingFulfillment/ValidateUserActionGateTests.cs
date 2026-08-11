@@ -23,6 +23,7 @@ public class ValidateUserActionGateTests
     private readonly Mock<IOutboxRepository> _outboxRepo = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
     private readonly Mock<IUnitOfWork> _uow = new();
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
 
     private ValidateOperationCommandHandler CreateHandler() => new(
         _opRepo.Object,
@@ -31,6 +32,7 @@ public class ValidateUserActionGateTests
         _validationPolicy.Object,
         _outboxRepo.Object,
         _auditRepo.Object,
+        _bookingRepo.Object,
         _uow.Object);
 
     private static BookingOperation MakeOp(string tenantId, string operationId, OperationStatus status, long version = 0) =>
@@ -52,8 +54,8 @@ public class ValidateUserActionGateTests
 
         _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((WorkflowStep?)null);
-        _stepRepo.Setup(r => r.AddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
         _outboxRepo.Setup(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
         _auditRepo.Setup(r => r.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))

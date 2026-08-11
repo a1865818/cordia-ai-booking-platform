@@ -1,7 +1,7 @@
 // Cordia console — types and mock data
 
 export type BookingStatus = 'confirmed' | 'pending' | 'confirming' | 'retrying' | 'failed' | 'cancelled' | 'waitlisted';
-export type Channel = 'phone' | 'sms' | 'web' | 'instagram' | 'whatsapp';
+export type Channel = 'phone' | 'sms' | 'email' | 'web' | 'instagram' | 'whatsapp';
 
 export interface Booking {
   id: string;
@@ -12,11 +12,24 @@ export interface Booking {
   service: string;
   serviceName: string;
   name: string;
-  prov: 'ai' | 'you';
+  /**
+   * The projection's raw `customer_ref`, unrendered. Needed when submitting a change against
+   * this booking: the new revision must carry the guest forward or the resulting notification
+   * has no destination. Null on rows the API returned without one, and absent on demo rows.
+   */
+  customerRef?: string | null;
+  /** Who made the booking. `unknown` when the source does not record it (the API does not). */
+  prov: 'ai' | 'you' | 'unknown';
   status: BookingStatus;
   channel: Channel | null;
   dep: number;
   transcript: string | null;
+  /**
+   * False when the row is an operation the platform has accepted but not yet finalised, so there
+   * is no booking to act on: `id` holds the operation id, and cancel/modify against it would 404.
+   * Absent on demo rows, which are all treated as real.
+   */
+  isBooking?: boolean;
 }
 
 export interface QueueItem {
@@ -25,9 +38,42 @@ export interface QueueItem {
   service: string;
   slot: string;
   reason: string;
-  retries: number;
-  channel: Channel;
+  /**
+   * Attempt count. **Optional** — `OperationSummary` does not project it, so a live row omits
+   * it rather than reporting 0, which read as "this has never been retried".
+   */
+  retries?: number;
+  /** Optional for the same reason: the API models no channel on an operation. */
+  channel?: Channel;
   transcript: string | null;
+  /**
+   * The server's operation status. Carried so a local dismissal can be tied to the state it
+   * acknowledged: an operation that escalates afterwards must come back, not stay hidden.
+   * Absent on demo rows.
+   */
+  status?: string;
+  /**
+   * True when the operation carries a pre-order. Carried because the follow-up surface
+   * needs it: the server refuses to route a pre-order to the waitlist (spec 11 §21.4), so
+   * that answer must not be offered on such a row. Absent on demo rows.
+   */
+  isPreorder?: boolean;
+  /**
+   * The open manual-recovery work item for this operation, when one exists.
+   *
+   * A separate record from the status, with a separate lifetime: it is raised when the
+   * platform gives up and stays open until a person closes it, so it says *why* someone was
+   * called and *by when* — which the status alone cannot. Absent on demo rows and on
+   * operations nobody has been called for.
+   */
+  workItem?: {
+    /** Operator-facing wording; the raw reason is a machine tag. */
+    reason: string;
+    slaDeadline: string;
+    /** Past its deadline. Never inferred from an unparseable date. */
+    overdue: boolean;
+    assignee: string | null;
+  };
 }
 
 export interface Thread {
@@ -35,10 +81,23 @@ export interface Thread {
   name: string;
   channel: Channel;
   preview: string;
-  status: BookingStatus;
-  prov: string;
+  /**
+   * **Optional.** `ConversationSessionSummary` carries no outcome, so a live thread sets
+   * nothing rather than claiming `pending` for every session that has ended.
+   */
+  status?: BookingStatus;
+  /** Optional for the same reason: nothing records whether the agent or a human handled it. */
+  prov?: string;
   ago: string;
   live?: boolean;
+  /**
+   * `consent_state` as the session read returned it — the ratified `ConsentState` vocabulary,
+   * or `null` when the platform recorded none. Consent is the guest's and is captured
+   * in-channel; the console only ever displays what was recorded.
+   */
+  consentState?: string | null;
+  /** `recording_allowed`; meaningful only alongside a granted consent. */
+  recordingAllowed?: boolean | null;
 }
 
 export interface Message {
@@ -51,12 +110,38 @@ export interface WaitlistItem {
   name: string;
   service: string;
   want: string;
+  /**
+   * Whether the guest authorized auto-book. This is a **consent grant recorded at enrollment**
+   * (spec 11 §20, Inv-1), not a venue preference — and no endpoint changes it, so it is
+   * read-only on any row that came from the API.
+   */
   auto: boolean;
+  /** True for a row from `/api/waitlist/enrollments`; absent on demo rows. */
+  isLive?: boolean;
+  /**
+   * The latest offer's id, raw. Whether it can be **answered** is decided at render against a
+   * ticking clock, not here — an offer's expiry passes while the row sits on screen.
+   */
+  offerId?: string;
+  /** Raw latest-offer status, for display. */
+  offerStatus?: string;
+  /** Raw ISO expiry of the latest offer. */
+  offerExpiresAt?: string;
+  /** Raw enrollment fields, carried so "Book now" can prefill rather than open a blank form. */
+  serviceId?: string;
+  partySize?: number;
+  /** ISO instant of the start of the guest's acceptable window. */
+  acceptableFrom?: string;
 }
 
 export interface Customer {
   id: string;
   name: string;
+  /**
+   * True when this row is the console operator rather than a guest — see
+   * `features/customers/adapters.ts`. Absent on demo rows.
+   */
+  isOperator?: boolean;
   phone: string;
   channel: Channel;
   visits: number;
@@ -119,13 +204,6 @@ export interface PayoutInfo {
   account: string;
 }
 
-export interface Staff {
-  id: string;
-  name: string;
-  role: string;
-  skills: string[];
-}
-
 export interface Service {
   key: string;
   name: string;
@@ -172,6 +250,7 @@ export function chMeta(ch: string) {
   const m: Record<string, { label: string; short: string; color: string }> = {
     phone:     { label: 'Phone call', short: 'Phone',     color: '#15924B' },
     sms:       { label: 'SMS',        short: 'SMS',       color: '#2F6BEB' },
+    email:     { label: 'Email',      short: 'Email',     color: '#6B5BD2' },
     web:       { label: 'Web chat',   short: 'Web',       color: '#C98A09' },
     instagram: { label: 'Instagram',  short: 'Instagram', color: '#BC2A8D' },
     whatsapp:  { label: 'WhatsApp',   short: 'WhatsApp',  color: '#1FA855' },
@@ -257,17 +336,6 @@ export const TENANT: TenantConfig = {
   resourceLabelPlural: 'Technicians',
 };
 
-// ---- WEEK ----
-
-export const WEEK = {
-  dows: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'],
-  doms: [9, 10, 11, 12, 13, 14, 15],
-  month: 'June',
-  today: 3,
-  attnDays: { 4: true, 5: true } as Record<number, boolean>,
-  rangeLabel: 'Week of June 9–15',
-};
-
 export const SERVICES: Record<string, { name: string; dur: number; dep: number }> = {
   gel:     { name: 'Gel manicure',       dur: 45,  dep: 20 },
   sns:     { name: 'SNS dipping powder', dur: 60,  dep: 25 },
@@ -277,15 +345,6 @@ export const SERVICES: Record<string, { name: string; dur: number; dep: number }
 };
 
 export const SERVICE_LIST: Service[] = Object.entries(SERVICES).map(([key, s]) => ({ key, ...s }));
-
-export const STAFF: Staff[] = [
-  { id: 's1', name: 'Linh Pham', role: 'Technician · Bay 1', skills: ['gel', 'sns', 'acrylic', 'pedi'] },
-  { id: 's2', name: 'Trang Vo',  role: 'Technician · Bay 2', skills: ['gel', 'sns', 'acrylic', 'pedi'] },
-  { id: 's3', name: 'Mai Dang',  role: 'Specialist · Bay 3',  skills: ['lash', 'pedi'] },
-  { id: 's4', name: 'Tony Bui',  role: 'Technician · Bay 4', skills: ['gel', 'acrylic', 'lash'] },
-];
-
-export const staffById = (id: string): Staff => STAFF.find(s => s.id === id) || STAFF[0];
 
 let _bid = 0;
 function bk(day: number, staff: string, start: number, svc: string, name: string, prov: 'ai'|'you', status: BookingStatus, channel: Channel|null, dep: number|null, transcript?: string): Booking {
@@ -571,13 +630,20 @@ export function dayBounds(dayIdx: number): { start: number; end: number; closed:
   return { start: parseTime(h.open), end: parseTime(h.close), closed: !h.on };
 }
 
+/**
+ * The bookable times the pickers offer, 08:00-20:00 in half-hour steps.
+ *
+ * Widened from 09:00-17:30. The schedule grid frames 08:00-20:00 by default (`DEFAULT_WINDOW` in
+ * TodayScreen) and stretches further for any booking outside it, so the narrower list could not
+ * even express times the grid was already drawing: a 19:00 booking opened the reschedule drawer on
+ * a `<select>` whose value matched no `<option>`, rendering blank, and the only moves on offer
+ * pulled the booking INTO business hours.
+ *
+ * Still a fixed list rather than the venue's hours — no operating-hours endpoint exists (see
+ * SettingsScreen's own badge), so anything narrower would be a constraint invented here.
+ */
 export const TIME_SLOTS = (() => {
   const o: { value: string; label: string }[] = [];
-  for (let m = 540; m <= 1050; m += 30) o.push({ value: String(m), label: fmtT(m) });
+  for (let m = 480; m <= 1200; m += 30) o.push({ value: String(m), label: fmtT(m) });
   return o;
 })();
-
-export const DAY_OPTS = WEEK.dows.map((d, i) => ({
-  value: String(i),
-  label: d.charAt(0) + d.slice(1).toLowerCase() + ' ' + WEEK.doms[i],
-}));

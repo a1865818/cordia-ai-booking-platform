@@ -6,6 +6,7 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services.Retention;
 using Cordia.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
@@ -62,6 +63,12 @@ public class RetentionSweeperTests(PostgresFixture fixture)
                     return ctx;
                 if (serviceType == typeof(RetentionSweepHandler))
                     return new RetentionSweepHandler(ctx);
+                // The sweep erases guest contact out-of-band (owner retention ruling 2026-08-06).
+                // Omitting this made GetRequiredService throw INSIDE the per-tenant try, where the
+                // catch swallowed it as "this tenant failed" — so retention silently stopped for
+                // every tenant and the only symptom was a lower pruned count.
+                if (serviceType == typeof(IGuestContactRepository))
+                    return new GuestContactRepository(ctx);
                 return null;
             }
 
@@ -115,8 +122,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
     [Fact]
     public async Task SweepAllTenants_DiscoversAndSweepsEveryTenant()
     {
-        var tenantA = $"t14-sweepall-a-{Guid.NewGuid():N}";
-        var tenantB = $"t14-sweepall-b-{Guid.NewGuid():N}";
+        var tenantA = TestIds.New("t14-sweepall-a");
+        var tenantB = TestIds.New("t14-sweepall-b");
 
         // Tenant A: an ended session past the anonymization window.
         await using (var ctx = fixture.CreateContext(tenantA))
@@ -149,7 +156,7 @@ public class RetentionSweeperTests(PostgresFixture fixture)
         }
 
         // Tenant A also has an expired encrypted object (e.g. raw audio past its 72h TTL).
-        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var objectRoot = Path.Combine(Path.GetTempPath(), TestIds.New("cordia-objstore"));
         var objectStore = BuildObjectStore(objectRoot);
         await objectStore.PutAsync(
             tenantA, "raw-audio", "sweepall-audio", new byte[] { 1, 2, 3 },
@@ -161,6 +168,7 @@ public class RetentionSweeperTests(PostgresFixture fixture)
             var sweeper = new RetentionSweeper(
                 scopeFactory,
                 objectStore,
+                new Cordia.Infrastructure.Observability.Metrics(),
                 NullLogger<RetentionSweeper>.Instance);
             var pruned = await sweeper.SweepAllTenantsAsync(Now);
             Assert.True(pruned >= 3, $"expected at least 3 pruned/anonymized rows+objects, got {pruned}");
@@ -206,8 +214,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
     {
         // B5: a single DeleteAsync failure must not abort the delete loop — every OTHER expired
         // object still gets pruned this cycle (per-object fault isolation, matching the per-tenant loop).
-        var tenant = $"t14-delfail-{Guid.NewGuid():N}";
-        var objectRoot = Path.Combine(Path.GetTempPath(), $"cordia-objstore-{Guid.NewGuid():N}");
+        var tenant = TestIds.New("t14-delfail");
+        var objectRoot = Path.Combine(Path.GetTempPath(), TestIds.New("cordia-objstore"));
         var real = BuildObjectStore(objectRoot);
 
         // Two expired objects; deletion of "audio-fails" is rigged to throw.
@@ -218,7 +226,8 @@ public class RetentionSweeperTests(PostgresFixture fixture)
         try
         {
             var sweeper = new RetentionSweeper(
-                new FixtureScopeFactory(fixture), store, NullLogger<RetentionSweeper>.Instance);
+                new FixtureScopeFactory(fixture), store,
+                new Cordia.Infrastructure.Observability.Metrics(), NullLogger<RetentionSweeper>.Instance);
 
             // The sweep must not throw despite the rigged delete failure.
             await sweeper.SweepAllTenantsAsync(Now);

@@ -4,6 +4,7 @@ using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Preorder;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Generated;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Moq;
 
@@ -48,7 +49,9 @@ public class SubmitConfirmedIntentPreorderRoutingTests
             .ReturnsAsync(false);
         _intent.Setup(r => r.AddIntentAsync(It.IsAny<BookingIntent>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         _intent.Setup(r => r.AddRevisionAsync(It.IsAny<BookingIntentRevision>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
-        _intent.Setup(r => r.AddConfirmationAsync(It.IsAny<IntentConfirmation>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        _intent.Setup(r => r.AddConfirmationAsync(It.IsAny<IntentConfirmation>(), It.IsAny<CancellationToken>()))
+            .Callback<IntentConfirmation, CancellationToken>((cf, _) => _capturedConfirmation = cf)
+            .Returns(Task.CompletedTask);
         _ops.Setup(r => r.AddAsync(It.IsAny<BookingOperation>(), It.IsAny<CancellationToken>()))
             .Callback<BookingOperation, CancellationToken>((op, _) => _capturedOp = op)
             .Returns(Task.CompletedTask);
@@ -60,9 +63,136 @@ public class SubmitConfirmedIntentPreorderRoutingTests
             .ReturnsAsync((ConversationSession?)null);
     }
 
+    private readonly Mock<IVerificationGrantRepository> _grants = new();
+
+    // Every payload in this suite is a CREATE, so mutation authorization never engages — these
+    // are here to satisfy the constructor, not to be exercised.
+    private readonly Mock<IBookingRepository> _bookings = new();
+    private readonly Mock<Cordia.Application.Common.Authorization.IGrantAuthorizationService> _grantAuth = new();
+    private IntentConfirmation? _capturedConfirmation;
+
     private SubmitConfirmedIntentCommandHandler CreateHandler() =>
         new(_hasher.Object, _uow.Object, _idem.Object, _intent.Object, _ops.Object, _outbox.Object, _audit.Object,
-            new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object);
+            new Cordia.Infrastructure.Observability.Metrics(), _sessions.Object, _grants.Object,
+            _bookings.Object, _grantAuth.Object, AssertedActor.Allowed);
+
+    // ------------------------------------------------------------------
+    // R15 — the assurance level is the SERVER's, not the caller's.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task TheGrantsRecordedAssuranceBeatsWhateverTheCallerAsserted()
+    {
+        // The caller understates itself. The platform's own grant says the customer was
+        // identity-verified, and the platform's record is the one that counts — otherwise a
+        // genuinely verified customer is recorded as unverified and later step-up gates
+        // re-challenge them for no reason.
+        _grants.Setup(g => g.GetAssuranceLevelAsync(
+                It.IsAny<string>(), "grant_abc", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(VerificationLevel.IdentityVerified);
+
+        await CreateHandler().Handle(
+            BuildCommand(identity: "grant_abc", assertedLevel: "unverified"),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(_capturedConfirmation);
+        Assert.Equal(VerificationLevel.IdentityVerified, _capturedConfirmation.VerificationLevel);
+    }
+
+    [Fact]
+    public async Task AWellFormedOverclaimIsOverriddenByTheGrant()
+    {
+        // The converse, and the one that matters for trust: a lane that verified nobody cannot
+        // record high_assurance just by saying so.
+        _grants.Setup(g => g.GetAssuranceLevelAsync(
+                It.IsAny<string>(), "grant_abc", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(VerificationLevel.ChannelVerified);
+
+        await CreateHandler().Handle(
+            BuildCommand(identity: "grant_abc", assertedLevel: "high_assurance"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.ChannelVerified, _capturedConfirmation!.VerificationLevel);
+    }
+
+    [Fact]
+    public async Task AnExpiredOrUnknownGrantFallsBackToTheAssertedLevel()
+    {
+        // Null from the repository means "no unexpired grant with that id". There is nothing
+        // authoritative to use, so the (now vocabulary-validated) asserted value stands.
+        _grants.Setup(g => g.GetAssuranceLevelAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationLevel?)null);
+
+        await CreateHandler().Handle(
+            BuildCommand(identity: "grant_gone", assertedLevel: "channel_verified"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.ChannelVerified, _capturedConfirmation!.VerificationLevel);
+    }
+
+    [Fact]
+    public async Task AnOperatorIdentityIsNotLookedUpAtAll()
+    {
+        // The console sends an operator id, never a grant id. A query that can never match must
+        // not sit on the p95<300ms acceptance path (spec 04 §10.3).
+        await CreateHandler().Handle(
+            BuildCommand(identity: "operator:console", assertedLevel: "unverified"),
+            TestContext.Current.CancellationToken);
+
+        _grants.Verify(g => g.GetAssuranceLevelAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        Assert.Equal(VerificationLevel.Unverified, _capturedConfirmation!.VerificationLevel);
+    }
+
+    /// <summary>
+    /// A create cannot borrow a stranger's grant to record a higher assurance than it earned.
+    ///
+    /// <para>There is no authorization gate on a create — nothing existing is being changed — so
+    /// the level used to come from an unscoped `tenant + grant_id + unexpired` lookup, and
+    /// `confirmation.identity` is caller-controlled. Naming any live grant in the tenant recorded
+    /// its level. When the payload says who the booking is for, that is the binding: a grant issued
+    /// to someone else attests nothing about this customer.</para>
+    /// </summary>
+    [Fact]
+    public async Task ACreateDoesNotTakeItsAssuranceFromAGrantIssuedToSomeoneElse()
+    {
+        // Scoped lookup finds nothing: the grant is not this customer's.
+        _grants.Setup(g => g.GetAssuranceLevelForCustomerAsync(
+                It.IsAny<string>(), "grant_of_someone_else", "cust_9",
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((VerificationLevel?)null);
+
+        var command = BuildCommand(identity: "grant_of_someone_else", assertedLevel: "unverified");
+        command.Request.Revision.CanonicalPayload.Customer = new CustomerRef { CustomerId = "cust_9" };
+
+        await CreateHandler().Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.Unverified, _capturedConfirmation!.VerificationLevel);
+
+        // And the UNSCOPED read is not consulted at all once there is a customer to bind to.
+        _grants.Verify(g => g.GetAssuranceLevelAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>The converse: a grant that IS this customer's still supplies the level.</summary>
+    [Fact]
+    public async Task ACreateStillTakesItsAssuranceFromTheCustomersOwnGrant()
+    {
+        _grants.Setup(g => g.GetAssuranceLevelForCustomerAsync(
+                It.IsAny<string>(), "grant_abc", "cust_9",
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(VerificationLevel.IdentityVerified);
+
+        var command = BuildCommand(identity: "grant_abc", assertedLevel: "unverified");
+        command.Request.Revision.CanonicalPayload.Customer = new CustomerRef { CustomerId = "cust_9" };
+
+        await CreateHandler().Handle(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(VerificationLevel.IdentityVerified, _capturedConfirmation!.VerificationLevel);
+    }
 
     [Fact]
     public async Task Preorder_Routes_To_Saga_Start_And_Marks_Operation()
@@ -95,6 +225,15 @@ public class SubmitConfirmedIntentPreorderRoutingTests
 
         var msg = Assert.Single(_capturedOutbox);
         Assert.Equal("booking.command.requested.v1", msg.MessageType);
+    }
+
+    /// <summary>MakeCommand with the confirmation's identity and asserted level overridden.</summary>
+    private static SubmitConfirmedIntentCommand BuildCommand(string identity, string assertedLevel)
+    {
+        var command = MakeCommand(null);
+        command.Request.Confirmation.Identity = identity;
+        command.Request.Confirmation.VerificationLevel = assertedLevel;
+        return command;
     }
 
     private static SubmitConfirmedIntentCommand MakeCommand(PreorderReference? preorder)

@@ -115,6 +115,109 @@ public class RetentionSweepHandler(ApplicationDbContext db)
     }
 
     /// <summary>
+    /// Counts intent revisions still holding guest contact data past the retention window.
+    ///
+    /// <para><b>This surveys; it does not erase — and that is the point.</b>
+    /// <c>booking_intent_revisions.canonical_payload</c> is immutable and hashed: redacting it
+    /// would make the stored payload stop re-hashing to <c>payload_hash</c>, and the whole
+    /// idempotency chain (Inv-2/3) is derived from that hash. Whether an aged, terminal revision
+    /// may be redacted anyway is a spec 12/14 ruling, not something a sweep should decide on its
+    /// own.</para>
+    ///
+    /// <para>What it CAN do is stop the exposure being invisible. Before this, contact data sat
+    /// in revisions permanently and nothing anywhere counted it, so "how much un-erasable guest
+    /// data do we hold?" had no answer. Now it does — and the number is what makes the ruling
+    /// actionable rather than theoretical.</para>
+    ///
+    /// <para>Only TERMINAL operations past the window are counted: a live operation's payload is
+    /// still operationally needed, so it is not an erasure candidate under any policy.</para>
+    /// </summary>
+    /// <returns>
+    /// <c>Pruned</c> is always 0 — nothing is erased. <c>Skipped</c> is the count of revisions
+    /// holding contact data that retention cannot currently reach.
+    /// </returns>
+    public async Task<RetentionSweepResult> SurveyUnerasableContactAsync(
+        string tenantId,
+        DateTimeOffset now,
+        TimeSpan? window = null,
+        CancellationToken ct = default)
+    {
+        var effectiveWindow = window ?? RetentionPolicy.DefaultSessionAnonymizationWindow;
+        var cutoff = now - effectiveWindow;
+
+        // The terminal filter runs in SQL (`status = ANY(...)`), not after the fact. It used to sit
+        // in the Count() below, so every aged operation for the tenant — live ones included — was
+        // fetched WITH its full canonical payload just to be discarded in memory. On a tenant with
+        // a large history that is hundreds of thousands of JSON blobs pulled into the sweeper on a
+        // background timer, per tenant, per cycle, to produce a single integer.
+        //
+        // The payloads that remain are STREAMED rather than materialised: `CarriesContact` has to
+        // parse the JSON, which cannot be pushed into the query without duplicating its rules in
+        // SQL (and letting the two drift), but nothing needs two payloads in memory at once.
+        var payloads = (
+            from op in db.BookingOperations.IgnoreQueryFilters()
+            join rev in db.BookingIntentRevisions.IgnoreQueryFilters()
+                on new { op.TenantId, op.IntentId, Revision = op.IntentRevision }
+                equals new { rev.TenantId, rev.IntentId, rev.Revision }
+            where op.TenantId == tenantId
+                && op.UpdatedAt < cutoff
+                && RetentionPolicy.PrunableStatuses.Contains(op.Status)
+            select rev.CanonicalPayload)
+            .AsAsyncEnumerable();
+
+        var holding = 0;
+        await foreach (var payload in payloads.WithCancellation(ct))
+        {
+            if (CarriesContact(payload))
+                holding++;
+        }
+
+        return new RetentionSweepResult(0, holding);
+    }
+
+    /// <summary>
+    /// True when a canonical payload carries a guest contact value.
+    ///
+    /// Looks only at the <c>customer</c> node the submission contract defines (spec 04 §4.2), not
+    /// at any string that happens to look like a phone — over-counting would make the number
+    /// useless for the decision it exists to inform.
+    /// </summary>
+    internal static bool CarriesContact(string? canonicalPayload)
+    {
+        if (string.IsNullOrWhiteSpace(canonicalPayload))
+            return false;
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(canonicalPayload);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("customer", out var customer)
+                || customer.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            foreach (var field in new[] { "phone_e164", "email", "display_name" })
+            {
+                if (customer.TryGetProperty(field, out var v)
+                    && v.ValueKind == System.Text.Json.JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(v.GetString()))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // A malformed historical row is not evidence of contact data, and must not take the
+            // sweep down.
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Anonymizes ended conversation sessions past the retention window
     /// (spec 14 §24.3): <c>customer_ref</c> is tombstoned (nulled) — the row
     /// and its consent evidence are PRESERVED for security audit; nothing is

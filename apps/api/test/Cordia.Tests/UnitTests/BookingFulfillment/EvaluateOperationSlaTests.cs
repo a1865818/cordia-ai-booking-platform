@@ -59,7 +59,7 @@ public class EvaluateOperationSlaTests
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op1"), CancellationToken.None);
 
         outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
-        workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
+        workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public class EvaluateOperationSlaTests
         outboxRepo.Verify(r => r.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == "notification.still_confirming.v1"),
             It.IsAny<CancellationToken>()), Times.Once);
-        workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
+        workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -96,6 +96,10 @@ public class EvaluateOperationSlaTests
         var workItemRepo = new Mock<IOperationWorkItemRepository>();
         workItemRepo.Setup(r => r.GetOpenByOperationAsync("t", "op3", It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
+        // TryAddOpenAsync is the atomic INSERT … ON CONFLICT DO NOTHING that replaced
+        // read-then-add. true = this call created the row, which is the signal the audit gates on.
+        workItemRepo.Setup(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         var auditRepo = new Mock<IAuditEventRepository>();
         var uow = UowPassThrough();
 
@@ -104,7 +108,7 @@ public class EvaluateOperationSlaTests
 
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op3"), CancellationToken.None);
 
-        workItemRepo.Verify(r => r.AddAsync(
+        workItemRepo.Verify(r => r.TryAddOpenAsync(
             It.Is<OperationWorkItem>(w => w.State == "open" && w.Reason == "sla_escalation"),
             It.IsAny<CancellationToken>()), Times.Once);
         outboxRepo.Verify(r => r.AddAsync(
@@ -147,6 +151,10 @@ public class EvaluateOperationSlaTests
         var workItemRepo = new Mock<IOperationWorkItemRepository>();
         workItemRepo.Setup(r => r.GetOpenByOperationAsync("t", "op5", It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
+        // TryAddOpenAsync is the atomic INSERT … ON CONFLICT DO NOTHING that replaced
+        // read-then-add. true = this call created the row, which is the signal the audit gates on.
+        workItemRepo.Setup(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         var auditRepo = new Mock<IAuditEventRepository>();
         var uow = UowPassThrough();
 
@@ -155,7 +163,7 @@ public class EvaluateOperationSlaTests
 
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op5"), CancellationToken.None);
 
-        workItemRepo.Verify(r => r.AddAsync(
+        workItemRepo.Verify(r => r.TryAddOpenAsync(
             It.Is<OperationWorkItem>(w => w.State == "open" && w.Reason == "sla_escalation"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -177,7 +185,7 @@ public class EvaluateOperationSlaTests
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op6"), CancellationToken.None);
 
         outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
-        workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
+        workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -192,6 +200,10 @@ public class EvaluateOperationSlaTests
         var workItemRepo = new Mock<IOperationWorkItemRepository>();
         workItemRepo.Setup(r => r.GetOpenByOperationAsync("t", "op7", It.IsAny<CancellationToken>()))
             .ReturnsAsync((OperationWorkItem?)null);
+        // TryAddOpenAsync is the atomic INSERT … ON CONFLICT DO NOTHING that replaced
+        // read-then-add. true = this call created the row, which is the signal the audit gates on.
+        workItemRepo.Setup(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         var auditRepo = new Mock<IAuditEventRepository>();
         var uow = UowPassThrough();
 
@@ -200,7 +212,7 @@ public class EvaluateOperationSlaTests
 
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op7"), CancellationToken.None);
 
-        workItemRepo.Verify(r => r.AddAsync(
+        workItemRepo.Verify(r => r.TryAddOpenAsync(
             It.Is<OperationWorkItem>(w => w.State == "open" && w.Reason == "sla_escalation"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -221,7 +233,7 @@ public class EvaluateOperationSlaTests
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op8"), CancellationToken.None);
 
         outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
-        workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
+        workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -240,6 +252,6 @@ public class EvaluateOperationSlaTests
         await handler.Handle(new EvaluateOperationSlaCommand("t", "op9"), CancellationToken.None);
 
         outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
-        workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
+        workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

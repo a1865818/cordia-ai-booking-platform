@@ -68,6 +68,87 @@ public class ValidateBookingChangeEndpointTests(AcceptanceApiFixture fixture)
         });
     }
 
+    /// <summary>
+    /// An authenticated staff role authorizes the pre-flight, exactly as it authorizes the Modify
+    /// it precedes (spec 08 §12).
+    ///
+    /// <para>Before this, the check was STRICTER than the change it exists to de-risk: the
+    /// console holds no verification grant, so the caller who most needs to ask "may I?" was the
+    /// one caller 403'd from asking, and could only find out by submitting the mutation.</para>
+    /// </summary>
+    [Fact]
+    public async Task ValidateChange_WithStaffRoleAndNoGrant_ReturnsValid()
+    {
+        var tenantId = $"t8-validate-role-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-role", "cust-role", "grant-unused", VerificationActionEnum.Modify);
+
+        var result = await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(Body("bk-role", 3, grantId: "")).ToUrl("/api/bookings/bk-role/changes:validate");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "console-operator");
+            x.WithRequestHeader("X-Actor-Role", "operator");
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        using var doc = JsonDocument.Parse(await result.ReadAsTextAsync());
+        Assert.Equal("ok", doc.RootElement.GetProperty("status").GetString());
+        Assert.True(doc.RootElement.GetProperty("validation").GetProperty("valid").GetBoolean());
+    }
+
+    /// <summary>
+    /// The role path is an ALTERNATIVE, not a bypass: with neither a role nor a grant the
+    /// endpoint still refuses.
+    /// </summary>
+    [Fact]
+    public async Task ValidateChange_WithNeitherRoleNorGrant_Returns403()
+    {
+        var tenantId = $"t8-validate-none-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-none", "cust-none", "grant-none", VerificationActionEnum.Modify);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(Body("bk-none", 3, grantId: "")).ToUrl("/api/bookings/bk-none/changes:validate");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
+        });
+    }
+
+    /// <summary>
+    /// `duration_minutes` is a supported change. The console's reschedule submits it on every
+    /// move (the drawer and the drag handler both carry `dur`), so leaving it out of the
+    /// supported set made the pre-flight answer `policy_failed` for the commonest real change.
+    /// </summary>
+    [Fact]
+    public async Task ValidateChange_DurationMinutes_IsASupportedChange()
+    {
+        var tenantId = $"t8-validate-dur-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-dur", "cust-dur", "grant-dur", VerificationActionEnum.Modify);
+
+        var body = $$"""
+        {
+          "target_booking_id": "bk-dur",
+          "expected_booking_version": 3,
+          "requested_fields": { "starts_at": "2026-09-01T10:00:00Z", "duration_minutes": 90, "party_size": 2 },
+          "grant_id": ""
+        }
+        """;
+
+        var result = await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(body).ToUrl("/api/bookings/bk-dur/changes:validate");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "console-operator");
+            x.WithRequestHeader("X-Actor-Role", "operator");
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        using var doc = JsonDocument.Parse(await result.ReadAsTextAsync());
+        var validation = doc.RootElement.GetProperty("validation");
+        Assert.True(validation.GetProperty("valid").GetBoolean());
+        Assert.Equal("valid", validation.GetProperty("code").GetString());
+    }
+
     private async Task SeedBookingAndGrantAsync(
         string tenantId,
         string bookingId,

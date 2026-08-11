@@ -44,8 +44,21 @@ file sealed class CapstoneNoCapacityReservation : ICapacityReservation
     public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
         => Task.FromResult(0);
 
+    public Task<int> ReleaseFinalizedByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.FromResult(0);
+
     public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
         => Task.FromResult(FinalizeOutcome.NotTracked);
+
+    public Task<bool> AbsorbSameSlotAsync(
+        string tenantId,
+        string previousOperationId,
+        string newOperationId,
+        string workflowStep,
+        string slotId,
+        int totalCapacity,
+        CancellationToken ct = default) => Task.FromResult(false);
+
 }
 
 /// <summary>IDepositPolicy that always requires a deposit (used to drive op to AwaitingPayment).</summary>

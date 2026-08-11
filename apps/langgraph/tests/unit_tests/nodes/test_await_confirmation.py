@@ -276,6 +276,8 @@ async def test_confirmation_fields_persisted() -> None:
     state = _base_state(
         read_back_version="hash_xyz",
         disclosures_presented=["disc_a", "disc_b"],
+        # A CHANNEL in the assurance field — which is how this got into production. The node
+        # now coerces it to the honest floor rather than forwarding a value the API rejects.
         verification_level="sms",
     )
     result = await await_confirmation(state)
@@ -283,7 +285,7 @@ async def test_confirmation_fields_persisted() -> None:
 
     assert conf.read_back_version == "hash_xyz"
     assert conf.disclosures_presented == ["disc_a", "disc_b"]
-    assert conf.verification_level == "sms"
+    assert conf.verification_level == "unverified"
 
 
 @pytest.mark.unit
@@ -455,6 +457,7 @@ async def test_material_change_invalidates_confirmation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # §8.9: a read-back the customer has not heard cannot be confirmed
 # ---------------------------------------------------------------------------
 
@@ -489,3 +492,40 @@ async def test_the_same_read_back_confirms_on_the_following_turn() -> None:
 
     assert result.get("confirmation") is not None
     assert result["confirmation"]["source_turn_id"] == "turn_001"
+
+
+# ---------------------------------------------------------------------------
+# R15 — the assurance vocabulary
+# ---------------------------------------------------------------------------
+
+
+def test_normalise_verification_level_keeps_ratified_members() -> None:
+    from cordia_agent.nodes.await_confirmation import _normalise_verification_level
+
+    for level in (
+        "unverified",
+        "channel_verified",
+        "identity_verified",
+        "high_assurance",
+    ):
+        assert _normalise_verification_level(level) == level
+
+
+def test_normalise_verification_level_coerces_everything_else_to_the_honest_floor() -> (
+    None
+):
+    """The API rejects an off-vocabulary value outright, so forwarding one loses a confirmed
+    submission. Recording the honest floor is better than a 400 — and far better than the old
+    behaviour, where the API silently mapped it to unverified with nothing saying so."""
+    from cordia_agent.nodes.await_confirmation import _normalise_verification_level
+
+    # "none" was this node's own historical sentinel; "sms" is a channel that leaked into the
+    # assurance field. Neither is a member.
+    for junk in (None, "", "none", "sms", "verified", "IDENTITY-VERIFIED", "  "):
+        assert _normalise_verification_level(junk) == "unverified"
+
+
+def test_normalise_verification_level_is_case_and_space_tolerant() -> None:
+    from cordia_agent.nodes.await_confirmation import _normalise_verification_level
+
+    assert _normalise_verification_level("  Identity_Verified  ") == "identity_verified"

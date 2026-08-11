@@ -176,13 +176,35 @@ async def await_confirmation(state: AgentState) -> dict:
         source_turn_id=state.current_turn_id or "unknown",
         read_back_version=state.read_back_version,
         disclosures_presented=list(state.disclosures_presented),
-        verification_level=state.verification_level or "none",
+        verification_level=_normalise_verification_level(state.verification_level),
     )
 
     return {
         "confirmation": confirmation.model_dump(mode="json"),
         "last_confirmed_revision": current_rev.revision,
     }
+
+
+#: The ratified `verification_level` vocabulary (spec 04 §8.8 / spec 08). The API rejects
+#: anything else outright — it used to coerce it to `unverified`, which meant a customer the
+#: agent had genuinely identity-verified was recorded as unverified and nothing said so (R15).
+VERIFICATION_LEVELS = frozenset(
+    {"unverified", "channel_verified", "identity_verified", "high_assurance"}
+)
+
+
+def _normalise_verification_level(raw: str | None) -> str:
+    """Coerce a captured assurance level to a ratified vocabulary member.
+
+    Absent, or the historical ``"none"`` sentinel this node used to emit, both mean "we did not
+    verify anyone" — which the vocabulary spells ``unverified``. Anything else unrecognised is
+    treated the same way rather than forwarded: the API would reject it with a 400, and losing a
+    whole confirmed submission to a vocabulary typo is worse than recording the honest floor.
+    """
+    if raw is None:
+        return "unverified"
+    candidate = raw.strip().lower()
+    return candidate if candidate in VERIFICATION_LEVELS else "unverified"
 
 
 def _derive_channel(state: AgentState) -> str:

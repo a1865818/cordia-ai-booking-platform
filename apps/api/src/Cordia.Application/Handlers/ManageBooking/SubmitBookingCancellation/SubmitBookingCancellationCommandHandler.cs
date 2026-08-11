@@ -152,11 +152,15 @@ public sealed class SubmitBookingCancellationCommandHandler(
             if (!won)
                 return;
 
-            var transitioned = await bookingRepo.TryTransitionLifecycleAsync(
+            // Parked UNDER THIS OPERATION'S ID — same reasoning as the modification door. Two
+            // cancellations can be live against one booking, and the loser of that race must be
+            // able to tell that the CancellationPending it is looking at is not its own.
+            var transitioned = await bookingRepo.TryParkPendingAsync(
                 command.TenantId,
                 booking.BookingId,
                 request.ExpectedBookingVersion,
                 BookingLifecycleStatus.CancellationPending,
+                request.OperationId,
                 now,
                 ct2);
             if (transitioned == 0)

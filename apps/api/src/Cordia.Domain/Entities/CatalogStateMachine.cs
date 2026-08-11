@@ -8,12 +8,11 @@ namespace Cordia.Domain.Entities;
 /// Encodes the §5.2 allowed-edge set for the vendor-catalog lifecycle state machine
 /// (spec 11 §5.2). This is the single authoritative source of legal catalog transitions in C#.
 ///
-/// <para>Note: the canonical <c>catalog_status</c> pg-enum (frozen decision D4) has exactly
-/// nine values and no <c>extract_failed</c> state, so the §5.2 diagram's <c>ExtractFailed</c>
-/// terminal is intentionally NOT modelled here (D4 overrides the diagram). A failed extraction
-/// leaves the catalog in <see cref="CatalogStatus.Extracting"/> — it never reaches
-/// <c>DraftReady</c>/<c>Published</c> and is surfaced via the DLQ (Inv-14); see the ingestion
-/// handler.</para>
+/// <para>The §5.2 diagram's <c>ExtractFailed</c> terminal IS modelled here as of the D4
+/// amendment (owner ruling 2026-08-06). Before it, a stalled extraction stayed in
+/// <see cref="CatalogStatus.Extracting"/> forever: it never reached <c>DraftReady</c>, and
+/// "genuinely failed" was indistinguishable from "still working" in the only field that
+/// records catalog state.</para>
 /// </summary>
 public static class CatalogStateMachine
 {
@@ -34,10 +33,13 @@ public static class CatalogStateMachine
             {
                 CatalogStatus.Extracting,
                 CatalogStatus.Quarantined,
+                // A scan that never returns is as stuck as an extraction that never returns.
+                CatalogStatus.ExtractFailed,
             }.ToFrozenSet(),
             [CatalogStatus.Extracting] = new HashSet<CatalogStatus>
             {
                 CatalogStatus.DraftReady,
+                CatalogStatus.ExtractFailed,
             }.ToFrozenSet(),
             [CatalogStatus.DraftReady] = new HashSet<CatalogStatus>
             {
@@ -56,8 +58,46 @@ public static class CatalogStateMachine
                 CatalogStatus.Superseded,
             }.ToFrozenSet(),
             // Terminal states — no outgoing edges; absent from the dictionary.
-            // Quarantined, Superseded
+            // Quarantined, Superseded, ExtractFailed.
+            //
+            // ExtractFailed is terminal rather than retryable on purpose: re-running extraction
+            // in place would mutate a catalog an operator may already have looked at and judged.
+            // The recovery path is a fresh upload, which supersedes — the same route every other
+            // catalog replacement takes.
         }.ToFrozenDictionary();
+
+    /// <summary>
+    /// Terminal catalog states — <b>derived</b> from <see cref="AllowedTransitions"/>, so the set
+    /// cannot drift from the edge map that defines it.
+    /// </summary>
+    public static readonly IReadOnlySet<CatalogStatus> TerminalStates =
+        Enum.GetValues<CatalogStatus>()
+            .Where(s => !AllowedTransitions.ContainsKey(s))
+            .ToFrozenSet();
+
+    /// <summary>
+    /// States where work is running in a process that may never report back — an antivirus scan or
+    /// an extraction job. The ingestion monitor sweeps exactly these for staleness.
+    ///
+    /// <para><b>Listed, not derived.</b> "Has an outgoing edge" is not the question: <c>Uploaded</c>,
+    /// <c>DraftReady</c>, <c>InReview</c> and <c>Approved</c> are all non-terminal too, and every one
+    /// of them is waiting on a PERSON, not on a job. Sweeping those for staleness would time out an
+    /// operator who has simply not got to the review yet.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<CatalogStatus> InProgressStates =
+        new HashSet<CatalogStatus>
+        {
+            CatalogStatus.Scanning,
+            CatalogStatus.Extracting,
+        }.ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> if <paramref name="status"/> is terminal (no outgoing edges).</summary>
+    public static bool IsTerminal(CatalogStatus status)
+        => TerminalStates.Contains(status);
+
+    /// <summary>Returns <c>true</c> when an external job is running for this catalog.</summary>
+    public static bool IsInProgress(CatalogStatus status)
+        => InProgressStates.Contains(status);
 
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(CatalogStatus from, CatalogStatus to)

@@ -1,0 +1,586 @@
+{
+  "$comment": [
+    "Cross-language golden vectors for the canon.v1 canonical request hasher (spec 04 section 5).",
+    "Authoritative implementation: apps/api/src/Cordia.Infrastructure/Services/CanonicalRequestHasher.cs.",
+    "`expected` values are produced by it and asserted by CanonV1GoldenVectorTests.cs.",
+    "The TypeScript port (apps/web/src/api/canonicalHash.ts) and the Python port",
+    "(apps/langgraph/cordia_agent/revisions/canonical_hash.py) are pinned to this same file,",
+    "so all three languages move together or their suites fail.",
+    "`payload` is RAW JSON TEXT, not a parsed object: number forms (5e2, 500.0) and Unicode",
+    "normalisation forms only survive as text. Parse it with the host language's JSON parser.",
+    "Vectors sharing an `equivalence` label MUST hash identically - that is the property under test."
+  ],
+  "version": "canon.v1",
+  "vectors": [
+    {
+      "name": "empty_object",
+      "equivalence": "empty",
+      "payload": "{}",
+      "expected": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "minimal_create_key_order_reversed",
+      "equivalence": "minimal_create",
+      "payload": "{\"party_size\":2,\"service_id\":\"gel\",\"operation\":\"create\"}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "minimal_create_explicit_nulls_omitted",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"location_id\":null,\"target_booking_id\":null}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "minimal_create_empty_object_omitted",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"preorder\":{}}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "minimal_create_empty_array_omitted",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"special_requests\":[]}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "minimal_create_party_size_decimal_zero",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2.0}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764"
+    },
+    {
+      "name": "string_whitespace_padded",
+      "equivalence": "string_whitespace",
+      "payload": "{\"note\":\"  window   seat  \"}",
+      "expected": "7349a1ffcbdef4a4298d2d625531ebde5aebe3918941bfebb785586eb4229362"
+    },
+    {
+      "name": "string_whitespace_collapsed",
+      "equivalence": "string_whitespace",
+      "payload": "{\"note\":\"window seat\"}",
+      "expected": "7349a1ffcbdef4a4298d2d625531ebde5aebe3918941bfebb785586eb4229362"
+    },
+    {
+      "name": "string_whitespace_tabs_newlines",
+      "equivalence": "string_whitespace",
+      "payload": "{\"note\":\"window\\u0009\\u000a  seat\"}",
+      "expected": "7349a1ffcbdef4a4298d2d625531ebde5aebe3918941bfebb785586eb4229362"
+    },
+    {
+      "name": "string_nfc_composed",
+      "equivalence": "string_nfc",
+      "payload": "{\"note\":\"caf\\u00e9\"}",
+      "expected": "61b77999f66d01775f2a49e9367fa415e36a3426cead756f8fd521abe263f068"
+    },
+    {
+      "name": "string_nfc_decomposed",
+      "equivalence": "string_nfc",
+      "payload": "{\"note\":\"cafe\\u0301\"}",
+      "expected": "61b77999f66d01775f2a49e9367fa415e36a3426cead756f8fd521abe263f068"
+    },
+    {
+      "name": "string_case_preserved",
+      "equivalence": "string_case",
+      "payload": "{\"note\":\"Window Seat\"}",
+      "expected": "0713fad9650b8cfeb1230ed81c054635af525f5c566320b91b991e6555337a59"
+    },
+    {
+      "name": "object_key_nfc_composed",
+      "equivalence": "key_nfc",
+      "payload": "{\"caf\\u00e9\":\"x\"}",
+      "expected": "55140d174bf26531e2e02790146525d9d1d102ad01d07b743e374ceabd7fa362"
+    },
+    {
+      "name": "object_key_nfc_decomposed",
+      "equivalence": "key_nfc",
+      "payload": "{\"cafe\\u0301\":\"x\"}",
+      "expected": "55140d174bf26531e2e02790146525d9d1d102ad01d07b743e374ceabd7fa362"
+    },
+    {
+      "name": "number_integer_plain",
+      "equivalence": "number_500",
+      "payload": "{\"fees_minor\":500}",
+      "expected": "3674ebe7f93f162bced906235ce0323d1c1262b29923441264fd3c67904ba374"
+    },
+    {
+      "name": "number_integer_decimal_zero",
+      "equivalence": "number_500",
+      "payload": "{\"fees_minor\":500.0}",
+      "expected": "3674ebe7f93f162bced906235ce0323d1c1262b29923441264fd3c67904ba374"
+    },
+    {
+      "name": "number_integer_exponent",
+      "equivalence": "number_500",
+      "payload": "{\"fees_minor\":5e2}",
+      "expected": "3674ebe7f93f162bced906235ce0323d1c1262b29923441264fd3c67904ba374"
+    },
+    {
+      "name": "number_fraction",
+      "equivalence": "number_500_5",
+      "payload": "{\"fees_minor\":500.5}",
+      "expected": "1baaddc95231230062c8c7ffb33e5cf3905ddb0573245eb3438144c9cd1a54fe"
+    },
+    {
+      "name": "number_fraction_trailing_zeros",
+      "equivalence": "number_500_5",
+      "payload": "{\"fees_minor\":500.5000}",
+      "expected": "1baaddc95231230062c8c7ffb33e5cf3905ddb0573245eb3438144c9cd1a54fe"
+    },
+    {
+      "name": "number_negative_fraction",
+      "equivalence": "number_negative",
+      "payload": "{\"fees_minor\":-12.25}",
+      "expected": "eb8ed01e1e9ff58aac68d973973ec1424cd27184a54f1b4bb06268c01bb6b12d"
+    },
+    {
+      "name": "number_zero_plain",
+      "equivalence": "number_zero",
+      "payload": "{\"fees_minor\":0}",
+      "expected": "77e1a8aa714aabfb73d7616a414807aaac1139d01260694013d9fd4e0d04e619"
+    },
+    {
+      "name": "number_zero_decimal",
+      "equivalence": "number_zero",
+      "payload": "{\"fees_minor\":0.0}",
+      "expected": "77e1a8aa714aabfb73d7616a414807aaac1139d01260694013d9fd4e0d04e619"
+    },
+    {
+      "name": "timestamp_offset_plus_two",
+      "equivalence": "timestamp_1830z",
+      "payload": "{\"starts_at\":\"2026-08-01T20:30:00+02:00\"}",
+      "expected": "c9e7cea7df3c70ab2589297c8f9a1b57c688ec2db375078d63d6ee50fa7cbefd"
+    },
+    {
+      "name": "timestamp_utc_z",
+      "equivalence": "timestamp_1830z",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:00Z\"}",
+      "expected": "c9e7cea7df3c70ab2589297c8f9a1b57c688ec2db375078d63d6ee50fa7cbefd"
+    },
+    {
+      "name": "timestamp_utc_lowercase_z",
+      "equivalence": "timestamp_1830z",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:00z\"}",
+      "expected": "c9e7cea7df3c70ab2589297c8f9a1b57c688ec2db375078d63d6ee50fa7cbefd"
+    },
+    {
+      "name": "timestamp_microseconds_truncated",
+      "equivalence": "timestamp_ms_123",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:00.123456Z\"}",
+      "expected": "68cda1e1fd5223bec7cee412d9201170b1ae0386cd5bab85800e05ffbd25a402"
+    },
+    {
+      "name": "timestamp_milliseconds",
+      "equivalence": "timestamp_ms_123",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:00.123Z\"}",
+      "expected": "68cda1e1fd5223bec7cee412d9201170b1ae0386cd5bab85800e05ffbd25a402"
+    },
+    {
+      "name": "timestamp_near_second_boundary_floors",
+      "equivalence": "timestamp_boundary",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:59.9995Z\"}",
+      "expected": "6428274b70b0b6f605c969dd1b21531514c6f8fc6ff2b3f1634f375640679d45"
+    },
+    {
+      "name": "timestamp_near_second_boundary_explicit_floor",
+      "equivalence": "timestamp_boundary",
+      "payload": "{\"starts_at\":\"2026-08-01T18:30:59.999Z\"}",
+      "expected": "6428274b70b0b6f605c969dd1b21531514c6f8fc6ff2b3f1634f375640679d45"
+    },
+    {
+      "name": "tristate_strings_not_timestamps",
+      "equivalence": "tristate",
+      "payload": "{\"starts_at\":\"absent\",\"party_size\":\"unknown\",\"duration_minutes\":\"declined\"}",
+      "expected": "8e905052bd467900dbab5c949269efcc45c89bf56b23c1ed9ee76835e128e9aa"
+    },
+    {
+      "name": "plain_date_not_a_timestamp",
+      "equivalence": "plain_date",
+      "payload": "{\"booking_date\":\"2026-06-15\"}",
+      "expected": "03da84fdc5923bdfb6a0852e599ebd7a576362deae77d4f7265b0b6b8a596e3b"
+    },
+    {
+      "name": "scalar_array_unsorted",
+      "equivalence": "scalar_array",
+      "payload": "{\"special_requests\":[\"window seat\",\"high chair\",\"allergy: nuts\"]}",
+      "expected": "cda64f825c6bbccf5f2746a5afb3d61c74e026004009d4504d365271db608664"
+    },
+    {
+      "name": "scalar_array_sorted",
+      "equivalence": "scalar_array",
+      "payload": "{\"special_requests\":[\"allergy: nuts\",\"high chair\",\"window seat\"]}",
+      "expected": "cda64f825c6bbccf5f2746a5afb3d61c74e026004009d4504d365271db608664"
+    },
+    {
+      "name": "object_array_natural_key_unsorted",
+      "equivalence": "preorder_lines",
+      "payload": "{\"preorder\":{\"catalog_version\":\"v3\",\"lines\":[{\"item_id\":\"item_b\",\"quantity\":1},{\"item_id\":\"item_a\",\"quantity\":2,\"modifier_id\":\"mod_z\"},{\"item_id\":\"item_a\",\"quantity\":2,\"modifier_id\":\"mod_a\"}]}}",
+      "expected": "635ac1d126aa1e63b55220229e3ce55e9f4b679df847542ff49dc1bbe7de4684"
+    },
+    {
+      "name": "object_array_natural_key_sorted",
+      "equivalence": "preorder_lines",
+      "payload": "{\"preorder\":{\"catalog_version\":\"v3\",\"lines\":[{\"item_id\":\"item_a\",\"modifier_id\":\"mod_a\",\"quantity\":2},{\"item_id\":\"item_a\",\"modifier_id\":\"mod_z\",\"quantity\":2},{\"item_id\":\"item_b\",\"quantity\":1}]}}",
+      "expected": "635ac1d126aa1e63b55220229e3ce55e9f4b679df847542ff49dc1bbe7de4684"
+    },
+    {
+      "name": "nested_object_recursion",
+      "equivalence": "nested",
+      "payload": "{\"operation\":\"modify\",\"target_booking_id\":\"bk_1\",\"preorder\":{\"catalog_version\":\"v1\",\"lines\":[{\"item_id\":\"i1\",\"quantity\":1}]},\"special_requests\":[\"  spaced   out  \"]}",
+      "expected": "5a4f7007bf21a0a94d08475509609bbadec15ca2d56ef0dafc4db282bc0ea74a"
+    },
+    {
+      "name": "booleans_pass_through",
+      "equivalence": "booleans",
+      "payload": "{\"requires_confirmation\":true,\"requires_payment\":false}",
+      "expected": "4618ca13f441061d9be061f46b6d5e0f3bc0037b1607f63163e2d90a0fe6b2bb"
+    },
+    {
+      "name": "nested_empty_collections_omitted",
+      "equivalence": "nested_empty",
+      "payload": "{\"operation\":\"create\",\"preorder\":{\"lines\":[]},\"special_requests\":[]}",
+      "expected": "fa929069307fc0464c8bc0d81ae52deab443a9857000a6accbf7e9c7e2ccce18"
+    },
+    {
+      "name": "nested_empty_collections_absent",
+      "equivalence": "nested_empty",
+      "payload": "{\"operation\":\"create\"}",
+      "expected": "fa929069307fc0464c8bc0d81ae52deab443a9857000a6accbf7e9c7e2ccce18"
+    },
+    {
+      "name": "full_create_booking_request",
+      "equivalence": "full_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"location_id\":\"loc_main\",\"starts_at\":\"2026-08-01T18:30:00.000Z\",\"party_size\":4,\"duration_minutes\":45,\"special_requests\":[\"window seat\"],\"target_booking_id\":null,\"target_booking_version\":null,\"preorder\":null}",
+      "expected": "6ef57c031a150a81712b7850ad08d56c4f240fe0111b2880787af9ef1af35a5a"
+    },
+    {
+      "name": "timestamp_lowercase_t_is_not_a_timestamp",
+      "equivalence": "ts_lower_t",
+      "payload": "{\"starts_at\":\"2026-08-01t18:30:00Z\"}",
+      "expected": "522f11a99d966eb2688347abc43d78219f809332691a147b73f6fc30af9f9e38"
+    },
+    {
+      "name": "timestamp_single_digit_hour_is_not_a_timestamp",
+      "equivalence": "ts_1digit_hour",
+      "payload": "{\"starts_at\":\"2026-08-01T5:30:00Z\"}",
+      "expected": "682acb6899cc85dab591ad485b8e64bd4e35380ebe46b29934b63e7ee96e0f27"
+    },
+    {
+      "name": "timestamp_single_digit_minute_is_not_a_timestamp",
+      "equivalence": "ts_1digit_min",
+      "payload": "{\"starts_at\":\"2026-08-01T05:3:00Z\"}",
+      "expected": "aac21bb9ab7c50740acc80a1dee4d8b19207b65d3aa736e2c942aadb018f83d2"
+    },
+    {
+      "name": "timestamp_single_digit_month_and_day_is_a_timestamp",
+      "equivalence": "ts_1digit_date",
+      "payload": "{\"starts_at\":\"2026-8-1T05:30:00Z\"}",
+      "expected": "09df2cc4c383b5ba00b5bafe406035832f02e45c29c80a22caece4ec891d8820"
+    },
+    {
+      "name": "timestamp_impossible_date_is_not_a_timestamp",
+      "equivalence": "ts_feb30",
+      "payload": "{\"starts_at\":\"2026-02-30T05:30:00Z\"}",
+      "expected": "0754eac308f88a116f5a07bb48206006d98d08831ef4f3521339c6cdd3e7a9c7"
+    },
+    {
+      "name": "timestamp_hour_24_is_not_a_timestamp",
+      "equivalence": "ts_hour24",
+      "payload": "{\"starts_at\":\"2026-08-01T24:00:00Z\"}",
+      "expected": "2f3c4038556a3a2d5343f02cf3527273f48f2637b6294d17d33ab0deb6b53781"
+    },
+    {
+      "name": "timestamp_month_13_is_not_a_timestamp",
+      "equivalence": "ts_month13",
+      "payload": "{\"starts_at\":\"2026-13-01T05:30:00Z\"}",
+      "expected": "ddca0905eaa57615d446a24b18f055808c115ec7782acef26c6d215c5eec414a"
+    },
+    {
+      "name": "timestamp_two_digit_year_range",
+      "equivalence": "ts_year_0099",
+      "payload": "{\"starts_at\":\"0099-01-01T00:00:00Z\"}",
+      "expected": "e8624ae96f56345f86bcc56cf01aa6ab44ddbc85725168cf238d5b145e7eec86"
+    },
+    {
+      "name": "timestamp_min_year_with_offset",
+      "equivalence": "ts_year_0001",
+      "payload": "{\"starts_at\":\"0001-01-01T00:30:00+01:00\"}",
+      "expected": "7396fa173beab8aebf5acb0f27cb24e05e4d39f70115d759c6881adf9cb02dd2"
+    },
+    {
+      "name": "timestamp_max_year_with_offset",
+      "equivalence": "ts_year_9999",
+      "payload": "{\"starts_at\":\"9999-12-31T23:30:00-01:00\"}",
+      "expected": "2a1a44680b1b8373a0a97330d6a5dfae10dfe396678755cf1cebd1f65c8d96cb"
+    },
+    {
+      "name": "full_modify_booking_request",
+      "equivalence": "full_modify",
+      "payload": "{\"operation\":\"modify\",\"service_id\":\"gel\",\"starts_at\":\"2026-08-02T09:00:00.000Z\",\"party_size\":2,\"duration_minutes\":45,\"target_booking_id\":\"bk_abc\",\"target_booking_version\":3}",
+      "expected": "a8c53b96f33cdb32a47cf2abeb5c82d5c520322590055fe7545aa3f61d7cd6c2"
+    },
+    {
+      "name": "encoding_double_quote",
+      "equivalence": "enc_quote",
+      "payload": "{\"s\":\"quote\\\" inside\"}",
+      "expected": "001985c02175264b3c789450564c99e31f187c4b0c5bcb3da4b360a7518eaaa8"
+    },
+    {
+      "name": "encoding_backslash",
+      "equivalence": "enc_backslash",
+      "payload": "{\"s\":\"back\\\\slash\"}",
+      "expected": "78c9c9b983674b40244908b1282abcb8d60dfbc7674da94f8c1f85b6d722b6d2"
+    },
+    {
+      "name": "encoding_ampersand",
+      "equivalence": "enc_amp",
+      "payload": "{\"s\":\"a&b\"}",
+      "expected": "170f0050b936ac64f46da59b962323551ef91640132bf24a4def207339919997"
+    },
+    {
+      "name": "encoding_apostrophe",
+      "equivalence": "enc_apos",
+      "payload": "{\"s\":\"a'b\"}",
+      "expected": "5dc5603d87ba05f5fbea3b85a839936b093ae6003ca35ea41e400467ae1848de"
+    },
+    {
+      "name": "encoding_plus",
+      "equivalence": "enc_plus",
+      "payload": "{\"s\":\"a+b\"}",
+      "expected": "74a576e69da17697c16faa809f9a09bdbca21e176ff38314b1d436dc2d87cf96"
+    },
+    {
+      "name": "encoding_angle_brackets",
+      "equivalence": "enc_angle",
+      "payload": "{\"s\":\"a<b>c\"}",
+      "expected": "29edc42ba550cc64d483c1f6857573116af9df3d4f0b9f66c77928b1ca0aaa30"
+    },
+    {
+      "name": "encoding_backtick",
+      "equivalence": "enc_backtick",
+      "payload": "{\"s\":\"a`b\"}",
+      "expected": "90757f77da3499d2297e6676e415e824d1a457209b3d47c7e26fd95cb7e44d05"
+    },
+    {
+      "name": "encoding_unescaped_ascii_punctuation",
+      "equivalence": "enc_plain_punct",
+      "payload": "{\"s\":\"a/b=c!d~e$f%g^h*i(j)k[l]m{n}o|p@q#r?s,t.u-v_w:x;y\"}",
+      "expected": "3a6c94ec3736b53ca19a870795b32711c0bc310538775af52825f5cae28e619d"
+    },
+    {
+      "name": "encoding_non_ascii_bmp",
+      "equivalence": "enc_bmp",
+      "payload": "{\"s\":\"\\u65e5\\u672c\"}",
+      "expected": "5a5097126c1a1a37607a31276d91918e94f4798e7fba8561f729a73c9614c849"
+    },
+    {
+      "name": "encoding_surrogate_pair",
+      "equivalence": "enc_surrogate",
+      "payload": "{\"s\":\"\\ud83d\\ude00\"}",
+      "expected": "fc2e9f8d7a26e22b8941d156dd0b4c394d6ce96b9337ed1fa0002e82f2869754"
+    },
+    {
+      "name": "encoding_key_is_escaped_too",
+      "equivalence": "enc_key",
+      "payload": "{\"a<b\":\"x\"}",
+      "expected": "3db1190e6750106e29a09117e1def329daf495393ca5adeba8cc3fd04c5a9df0"
+    },
+    {
+      "name": "encoding_del_char",
+      "equivalence": "enc_del",
+      "payload": "{\"s\":\"a\\u007fb\"}",
+      "expected": "7b8f72cae318bdb713b9802afeca4a0c88145d1b1027f5e3d35965088b4126ef"
+    },
+    {
+      "name": "encoding_control_char",
+      "equivalence": "enc_control",
+      "payload": "{\"s\":\"a\\u0001b\"}",
+      "expected": "ca2a35d23e9b2481bce2117658dc8005af7911b8fc7faee40c09729c85a01bd7"
+    },
+    {
+      "name": "whitespace_nbsp_collapses",
+      "equivalence": "ws_nbsp",
+      "payload": "{\"s\":\"x\\u00a0y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_nbsp_collapses_reference",
+      "equivalence": "ws_nbsp",
+      "payload": "{\"s\":\"x y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_nel_collapses",
+      "equivalence": "ws_nel",
+      "payload": "{\"s\":\"x\\u0085y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_nel_collapses_reference",
+      "equivalence": "ws_nel",
+      "payload": "{\"s\":\"x y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_line_separator_collapses",
+      "equivalence": "ws_lsep",
+      "payload": "{\"s\":\"x\\u2028y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_line_separator_collapses_reference",
+      "equivalence": "ws_lsep",
+      "payload": "{\"s\":\"x y\"}",
+      "expected": "a871689ded8c91091b400fdbe48b747f6a66d71597c3a27767b97dd0076c10ec"
+    },
+    {
+      "name": "whitespace_bom_is_not_whitespace",
+      "equivalence": "ws_bom",
+      "payload": "{\"s\":\"x\\ufeffy\"}",
+      "expected": "4fed585af06b8719800c735623d12548e1e8a031652d20ef38788158d736ccfe"
+    },
+    {
+      "name": "whitespace_leading_nbsp_trimmed",
+      "equivalence": "ws_trim_nbsp",
+      "payload": "{\"s\":\"\\u00a0trimmed\\u00a0\"}",
+      "expected": "31f1108b41f59b70ea24a5b946dd28c3704acfa134e410ec3ac7c9b7642ccfe1"
+    },
+    {
+      "name": "whitespace_leading_nbsp_trimmed_reference",
+      "equivalence": "ws_trim_nbsp",
+      "payload": "{\"s\":\"trimmed\"}",
+      "expected": "31f1108b41f59b70ea24a5b946dd28c3704acfa134e410ec3ac7c9b7642ccfe1"
+    },
+    {
+      "name": "control_backspace_in_value",
+      "equivalence": "control_backspace_in_value",
+      "payload": "{\"k\":\"a\\bb\"}",
+      "expected": "35d54cc26179d07a8513b902cf01503e93ffa033a68dd1a10a4b9599f676cc3a",
+      "note": "System.Text.Json writes U+0008 as \\b, not \\u0008. Backspace is NOT whitespace, so it survives canonicalizeString and reaches the encoder from a value."
+    },
+    {
+      "name": "control_tab_in_key",
+      "equivalence": "control_tab_in_key",
+      "payload": "{\"a\\tb\":\"v\"}",
+      "expected": "0df7b5b4515b4da128ba8767ae9436dac9fabbcba9d9dfbe0d092a036f0c95d9",
+      "note": "Keys are NFC-normalised but never whitespace-collapsed, so \\t reaches the encoder and must be written short."
+    },
+    {
+      "name": "control_newline_in_key",
+      "equivalence": "control_newline_in_key",
+      "payload": "{\"a\\nb\":\"v\"}",
+      "expected": "c42b5cec93a3f00972d473c3da442c3e75b5b609688d49762a1a037b52a113b6",
+      "note": "Same as the tab case for U+000A."
+    },
+    {
+      "name": "control_formfeed_and_return_in_values",
+      "equivalence": "control_formfeed_and_return_in_values",
+      "payload": "{\"k\":\"a\\fb\",\"j\":\"a\\rb\"}",
+      "expected": "02132287ec4464cf3ee5f05f4ab68a49a26e311b124cc97e2ce5edfab834b0cd",
+      "note": "U+000C and U+000D also take short escapes."
+    },
+    {
+      "name": "control_vertical_tab_stays_numeric",
+      "equivalence": "control_vertical_tab_stays_numeric",
+      "payload": "{\"k\":\"a\\u000Bb\"}",
+      "expected": "e54d5c1dd01e5d122e047fdfab6b6471ea886e8b70b9d0ed83a589e841c34e24",
+      "note": "Regression guard: U+000B has NO short escape and stays \\u000B (uppercase hex)."
+    },
+    {
+      "name": "iso_leading_whitespace_is_still_a_timestamp",
+      "equivalence": "iso_leading_whitespace_is_still_a_timestamp",
+      "payload": "{\"k\":\" 2026-06-15T18:00:00Z\"}",
+      "expected": "f96a0e61efb373ec2e64c22cd22c7243815902493437a79848123be3333ec559",
+      "note": "DateTimeOffset.TryParse tolerates surrounding whitespace, so this normalises to 2026-06-15T18:00:00.000Z. An anchored regex would treat it as a plain string and diverge."
+    },
+    {
+      "name": "iso_offset_beyond_14h_is_a_plain_string",
+      "equivalence": "iso_offset_beyond_14h_is_a_plain_string",
+      "payload": "{\"k\":\"2026-06-15T18:00:00+15:00\"}",
+      "expected": "a6c5d3f4d7e37a297f019fc9b490aa5625b9dd247fbd8447c9393dcf285c4d99",
+      "note": "TryParse REJECTS offsets past +/-14:00, so the value stays raw text. A regex with unbounded two-digit offset groups would normalise it to UTC and diverge."
+    },
+    {
+      "name": "iso_offset_minute_overflow_is_a_plain_string",
+      "equivalence": "iso_offset_minute_overflow_is_a_plain_string",
+      "payload": "{\"k\":\"2026-06-15T18:00:00+05:75\"}",
+      "expected": "ff9b8706f1e99c88bc8d8dc96bc8aee3bee8228c29fd65185c87de79430dc6c6",
+      "note": "TryParse rejects an offset whose minutes exceed 59, so the value stays raw text. A regex whose offset-minute group accepts \\d\\d would normalise +05:75 to UTC and diverge."
+    },
+    {
+      "name": "iso_offset_at_14h_boundary_parses",
+      "equivalence": "iso_offset_at_14h_boundary_parses",
+      "payload": "{\"k\":\"2026-06-15T18:00:00+14:00\"}",
+      "expected": "6145cce5ee9d07487373622c0591a0684550757e3d537de1753eaf87f6c2a0ce",
+      "note": "+14:00 is the inclusive limit and DOES parse - guards against an off-by-one in the bound."
+    },
+    {
+      "name": "guest_absent_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "BACKWARD COMPATIBILITY: BookingRequest.customer is optional, so a payload predating it must keep its original hash. Same equivalence label as minimal_create - if adding the field ever changed this, the whole corpus would fail."
+    },
+    {
+      "name": "guest_null_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":null}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "A serializer that writes \"customer\": null (the generated C# type has no WhenWritingNull on this property) must hash identically to omitting it."
+    },
+    {
+      "name": "guest_empty_object_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{}}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "An all-absent CustomerRef canonicalizes to {} and is then omitted, so it also cannot change an existing hash."
+    },
+    {
+      "name": "guest_all_null_fields_omitted_matches_minimal_create",
+      "equivalence": "minimal_create",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":null,\"display_name\":null,\"phone_e164\":null}}",
+      "expected": "61b504c74d0d8ec676731d4c53ceee40062d3b47c5bf19d3ddd8384bebc56764",
+      "note": "Nested nulls are dropped, leaving {}, which is then dropped - the recursive form of the case above."
+    },
+    {
+      "name": "guest_with_phone",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"phone_e164\":\"+61400111222\"}}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "A payload that USES the guest field hashes differently from one that does not - the field is genuinely material (Inv-2/Inv-3)."
+    },
+    {
+      "name": "guest_with_phone_key_order_reversed",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"customer\":{\"phone_e164\":\"+61400111222\"},\"party_size\":2,\"service_id\":\"gel\",\"operation\":\"create\"}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "Key order at both levels is irrelevant - the nested object is sorted too."
+    },
+    {
+      "name": "guest_with_phone_nested_nulls_omitted",
+      "equivalence": "guest_with_phone",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":null,\"display_name\":null,\"phone_e164\":\"+61400111222\"}}",
+      "expected": "e10e0252d24c583b3e01a1a5fcc1b64db251007aa77c22888a9e3ad2ffc2cbdb",
+      "note": "Explicit nulls beside a real value are dropped, so the console omitting display_name and a serializer nulling it agree."
+    },
+    {
+      "name": "guest_full_ref",
+      "equivalence": "guest_full_ref",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"customer_id\":\"cust-7\",\"display_name\":\"Ada Lovelace\",\"phone_e164\":\"+61400111222\"}}",
+      "expected": "4c05c6300e524623927de6a2fc9c9dc30b71f7efdac72d8e7c8ae2c1ca7e6b9b",
+      "note": "All three CustomerRef fields populated. Distinct from guest_with_phone - adding identifying fields is a material change that forces a new revision."
+    },
+    {
+      "name": "guest_phone_whitespace_collapsed",
+      "equivalence": "guest_with_phone_spaced",
+      "payload": "{\"operation\":\"create\",\"service_id\":\"gel\",\"party_size\":2,\"customer\":{\"phone_e164\":\"  +61 400  111 222  \"}}",
+      "expected": "dd5be9afe04cf6d76572a6cf219d64a77f8e5893e770a03d970cb9789a03bd4d",
+      "note": "String canonicalization trims and collapses internal whitespace, so a spaced phone is NOT equal to the compact one - it normalises to '+61 400 111 222'. Pins that the hasher does not strip spaces entirely."
+    }
+  ]
+}

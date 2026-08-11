@@ -2,11 +2,11 @@
 
 All functions are pure and deterministic.  No LLM, no I/O.
 
-``canonical_payload_hash`` re-exports the canon.v1 hasher owned by spec 04 §5
-(:mod:`cordia_agent.revisions.canonical`).  It MUST agree byte for byte with the
-API's ``CanonicalRequestHasher``: the API re-derives the hash from the submitted
-``revision.canonical_payload`` and rejects any submission whose
-``confirmation.intent_payload_hash`` differs (§8.8, Inv-1).
+``canonical_payload_hash`` delegates to the ``canon.v1`` implementation in
+:mod:`cordia_agent.revisions.canonical_hash`, which mirrors the authoritative C#
+hasher byte-for-byte (spec 04 §5).  It must: the acceptance endpoint recomputes the
+hash server-side and rejects a mismatch with 422, so a divergent hash here means the
+agent cannot submit a booking at all.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from cordia_agent.models.intent import (  # noqa: F401
     IntentRevision,
     confirmation_binds_revision,
 )
-from cordia_agent.revisions.canonical import canonical_payload_hash as _canon_hash
+from cordia_agent.revisions.canonical_hash import canonical_hash
 
 
 if TYPE_CHECKING:
@@ -27,15 +27,17 @@ if TYPE_CHECKING:
 
 
 def canonical_payload_hash(payload: BookingRequest) -> str:
-    """Return the canon.v1 SHA-256 hex digest of a ``BookingRequest`` (spec 04 §5).
+    """``canon.v1`` content hash of a BookingRequest (spec 04 §5, §10.2).
 
-    Args:
-        payload: The canonical booking request to hash.
+    Returns the BARE 64-char lowercase hex digest — the same value the API stores on
+    ``booking_intent_revisions.payload_hash`` and compares against
+    ``intent_confirmations.intent_payload_hash``.  The version label is carried
+    separately by the API (``canon.v1:<hex>``) and is not part of this value.
 
-    Returns:
-        A 64-character lowercase hex digest that the API reproduces exactly.
+    The payload is dumped in JSON mode first so datetimes, enums and unions reach the
+    canonicaliser in their wire form — the same form the server sees.
     """
-    return _canon_hash(payload)
+    return canonical_hash(payload.model_dump(mode="json")).value
 
 
 def build_revision(
@@ -90,6 +92,20 @@ _MATERIAL_FIELDS: tuple[str, ...] = (
     "party_size",
     "duration_minutes",
     "target_booking_id",
+    # WHO the booking is for is material.
+    #
+    # ``read_back`` projects the ambient guest onto ``draft.request`` when the request carries
+    # none, and its comment stated that doing so "counts as a material change below and
+    # supersedes the revision" — which was not true while ``customer`` was missing from this
+    # tuple.  The projection therefore changed the request and left the revision behind holding
+    # ``customer=None``, and because the projection only runs while ``request.customer`` is None
+    # it never fired again: the two diverged permanently, the guest was dropped from the
+    # submitted payload (no notification destination, unfindable by ``?phone_e164=``), and any
+    # lane sending ``draft.request`` alongside the stale ``payload_hash`` earned a 422.
+    #
+    # It is also material on the merits: the customer is the notification destination and the
+    # manage-booking lookup key, so changing it changes what the guest is confirming (§2.3).
+    "customer",
 )
 
 
@@ -97,7 +113,7 @@ def is_material_change(old: BookingRequest, new: BookingRequest) -> bool:
     """Return True if any material booking field changed between two requests.
 
     Material fields: operation, service_id, location_id, starts_at, party_size,
-    duration_minutes, target_booking_id.  Non-material fields such as
+    duration_minutes, target_booking_id, customer.  Non-material fields such as
     ``special_requests`` or ``target_booking_version`` are intentionally ignored
     (a change in ``special_requests`` alone does NOT trigger a new revision).
     """
