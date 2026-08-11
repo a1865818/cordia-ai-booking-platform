@@ -10,8 +10,6 @@ from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming import Pipeline, PipelineSession
 from cordia_agent.streaming import agent_port as agent_port_module
 from cordia_agent.streaming.providers import (
-    FakeSTTProvider,
-    FakeTTSProvider,
     STTFinalEvent,
     STTPartialEvent,
 )
@@ -20,6 +18,8 @@ from cordia_agent.streaming_models import (
     AgentTextFinalFrame,
     ToolProgressFrame,
 )
+from tests._stubs.streaming_providers_fake import FakeSTTProvider
+from tests._stubs.streaming_tts_fake import FakeTTSProvider
 from tests.unit_tests.streaming.fakes import fake_agent as fake_agent_module
 from tests.unit_tests.streaming.fakes.fake_agent import FakeAgent
 

@@ -1,4 +1,11 @@
-"""Deterministic fake TTS provider for streaming tests."""
+"""Test-only fake for the ``TTSProvider`` port.
+
+Mirrors ``cordia_agent.streaming.providers.tts_port``.  Yields stable opaque
+audio refs so streaming tests stay deterministic and fully offline.
+
+DO NOT import this module from production code.  It must only be referenced from
+tests and test fixtures.
+"""
 
 from __future__ import annotations
 

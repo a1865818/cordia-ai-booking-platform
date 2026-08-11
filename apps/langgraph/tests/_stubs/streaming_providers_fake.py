@@ -1,4 +1,13 @@
-"""Deterministic fake STT provider for adapter tests."""
+"""Test-only fakes for the STT and reconnect-hook ports.
+
+Mirrors ``cordia_agent.streaming.providers.types`` (``STTProvider``) and
+``cordia_agent.streaming.reconnect`` (``SessionLookup``, ``AgentResumeHook``,
+``HandoffHook``) — one stub module per source port module, so a fake is always
+found next to the port it satisfies.
+
+DO NOT import this module from production code.  It must only be referenced from
+tests and test fixtures.
+"""
 
 from __future__ import annotations
 

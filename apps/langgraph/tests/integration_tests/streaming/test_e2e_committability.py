@@ -54,7 +54,7 @@ requires_spec02()
 class _ServiceIdExtractor:
     """Always returns a single SlotCapture for service_id = 'svc_test_001'."""
 
-    def extract(self, text: str) -> list[SlotCapture]:
+    async def extract(self, text: str) -> list[SlotCapture]:
         if not text:
             return []
         return [

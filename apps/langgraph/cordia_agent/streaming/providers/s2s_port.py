@@ -66,7 +66,7 @@ class S2SProvider(Protocol):
 
     Implementations receive live PCM audio and yield mixed transcription and
     agent-response events. No real provider dependency should be imported in
-    implementations — use FakeS2SProvider for tests.
+    implementations — tests use the deterministic fake in ``tests/_stubs``.
     """
 
     def converse(

@@ -1,13 +1,20 @@
-"""Streaming provider ports and deterministic test providers."""
+"""Streaming provider ports (STT, TTS, S2S, audio sink) and their event types.
 
-from cordia_agent.streaming.providers.fake import (
-    FakeAgentResumeHook,
-    FakeHandoffHook,
-    FakeSessionLookup,
-    FakeSTTProvider,
-)
-from cordia_agent.streaming.providers.fake_s2s import FakeS2SProvider
-from cordia_agent.streaming.providers.fake_tts import FakeTTSProvider
+The Azure implementations (``azure_realtime_stt``, ``azure_stt``, ``azure_tts``)
+are deliberately NOT re-exported here.  Importing this package must stay free of
+any provider or transport import so the port surface can be used — and stubbed —
+without pulling ``httpx``, ``websockets`` or any Azure setting into the graph's
+import path.  Import the concrete providers from their own modules at the
+construction site.
+
+Two ``STTProvider`` implementations ship: ``azure_realtime_stt`` (the default,
+WebSocket, service-side VAD) and ``azure_stt`` (batch REST plus the local
+:mod:`~cordia_agent.streaming.providers.vad` detector, for resources where only
+a ``whisper`` deployment exists).  See either module's docstring for which
+applies.
+"""
+
+from cordia_agent.streaming.providers.audio_sink import AudioChunkMetadata, AudioSink
 from cordia_agent.streaming.providers.s2s_port import (
     S2SAgentText,
     S2SAudioChunk,
@@ -24,15 +31,17 @@ from cordia_agent.streaming.providers.types import (
     STTProvider,
     STTProviderEvent,
 )
+from cordia_agent.streaming.providers.vad import (
+    EnergyVoiceActivityDetector,
+    VadEvent,
+    VoiceActivityDetector,
+)
 
 
 __all__ = [
-    "FakeAgentResumeHook",
-    "FakeHandoffHook",
-    "FakeS2SProvider",
-    "FakeSTTProvider",
-    "FakeSessionLookup",
-    "FakeTTSProvider",
+    "AudioChunkMetadata",
+    "AudioSink",
+    "EnergyVoiceActivityDetector",
     "S2SAgentText",
     "S2SAudioChunk",
     "S2SFinalTranscript",
@@ -46,4 +55,6 @@ __all__ = [
     "STTProviderEvent",
     "TTSCancellationToken",
     "TTSProvider",
+    "VadEvent",
+    "VoiceActivityDetector",
 ]

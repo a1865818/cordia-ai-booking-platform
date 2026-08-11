@@ -1,4 +1,11 @@
-"""Deterministic fake S2S provider for streaming tests (§6.2, OPTIONAL/DEFERRED)."""
+"""Test-only fake for the ``S2SProvider`` port (§6.2, OPTIONAL/DEFERRED).
+
+Mirrors ``cordia_agent.streaming.providers.s2s_port``.  Replays a frozen script
+of ``S2SProviderEvent``s so escalation tests stay deterministic and offline.
+
+DO NOT import this module from production code.  It must only be referenced from
+tests and test fixtures.
+"""
 
 from __future__ import annotations
 

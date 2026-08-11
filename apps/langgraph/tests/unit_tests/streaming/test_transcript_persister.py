@@ -13,14 +13,14 @@ import pytest
 from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming import Pipeline, PipelineSession
 from cordia_agent.streaming.providers import (
-    FakeSTTProvider,
-    FakeTTSProvider,
     STTFinalEvent,
     STTPartialEvent,
 )
 from cordia_agent.streaming.transcript_persister import ToolTranscriptPersister
 from cordia_agent.streaming_models import AgentTextFinalFrame, TranscriptFinalFrame
 from cordia_agent.tools.contracts import ToolResultEnvelope, TranscriptTurnInput
+from tests._stubs.streaming_providers_fake import FakeSTTProvider
+from tests._stubs.streaming_tts_fake import FakeTTSProvider
 from tests.unit_tests.streaming.fakes.fake_agent import FakeAgent
 
 

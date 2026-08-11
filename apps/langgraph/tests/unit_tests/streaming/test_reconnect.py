@@ -10,17 +10,17 @@ import cordia_agent.streaming.reconnect as reconnect_module
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 
 # --- Protocols are tested via fakes imported from providers ---
-from cordia_agent.streaming.providers import (
-    FakeAgentResumeHook,
-    FakeHandoffHook,
-    FakeSessionLookup,
-)
 from cordia_agent.streaming.reconnect import (
     ReconnectHandler,
     ReconnectOutcome,
     ReconnectSessionContext,
 )
 from cordia_agent.streaming.turn_manager import TurnManager
+from tests._stubs.streaming_providers_fake import (
+    FakeAgentResumeHook,
+    FakeHandoffHook,
+    FakeSessionLookup,
+)
 
 
 # ---------------------------------------------------------------------------
