@@ -55,6 +55,8 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<HandoffWorkItem> HandoffWorkItems => Set<HandoffWorkItem>();
 
+    public DbSet<TenantResource> TenantResources => Set<TenantResource>();
+
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     public DbSet<ConsumerInbox> ConsumerInbox => Set<ConsumerInbox>();

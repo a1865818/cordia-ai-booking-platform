@@ -72,6 +72,7 @@ EXPECTED_TOOL_NAMES = {
     "submit_confirmed_intent",
     "get_operation_status",
     "request_human_handoff",
+    "resolve_tenant_resources",
     "resolve_consent_policy",
     "record_consent",
     "append_transcript_turn",
@@ -213,8 +214,9 @@ def fake_client_submitted() -> FakeClient:
 
 @pytest.mark.unit
 def test_foreground_tools_count() -> None:
-    """FOREGROUND_TOOLS has exactly 13 entries (11 spec-03 + 2 spec-14 consent)."""
-    assert len(FOREGROUND_TOOLS) == 15
+    """FOREGROUND_TOOLS has 16 entries (spec-03 + spec-14 consent/transcript +
+    spec-13 trace + resolve_tenant_resources, the spoken-name -> id seam)."""
+    assert len(FOREGROUND_TOOLS) == 16
 
 
 @pytest.mark.unit

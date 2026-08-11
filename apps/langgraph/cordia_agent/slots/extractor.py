@@ -92,6 +92,23 @@ class ExtractedSlots(BaseModel):
             "identifier. Never invent an ID from a place name."
         ),
     )
+    service_name: str | None = Field(
+        default=None,
+        description=(
+            "What the customer CALLED the service, verbatim and unmodified — "
+            "'dinner', 'the tasting menu'. Not an ID: a later step matches it "
+            "against what this tenant actually offers. Report it even when you "
+            "are unsure it is real; that is the matcher's job, not yours."
+        ),
+    )
+    location_name: str | None = Field(
+        default=None,
+        description=(
+            "What the customer CALLED the location, verbatim and unmodified — "
+            "'Fitzroy', 'the rooftop'. Not an ID: a later step matches it "
+            "against this tenant's rooms."
+        ),
+    )
     starts_at: str | None = Field(
         default=None,
         description=(
@@ -133,6 +150,11 @@ never carry over defaults, never invent identifiers.
 - `service_id` / `location_id` / `target_booking_id` are opaque system \
 identifiers. Return one ONLY when the customer literally spoke an identifier \
 (e.g. "service svc_001"). A description like "a haircut" is NOT an identifier.
+- `service_name` / `location_name` are the opposite: put what the customer \
+actually CALLED the thing there, word for word ("dinner", "the Fitzroy room", \
+"a haircut"). Do not clean it up, do not turn it into an identifier, and do not \
+worry whether it exists — a later step matches it against what this tenant \
+really offers and asks the customer when it cannot.
 - `starts_at` must be a full ISO-8601 timestamp WITH a UTC offset. Resolve \
 relative expressions ("tomorrow at 7pm") against the reference time below, in \
 the reference timezone. If you cannot resolve both a date and a time, return null.
@@ -278,6 +300,15 @@ def _to_captures(slots: ExtractedSlots) -> list[SlotCapture]:
         )
 
     for field in ("service_id", "location_id", "target_booking_id"):
+        value = getattr(slots, field)
+        if isinstance(value, str) and value.strip():
+            add(field, value.strip())
+
+    # Spoken names are NOT BookingRequest fields and never reach a draft as they
+    # stand.  They are carried as captures so the resolver downstream can trade
+    # them for a real identifier; anything it cannot match is dropped there, so
+    # a name the tenant does not offer can never become a booking payload.
+    for field in ("service_name", "location_name"):
         value = getattr(slots, field)
         if isinstance(value, str) and value.strip():
             add(field, value.strip())

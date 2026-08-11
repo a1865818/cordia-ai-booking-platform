@@ -35,6 +35,7 @@ from cordia_agent.tools.contracts import (
     OperationStatusView,
     PolicyValidationResult,
     RecordConsentInput,
+    ResolvedResourcesView,
     SubmitConfirmedIntentInput,
     TenantContextView,
     ToolResultEnvelope,
@@ -53,6 +54,7 @@ from cordia_agent.tools.foreground import (
     record_model_trace,
     request_human_handoff,
     resolve_consent_policy,
+    resolve_tenant_resources,
     submit_confirmed_intent,
     validate_booking_draft,
 )
@@ -247,6 +249,44 @@ def parse_policy_validation(env: ToolResultEnvelope) -> PolicyValidationResult |
 # ---------------------------------------------------------------------------
 # check_candidate_availability wrapper
 # ---------------------------------------------------------------------------
+
+
+async def resolve_tenant_resources_call(
+    *, kind: str | None = None, query: str | None = None
+) -> ToolResultEnvelope:
+    """Invoke resolve_tenant_resources and return the raw envelope.
+
+    Args:
+        kind: ``"service"`` or ``"location"``, or None for both.
+        query: The spoken name to match, or None to list what exists.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await resolve_tenant_resources.ainvoke({"kind": kind, "query": query})
+
+
+def parse_resolved_resources(env: ToolResultEnvelope) -> ResolvedResourcesView | None:
+    """Parse a ``ResolvedResourcesView`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The envelope returned by :func:`resolve_tenant_resources_call`.
+
+    Returns:
+        The validated view, or ``None`` when the tool failed or returned no
+        data — in which case nothing resolves and the caller asks the customer,
+        which is the same outcome as an unknown name.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "resolve_tenant_resources returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return ResolvedResourcesView.model_validate(env.data)
+    except Exception:
+        _log.exception("resolve_tenant_resources returned an unparseable payload")
+        return None
 
 
 async def evaluate_candidates(req: AvailabilityRequest) -> ToolResultEnvelope:

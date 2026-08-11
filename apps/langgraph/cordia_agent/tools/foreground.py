@@ -99,6 +99,30 @@ async def search_vendor_catalog(
 
 
 # ---------------------------------------------------------------------------
+# 3b. resolve_tenant_resources — PURE_READ, the name -> id seam
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def resolve_tenant_resources(
+    kind: str | None = None,
+    query: str | None = None,
+) -> ToolResultEnvelope:
+    """Resolve a service or location the customer named ("dinner", "the Fitzroy room") to the identifier a booking payload needs, against the set this tenant has actually declared. Omit query to list what exists so you can offer options. Never guess an identifier — an unresolved name is a question for the customer."""
+    params: dict[str, str] = {}
+    if kind is not None:
+        params["kind"] = kind
+    if query is not None:
+        params["query"] = query
+    return await get_tool_client().call_tool(
+        "resolve_tenant_resources",
+        "GET",
+        "/api/tenant-resources",
+        params=params,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. get_catalog_item — PURE_READ, path param
 # ---------------------------------------------------------------------------
 
@@ -348,6 +372,7 @@ FOREGROUND_TOOLS: list = [
     submit_confirmed_intent,
     get_operation_status,
     request_human_handoff,
+    resolve_tenant_resources,
     resolve_consent_policy,
     record_consent,
     append_transcript_turn,

@@ -20,6 +20,7 @@ from cordia_agent.slots.capture import (
     get_slot_extractor,
     required_candidate_fields_present,
 )
+from cordia_agent.slots.resolver import resolve_resource_names
 from cordia_agent.state import AgentState, OperationType
 
 
@@ -49,6 +50,13 @@ async def capture_fields(state: AgentState) -> dict:
 
     extractor = get_slot_extractor()
     captures = await extractor.extract(state.transcript_text or "")
+
+    # A spoken name ("dinner", "the Fitzroy room") is not an identifier and must
+    # not become one by guesswork.  The resolver trades it for an id the tenant
+    # has actually declared, and drops it when there is no unambiguous match —
+    # so an unrecognised name leaves the field unset and clarify asks, rather
+    # than a fabricated id reaching a booking payload.
+    captures = await resolve_resource_names(captures)
 
     updated_draft = capture_slots(
         state.draft,

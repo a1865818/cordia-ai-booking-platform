@@ -355,6 +355,38 @@ class VerificationSentResult(BaseModel):
     )
 
 
+class ResolvedResource(BaseModel):
+    """One service or location the tenant has actually declared (spec 03 §4.3)."""
+
+    model_config = {"extra": "forbid"}
+
+    resource_id: str = Field(description="Identifier the booking payload carries.")
+    kind: str = Field(description="'service' or 'location'.")
+    name: str = Field(description="Human name, e.g. 'Dinner sitting'.")
+    aliases: list[str] = Field(
+        default_factory=list, description="Other things a customer may call it."
+    )
+
+
+class ResolvedResourcesView(BaseModel):
+    """Output payload for resolve_tenant_resources (spec 03 §4.3).
+
+    ``resolved`` is set ONLY when the query matched exactly one resource. The
+    agent must never pick between candidates itself: ``ambiguous`` is a question
+    for the customer, not a coin toss.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    status: str = Field(description="resolved | ambiguous | no_match | listed.")
+    matches: list[ResolvedResource] = Field(
+        default_factory=list, description="Every resource the query matched."
+    )
+    resolved: ResolvedResource | None = Field(
+        default=None, description="The single unambiguous match, when there is one."
+    )
+
+
 class HandoffRequest(BaseModel):
     """Input payload for request_human_handoff (spec 03 §4.3)."""
 

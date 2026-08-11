@@ -45,6 +45,23 @@
         },
         "type": "object"
       },
+      "AvailabilityCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "availability_mode": {
+            "$ref": "#/components/schemas/AvailabilityModeEnum"
+          },
+          "duration_minutes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AvailabilityModeEnum": {
         "enum": [
           "confirmed",
@@ -53,6 +70,28 @@
           "live"
         ],
         "type": "string"
+      },
+      "AvailabilityRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/BookingDraft"
+          },
+          "hold_idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "hold_ttl_seconds": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "want_hold": {
+            "nullable": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       },
       "AvailabilityResult": {
         "additionalProperties": false,
@@ -132,6 +171,47 @@
           },
           "valid": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "BookingDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "customer": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
+          "field_provenance": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldProvenance"
+            },
+            "nullable": true,
+            "type": "object"
+          },
+          "preorder_draft": {
+            "$ref": "#/components/schemas/PreorderDraft"
+          },
+          "request": {
+            "$ref": "#/components/schemas/BookingRequest"
+          },
+          "schema_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "session_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceInfo"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_policy_version": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -377,6 +457,15 @@
         },
         "type": "object"
       },
+      "CaptureMethodEnum": {
+        "enum": [
+          "channel_verified",
+          "dtmf",
+          "speech",
+          "tool_selection"
+        ],
+        "type": "string"
+      },
       "CatalogDraftItem": {
         "additionalProperties": false,
         "properties": {
@@ -509,6 +598,52 @@
           "sms",
           "voice",
           "web"
+        ],
+        "type": "string"
+      },
+      "CheckCandidateAvailabilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "alternatives": {
+            "items": {
+              "$ref": "#/components/schemas/AvailabilityCandidate"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/AvailabilityCandidate"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "hold": {
+            "$ref": "#/components/schemas/HoldResult"
+          },
+          "invalid_fields": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/AvailabilityModeEnum"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CheckCandidateAvailabilityStatusEnum"
+          }
+        },
+        "type": "object"
+      },
+      "CheckCandidateAvailabilityStatusEnum": {
+        "enum": [
+          "available",
+          "available_pending",
+          "held",
+          "hold_failed",
+          "unavailable"
         ],
         "type": "string"
       },
@@ -853,6 +988,44 @@
         },
         "type": "object"
       },
+      "FieldProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_method": {
+            "$ref": "#/components/schemas/CaptureMethodEnum"
+          },
+          "model_confidence": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "normalized_value": {
+            "nullable": true,
+            "type": "string"
+          },
+          "source_turn_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "stt_confidence": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/FieldValidationEnum"
+          }
+        },
+        "type": "object"
+      },
+      "FieldValidationEnum": {
+        "enum": [
+          "invalid",
+          "needs_clarification",
+          "valid"
+        ],
+        "type": "string"
+      },
       "FindManageableBookingsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -919,6 +1092,60 @@
         "additionalProperties": false,
         "properties": {
           "contact_ref": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "HandoffRequestBody": {
+        "additionalProperties": false,
+        "properties": {
+          "handoff_idempotency_key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason_code": {
+            "nullable": true,
+            "type": "string"
+          },
+          "recommended_action": {
+            "nullable": true,
+            "type": "string"
+          },
+          "session_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "HandoffResult": {
+        "additionalProperties": false,
+        "properties": {
+          "queue": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          },
+          "work_item_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "HoldResult": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hold_id": {
             "nullable": true,
             "type": "string"
           }
@@ -1405,6 +1632,48 @@
         },
         "type": "object"
       },
+      "PreorderDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PreorderDraftLine"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PreorderDraftLine": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modifier_ids": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "notes": {
+            "nullable": true,
+            "type": "string"
+          },
+          "quantity": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "PreorderLineReference": {
         "additionalProperties": false,
         "properties": {
@@ -1579,6 +1848,51 @@
         ],
         "type": "string"
       },
+      "ResolvedResourcesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ResolvedResourceView"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "resolved": {
+            "$ref": "#/components/schemas/ResolvedResourceView"
+          },
+          "status": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ResolvedResourceView": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "kind": {
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "resource_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ResolveRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1711,6 +2025,19 @@
         "additionalProperties": false,
         "properties": {
           "display_name": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SourceInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/ChannelEnum"
+          },
+          "language": {
             "nullable": true,
             "type": "string"
           }
@@ -2420,6 +2747,83 @@
               "text/plain": {
                 "schema": {
                   "$ref": "#/components/schemas/AvailabilityResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Availability"
+        ]
+      }
+    },
+    "/api/availability/candidates": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Idempotency-Key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvailabilityRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvailabilityRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvailabilityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckCandidateAvailabilityResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckCandidateAvailabilityResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckCandidateAvailabilityResponse"
                 }
               }
             },
@@ -4987,6 +5391,74 @@
         ]
       }
     },
+    "/api/handoffs": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffRequestBody"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffRequestBody"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "Handoffs"
+        ]
+      }
+    },
     "/api/Health": {
       "get": {
         "responses": {
@@ -6735,6 +7207,71 @@
         ]
       }
     },
+    "/api/tenant-resources": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedResourcesResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedResourcesResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedResourcesResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "TenantResources"
+        ]
+      }
+    },
     "/api/verifications": {
       "post": {
         "requestBody": {
@@ -7439,6 +7976,9 @@
       "name": "GuestContacts"
     },
     {
+      "name": "Handoffs"
+    },
+    {
       "name": "Health"
     },
     {
@@ -7467,6 +8007,9 @@
     },
     {
       "name": "TenantProfile"
+    },
+    {
+      "name": "TenantResources"
     },
     {
       "name": "Verifications"
