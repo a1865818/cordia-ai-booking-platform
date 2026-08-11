@@ -15,7 +15,11 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.contracts.security import RedactionPolicy, SessionConsentState
-from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
+from cordia_agent.tools._external_stubs import (
+    BookingDraft,
+    Confirmation,
+    IntentRevision,
+)
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
     RequestHumanHandoffStatus,
@@ -392,6 +396,14 @@ class SubmitConfirmedIntentInput(BaseModel):
     """Input for submit_confirmed_intent — ALL fields REQUIRED, NO defaults (Inv-2, spec 03 §4.3 / §10.4).
 
     operation_id, idempotency_key, and intent_payload_hash are opaque strings minted by spec 04.
+
+    ``revision`` carries the whole canonical, hashed ``IntentRevision``. Spec 04 §4.2
+    makes it part of the agent→API body and Inv-1/§8.8 make it mandatory: the API
+    re-derives the canonical hash from ``revision.canonical_payload`` server-side and
+    rejects the submission unless ``confirmation.intent_payload_hash`` matches. A
+    client-asserted ``intent_payload_hash`` alone is not something the server can
+    verify, so it is retained as the agent-side §8.8 guard input but is NOT what the
+    platform trusts.
     """
 
     model_config = {"extra": "forbid"}
@@ -408,6 +420,9 @@ class SubmitConfirmedIntentInput(BaseModel):
     )
     intent_payload_hash: str = Field(
         description="Canonical payload hash; must equal the bound revision's hash (Inv-2)."
+    )
+    revision: IntentRevision = Field(
+        description="Canonical, hashed intent revision the API re-hashes and verifies (spec 04 §4.2, Inv-1)."
     )
     confirmation: Confirmation = Field(
         description="Immutable confirmation evidence bound to this revision (§8.8)."

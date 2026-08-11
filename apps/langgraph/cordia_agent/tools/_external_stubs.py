@@ -5,6 +5,7 @@ tool contracts depend on but do NOT own:
 
   * ``BookingDraft``   — owned by spec 02 (cordia_agent.state)
   * ``Confirmation``   — owned by spec 02 (cordia_agent.models.intent)
+  * ``IntentRevision`` — owned by spec 02 (cordia_agent.models.intent)
 
 Rationale: tool contract code (spec 03) imports from here rather than reaching
 directly into spec-02 modules. This seam makes cross-track dependencies visible
@@ -22,7 +23,8 @@ Placeholder for spec-04 model (not yet available):
 from __future__ import annotations
 
 from cordia_agent.models.intent import Confirmation as Confirmation
+from cordia_agent.models.intent import IntentRevision as IntentRevision
 from cordia_agent.state import BookingDraft as BookingDraft
 
 
-__all__ = ["BookingDraft", "Confirmation"]
+__all__ = ["BookingDraft", "Confirmation", "IntentRevision"]

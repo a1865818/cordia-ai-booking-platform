@@ -13,11 +13,11 @@ import pytest
 
 from cordia_agent.contracts.catalog import CatalogItem, Money
 from cordia_agent.menu.extraction_agent import IsolatedExtractionAgent
-from cordia_agent.menu.model_port import FakeExtractionModel
 from cordia_agent.safety.injection_harness import (
     TrustLevel,
     is_tool_invocation_permitted,
 )
+from tests._stubs.menu_model_fake import FakeExtractionModel
 
 
 def _item(

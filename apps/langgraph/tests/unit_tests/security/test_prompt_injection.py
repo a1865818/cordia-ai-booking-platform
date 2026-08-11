@@ -13,7 +13,6 @@ import pytest
 from pydantic import ValidationError
 
 from cordia_agent.menu.extraction_agent import IsolatedExtractionAgent
-from cordia_agent.menu.model_port import FakeExtractionModel
 from cordia_agent.safety.injection_harness import (
     LabeledContent,
     ToolAllowlist,
@@ -25,6 +24,7 @@ from cordia_agent.security.redaction import redact_text
 from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming.pipeline import _scrub_transcript_frame
 from cordia_agent.streaming_models import TranscriptFinalFrame
+from tests._stubs.menu_model_fake import FakeExtractionModel
 
 
 INJECTION_CORPUS = [

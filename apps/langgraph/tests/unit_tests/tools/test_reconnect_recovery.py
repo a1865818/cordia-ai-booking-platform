@@ -21,9 +21,9 @@ from typing import Any
 import httpx
 import pytest
 
-from cordia_agent.models.intent import Confirmation
+from cordia_agent.models.intent import Confirmation, IntentRevision
 from cordia_agent.safety.tenant_context import TenantContext
-from cordia_agent.state import Channel
+from cordia_agent.state import BookingRequest, Channel, OperationType
 from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 from cordia_agent.tools.contracts import (
     SubmitConfirmedIntentInput,
@@ -184,6 +184,24 @@ def _minimal_confirmation(
     )
 
 
+def _minimal_revision(
+    intent_id: str = "intent_reconnect_001",
+    intent_revision: int = 1,
+    intent_payload_hash: str = "hash_reconnect_abc",
+) -> IntentRevision:
+    """Build the canonical revision the API re-hashes server-side (spec 04 §4.2)."""
+    return IntentRevision(
+        intent_id=intent_id,
+        revision=intent_revision,
+        canonical_payload=BookingRequest(operation=OperationType.create),
+        schema_version="draft.v1",
+        tenant_policy_version="policy.v1",
+        payload_hash=intent_payload_hash,
+        created_at=datetime.datetime(2026, 6, 25, 10, 0, tzinfo=datetime.UTC),
+        source_session_id="sess_reconnect_001",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -236,6 +254,11 @@ async def test_recover_not_resubmit(
         intent_id="intent_reconnect_001",
         intent_revision=1,
         intent_payload_hash="hash_reconnect_abc",
+        revision=_minimal_revision(
+            intent_id="intent_reconnect_001",
+            intent_revision=1,
+            intent_payload_hash="hash_reconnect_abc",
+        ),
         confirmation=_minimal_confirmation(
             intent_id="intent_reconnect_001",
             intent_revision=1,
@@ -299,6 +322,11 @@ async def test_same_key_resubmit_returns_duplicate_accepted(
         intent_id="intent_dup_001",
         intent_revision=1,
         intent_payload_hash="hash_dup_abc",
+        revision=_minimal_revision(
+            intent_id="intent_dup_001",
+            intent_revision=1,
+            intent_payload_hash="hash_dup_abc",
+        ),
         confirmation=_minimal_confirmation(
             intent_id="intent_dup_001",
             intent_revision=1,

@@ -67,6 +67,20 @@ def _booking_draft_dict() -> dict:
     }
 
 
+def _intent_revision_dict() -> dict:
+    """The canonical revision the API re-hashes server-side (spec 04 §4.2, Inv-1)."""
+    return {
+        "intent_id": "intent_01ABC",
+        "revision": 3,
+        "canonical_payload": {"operation": "create"},
+        "schema_version": "1.0.0",
+        "tenant_policy_version": "policy_2026_06_15",
+        "payload_hash": "sha256-xyz",
+        "created_at": "2026-06-15T10:29:00Z",
+        "source_session_id": "sess-001",
+    }
+
+
 def _valid_submit_confirmed_intent() -> dict:
     return {
         "operation_id": "op_01JX123",
@@ -74,6 +88,7 @@ def _valid_submit_confirmed_intent() -> dict:
         "intent_id": "intent_01ABC",
         "intent_revision": 3,
         "intent_payload_hash": "sha256-xyz",
+        "revision": _intent_revision_dict(),
         "confirmation": _confirmation_dict(),
     }
 
@@ -103,7 +118,7 @@ def _valid_submit_cancellation() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Inv-2 — SubmitConfirmedIntentInput: all 6 fields REQUIRED, NO defaults
+# Inv-2 — SubmitConfirmedIntentInput: all 7 fields REQUIRED, NO defaults
 # ---------------------------------------------------------------------------
 
 _SUBMIT_INTENT_REQUIRED_FIELDS = [
@@ -112,6 +127,7 @@ _SUBMIT_INTENT_REQUIRED_FIELDS = [
     "intent_id",
     "intent_revision",
     "intent_payload_hash",
+    "revision",
     "confirmation",
 ]
 
@@ -143,6 +159,7 @@ def test_submit_confirmed_intent_happy_path() -> None:
     assert obj.intent_id == "intent_01ABC"
     assert obj.intent_revision == 3
     assert obj.intent_payload_hash == "sha256-xyz"
+    assert obj.revision.payload_hash == "sha256-xyz"
     assert obj.confirmation.confirmation_id == "conf-001"
 
 

@@ -5,13 +5,12 @@ from cordia_agent.menu.extraction_agent import (
     ExtractionResult,
     IsolatedExtractionAgent,
 )
-from cordia_agent.menu.model_port import ExtractionModel, FakeExtractionModel
+from cordia_agent.menu.model_port import ExtractionModel
 
 
 __all__ = [
     "ExtractionFlag",
     "ExtractionModel",
     "ExtractionResult",
-    "FakeExtractionModel",
     "IsolatedExtractionAgent",
 ]

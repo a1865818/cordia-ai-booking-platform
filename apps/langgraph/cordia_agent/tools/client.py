@@ -23,6 +23,7 @@ Design:
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -396,3 +397,66 @@ def reset_tool_client() -> None:
     """Clear the registered ``ToolClient`` (test teardown helper)."""
     global _tool_client
     _tool_client = None
+
+
+# ---------------------------------------------------------------------------
+# Production bootstrap (env-guarded, mirrors safety.jws_verifier.bootstrap_verifier)
+# ---------------------------------------------------------------------------
+
+#: Base URL of the Booking API every tool path is resolved against, e.g.
+#: ``http://localhost:8080``.  Unset ⇒ no client is registered and
+#: ``get_tool_client()`` keeps failing closed with "no ToolClient configured".
+API_BASE_URL_ENV_VAR = "CORDIA_API_BASE_URL"
+
+#: Ceiling on any single tool request.  The authoritative per-tool budget lives
+#: in ``_timeouts.TOOL_DEADLINES`` and is passed per call; this only bounds
+#: connection setup so a black-holed host cannot outlive the per-call deadline.
+_CONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def bootstrap_tool_client() -> None:
+    """Register the production ``ToolClient`` once at graph startup (§3.3).
+
+    Mirrors the env-guarded module-load pattern of ``init_metrics`` and
+    ``bootstrap_verifier`` (:mod:`cordia_agent.graph`):
+
+    * When :data:`API_BASE_URL_ENV_VAR` is set, an ``httpx.AsyncClient`` bound
+      to that base URL is constructed and registered — raising on a malformed
+      URL (fail closed: a misconfigured process crashes at startup rather than
+      silently issuing every tool call against a relative path).
+    * When the variable is absent (tests / CI / any process with no API), this
+      returns without registering, leaving :func:`get_tool_client` to fail
+      closed with its "no ToolClient configured" error.  Importing the graph
+      stays side-effect-free and fully offline.
+
+    Idempotent: if a client is already registered — by an earlier bootstrap or
+    by a test fixture — this is a no-op, so re-importing the graph module never
+    replaces an injected transport.
+
+    Raises:
+        RuntimeError: if the configured base URL has no ``http``/``https``
+            scheme.
+    """
+    raw = os.environ.get(API_BASE_URL_ENV_VAR, "").strip()
+    if not raw:
+        return
+
+    if _tool_client is not None:
+        return
+
+    if not raw.startswith(("http://", "https://")):
+        raise RuntimeError(
+            f"{API_BASE_URL_ENV_VAR} must be an absolute http(s) URL "
+            f"(e.g. http://localhost:8080); got {raw!r}"
+        )
+
+    set_tool_client(
+        ToolClient(
+            httpx.AsyncClient(
+                base_url=raw.rstrip("/"),
+                timeout=httpx.Timeout(
+                    _CONNECT_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS
+                ),
+            )
+        )
+    )

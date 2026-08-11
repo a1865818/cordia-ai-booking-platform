@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
+from cordia_agent.models.submission import SubmitConfirmedIntentRequest
 from cordia_agent.tools._external_stubs import BookingDraft
 from cordia_agent.tools.client import get_tool_client
 from cordia_agent.tools.contracts import (
@@ -207,11 +208,23 @@ async def submit_confirmed_intent(
 ) -> ToolResultEnvelope:
     """Submit the customer's confirmed booking intent as a durable mutation. operation_id and idempotency_key are injected verbatim — never re-minted (Inv-2). The accepted response will confirm submission, not use 'booked' language (Inv-16)."""
     inp = SubmitConfirmedIntentInput(**kwargs)
+    # The wire body is the spec 04 §4.2 contract (SubmitConfirmedIntentRequest), not the
+    # LLM tool-arg model: the API needs the whole canonical `revision` to re-derive the
+    # payload hash itself (Inv-1/§8.8). The client-asserted `intent_payload_hash` stays
+    # an agent-side guard input and is deliberately not sent — it is unverifiable.
+    body = SubmitConfirmedIntentRequest(
+        operation_id=inp.operation_id,
+        idempotency_key=inp.idempotency_key,
+        intent_id=inp.intent_id,
+        intent_revision=inp.intent_revision,
+        revision=inp.revision,
+        confirmation=inp.confirmation,
+    )
     return await get_tool_client().call_tool(
         "submit_confirmed_intent",
         "POST",
         "/api/bookings",
-        json=inp.model_dump(mode="json"),
+        json=body.model_dump(mode="json"),
         operation_id=inp.operation_id,
         idempotency_key=inp.idempotency_key,
     )

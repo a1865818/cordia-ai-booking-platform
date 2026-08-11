@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from cordia_agent.models.intent import Confirmation
+from cordia_agent.models.intent import Confirmation, IntentRevision
 from cordia_agent.state import (
     BookingDraft,
     BookingRequest,
@@ -107,6 +107,24 @@ def _minimal_confirmation() -> Confirmation:
         source_turn_id="turn_001",
         read_back_version="v1",
         verification_level="none",
+    )
+
+
+def _minimal_revision(
+    intent_id: str = "intent_001",
+    revision: int = 1,
+    payload_hash: str = "hash_abc",
+) -> IntentRevision:
+    """Build the canonical revision the API re-hashes server-side (spec 04 §4.2)."""
+    return IntentRevision(
+        intent_id=intent_id,
+        revision=revision,
+        canonical_payload=BookingRequest(operation=OperationType.create),
+        schema_version="draft.v1",
+        tenant_policy_version="policy.v1",
+        payload_hash=payload_hash,
+        created_at=datetime.datetime(2026, 6, 25, 10, 0, tzinfo=datetime.UTC),
+        source_session_id="sess_001",
     )
 
 
@@ -407,6 +425,7 @@ async def test_submit_confirmed_intent_inv2_passthrough(
         intent_id="intent_001",
         intent_revision=1,
         intent_payload_hash="hash_abc",
+        revision=_minimal_revision(),
         confirmation=_minimal_confirmation(),
     )
     await submit_confirmed_intent.ainvoke(inp.model_dump(mode="json"))
@@ -441,6 +460,7 @@ async def test_submit_confirmed_intent_inv16_hint(
         intent_id="intent_001",
         intent_revision=1,
         intent_payload_hash="hash_abc",
+        revision=_minimal_revision(),
         confirmation=_minimal_confirmation(),
     )
     # Use .coroutine to call the underlying async function directly.
