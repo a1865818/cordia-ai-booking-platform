@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from langgraph.graph import END
+
 from cordia_agent.state import AgentState, OperationType
 from cordia_agent.tools.client_binding import (
     check_verification_call,
@@ -194,12 +196,16 @@ def route_after_verify_identity(state: AgentState) -> str:
 
     Routes:
       - ``"human_handoff"`` when outcome is "invalid" (or terminal_state set).
-      - ``"capture_fields"`` for "valid" (advance) or "expired" (re-verify) or
-        "pass_through" (non-mutation operation — unexpected entry).
-
-    Edges {capture_fields, human_handoff} already exist in the graph (§8.3).
+      - ``END`` when the grant has EXPIRED — re-verification needs a fresh code
+        from the customer, which cannot arrive inside this turn.  Continuing to
+        ``capture_fields`` sent the same mutation draft straight back here with
+        the grant still cleared, which is a cycle, not a retry.
+      - ``"capture_fields"`` for "valid" (advance) or "pass_through"
+        (non-mutation operation — unexpected entry).
     """
     outcome = state.verification_outcome
     if outcome == "invalid" or state.terminal_state == "human_handoff":
         return "human_handoff"
+    if outcome == "expired":
+        return END
     return "capture_fields"

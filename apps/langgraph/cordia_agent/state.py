@@ -442,6 +442,16 @@ class AgentState(BaseModel):
             "(§6.6, Inv-16). Advisory only — NEVER treated as held/confirmed/success."
         ),
     )
+    availability_checked: bool = Field(
+        default=False,
+        description=(
+            "Internal: True once check_candidates has run for the current draft. "
+            "Distinguishes 'the slot is genuinely full' (checked, zero candidates) "
+            "from 'we have not looked yet' (the session's default), which is what "
+            "lets clarify offer another time instead of re-asking for a field the "
+            "customer already gave."
+        ),
+    )
     # --- Read-back + confirmation channels (02-I, §8.6/§8.8/§8.9) ---
     # Stored as plain types (str/bool/dict/list) to avoid a circular import:
     # state.py MUST NOT import IntentRevision/Confirmation (models.intent imports
@@ -456,6 +466,16 @@ class AgentState(BaseModel):
         description=(
             "Internal: deterministic sha256 content hash of the read-back render "
             "(§8.6); used by await_confirmation to bind the Confirmation."
+        ),
+    )
+    read_back_first_presented_turn_id: str | None = Field(
+        default=None,
+        description=(
+            "Internal: the turn on which the CURRENT read_back_version was first "
+            "rendered (§8.9). A confirmation spoken on that same turn cannot be a "
+            "response to it — the customer had not heard it yet — so "
+            "await_confirmation refuses one. Re-rendering an unchanged read-back "
+            "on a later turn leaves this alone."
         ),
     )
     read_back_interrupted: bool = Field(
@@ -536,6 +556,15 @@ class AgentInputState(BaseModel):
     ``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).
     A plain ``tenant_id`` field is intentionally absent — the tenant is resolved
     exclusively from the verified signed token by the resolve_tenant node.
+
+    The transcript fields carry ONE dialog turn.  They mirror the identically
+    named ``AgentState`` channels, so LangGraph maps them straight through and
+    the per-turn nodes (``identify_intent``, ``capture_fields``,
+    ``await_confirmation``, ``consent_gate``) see the utterance without any
+    node-side plumbing.  An ``AgentPort`` implementation (spec 01 §agent_port)
+    maps a ``TranscriptFinalFrame`` onto them: ``text`` →
+    ``transcript_text``, ``turn_id`` → ``current_turn_id``, and
+    ``transcript_is_final=True`` because only committed finals reach the port.
     """
 
     model_config = {"extra": "forbid"}
@@ -550,6 +579,29 @@ class AgentInputState(BaseModel):
     source: SourceInfo = Field(description="Origin channel + language.")
     customer: CustomerRef | None = Field(
         default=None, description="Customer reference if known."
+    )
+    transcript_text: str | None = Field(
+        default=None,
+        description=(
+            "Transcript text for this turn.  Optional so a session can be "
+            "opened (consent notice, greeting) before the customer speaks."
+        ),
+    )
+    transcript_is_final: bool = Field(
+        default=False,
+        description=(
+            "True iff the transcript is a committed final (not partial) STT "
+            "result.  Defaults to False so Inv-1 fails safe: a caller must "
+            "assert finality explicitly before the turn may mutate the draft "
+            "or confirm a read-back."
+        ),
+    )
+    current_turn_id: str | None = Field(
+        default=None,
+        description=(
+            "Turn/message ID for this turn; stamped onto captured fields and "
+            "the confirmation record for provenance."
+        ),
     )
 
 
