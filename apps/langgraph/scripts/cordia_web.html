@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cordia — talk to the agent</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1116; --panel: #161b22; --line: #262d36;
+    --ink: #e6edf3; --dim: #8b949e;
+    --you: #2f81f7; --agent: #3fb950; --warn: #d29922; --bad: #f85149;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); height: 100vh;
+         display: flex; flex-direction: column; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .meta { font-size: 12px; color: var(--dim); font-family: ui-monospace, monospace; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } #side { display: none; } }
+  #log, #side { overflow-y: auto; padding: 18px 20px; }
+  #side { border-left: 1px solid var(--line); background: var(--panel); }
+  footer { border-top: 1px solid var(--line); padding: 14px 20px;
+           display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  button { font: inherit; font-size: 13px; padding: 9px 16px; border-radius: 8px;
+           border: 1px solid var(--line); background: #21262d; color: var(--ink);
+           cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #3d444d; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
+  button.rec { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+
+  .row { display: flex; gap: 10px; align-items: baseline; margin-bottom: 14px; }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+         min-width: 62px; font-weight: 700; padding-top: 2px; }
+  .you .who { color: var(--you); }
+  .agent .who { color: var(--agent); }
+  .sys .who, .sys .what { color: var(--dim); }
+  .what { white-space: pre-wrap; line-height: 1.5; flex: 1; }
+  .at { font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
+  .partial .what { color: var(--dim); font-style: italic; }
+  .err .who, .err .what { color: var(--bad); }
+  .warn .who, .warn .what { color: var(--warn); }
+
+  #level { width: 120px; height: 8px; border-radius: 4px; background: #21262d;
+           overflow: hidden; }
+  #level > div { height: 100%; width: 0%; background: var(--agent); transition: width .06s; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--dim); margin: 0 0 10px; }
+  pre { font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.55;
+        white-space: pre-wrap; word-break: break-word; margin: 0 0 20px; }
+  .k { color: var(--dim); }
+  .hint { font-size: 12px; color: var(--dim); }
+  input[type=text] { font: inherit; font-size: 13px; flex: 1; min-width: 180px;
+                     padding: 9px 12px; border-radius: 8px; background: #0d1117;
+                     border: 1px solid var(--line); color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cordia</h1>
+  <span class="meta" id="status">connecting…</span>
+  <span style="flex:1"></span>
+  <div id="level" title="microphone level"><div></div></div>
+</header>
+
+<main>
+  <div id="log"></div>
+  <div id="side">
+    <h2>Graph state</h2>
+    <pre id="state" class="k">— take a turn —</pre>
+    <h2>Draft</h2>
+    <pre id="draft" class="k">—</pre>
+  </div>
+</main>
+
+<footer>
+  <button id="talk" class="primary" disabled>Hold to talk</button>
+  <button id="hands" disabled>Hands-free: off</button>
+  <input type="text" id="say" placeholder="…or type a line and press Enter (spoken to the recogniser, not a bypass)" disabled />
+  <span class="hint" id="hint"></span>
+</footer>
+
+<script type="module">
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const stateEl = document.getElementById('state');
+const draftEl = document.getElementById('draft');
+const talkBtn = document.getElementById('talk');
+const handsBtn = document.getElementById('hands');
+const sayInput = document.getElementById('say');
+const hintEl = document.getElementById('hint');
+const levelBar = document.querySelector('#level > div');
+
+let ws, captureCtx, playbackCtx, micStream, workletNode, sourceNode;
+let playbackRate = 24000, captureRate = 16000;
+let sending = false, handsFree = false;
+let playHead = 0;
+const scheduled = [];
+let partialRow = null;
+
+function row(kind, who, text, at) {
+  const el = document.createElement('div');
+  el.className = 'row ' + kind;
+  el.innerHTML = `<div class="who"></div><div class="what"></div><div class="at"></div>`;
+  el.children[0].textContent = who;
+  el.children[1].textContent = text;
+  el.children[2].textContent = at != null ? at + 's' : '';
+  logEl.appendChild(el);
+  logEl.scrollTop = logEl.scrollHeight;
+  return el;
+}
+
+// ---------------------------------------------------------------- playback
+
+function playPcm16(buffer) {
+  if (!playbackCtx) return;
+  const view = new DataView(buffer);
+  const frames = buffer.byteLength >> 1;
+  if (!frames) return;
+  const audio = playbackCtx.createBuffer(1, frames, playbackRate);
+  const channel = audio.getChannelData(0);
+  for (let i = 0; i < frames; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
+
+  const src = playbackCtx.createBufferSource();
+  src.buffer = audio;
+  src.connect(playbackCtx.destination);
+  // Schedule back to back so consecutive chunks play gapless; a small lead
+  // absorbs jitter without adding audible latency.
+  const now = playbackCtx.currentTime;
+  if (playHead < now + 0.02) playHead = now + 0.02;
+  src.start(playHead);
+  playHead += audio.duration;
+  scheduled.push(src);
+  src.onended = () => { const i = scheduled.indexOf(src); if (i >= 0) scheduled.splice(i, 1); };
+}
+
+function stopPlayback() {
+  // Barge-in: the caller started talking, so everything queued is now stale.
+  for (const src of scheduled.splice(0)) { try { src.stop(); } catch {} }
+  playHead = 0;
+}
+
+// ---------------------------------------------------------------- capture
+
+const WORKLET = `
+class CaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0]) {
+      const f = input[0];
+      const pcm = new Int16Array(f.length);
+      let peak = 0;
+      for (let i = 0; i < f.length; i++) {
+        const s = Math.max(-1, Math.min(1, f[i]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        const a = Math.abs(s); if (a > peak) peak = a;
+      }
+      this.port.postMessage({ pcm: pcm.buffer, peak }, [pcm.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('capture', CaptureProcessor);
+`;
+
+async function startMic() {
+  if (captureCtx) return;
+  // Asking the context for 16 kHz avoids hand-rolling a resampler in JS: the
+  // browser does it, and it is the rate the realtime socket wants.
+  captureCtx = new AudioContext({ sampleRate: captureRate });
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  const blob = new Blob([WORKLET], { type: 'application/javascript' });
+  await captureCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+  sourceNode = captureCtx.createMediaStreamSource(micStream);
+  workletNode = new AudioWorkletNode(captureCtx, 'capture');
+  workletNode.port.onmessage = (event) => {
+    const { pcm, peak } = event.data;
+    levelBar.style.width = Math.min(100, peak * 180) + '%';
+    if (sending && ws && ws.readyState === WebSocket.OPEN) ws.send(pcm);
+  };
+  sourceNode.connect(workletNode);
+  // Worklets need a sink to be pulled; a muted gain node keeps it running
+  // without echoing the microphone into the speakers.
+  const mute = captureCtx.createGain();
+  mute.gain.value = 0;
+  workletNode.connect(mute).connect(captureCtx.destination);
+}
+
+// ------------------------------------------------------------------ socket
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => { statusEl.textContent = 'connected — starting session…'; };
+
+  ws.onmessage = async (event) => {
+    if (event.data instanceof ArrayBuffer) { playPcm16(event.data); return; }
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === 'ready') {
+      playbackRate = msg.playback_rate_hz;
+      captureRate = msg.capture_rate_hz;
+      playbackCtx = new AudioContext({ sampleRate: playbackRate });
+      statusEl.textContent =
+        `session ${msg.session_id.slice(0, 16)}… · STT warm in ${msg.prewarm_seconds}s · agent audio ${msg.egress}`;
+      talkBtn.disabled = false; handsBtn.disabled = false; sayInput.disabled = false;
+      hintEl.textContent = 'hold the button (or space) and speak';
+      row('sys', 'ready', 'Session open. Say hello.');
+    } else if (msg.type === 'partial') {
+      if (msg.onset) { stopPlayback(); return; }
+      if (!partialRow) partialRow = row('you partial', 'you', msg.text, msg.at);
+      else { partialRow.children[1].textContent = msg.text; }
+    } else if (msg.type === 'heard') {
+      if (partialRow) { partialRow.remove(); partialRow = null; }
+      row('you', 'you', msg.text, msg.at);
+    } else if (msg.type === 'said') {
+      row('agent', 'agent', msg.text, msg.at);
+    } else if (msg.type === 'progress') {
+      hintEl.textContent = `${msg.tool} — ${(msg.elapsed_ms / 1000).toFixed(1)}s`;
+    } else if (msg.type === 'barge_in') {
+      stopPlayback();
+      row('sys', 'barge-in', 'caller started speaking; agent audio cut', msg.at);
+    } else if (msg.type === 'state') {
+      renderState(msg.state);
+      hintEl.textContent = handsFree ? 'hands-free — just talk' : 'hold the button (or space) and speak';
+    } else if (msg.type === 'error') {
+      row('err', 'error', msg.detail);
+    }
+  };
+
+  ws.onclose = () => { statusEl.textContent = 'disconnected'; talkBtn.disabled = true;
+                       handsBtn.disabled = true; sayInput.disabled = true; };
+  ws.onerror = () => { statusEl.textContent = 'socket error'; };
+}
+
+function renderState(s) {
+  const lines = [];
+  for (const [k, v] of Object.entries(s)) {
+    if (k === 'draft') continue;
+    if (v === null || v === undefined || (Array.isArray(v) && !v.length)) continue;
+    lines.push(`${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+  }
+  stateEl.textContent = lines.join('\n') || '— nothing yet —';
+  draftEl.textContent = s.draft
+    ? Object.entries(s.draft)
+        .filter(([, v]) => v !== null && !(Array.isArray(v) && !v.length))
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+        .join('\n')
+    : '—';
+}
+
+// ------------------------------------------------------------------ controls
+
+async function beginTalking() {
+  if (sending) return;
+  await startMic();
+  if (playbackCtx?.state === 'suspended') await playbackCtx.resume();
+  stopPlayback();
+  sending = true;
+  talkBtn.classList.add('rec');
+  talkBtn.textContent = 'Listening…';
+}
+
+function endTalking() {
+  if (!sending || handsFree) return;
+  sending = false;
+  talkBtn.classList.remove('rec');
+  talkBtn.textContent = 'Hold to talk';
+}
+
+talkBtn.addEventListener('pointerdown', beginTalking);
+talkBtn.addEventListener('pointerup', endTalking);
+talkBtn.addEventListener('pointerleave', endTalking);
+
+handsBtn.addEventListener('click', async () => {
+  handsFree = !handsFree;
+  handsBtn.textContent = `Hands-free: ${handsFree ? 'on' : 'off'}`;
+  if (handsFree) { await beginTalking(); talkBtn.textContent = 'Hands-free'; talkBtn.disabled = true; }
+  else { talkBtn.disabled = false; sending = false; talkBtn.classList.remove('rec');
+         talkBtn.textContent = 'Hold to talk'; }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat && document.activeElement !== sayInput) {
+    e.preventDefault(); beginTalking();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && document.activeElement !== sayInput) { e.preventDefault(); endTalking(); }
+});
+
+// Typing a line is not a shortcut past the audio path: the server still speaks
+// it and recognises it, so what the graph sees is what a recogniser produced.
+sayInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !sayInput.value.trim()) return;
+  ws.send(JSON.stringify({ type: 'say', text: sayInput.value.trim() }));
+  row('sys', 'typed', sayInput.value.trim());
+  sayInput.value = '';
+});
+
+connect();
+</script>
+</body>
+</html>
