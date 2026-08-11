@@ -472,3 +472,77 @@ async def test_single_flight_concurrent_same_op_id_exactly_one_submit() -> None:
     assert submit_call_count == 1, (
         f"§27.3 single-flight: expected exactly 1 submit call, got {submit_call_count}"
     )
+
+# ---------------------------------------------------------------------------
+# Recovery is for INCONCLUSIVE outcomes only (handoff doc §8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_a_definitive_422_is_not_resubmitted() -> None:
+    """A rejection the server already read must not be sent a second time.
+
+    Before this, ANY non-ok envelope triggered the lost-response dance:
+    `map_http_error` maps an untyped 422 to the generic `request_error`, so the
+    node issued GET /booking-operations/{id} (404, the operation was never
+    created), then RESUBMITTED the identical durable mutation for the identical
+    refusal, and finally landed in `human_handoff` — for a case spec 03 §4.3
+    classifies as recoverable.
+    """
+    calls: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.method, req.url.path))
+        if req.url.path == "/api/bookings":
+            # No typed `status` in the body, so the generic HTTP mapping applies.
+            return _json_response(422, {"error": "unprocessable"})
+        return _json_response(404, {"error": "not_found"})
+
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    state = _bound_state()
+    result = await submit_intent(state)
+
+    submits = [c for c in calls if c[1] == "/api/bookings"]
+    assert len(submits) == 1, f"the durable mutation was retried: {calls}"
+    assert not [c for c in calls if "booking-operations" in c[1]], (
+        "a definitive rejection must not trigger a status poll"
+    )
+
+    merged = AgentState(**{**state.model_dump(), **result})
+    assert merged.terminal_state is None, "a 4xx must not terminate in human_handoff"
+    assert route_after_submit_intent(merged) == "capture_fields"
+
+
+@pytest.mark.unit
+async def test_an_inconclusive_5xx_still_recovers_before_resubmitting() -> None:
+    """Inv-5 is intact for the case it exists for: an unknown outcome."""
+    calls: list[tuple[str, str]] = []
+    submitted = {"count": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.method, req.url.path))
+        if req.url.path == "/api/bookings":
+            submitted["count"] += 1
+            if submitted["count"] == 1:
+                return _json_response(503, {"error": "unavailable"})
+            return _json_response(
+                202,
+                {"status": "accepted", "ok": True, "correlation_id": "corr_001"},
+            )
+        # The operation genuinely is not there — the first attempt never landed.
+        return _json_response(404, {"error": "not_found"})
+
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(_bound_state())
+
+    assert [c[1] for c in calls].count("/api/bookings") == 2, (
+        "an inconclusive outcome must be resubmitted once the poll finds nothing"
+    )
+    assert any("booking-operations" in path for _, path in calls), (
+        "Inv-5: the status poll must happen BEFORE any resubmit"
+    )
+    assert result["terminal_state"] == "submitted"

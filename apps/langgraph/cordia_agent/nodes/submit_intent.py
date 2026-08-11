@@ -61,8 +61,45 @@ _CAPTURE_FIELDS_STATUSES: frozenset[str] = frozenset(
         "confirmation_invalid",
         "policy_failed",
         "idempotency_conflict",
+        # The generic mapping for a 4xx the API did not give a typed code for
+        # (400/401/403/422).  See _is_inconclusive: these are DEFINITIVE
+        # rejections and spec 03 §4.3 classifies them as recoverable.
+        "request_error",
+        "conflict",
     }
 )
+
+# Envelope statuses that mean "we do not know whether the mutation landed".
+# ONLY these justify the Inv-5 lost-response dance (poll the operation, then
+# resubmit the same durable mutation if it is not there).
+#
+# The bug this replaces: `_do_submit` treated *any* `env.ok == False` as a lost
+# response.  `map_http_error` maps 422 to the generic `request_error`, so a
+# server that had already read the payload and definitively refused it got a
+# GET that 404s, followed by a RESUBMIT of the identical payload, followed by
+# the identical 422 — and then `nonrecoverable` → `human_handoff`.  Two things
+# wrong with that: a pointless duplicate durable-mutation attempt against a
+# payload the server explicitly rejected, and a terminal handoff for a case
+# spec 03 §4.3 says is recoverable and routable back to `capture_fields`.
+_INCONCLUSIVE_STATUSES: frozenset[str] = frozenset(
+    {
+        "unavailable",  # transport failure, timeout, or 5xx
+        "rate_limited",  # 429: the request may or may not have been processed
+    }
+)
+
+
+def _is_inconclusive(status: str) -> bool:
+    """Whether *status* leaves the mutation's fate genuinely unknown (Inv-5).
+
+    A definitive rejection is not a lost response.  Recovery exists for the
+    case where the request may have been applied and we never saw the answer —
+    a timeout, a dropped connection, a 5xx.  A 422 means the server read the
+    payload and said no; polling for an operation it never created and then
+    sending the same payload again is duplicated work for a guaranteed
+    identical refusal.
+    """
+    return status in _INCONCLUSIVE_STATUSES
 
 
 async def submit_intent(state: AgentState) -> dict:
@@ -225,6 +262,7 @@ async def _do_submit(
         intent_id=rev.intent_id,
         intent_revision=rev.revision,
         intent_payload_hash=rev.payload_hash,
+        revision=rev,
         confirmation=conf,
     )
 
@@ -233,10 +271,13 @@ async def _do_submit(
 
     env = await get_single_flight().run(op_id, _factory)
 
-    # Check for lost / transport error response
-    if not env.ok:
+    # Lost-response recovery, and ONLY for genuinely inconclusive outcomes.
+    # A definitive 4xx skips straight to the status mapping below, which routes
+    # it back to capture_fields per spec 03 §4.3.
+    if not env.ok and _is_inconclusive(env.status):
         _log.warning(
-            "submit_intent: submit returned non-ok (status=%s) — attempting recovery",
+            "submit_intent: submit outcome inconclusive (status=%s) — attempting "
+            "recovery before any resubmit (Inv-5)",
             env.status,
         )
         recovery_env = await get_operation_status_call(op_id)
