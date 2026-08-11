@@ -67,8 +67,8 @@ public class TenantIsolationTests(PostgresFixture fixture)
     [Fact]
     public async Task TenantB_CannotReadTenantAsRows_ThroughTheAmbientFilter()
     {
-        var tenantA = $"t14-iso-a-{Guid.NewGuid():N}";
-        var tenantB = $"t14-iso-b-{Guid.NewGuid():N}";
+        var tenantA = TestIds.New("t14-iso-a");
+        var tenantB = TestIds.New("t14-iso-b");
 
         await using (var ctxA = fixture.CreateContext(tenantA))
         {
@@ -82,7 +82,7 @@ public class TenantIsolationTests(PostgresFixture fixture)
             ctxA.AuditEvents.Add(new AuditEvent
             {
                 TenantId = tenantA,
-                EventId = $"evt_{Guid.NewGuid():N}",
+                EventId = TestIds.New("evt_"),
                 EventType = "test.iso",
                 Actor = "system",
                 SubjectRef = "iso-sess",

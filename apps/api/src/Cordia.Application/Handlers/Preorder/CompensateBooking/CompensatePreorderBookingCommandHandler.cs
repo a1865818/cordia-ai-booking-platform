@@ -32,6 +32,7 @@ public sealed class CompensatePreorderBookingCommandHandler(
     IPreorderSagaRepository sagaRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    IOperationWorkItemRepository workItemRepo,
     ILogger<CompensatePreorderBookingCommandHandler> logger)
     : IRequestHandler<CompensatePreorderBookingCommand, Unit>
 {
@@ -58,6 +59,17 @@ public sealed class CompensatePreorderBookingCommandHandler(
         // booking is committed). The single combined outcome is owned by the terminal convert/cancel.
         await outboxRepo.AddAsync(PreorderSagaSupport.InReviewNotice(
             command.TenantId, command.SagaId, command.OperationId, now, command.CorrelationId), ct);
+
+        // The durable work item, in the SAME transaction as the state change (Inv-8 discipline).
+        //
+        // Without it this park was a silent dead end: the saga state changed, an audit row was
+        // appended, a neutral notice went out — and nothing that an operator or an alert reads was
+        // any different. The saga never auto-advances out of ManualReview, so a booking that was
+        // genuinely committed sat waiting for a conversation nobody knew to have.
+        await workItemRepo.TryAddOpenAsync(
+            PreorderSagaSupport.ManualReviewWorkItem(
+                command.TenantId, command.OperationId, command.SagaId, now), ct);
+
         await auditRepo.AddAsync(PreorderSagaSupport.Audit(
             command.TenantId, "preorder.manual_review", command.SagaId, command.OperationId, now,
             new { saga_id = command.SagaId, reason = "post_commit_failure" }), ct);

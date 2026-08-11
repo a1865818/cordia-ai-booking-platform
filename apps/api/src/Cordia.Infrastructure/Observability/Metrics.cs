@@ -69,6 +69,15 @@ public sealed class Metrics : IDisposable
     /// <summary>Capacity conditional-write race losses.</summary>
     public Counter<long> FulfillmentCapacityRaceLossTotal { get; }
 
+    /// <summary>Bookings held without a capacity check (no slot row for the derived key).</summary>
+    public Counter<long> FulfillmentCapacityUntrackedTotal { get; }
+
+    /// <summary>Un-erasable guest contact still held past its retention window.</summary>
+    public Counter<long> RetentionUnerasableContactTotal { get; }
+
+    /// <summary>Vendor catalogs stalled mid-ingestion past the threshold.</summary>
+    public Counter<long> MenuIngestionStalledTotal { get; }
+
     /// <summary>Capacity holds successfully acquired.</summary>
     public Counter<long> FulfillmentHoldAcquiredTotal { get; }
 
@@ -280,6 +289,18 @@ public sealed class Metrics : IDisposable
             MetricNames.FulfillmentAcceptedToBookedMs,
             unit: "ms",
             description: "Accepted-to-booked latency by provider.");
+
+        FulfillmentCapacityUntrackedTotal = Meter.CreateCounter<long>(
+            MetricNames.FulfillmentCapacityUntrackedTotal,
+            description: "Bookings held without a capacity check because no capacity_slots row exists for the derived key.");
+
+        RetentionUnerasableContactTotal = Meter.CreateCounter<long>(
+            MetricNames.RetentionUnerasableContactTotal,
+            description: "Intent revisions past retention still carrying guest contact that cannot be erased.");
+
+        MenuIngestionStalledTotal = Meter.CreateCounter<long>(
+            MetricNames.MenuIngestionStalledTotal,
+            description: "Vendor catalogs stuck in scanning/extracting past the stall threshold.");
 
         FulfillmentCapacityRaceLossTotal = Meter.CreateCounter<long>(
             MetricNames.FulfillmentCapacityRaceLossTotal,

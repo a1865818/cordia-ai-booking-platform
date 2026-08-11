@@ -50,24 +50,31 @@ public sealed class ManualReviewEscalator(
 
         var now = DateTimeOffset.UtcNow;
 
-        // Idempotency check (C11): if an open work item already exists for this operation,
-        // skip creating a second one.  The unique partial index (uq_open_work_item_per_operation)
-        // is the DB backstop, but checking here avoids a spurious constraint violation.
-        var existingWorkItem = await workItemRepo.GetOpenByOperationAsync(tenantId, operationId, ct);
-        if (existingWorkItem is null)
+        // Idempotency: at most one OPEN work item per operation.
+        //
+        // Read-then-insert is not enough, and the failure it leaves is not a duplicate row — the
+        // partial unique index (uq_open_work_item_per_operation) stops that. It is that a losing
+        // insert raises 23505, and PostgreSQL aborts the WHOLE ambient transaction on a constraint
+        // violation. This escalator runs INSIDE the caller's transaction, so the status transition,
+        // the outbox row and the audit event that were already written all roll back with it, and
+        // the operation is left un-escalated by a race whose correct outcome was "someone else
+        // already did it".
+        //
+        // TryAddOpenAsync lets the database absorb the conflict (ON CONFLICT DO NOTHING), so no
+        // exception is raised, the transaction stays clean, and a lost race is the benign no-op it
+        // should always have been. Same primitive and same reasoning as
+        // CapacitySlotRepository.TryAddAsync and IdempotencyRepository.ElectCreatorAsync.
+        await workItemRepo.TryAddOpenAsync(new OperationWorkItem
         {
-            await workItemRepo.AddAsync(new OperationWorkItem
-            {
-                TenantId = tenantId,
-                WorkItemId = $"wi_{Guid.NewGuid():N}",
-                OperationId = operationId,
-                Reason = reason,
-                State = "open",
-                SlaDeadline = slaDeadline,
-                CreatedAt = now,
-                Version = 0,
-            }, ct);
-        }
+            TenantId = tenantId,
+            WorkItemId = $"wi_{Guid.NewGuid():N}",
+            OperationId = operationId,
+            Reason = reason,
+            State = "open",
+            SlaDeadline = slaDeadline,
+            CreatedAt = now,
+            Version = 0,
+        }, ct);
 
         // Inv-8 / §17.5: "still confirming" notification — the operation is in_progress,
         // not booked or charged.  Emitted atomically with the ManualReview transition.

@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Generated;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Observability;
 using MediatR;
@@ -55,13 +56,14 @@ public sealed class GetOperationStatusQueryHandler(
                 "Unmapped OperationStatus — add it to the normalized-status projection."),
         };
 
-        // §6.1 terminal states: Booked, Rejected, Expired, Waitlisted, FailedFinal.
-        bool terminal = normalized is
-            NormalizedOperationStatusEnum.Booked or
-            NormalizedOperationStatusEnum.Rejected or
-            NormalizedOperationStatusEnum.Expired or
-            NormalizedOperationStatusEnum.Waitlisted or
-            NormalizedOperationStatusEnum.Failed;
+        // Terminality is asked of the state machine, and asked of the INTERNAL status.
+        //
+        // It was previously recomputed as a five-way pattern match over the NORMALIZED value — a
+        // second hand-written copy of a set spec 06 owns, one projection hop removed from the fact
+        // it was trying to state. The normalized enum is a lossy view built for the wire; deciding
+        // "has this ended" from it means the answer depends on the projection table staying in step
+        // with the edge map, which nothing enforced.
+        bool terminal = OperationStateMachine.IsTerminal(op.Status);
 
         var customerMessage = BuildCustomerMessage(normalized, op.StatusReason, op.CancellationRequestedAt, terminal);
 

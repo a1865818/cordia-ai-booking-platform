@@ -129,12 +129,19 @@ public class BookingOperationConcurrencyTests(PostgresFixture fixture)
         }
 
         // Wrong expected status (Validating) but matching version (0) → must NOT transition.
+        //
+        // The edge itself must be LEGAL (Validating → Rejected is in the §11 map). This test is
+        // about the STATUS GUARD — the row is Accepted, not Validating, so the predicate matches
+        // nothing — and it previously used Validating → Booked, which is not an edge at all. That
+        // passed only because the repository did not check; now that TryTransitionStatusAsync
+        // validates the edge, an illegal pair throws before the guard is ever exercised and the
+        // test would be asserting the wrong mechanism.
         await using (var ctx = fixture.CreateContext(tenantId))
         {
             var repo = new BookingOperationRepository(ctx);
             var rows = await repo.TryTransitionStatusAsync(
                 tenantId, operationId, expectedVersion: 0,
-                expectedStatus: OperationStatus.Validating, next: OperationStatus.Booked);
+                expectedStatus: OperationStatus.Validating, next: OperationStatus.Rejected);
             Assert.Equal(0, rows);
         }
 

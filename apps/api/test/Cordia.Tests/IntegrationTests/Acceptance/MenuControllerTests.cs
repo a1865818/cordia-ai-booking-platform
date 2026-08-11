@@ -19,7 +19,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
 {
     private async Task<string> SeedCatalogAsync(string tenantId, CatalogStatus status)
     {
-        var catalogId = $"cat-{Guid.NewGuid():N}";
+        var catalogId = TestIds.New("cat");
         await using var ctx = fixture.CreateContext(tenantId);
         ctx.VendorCatalogs.Add(new VendorCatalog
         {
@@ -36,7 +36,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Upload_Returns202_CreatesUploadedCatalog_AndEnqueuesIngest()
     {
-        var tenantId = $"acc-menu-up-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-up");
 
         var result = await fixture.Host.Scenario(x =>
         {
@@ -68,7 +68,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Review_DraftReady_Returns200()
     {
-        var tenantId = $"acc-menu-rv-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-rv");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.DraftReady);
 
         await fixture.Host.Scenario(x =>
@@ -90,7 +90,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task EditItems_InReview_Returns200_AndAppliesEdit()
     {
-        var tenantId = $"acc-menu-ed-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-ed");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
 
         // Seed a draft item (id namespaced as the ingestion handler does: {catalogId}:{itemId}).
@@ -141,7 +141,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     {
         // M5: an edit targeting an item id that matches no row in the editable catalog must SURFACE a
         // 404 (never silently succeed), so a stale/mistyped id fails loudly.
-        var tenantId = $"acc-menu-ed404-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-ed404");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
 
         await fixture.Host.Scenario(x =>
@@ -160,7 +160,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task EditItems_NotInReview_Returns409()
     {
-        var tenantId = $"acc-menu-edc-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-edc");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.DraftReady);
 
         await fixture.Host.Scenario(x =>
@@ -179,7 +179,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Approve_InReview_Returns200()
     {
-        var tenantId = $"acc-menu-ap-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-ap");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
 
         await fixture.Host.Scenario(x =>
@@ -202,7 +202,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Publish_Approved_Returns200()
     {
-        var tenantId = $"acc-menu-pb-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-pb");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.Approved);
 
         await fixture.Host.Scenario(x =>
@@ -224,7 +224,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Review_UnknownCatalog_Returns404()
     {
-        var tenantId = $"acc-menu-nf-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-nf");
 
         await fixture.Host.Scenario(x =>
         {
@@ -240,7 +240,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     [Fact]
     public async Task Approve_WrongStatus_Returns409()
     {
-        var tenantId = $"acc-menu-cf-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-cf");
         // Approve requires in_review; a draft_ready catalog is an illegal edge → 409.
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.DraftReady);
 
@@ -260,7 +260,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     {
         // GD-1 role matrix: menu lifecycle requires OWNER; an operator assertion is denied
         // with 403 (AuthorizationFailedException) and a deny audit, and nothing advances.
-        var tenantId = $"acc-menu-role-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-role");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
 
         await fixture.Host.Scenario(x =>
@@ -291,7 +291,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     {
         // Spec 14 §24.5 fail-closed: owner actions without X-Actor / X-Reason-Code are rejected
         // (400 from the command validator) — never silently attributed to a default "owner".
-        var tenantId = $"acc-menu-fc-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("acc-menu-fc");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.InReview);
 
         await fixture.Host.Scenario(x =>

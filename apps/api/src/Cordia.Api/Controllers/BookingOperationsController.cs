@@ -2,6 +2,9 @@
 using Cordia.Application.Handlers.BookingFulfillment.Cancellation;
 using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
+using Cordia.Application.Handlers.Console.ListOpenWorkItems;
+using Cordia.Application.Handlers.Console.ListOperations;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -27,6 +30,109 @@ namespace Cordia.Api.Controllers;
 [Route("api/booking-operations")]
 public class BookingOperationsController(IMediator mediator, ITenantContext tenant) : ControllerBase
 {
+    /// <summary>Default page size when the caller does not specify one.</summary>
+    public const int DefaultListLimit = 100;
+
+    /// <summary>
+    /// Lists booking operations for the console's Queue / Operations board, newest activity first.
+    ///
+    /// <paramref name="status"/> accepts repeated or comma-separated snake_case values from
+    /// the ratified 16-value set (D1, owner spec 06); an unknown value is a 400 rather than
+    /// being ignored, so a typo cannot silently widen the result to "everything".
+    /// <paramref name="needsAttention"/> is shorthand for the states that are waiting on a
+    /// person or have stopped making progress on their own.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(ListOperationsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListOperationsResponse>> List(
+        [FromQuery(Name = "status")] string[]? status,
+        [FromQuery(Name = "needs_attention")] bool? needsAttention,
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var requested = (status ?? [])
+            .SelectMany(s => s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToArray();
+
+        var parsed = new List<OperationStatus>(requested.Length);
+        var unknown = new List<string>();
+        foreach (var value in requested)
+        {
+            if (OperationStatusNames.TryParse(value, out var operationStatus))
+                parsed.Add(operationStatus);
+            else
+                unknown.Add(value);
+        }
+
+        if (unknown.Count > 0)
+        {
+            ModelState.AddModelError(
+                "status",
+                $"Unknown operation status: {string.Join(", ", unknown)}. Valid values: {string.Join(", ", OperationStatusNames.All)}.");
+            return ValidationProblem(ModelState);
+        }
+
+        if (needsAttention == true)
+            parsed.AddRange(ListOperationsQueryHandler.NeedsAttention);
+
+        var operations = await mediator.Send(
+            new ListOperationsQuery(tenant.TenantId, parsed.Distinct().ToArray(), limit ?? DefaultListLimit),
+            ct);
+
+        return Ok(new ListOperationsResponse(
+            operations.Select(o => new OperationSummaryView(
+                o.OperationId,
+                o.BookingId,
+                o.IntentId,
+                o.IntentRevision,
+                EnumWireNames.ToWireName(o.OperationType),
+                OperationStatusNames.ToWireName(o.Status),
+                o.StatusReason,
+                o.IsPreorder,
+                o.CorrelationId,
+                o.CreatedAt,
+                o.UpdatedAt)).ToList()));
+    }
+
+    /// <summary>
+    /// Lists the OPEN manual-recovery work items for this tenant, most overdue first.
+    ///
+    /// <para>The queue an operator works through. Every path that gives up on an operation — an
+    /// ambiguous provider cancel, an exhausted retry budget, a poison message, an SLA breach, a
+    /// parked pre-order whose booking already committed — durably opens a work item carrying a
+    /// reason and an SLA deadline. Until this endpoint there was no way to read them: the only
+    /// readers were two cross-tenant aggregates feeding metrics gauges, so the manual-review depth
+    /// could be seen rising without anyone being able to see what was in it.</para>
+    ///
+    /// <para>Ordered by SLA deadline rather than creation time, because different reasons carry
+    /// different deadlines and "most overdue" is the order the work should be done in.</para>
+    /// </summary>
+    [HttpGet("work-items")]
+    [ProducesResponseType(typeof(ListWorkItemsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ListWorkItemsResponse>> ListWorkItems(
+        [FromQuery(Name = "limit")] int? limit,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var items = await mediator.Send(
+            new ListOpenWorkItemsQuery(tenant.TenantId, limit ?? DefaultListLimit), ct);
+
+        return Ok(new ListWorkItemsResponse(
+            items.Select(w => new OperationWorkItemView(
+                w.WorkItemId,
+                w.OperationId,
+                w.Reason,
+                w.SlaDeadline,
+                w.Assignee,
+                w.CreatedAt,
+                w.OperationStatus is null ? null : OperationStatusNames.ToWireName(w.OperationStatus.Value))).ToList()));
+    }
+
     /// <summary>Returns the current status of the given booking operation, or 404 if not found.</summary>
     [HttpGet("{operationId}")]
     [ProducesResponseType(typeof(OperationStatusView), StatusCodes.Status200OK)]
@@ -268,3 +374,41 @@ public sealed record AlternativesRequest(
     // Parameterless ctor for model binding.
     public AlternativesRequest() : this(string.Empty) { }
 }
+
+/// <summary>One row of the console's operations board.</summary>
+public sealed record OperationSummaryView(
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_id")] string OperationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("booking_id")] string? BookingId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("intent_id")] string IntentId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("intent_revision")] int IntentRevision,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_type")] string OperationType,
+    [property: System.Text.Json.Serialization.JsonPropertyName("status")] string Status,
+    [property: System.Text.Json.Serialization.JsonPropertyName("status_reason")] string? StatusReason,
+    [property: System.Text.Json.Serialization.JsonPropertyName("is_preorder")] bool IsPreorder,
+    [property: System.Text.Json.Serialization.JsonPropertyName("correlation_id")] string? CorrelationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("created_at")] System.DateTimeOffset CreatedAt,
+    [property: System.Text.Json.Serialization.JsonPropertyName("updated_at")] System.DateTimeOffset UpdatedAt);
+
+public sealed record ListOperationsResponse(
+    [property: System.Text.Json.Serialization.JsonPropertyName("operations")]
+    IReadOnlyList<OperationSummaryView> Operations);
+
+/// <summary>
+/// An open manual-recovery work item (spec 06 §17.5, FM#11).
+///
+/// <c>operation_status</c> is the operation's status RIGHT NOW, not when the item was raised — a
+/// work item stays open until a person closes it, so the operation may have moved or finished since.
+/// It is null when the linked operation is not visible to this tenant.
+/// </summary>
+public sealed record OperationWorkItemView(
+    [property: System.Text.Json.Serialization.JsonPropertyName("work_item_id")] string WorkItemId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_id")] string OperationId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("reason")] string Reason,
+    [property: System.Text.Json.Serialization.JsonPropertyName("sla_deadline")] System.DateTimeOffset SlaDeadline,
+    [property: System.Text.Json.Serialization.JsonPropertyName("assignee")] string? Assignee,
+    [property: System.Text.Json.Serialization.JsonPropertyName("created_at")] System.DateTimeOffset CreatedAt,
+    [property: System.Text.Json.Serialization.JsonPropertyName("operation_status")] string? OperationStatus);
+
+public sealed record ListWorkItemsResponse(
+    [property: System.Text.Json.Serialization.JsonPropertyName("work_items")]
+    IReadOnlyList<OperationWorkItemView> WorkItems);

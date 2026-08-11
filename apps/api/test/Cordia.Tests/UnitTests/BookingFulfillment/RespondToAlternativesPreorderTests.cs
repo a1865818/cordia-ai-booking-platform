@@ -31,8 +31,11 @@ public class RespondToAlternativesPreorderTests
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
 
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
+
     private RespondToAlternativesCommandHandler CreateHandler() =>
-        new(_opRepo.Object, _outboxRepo.Object, _auditRepo.Object, _uow.Object);
+        new(_opRepo.Object, _outboxRepo.Object, _auditRepo.Object, _bookingRepo.Object,
+            _uow.Object);
 
     private static BookingOperation PreorderOp() => new()
     {

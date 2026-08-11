@@ -154,6 +154,49 @@ public static class PreorderSagaSupport
     /// <c>"system"</c> for automated steps; pass the operator identity for human-initiated resolutions
     /// (convert/cancel) so the audit trail attributes the action to the real actor.
     /// </summary>
+    /// <summary>
+    /// How long a parked pre-order may sit before it is overdue.
+    ///
+    /// <para>Longer than an internal review's hour because §21.4 resolution is not something an
+    /// operator can do alone — it needs the CUSTOMER to agree to convert the pre-order to a
+    /// standalone order or to cancel it. The deadline is when someone should be chased, not when the
+    /// saga does anything on its own; it never auto-advances.</para>
+    /// </summary>
+    public static readonly TimeSpan ManualReviewSla = TimeSpan.FromHours(4);
+
+    /// <summary>
+    /// The durable work item for a saga parked in <see cref="PreorderSagaState.ManualReview"/>.
+    ///
+    /// <para><b>Why a work item and not just the audit event.</b> Both routes into this state
+    /// (post-commit compensation, and reconcile giving up) wrote an audit row and an "under review"
+    /// notice and stopped there. Audit events are an append-only history — nothing queries them for
+    /// outstanding work, they carry no SLA deadline and no assignee, and they are not counted by the
+    /// <c>fulfillment.manual_review.depth</c> gauge. So a pre-order with a COMMITTED booking, parked
+    /// pending a conversation with the customer, was invisible to every surface an operator or an
+    /// alert actually looks at: it had a state in the database and nothing that would ever surface
+    /// it. The saga never auto-advances out, so nothing would have raised it later either.</para>
+    ///
+    /// <para>Keyed to the 06 operation id because that is what <c>operations_work_items</c> is keyed
+    /// by (and its FK requires a real operation row — which exists by this point, since the saga
+    /// reached <c>CommittingBooking</c> to get here). The reason string carries the saga.</para>
+    /// </summary>
+    public static OperationWorkItem ManualReviewWorkItem(
+        string tenantId,
+        string operationId,
+        string sagaId,
+        DateTimeOffset now)
+        => new()
+        {
+            TenantId = tenantId,
+            WorkItemId = $"wi_{Guid.NewGuid():N}",
+            OperationId = operationId,
+            Reason = $"preorder_manual_review:{sagaId}",
+            State = "open",
+            SlaDeadline = now + ManualReviewSla,
+            CreatedAt = now,
+            Version = 0,
+        };
+
     public static AuditEvent Audit(
         string tenantId, string eventType, string sagaId, string operationId,
         DateTimeOffset now, object? metadata = null, string actor = "system")

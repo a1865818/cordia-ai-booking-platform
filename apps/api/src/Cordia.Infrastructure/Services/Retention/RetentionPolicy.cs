@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 
 namespace Cordia.Infrastructure.Services.Retention;
 
@@ -17,15 +18,27 @@ namespace Cordia.Infrastructure.Services.Retention;
 public static class RetentionPolicy
 {
     /// <summary>
-    /// Terminal operation statuses: no open work or dispute window → safe to prune (Inv-14).
+    /// Statuses whose rows are safe to physically prune: no open work, no dispute window (Inv-14).
+    ///
+    /// <para><b>"Prunable", not "terminal" — the rename is the point.</b> This set used to be called
+    /// <c>TerminalStatuses</c> and excluded <see cref="OperationStatus.Waitlisted"/>, which reads as
+    /// drift from <see cref="OperationStateMachine.TerminalStates"/> and invites someone to "fix" it
+    /// by adding the missing member. It is not drift: a waitlisted operation IS terminal to spec 06
+    /// and still has a LIVE enrollment that can be matched and offered later, so its data must
+    /// survive. Two different questions were wearing one word.</para>
+    ///
+    /// <para>Now derived from the spec-06 set minus that one documented exclusion, so the shared
+    /// half cannot drift while the difference stays explicit and explained.</para>
+    ///
+    /// <para>An ARRAY because callers building EF queries need it: <c>Contains</c> on an array
+    /// translates to SQL <c>= ANY</c>, so the filter runs in the database instead of after every
+    /// candidate row has been dragged into memory. <see cref="Prunable"/> keeps the O(1) membership
+    /// test for in-memory callers.</para>
     /// </summary>
-    private static readonly HashSet<OperationStatus> Terminal = new()
-    {
-        OperationStatus.Booked,
-        OperationStatus.Rejected,
-        OperationStatus.Expired,
-        OperationStatus.FailedFinal,
-    };
+    public static readonly OperationStatus[] PrunableStatuses =
+        [.. OperationStateMachine.TerminalStates.Where(s => s != OperationStatus.Waitlisted)];
+
+    private static readonly HashSet<OperationStatus> Prunable = [.. PrunableStatuses];
 
     /// <summary>
     /// Returns <c>true</c> when the record is eligible for physical deletion:
@@ -42,10 +55,16 @@ public static class RetentionPolicy
         DateTimeOffset now,
         OperationStatus? linkedStatus)
         => retentionDeadline < now
-           && (linkedStatus is null || Terminal.Contains(linkedStatus.Value));
+           && (linkedStatus is null || Prunable.Contains(linkedStatus.Value));
 
-    /// <summary>Returns <c>true</c> when <paramref name="status"/> is a terminal operation status.</summary>
-    public static bool IsTerminal(OperationStatus status) => Terminal.Contains(status);
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="status"/>'s rows may be physically pruned.
+    ///
+    /// <para>Deliberately NOT named <c>IsTerminal</c>: <see cref="OperationStateMachine.IsTerminal"/>
+    /// answers a different question and gives a different answer for
+    /// <see cref="OperationStatus.Waitlisted"/>. See <see cref="PrunableStatuses"/>.</para>
+    /// </summary>
+    public static bool IsPrunable(OperationStatus status) => Prunable.Contains(status);
 
     // ── Spec 14 retention windows (Stage-3 gate decision 2026-07-09) ──────────────
     // Deployment-configurable defaults; jurisdiction-specific values remain an open

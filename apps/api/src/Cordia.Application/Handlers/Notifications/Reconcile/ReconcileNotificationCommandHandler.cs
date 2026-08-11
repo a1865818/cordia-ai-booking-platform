@@ -31,6 +31,7 @@ namespace Cordia.Application.Handlers.Notifications.Reconcile;
 /// <c>IUnitOfWork.ExecuteInTransactionAsync</c>.</para>
 /// </summary>
 public sealed class ReconcileNotificationCommandHandler(
+    INotificationRecipientResolver recipientResolver,
     INotificationRepository repo,
     IEnumerable<INotificationProviderAdapter> adapters,
     IAuditEventRepository auditRepo,
@@ -168,14 +169,36 @@ public sealed class ReconcileNotificationCommandHandler(
             // NOTE: reconcile resends always use the original provider_idempotency_key so that
             //       providers with send-idempotency can deduplicate the re-attempt correctly.
             var reconcileTemplate = await templateResolver.ResolveAsync(n.EventType, n.Channel, "en", ct2);
+            // As in the retry path: the destination is never persisted, so a reconcile resend
+            // re-resolves it through the same resolver instead of sending with nowhere to deliver.
+            //
+            // A null OperationId is NOT "no recipient" — spec 10 ratifies it as "null for
+            // non-operation messages", and every waitlist offer/expiry row has one because its
+            // op_wl_* operation does not exist until the offer is accepted. Gating resolution on it
+            // alone meant an ambiguous waitlist send could never recover: it fell straight to
+            // `no_destination` → InvalidRecipient, which is TERMINAL, so a guest the provider had
+            // actually reached was permanently recorded as unreachable and the offer was never
+            // re-attempted. The enrollment id on correlation_id is the durable link back to them.
+            //
+            // Fails closed: a correlation id that is not an enrollment resolves to null and the
+            // no-destination guard below behaves exactly as it does today.
+            var reconcileRecipient = await ResolveDestinationAsync(n, ct2);
             var rendered = new RenderedMessage(
                 TemplateVersion: n.TemplateVersion,
                 Channel: n.Channel,
                 Locale: "en",
                 Body: reconcileTemplate.BodyTemplate,
-                MinimizedRecipient: n.RecipientRef);
+                MinimizedRecipient: n.RecipientRef,
+                Destination: reconcileRecipient?.Destination);
 
-            var result = await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct2);
+            // Same guard as the send and retry paths: a resend with nowhere to deliver must not
+            // report a delivery it did not make (Inv-16).
+            var result = reconcileRecipient?.Destination is null
+                ? new NotificationSendResult(
+                    NotificationSendOutcome.InvalidRecipient,
+                    ProviderMessageId: null,
+                    FailureCategory: "no_destination")
+                : await adapter.SendAsync(n.ProviderIdempotencyKey!, rendered, ct2);
 
             switch (result.Outcome)
             {
@@ -279,6 +302,34 @@ public sealed class ReconcileNotificationCommandHandler(
         }, ct);
 
         return outcome;
+    }
+
+    /// <summary>
+    /// The destination for a resend, from whichever link the row actually carries: the booking
+    /// operation when there is one, else the enrollment id on <c>correlation_id</c> for a waitlist
+    /// offer/expiry (whose <c>op_wl_*</c> id is deliberately not persisted — spec 10).
+    ///
+    /// <para><b>The enrollment branch is gated on the EVENT TYPE, not merely on a null operation.</b>
+    /// <c>correlation_id</c> is a generic, unvalidated column: today only the two waitlist events
+    /// can produce a null-operation row and both set it to an enrollment id, but that is a property
+    /// of two lines in a DI registration file, enforced by nothing. Left ungated, the first future
+    /// <c>RequiresOperation: false</c> registration — or any producer that puts a trace id there —
+    /// would have its notification resolve a destination from an unrelated enrollment and text a
+    /// stranger. Naming the event types makes the safety a rule instead of a coincidence.</para>
+    /// </summary>
+    private async Task<ResolvedRecipient?> ResolveDestinationAsync(
+        Notification n,
+        CancellationToken ct)
+    {
+        if (n.OperationId is not null)
+            return await recipientResolver.ResolveAsync(n.TenantId, n.OperationId, ct);
+
+        if (n.EventType is not (NotificationEvent.WaitlistOffer or NotificationEvent.WaitlistOfferExpired))
+            return null;
+
+        return string.IsNullOrWhiteSpace(n.CorrelationId)
+            ? null
+            : await recipientResolver.ResolveByEnrollmentAsync(n.TenantId, n.CorrelationId, ct);
     }
 
     private Task EmitAuditAsync(

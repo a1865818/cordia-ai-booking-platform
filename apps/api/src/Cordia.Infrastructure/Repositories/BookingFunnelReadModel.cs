@@ -1,4 +1,6 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Reporting;
 using Cordia.Infrastructure.EntityFramework;
@@ -20,17 +22,14 @@ namespace Cordia.Infrastructure.Repositories;
 /// </summary>
 public class BookingFunnelReadModel(ApplicationDbContext db) : IBookingFunnelReadModel
 {
-    // Terminal-failure statuses (conservative: only states whose name clearly denotes a
-    // customer-visible failure outcome, per spec 13 §5.3 and the OperationStatus enum).
-    // Booked is NOT a failure.  Reconciling is ambiguous, not terminal.
-    // Waitlisted and AlternativesRequired are informational terminals, not "failures" in the
-    // product-reporting sense — excluded to stay conservative (spec says "terminal failure").
+    // Terminal-failure statuses (spec 13 §5.3): Booked is NOT a failure; Reconciling is ambiguous,
+    // not terminal; Waitlisted is an informational terminal, not a failure in the product-reporting
+    // sense.
+    //
+    // MATERIALISED from the state machine, which owns that classification, rather than restated
+    // here — an array because EF translates array.Contains into SQL `= ANY`.
     private static readonly OperationStatus[] TerminalFailureStatuses =
-    [
-        OperationStatus.Rejected,
-        OperationStatus.FailedFinal,
-        OperationStatus.Expired,
-    ];
+        [.. OperationStateMachine.TerminalFailureStates];
 
     /// <inheritdoc/>
     public async Task<BookingFunnel> GetFunnelAsync(
@@ -52,6 +51,8 @@ public class BookingFunnelReadModel(ApplicationDbContext db) : IBookingFunnelRea
                 ct);
 
         // --- confirmed: Status == Booked in the window ---
+        // A cancellation also terminates at `Booked` (D1 has no cancelled operation status), so
+        // it must be excluded or cancelling a booking would RAISE the confirmed figure.
         var confirmed = await db.BookingOperations
             .AsNoTracking()
             .IgnoreQueryFilters()
@@ -59,7 +60,8 @@ public class BookingFunnelReadModel(ApplicationDbContext db) : IBookingFunnelRea
                 o => o.TenantId == tenantId
                      && o.CreatedAt >= from
                      && o.CreatedAt < to
-                     && o.Status == OperationStatus.Booked,
+                     && o.Status == OperationStatus.Booked
+                     && o.OperationType != OperationTypeEnum.Cancel,
                 ct);
 
         // --- notified: Booked operations with a Delivered notification ---
@@ -72,7 +74,8 @@ public class BookingFunnelReadModel(ApplicationDbContext db) : IBookingFunnelRea
             .Where(o => o.TenantId == tenantId
                         && o.CreatedAt >= from
                         && o.CreatedAt < to
-                        && o.Status == OperationStatus.Booked)
+                        && o.Status == OperationStatus.Booked
+                        && o.OperationType != OperationTypeEnum.Cancel)
             .Join(
                 db.Notifications
                     .AsNoTracking()

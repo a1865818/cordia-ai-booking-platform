@@ -48,7 +48,47 @@ public class ResumeWorkflowStepCommandHandlerTests
             IntentRevision = 1,
             Status = status,
             Version = version,
+            // EXPLICIT. `OperationTypeEnum.Cancel` is the zero value, so leaving this unset made
+            // every one of these tests silently exercise a cancellation while reading as a
+            // generic operation — which matters now that cancel/modify/reschedule take a
+            // different manual-recovery path from a create.
+            OperationType = Domain.Generated.OperationTypeEnum.Create,
         };
+
+    /// <summary>
+    /// A mutation cannot be resumed, because resuming it is a loop rather than a recovery.
+    ///
+    /// <para>Resume means ManualReview → Reconciling, and the reconcile handler sends
+    /// cancel/modify/reschedule straight back to ManualReview on sight — its lookup is
+    /// create-shaped and cannot establish whether a cancellation landed or an amendment applied.
+    /// The operator would press Resume and watch the row return unchanged, forever. Refused with a
+    /// message naming the door that does work.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(Domain.Generated.OperationTypeEnum.Cancel)]
+    [InlineData(Domain.Generated.OperationTypeEnum.Modify)]
+    [InlineData(Domain.Generated.OperationTypeEnum.Reschedule)]
+    public async Task Handle_MutationOperation_RefusesResumeInsteadOfLooping(
+        Domain.Generated.OperationTypeEnum operationType)
+    {
+        const string tenantId = "t-resume-mut";
+        const string operationId = "op-resume-mut";
+
+        var op = MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 3);
+        op.OperationType = operationType;
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+
+        await Assert.ThrowsAsync<OperationConflictException>(() =>
+            CreateHandler().Handle(
+                new ResumeWorkflowStepCommand(tenantId, operationId, "rpl_mut", "ops", "rc_test", "operator"),
+                CancellationToken.None));
+
+        // It never left ManualReview, so there is nothing for the reconcile guard to bounce back.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            OperationStatus.ManualReview, OperationStatus.Reconciling,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 
     // ── Happy path: ManualReview → Reconciling + outbox + audit ─────────────────────────────
 

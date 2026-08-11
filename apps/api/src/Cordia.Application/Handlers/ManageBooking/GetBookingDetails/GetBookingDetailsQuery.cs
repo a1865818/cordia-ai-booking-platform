@@ -35,12 +35,18 @@ public sealed class GetBookingDetailsQueryHandler(
         if (projection is null)
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.NotFound, null);
 
-        var minimal = ManageBookingMapper.ToContract(projection);
+        // The optimistic-concurrency token callers must echo back as expected_booking_version
+        // lives on the bookings row, not on the operation (spec 08 §9.4.8). Without it there is
+        // no way for a client to issue a modify/cancel that is not guaranteed to 409, so it is
+        // part of the minimal projection. It is null when no authoritative row exists yet
+        // (e.g. an operation still in flight), which callers must treat as "not modifiable yet".
+        var authoritative = await bookings.GetByIdAsync(request.TenantId, projection.BookingId, ct);
+
+        var minimal = ManageBookingMapper.ToContract(projection, authoritative?.Version);
         var grantId = string.IsNullOrWhiteSpace(request.GrantId) ? null : request.GrantId;
         if (grantId is null)
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.Ok, minimal);
 
-        var authoritative = await bookings.GetByIdAsync(request.TenantId, projection.BookingId, ct);
         if (authoritative is null || string.IsNullOrWhiteSpace(authoritative.CustomerId))
             return new GetBookingDetailsResult(GetBookingDetailsStatusEnum.RequiresVerification, minimal);
 

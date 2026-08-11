@@ -33,8 +33,21 @@ file sealed class NoCapacityReservation : ICapacityReservation
     public Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
         => Task.FromResult(0);
 
+    public Task<int> ReleaseFinalizedByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default)
+        => Task.FromResult(0);
+
     public Task<FinalizeOutcome> FinalizeAgainstOperationAsync(string tenantId, string operationId, string workflowStep, CancellationToken ct = default)
         => Task.FromResult(FinalizeOutcome.NotTracked);
+
+    public Task<bool> AbsorbSameSlotAsync(
+        string tenantId,
+        string previousOperationId,
+        string newOperationId,
+        string workflowStep,
+        string slotId,
+        int totalCapacity,
+        CancellationToken ct = default) => Task.FromResult(false);
+
 }
 
 // ── Fake booking provider adapter ────────────────────────────────────────────────────────────
@@ -64,6 +77,11 @@ file sealed class T6FixedResultAdapter : IBookingProviderAdapter
 
     public Task<ProviderResult> GetStatusAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+    public Task<ProviderResult> ModifyBookingAsync(
+        string providerAccount, string providerReference, ProviderBookingRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.Created, providerReference));
 
     public Task<ProviderResult> CancelBookingAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
@@ -98,6 +116,11 @@ file sealed class T6FakeAdapter : IBookingProviderAdapter
 
     public Task<ProviderResult> GetStatusAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+
+    public Task<ProviderResult> ModifyBookingAsync(
+        string providerAccount, string providerReference, ProviderBookingRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(new ProviderResult(ProviderResultKind.Created, providerReference));
 
     public Task<ProviderResult> CancelBookingAsync(string account, string reference, CancellationToken ct = default)
         => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));

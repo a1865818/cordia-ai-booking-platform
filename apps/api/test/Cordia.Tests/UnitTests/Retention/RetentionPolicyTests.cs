@@ -41,7 +41,7 @@ public class RetentionPolicyTests
     [InlineData(OperationStatus.Expired)]
     [InlineData(OperationStatus.FailedFinal)]
     public void IsTerminal_ReturnsTrueForTerminalStatuses(OperationStatus status)
-        => Assert.True(RetentionPolicy.IsTerminal(status));
+        => Assert.True(RetentionPolicy.IsPrunable(status));
 
     // (6) IsTerminal sanity: non-terminal statuses are not terminal.
     [Theory]
@@ -49,5 +49,5 @@ public class RetentionPolicyTests
     [InlineData(OperationStatus.ManualReview)]
     [InlineData(OperationStatus.Reconciling)]
     public void IsTerminal_ReturnsFalseForNonTerminalStatuses(OperationStatus status)
-        => Assert.False(RetentionPolicy.IsTerminal(status));
+        => Assert.False(RetentionPolicy.IsPrunable(status));
 }

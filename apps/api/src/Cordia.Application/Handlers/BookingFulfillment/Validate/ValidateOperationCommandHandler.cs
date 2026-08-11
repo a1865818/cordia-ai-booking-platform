@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
 
@@ -33,6 +34,7 @@ public sealed class ValidateOperationCommandHandler(
     IValidationPolicy validationPolicy,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    IBookingRepository bookingRepo,
     IUnitOfWork uow)
     : IRequestHandler<ValidateOperationCommand, StepOutcome>
 {
@@ -75,23 +77,23 @@ public sealed class ValidateOperationCommandHandler(
             }
 
             // Create-or-skip the "validate" workflow step (internal step, no external call).
-            var existingStep = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, "validate", ct2);
-            if (existingStep is null)
+            //
+            // The step insert shares this transaction with the Accepted→Validating transition above,
+            // so a losing read-then-add did not just fail to reuse the winner's step — its 23505
+            // aborted the transition too, and the operation rolled back to Accepted.
+            var now = DateTimeOffset.UtcNow;
+            await stepRepo.GetOrAddAsync(new WorkflowStep
             {
-                var now = DateTimeOffset.UtcNow;
-                await stepRepo.AddAsync(new WorkflowStep
-                {
-                    TenantId = tenantId,
-                    WorkflowStepId = $"ws_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    StepType = "validate",
-                    Status = WorkflowStepStatus.Succeeded,
-                    AttemptCount = 0,
-                    Version = 0,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                }, ct2);
-            }
+                TenantId = tenantId,
+                WorkflowStepId = $"ws_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                StepType = "validate",
+                Status = WorkflowStepStatus.Succeeded,
+                AttemptCount = 0,
+                Version = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }, ct2);
 
             // Step 2: Validating → ReservingCapacity.
             // Read fresh to get the current version (may have been bumped by step 1 above).
@@ -174,6 +176,13 @@ public sealed class ValidateOperationCommandHandler(
 
                     var nowR = DateTimeOffset.UtcNow;
 
+                    // A rejected MUTATION must give the booking row its lifecycle back. Rejected is
+                    // terminal, so nothing downstream will ever revisit it: without this a modify
+                    // refused by policy left the booking at ModificationPending permanently while
+                    // the operation read `rejected`.
+                    await BookingPendingLifecycle.RevertOnFailureAsync(
+                        bookingRepo, tenantId, afterValidating, nowR, ct2);
+
                     // Spec 11 §5.3 / Inv-8: a pre-order operation signals the saga (booking_failed,
                     // reason from the policy) so it compensates the reserved items and emits the
                     // ONE combined outcome; a normal operation keeps the customer-facing rejected
@@ -213,10 +222,17 @@ public sealed class ValidateOperationCommandHandler(
                     return;
                 }
 
+                // Spec 08 §5.3: a cancellation undoes an existing booking, so it reserves no
+                // capacity and holds nothing — it goes straight to Finalizing, where the cancel
+                // step calls the provider. Routing it through ReservingCapacity would reserve a
+                // slot for an operation whose whole purpose is to give one back.
+                var isCancel = afterValidating.OperationType == OperationTypeEnum.Cancel;
+                var next = isCancel ? OperationStatus.Finalizing : OperationStatus.ReservingCapacity;
+
                 var rows3 = await opRepo.TryTransitionStatusAsync(
                     tenantId, operationId, afterValidating.Version,
-                    OperationStatus.Validating, OperationStatus.ReservingCapacity,
-                    reason: "validated", ct: ct2);
+                    OperationStatus.Validating, next,
+                    reason: isCancel ? "validated_cancel" : "validated", ct: ct2);
                 if (rows3 == 0)
                 {
                     result = StepOutcome.Continue;

@@ -939,6 +939,19 @@
           "default": null,
           "description": "Number of people in the booking if available.",
           "title": "Party Size"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optimistic-concurrency token for the booking row.  Pass it back as `expected_booking_version` on modify/cancel (spec 08 \u00a79.4.8); a stale value is rejected with 409 stale_version rather than overwriting a concurrent change.  None when the caller is not authorized to see the authoritative row.",
+          "title": "Version"
         }
       },
       "required": [
@@ -1057,6 +1070,18 @@
           ],
           "default": null,
           "description": "Immutable pre-order reference, or None when no pre-order."
+        },
+        "customer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CustomerRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Guest reference (spec 04 \u00a74.2); None when the guest is unknown."
         },
         "target_booking_id": {
           "anyOf": [
@@ -1660,6 +1685,19 @@
           "default": null,
           "description": "E.164 phone; plain str (no pattern).",
           "title": "Phone E164"
+        },
+        "contact_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opaque handle to contact details held out-of-band in `guest_contacts`. Preferred over the inline fields on the canonical payload: the payload is hashed and immutable, so anything inline can never be erased without breaking the idempotency chain (Inv-2/3). A ref is erasable by deleting one row.",
+          "title": "Contact Ref"
         }
       },
       "title": "CustomerRef",

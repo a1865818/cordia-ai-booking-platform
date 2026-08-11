@@ -27,6 +27,7 @@ public sealed class ReconcilePreorderSagaCommandHandler(
     IBookingOperationRepository opRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    IOperationWorkItemRepository workItemRepo,
     ILogger<ReconcilePreorderSagaCommandHandler> logger)
     : IRequestHandler<ReconcilePreorderSagaCommand, Unit>
 {
@@ -40,14 +41,23 @@ public sealed class ReconcilePreorderSagaCommandHandler(
     /// </summary>
     public static readonly TimeSpan CommitStuckEscalationAfter = TimeSpan.FromMinutes(30);
 
-    /// <summary>06 operation states that are a terminal FAILURE for a delegated pre-order booking.</summary>
-    private static readonly HashSet<OperationStatus> _terminalFailureStates =
-    [
-        OperationStatus.FailedFinal,
-        OperationStatus.Rejected,
-        OperationStatus.Expired,
-        OperationStatus.AlternativesRequired, // no-capacity for a pre-order op (High #3) — not customer-recoverable
-    ];
+    /// <summary>
+    /// 06 operation states that are a terminal FAILURE for a delegated pre-order booking.
+    ///
+    /// <para><b>Asked of the state machine plus a short, named delta</b> — not a flat hand-copy.
+    /// This was the same shape <c>ReconcileWaitlistAcceptCommandHandler</c> already removed once,
+    /// where the private copy silently missed states the enum had and re-probed them forever.
+    /// Spec 06 owns which statuses are a terminal failure; the only thing this handler is entitled
+    /// to add is what is terminal <i>for a delegated pre-order specifically</i>.</para>
+    ///
+    /// <para><c>AlternativesRequired</c> is that one addition: 06 treats it as a wait state because a
+    /// customer can pick an alternative, but nobody is going to pick one on behalf of a pre-order
+    /// saga, so for this reconciler it is an ending. Stated as an exception with a reason rather
+    /// than folded silently into a list.</para>
+    /// </summary>
+    private static bool IsTerminalFailureForPreorder(OperationStatus status)
+        => OperationStateMachine.IsTerminalFailure(status)
+           || status == OperationStatus.AlternativesRequired;
 
     /// <summary>
     /// Maps a resumable saga-owned state to the step message type that re-drives it. The dead
@@ -75,11 +85,12 @@ public sealed class ReconcilePreorderSagaCommandHandler(
             return Unit.Value;
         }
 
-        if (saga.SagaState is PreorderSagaState.Completed
-            or PreorderSagaState.FailedFinal
-            or PreorderSagaState.ManualReview)
+        // Asked of the saga's own definition. `ManualReview` is NOT terminal (§21.4 gives it two
+        // operator-driven edges out), but no automatic step will move it, so a reconciler must stop
+        // — which is exactly the distinction `IsResolvedForReconcile` names.
+        if (PreorderSagaStateMachine.IsResolvedForReconcile(saga.SagaState))
         {
-            return Unit.Value; // already terminal — nothing to recover
+            return Unit.Value; // ended, or parked awaiting a human — nothing to recover
         }
 
         // Waiting on the spec-06 engine (divergence #2). The saga advances only on the 06→saga
@@ -117,7 +128,7 @@ public sealed class ReconcilePreorderSagaCommandHandler(
                 return Unit.Value;
             }
 
-            if (op is not null && op.TenantId == command.TenantId && _terminalFailureStates.Contains(op.Status))
+            if (op is not null && op.TenantId == command.TenantId && IsTerminalFailureForPreorder(op.Status))
             {
                 // Booking terminally failed but the signal was lost → re-emit booking_failed so the saga
                 // compensates the reserved items and surfaces the one combined outcome.
@@ -251,6 +262,18 @@ public sealed class ReconcilePreorderSagaCommandHandler(
                     command.TenantId, command.SagaId, command.OperationId, $"reconcile_{next}", now, command.CorrelationId)
                 : PreorderSagaSupport.InReviewNotice(
                     command.TenantId, command.SagaId, command.OperationId, now, command.CorrelationId), ct);
+
+        // A park needs a durable, queryable work item; a terminal failure does not — nobody has to
+        // do anything about FailedFinal, whereas ManualReview is defined by waiting for someone.
+        // Same transaction as the state change, so the tracking cannot exist without the park or
+        // the park without the tracking.
+        if (next == PreorderSagaState.ManualReview)
+        {
+            await workItemRepo.TryAddOpenAsync(
+                PreorderSagaSupport.ManualReviewWorkItem(
+                    command.TenantId, command.OperationId, command.SagaId, now), ct);
+        }
+
         await auditRepo.AddAsync(PreorderSagaSupport.Audit(
             command.TenantId, "preorder.reconcile_escalated", command.SagaId, command.OperationId, now,
             new { saga_id = command.SagaId, to = next.ToString() }), ct);

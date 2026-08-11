@@ -47,6 +47,26 @@ public interface ICapacityReservation
     Task<int> ReleaseByOperationAsync(string tenantId, string operationId, ReleaseReason reason, CancellationToken ct = default);
 
     /// <summary>
+    /// Gives back capacity that a <b>completed</b> booking is holding (spec 07 §14, spec 08 §5.3).
+    ///
+    /// <para>Distinct from <see cref="ReleaseByOperationAsync"/>, which only touches <i>active</i>
+    /// holds. Once an operation finalizes, its hold is <see cref="HoldStatus.Finalized"/> and the
+    /// slot's units have moved from held to <b>booked</b> — so releasing an active hold is a no-op
+    /// and the slot would stay occupied forever after a cancellation.</para>
+    ///
+    /// <para>Conditionally flips the finalized hold to <see cref="HoldStatus.Released"/> and
+    /// decrements the slot's booked capacity in the same guarded update, inside the caller's
+    /// transaction (Inv-4). Idempotent (Inv-5): a hold already released returns 0 and the slot is
+    /// untouched, so a redelivered cancellation cannot give the same seat back twice.</para>
+    /// </summary>
+    /// <returns>Number of finalized holds released (0 when none, or when already released).</returns>
+    Task<int> ReleaseFinalizedByOperationAsync(
+        string tenantId,
+        string operationId,
+        ReleaseReason reason,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Looks up the latest hold for <paramref name="operationId"/>/<paramref name="workflowStep"/>
     /// and conditionally transitions it from Active to Finalized, atomically moving
     /// <see cref="CapacityHold.ReservedCapacity"/> units from held to booked on the associated
@@ -73,5 +93,42 @@ public interface ICapacityReservation
         string tenantId,
         string operationId,
         string workflowStep,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Hands a booking's seat from the operation that holds it to the operation amending it, on
+    /// the SAME slot, at a new size — the primitive an amendment that does not move the booking
+    /// needs, and the one spec 07 was missing.
+    ///
+    /// <para><b>Why release-and-re-reserve cannot express this.</b> The slot key excludes party
+    /// size, so a party-size change derives the slot the booking already occupies. Reserving the
+    /// full new size against it asks the slot to carry the booking twice, and a slot with no spare
+    /// room refuses — telling the guest there is no space for a table they are sitting at.
+    /// Reserving only the difference avoids that but leaves TWO finalized holds on the booking,
+    /// and a later cancellation releases only the newest booked operation's, leaking the rest
+    /// permanently. Neither half works alone; the transfer has to be one atomic step.</para>
+    ///
+    /// <para>Computes the booking's CURRENT contribution to the slot — the previous owner's
+    /// finalized hold plus anything already finalized under the new operation — and moves the slot
+    /// by exactly the difference to <paramref name="totalCapacity"/>. The previous hold is
+    /// released and the new operation ends up owning a single finalized hold of the full new size,
+    /// so every later path (cancel, compensation, another amendment) finds exactly one hold to act
+    /// on. Self-correcting: it lands on <paramref name="totalCapacity"/> whether the reserve step
+    /// took the delta or the full amount.</para>
+    ///
+    /// <para>Idempotent (Inv-5): once the previous hold is Released its contribution is zero, so a
+    /// redelivery computes a difference of zero and moves nothing.</para>
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> when the slot now reflects <paramref name="totalCapacity"/> for this booking;
+    /// <c>false</c> when the slot could not absorb an increase, leaving everything untouched.
+    /// </returns>
+    Task<bool> AbsorbSameSlotAsync(
+        string tenantId,
+        string previousOperationId,
+        string newOperationId,
+        string workflowStep,
+        string slotId,
+        int totalCapacity,
         CancellationToken ct = default);
 }

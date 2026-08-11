@@ -48,10 +48,12 @@ public class PreorderCompensationTests(PostgresFixture fixture)
             new OutboxRepository(ctx), new AuditEventRepository(ctx), NullLogger<CompensatePreorderItemsCommandHandler>.Instance);
     private static CompensatePreorderBookingCommandHandler CompBooking(ApplicationDbContext ctx)
         => new(new PreorderSagaRepository(ctx), new OutboxRepository(ctx), new AuditEventRepository(ctx),
+            new OperationWorkItemRepository(ctx),
             NullLogger<CompensatePreorderBookingCommandHandler>.Instance);
     private static ReconcilePreorderSagaCommandHandler Reconcile(ApplicationDbContext ctx)
         => new(new PreorderSagaRepository(ctx), new BookingOperationRepository(ctx),
             new OutboxRepository(ctx), new AuditEventRepository(ctx),
+            new OperationWorkItemRepository(ctx),
             NullLogger<ReconcilePreorderSagaCommandHandler>.Instance);
 
     private async Task InTxAsync(string tenantId, Func<ApplicationDbContext, Task> body)

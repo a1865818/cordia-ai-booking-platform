@@ -25,6 +25,25 @@ public sealed class MessagingOptions
     public PreorderRecoveryOptions PreorderRecovery { get; set; } = new();
 
     public RetentionSweepOptions RetentionSweep { get; set; } = new();
+
+    public MenuIngestionMonitorOptions MenuIngestionMonitor { get; set; } = new();
+}
+
+/// <summary>Options for the stalled-menu-ingestion monitor (docs §12 gap 8).</summary>
+public sealed class MenuIngestionMonitorOptions
+{
+    /// <summary>Set to false to disable the monitor (e.g. in test environments).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Milliseconds between ticks. Default: 5 minutes — this is a reporter, not a recovery path.</summary>
+    public int IntervalMs { get; set; } = 300000;
+
+    /// <summary>
+    /// How long a catalog may sit in scanning/extracting before it is reported as stalled.
+    /// Default 900 s, matching the console's own <c>STALE_INGESTION_SECONDS</c> so the operator and
+    /// the server never disagree about whether the same catalog is stuck.
+    /// </summary>
+    public int StalenessSeconds { get; set; } = 900;
 }
 
 /// <summary>Options for the pre-order saga recovery sweeper hosted service (spec 11 §5.3, divergence #3).</summary>

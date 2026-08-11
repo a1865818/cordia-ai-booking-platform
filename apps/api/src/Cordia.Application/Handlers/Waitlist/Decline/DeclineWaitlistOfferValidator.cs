@@ -12,6 +12,8 @@ public sealed class DeclineWaitlistOfferValidator : AbstractValidator<DeclineWai
     {
         RuleFor(x => x.TenantId).NotEmpty();
         RuleFor(x => x.OfferId).NotEmpty();
-        RuleFor(x => x.Actor).NotEmpty();
+        // No rule on Actor — see AcceptWaitlistOfferValidator. A missing actor on an operator
+        // action must reach OperatorActionBehavior so the refusal is deny-audited and answered
+        // 403, rather than being short-circuited into an unaudited 400 by validation.
     }
 }

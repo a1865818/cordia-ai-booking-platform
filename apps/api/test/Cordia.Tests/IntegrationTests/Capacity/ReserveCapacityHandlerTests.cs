@@ -43,12 +43,12 @@ public class ReserveCapacityHandlerTests(PostgresFixture fixture)
         var auditRepo = new AuditEventRepository(ctx);
         var scheduledJobRepo = new ScheduledJobRepository(ctx);
         var uow = new UnitOfWork(ctx);
-        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
+        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics());
         var expiryScheduler = new CapacityExpiryScheduler(scheduledJobRepo);
         var options = Options.Create(DefaultCapacityOptions);
 
         return new ReserveCapacityCommandHandler(
-            opRepo, stepRepo, capacityReservation, slotRepo, intentRepo,
+            opRepo, stepRepo, capacityReservation, slotRepo, holdRepo, intentRepo,
             expiryScheduler, outboxRepo, auditRepo, uow, options, new Metrics());
     }
 

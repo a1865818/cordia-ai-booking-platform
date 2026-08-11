@@ -372,3 +372,53 @@ The §13 items are resolved as follows for the initial implementation (revisit w
 - **Release** (`ReleaseExpiredHoldsCommand`, consumer `capacity.release`): idempotent; consumes both the scheduled `booking.scheduled.hold_expiry.v1` job (by `hold_id`) and the spec-06 `capacity.hold_release.requested.v1` deposit-expiry event (by `operation_id`). Frees capacity only; no op-status transition (no legal `Held → Expired` edge per §11).
 - **Finalize** (`FinalizeBookingCommandHandler`): in the success transaction, `FinalizeAgainstOperationAsync` (FIX 2+3+4+8) is the SINGLE decision point — looks up the latest hold by (op, "create"), flips `active → finalized` and moves slot `held → booked` atomically with `Finalizing → Booked`; on `Finalized` (idempotent: already finalized, no second slot move) → Booked; on `HoldNoLongerValid` (hold expired/released — capacity gone, but provider effect exists) → routes `Finalizing → CompensationRequired` so Compensate cancels the booking and keeps capacity consistent (not Reconciling — that would confirm a booking with no capacity backing); on `NotTracked` (no hold ever created) → non-tracked op, Booked unchanged.
 - **Compensation** (`CompensateOperationCommandHandler`): releases the active hold (`ReleaseReason.Compensated`) atomically with `CompensationRequired → FailedFinal`.
+
+### Capacity lock ordering (CLO) — normative
+
+Spec 07 owns the capacity tables' access discipline. Two deadlock cycles have been built out of them
+in practice, both from acquiring rows lazily — each step taking what it happened to need, in the
+order it happened to need it. The rule below makes both unreachable rather than merely unlikely.
+
+**Within a single transaction:**
+
+1. Acquire every `capacity_holds` row lock **before** any `capacity_slots` row lock.
+2. Acquire multiple `capacity_holds` rows in **ascending `hold_id`** order.
+3. Acquire multiple `capacity_slots` rows in **ascending `slot_id`** order.
+4. **Carve-out.** An `INSERT` of a *new* hold row acquires no lock any other transaction can already
+   hold, so it cannot be an edge in a wait cycle. `ReserveAsync`'s slot-update-then-hold-insert is
+   compliant.
+
+Clause 4 is why the rule is stated over **row locks on pre-existing rows**, not over "which table is
+touched first". Read the naive way, `ReserveAsync` looks like the very inversion clause 1 forbids.
+
+**Why holds must be locked before slots.** Both orders are internally consistent; what matters is
+that *every* transaction picks the same one. Holds are chosen as the entry point because the release
+paths have no choice: freeing a seat requires deciding the hold's fate first (the conditional
+`WHERE status = 'active'` flip is what elects a single winner between expiry and finalization, §14.3),
+and only a hold that actually flipped may move slot counters. A release therefore cannot take the
+slot first without giving up the guard that makes it idempotent. The modify path has no such
+constraint — it can take a lock without writing — so the modify path yields.
+
+**One implementation.** `ICapacityLockOrder` is the only place that knows the order. Call sites name
+the rows they will touch and never the sequence; a hand-rolled acquisition is how the rule gets
+broken. Acquire the whole set up front, before the first write: every later step then re-touches a
+row the transaction already holds and can re-order nothing.
+
+**Incorrect transaction patterns.** Each of these has existed in this codebase:
+
+| Anti-pattern | Why it deadlocks | Correct form |
+|---|---|---|
+| `FinalizeAgainstOperationAsync` (hold→slot) then `AbsorbSameSlotAsync` reaching for the previous owner's hold | Net order is `SLOT → HOLD(prev)`, against a concurrent cancel's `HOLD(prev) → SLOT`. Cannot be fixed inside `Absorb` — the slot is already held by the time it runs. | Acquire `HOLD(prev)` before the capacity phase begins. |
+| Cross-slot reschedule taking `SLOT(new)` (via finalize) then `SLOT(old)` (via release) | Ordered by ROLE. Two reschedules moving in opposite directions between the same pair each hold one row and want the other. **Clause 1 does not help — both rows are slots.** | Name both slots in one acquisition so clause 3 sorts them. |
+| Looping `HOLD(h₁) → SLOT(s₁) → HOLD(h₂) → SLOT(s₂)` over an unordered result set | Takes a hold *after* a slot, and takes the holds in whatever order the query returned. | `ORDER BY hold_id`, then acquire the whole set before the write loop. |
+| Retrying on `40P01` | Treats the symptom and hides the next inversion. | Fix the order so the cycle is unreachable. **Explicitly out of scope for this component.** |
+
+**Isolation.** READ COMMITTED, unchanged. The ordering rule does not depend on a stricter level, and
+raising it would change the semantics of the conditional writes in §4.3.
+
+**Verification.** `IntegrationTests/Capacity/CapacityLockOrderTests` proves this against real
+PostgreSQL, per §12's requirement for "deterministic two-transaction interleaving". Every safety
+proof is paired with a negative control that takes the *same rows* in the *wrong order* and is shown
+to abort with `40P01` — a test showing "this does not deadlock" is worthless if the scenario could
+never have deadlocked. Row locks are additionally proven real (`55P03` under `lock_timeout` for a
+concurrent writer) and proven to release on both commit and rollback.

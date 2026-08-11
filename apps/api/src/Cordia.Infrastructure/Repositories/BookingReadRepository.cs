@@ -10,7 +10,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Cordia.Infrastructure.Repositories;
 
 /// <summary>EF Core implementation of <see cref="IBookingReadRepository"/>.</summary>
-public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingReadRepository
+public sealed class BookingReadRepository(
+    ApplicationDbContext db,
+    ITenantDisplayNameRepository displayNames,
+    IGuestContactRepository guestContacts) : IBookingReadRepository
 {
     public async Task<IReadOnlyList<ManageBookingCandidate>> FindManageBookingCandidatesAsync(
         string tenantId,
@@ -21,13 +24,33 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
         if (!HasAnyHint(hints) || limit <= 0)
             return [];
 
+        var businessName = await BusinessNameAsync(tenantId, ct);
+
+        // New payloads carry only an opaque `contact_ref` — the contact itself lives in
+        // `guest_contacts` so it can be erased (owner retention ruling 2026-08-06). Resolve the
+        // contact hints to the refs they map to, once, rather than dereferencing per candidate row.
+        // An erased contact resolves to nothing, so its bookings correctly stop being findable by
+        // contact: that is what erasure means, not a bug.
+        //
+        // BOTH channels are resolved. Under this shape the payload holds no phone AND no email, so
+        // a channel with no resolver here is a channel by which the booking cannot be found at all
+        // — an email-only guest would be invisible to every hint the API accepts. A caller_id hint
+        // is a phone and resolves through the phone path below.
+        var phoneHint = !string.IsNullOrWhiteSpace(hints.PhoneE164) ? hints.PhoneE164 : hints.CallerId;
+
+        var contactRefs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(phoneHint))
+            contactRefs.AddRange(await guestContacts.FindRefsByPhoneAsync(tenantId, phoneHint, ct));
+        if (!string.IsNullOrWhiteSpace(hints.Email))
+            contactRefs.AddRange(await guestContacts.FindRefsByEmailAsync(tenantId, hints.Email, ct));
+
         var rows = await BaseRows(tenantId)
             .OrderByDescending(r => r.UpdatedAt)
             .ToListAsync(ct);
 
         return rows
-            .Select(r => ToProjection(r))
-            .Where(p => p is not null && MatchesHints(p.Payload, p.Operation, hints))
+            .Select(r => ToProjection(r, businessName))
+            .Where(p => p is not null && MatchesHints(p.Payload, p.Operation, hints, contactRefs))
             .Select(p => p!.Candidate)
             .Where(c => c is not null)
             .Select(c => c!)
@@ -42,13 +65,14 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
         string bookingId,
         CancellationToken ct = default)
     {
+        var businessName = await BusinessNameAsync(tenantId, ct);
         var rows = await BaseRows(tenantId)
             .OrderByDescending(r => r.UpdatedAt)
             .ToListAsync(ct);
 
         foreach (var row in rows)
         {
-            var projection = ToProjection(row);
+            var projection = ToProjection(row, businessName);
             if (projection?.Projection is not null && projection.MatchesBookingId(bookingId))
                 return projection.Projection;
         }
@@ -64,14 +88,42 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
         var row = await BaseRows(tenantId)
             .FirstOrDefaultAsync(r => r.OperationId == operationId, ct);
 
-        return row is null ? null : ToProjection(row)?.Projection;
+        return row is null
+            ? null
+            : ToProjection(row, await BusinessNameAsync(tenantId, ct))?.Projection;
     }
 
+    /// <summary>
+    /// The tenant's guest-facing venue name, or null when it has not set one.
+    ///
+    /// Null is a real answer and is NOT backfilled from the tenant id: `business_name` is shown
+    /// to a guest (spec 08 §4), and a slug would be worse than the candidate being withheld.
+    /// Read once per query rather than per row.
+    /// </summary>
+    private Task<string?> BusinessNameAsync(string tenantId, CancellationToken ct)
+        => displayNames.GetAsync(tenantId, ct);
+
+    /// <summary>
+    /// Operations joined to their confirmed revision, plus the authoritative
+    /// <c>booking_reference</c> from <c>bookings</c>.
+    ///
+    /// The <c>bookings</c> join is a LEFT join and load-bearing: the reference is written at
+    /// finalize and lives ONLY on the booking row — it is not a field of <c>BookingRequest</c>,
+    /// so it can never appear in the canonical payload. Without this join
+    /// <see cref="ToProjection"/> could not satisfy the reference half of a
+    /// <see cref="ManageBookingCandidate"/>, and the phone lookup returned nothing for every
+    /// real booking. Left, not inner, because an operation that has not reached finalize has no
+    /// booking row and must still project.
+    /// </summary>
     private IQueryable<BookingReadRow> BaseRows(string tenantId)
         => from op in db.BookingOperations.AsNoTracking()
            join rev in db.BookingIntentRevisions.AsNoTracking()
                on new { op.TenantId, op.IntentId, Revision = op.IntentRevision }
                equals new { rev.TenantId, rev.IntentId, rev.Revision }
+           join bk in db.Bookings.AsNoTracking()
+               on new { op.TenantId, BookingId = op.BookingId! }
+               equals new { bk.TenantId, bk.BookingId } into bookings
+           from booking in bookings.DefaultIfEmpty()
            where op.TenantId == tenantId
            select new BookingReadRow
            {
@@ -82,6 +134,7 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
                Version = op.Version,
                UpdatedAt = op.UpdatedAt,
                CanonicalPayload = rev.CanonicalPayload,
+               BookingReference = booking != null ? booking.BookingReference : null,
            };
 
     private static bool HasAnyHint(ManageBookingDiscoveryHints hints)
@@ -90,7 +143,7 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
            || !string.IsNullOrWhiteSpace(hints.Email)
            || !string.IsNullOrWhiteSpace(hints.BookingReference);
 
-    private static BookingProjectionParts? ToProjection(BookingReadRow row)
+    private static BookingProjectionParts? ToProjection(BookingReadRow row, string? businessName)
     {
         var payload = CanonicalBookingPayload.Parse(row.CanonicalPayload);
         if (payload is null)
@@ -100,12 +153,19 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
         if (bookingId is null)
             return null;
 
+        // The bookings row wins: it is where finalize writes the reference. The payload spelling
+        // is only a fallback for historical rows that happened to carry one.
+        var bookingReference = FirstNonEmpty(row.BookingReference, payload.BookingReference);
+        // The tenant's own display name — never derived from the tenant id, which would show a
+        // guest a slug. A payload-carried name still wins for a historical row that has one.
+        var business = FirstNonEmpty(payload.BusinessName, businessName);
+
         var lifecycleStatus = ToLifecycleStatus(row.OperationType, row.Status);
         var projection = new BookingProjection(
             bookingId,
             row.OperationId,
-            payload.BookingReference,
-            payload.BusinessName,
+            bookingReference,
+            business,
             payload.BookingDate,
             payload.ApproxTime,
             payload.StartsAt,
@@ -117,16 +177,16 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
             row.UpdatedAt);
 
         ManageBookingCandidate? candidate = null;
-        if (payload.BookingReference is not null
-            && payload.BusinessName is not null
+        if (bookingReference is not null
+            && business is not null
             && payload.BookingDate.HasValue
             && payload.ApproxTime is not null
             && payload.PartySize.HasValue)
         {
             candidate = new ManageBookingCandidate(
                 bookingId,
-                payload.BookingReference,
-                payload.BusinessName,
+                bookingReference,
+                business,
                 payload.BookingDate.Value,
                 payload.ApproxTime,
                 payload.PartySize.Value,
@@ -139,22 +199,36 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
     private static bool MatchesHints(
         CanonicalBookingPayload payload,
         BookingReadRow row,
-        ManageBookingDiscoveryHints hints)
+        ManageBookingDiscoveryHints hints,
+        IReadOnlyCollection<string> contactRefs)
     {
         if (!string.IsNullOrWhiteSpace(hints.BookingReference)
-            && MatchesAny(hints.BookingReference, payload.BookingReference, payload.BookingId, row.BookingId))
+            && MatchesAny(hints.BookingReference, row.BookingReference, payload.BookingReference, payload.BookingId, row.BookingId))
         {
             return true;
         }
 
+        // The current shape: the payload carries an opaque ref and the phone lives in
+        // `guest_contacts`. Matched by ref rather than by value, so the immutable payload never
+        // has to hold the number at all.
+        if (!string.IsNullOrWhiteSpace(payload.ContactRef)
+            && contactRefs.Contains(payload.ContactRef, StringComparer.Ordinal))
+        {
+            return true;
+        }
+
+        // The legacy shape, still matched because revisions written before the retention ruling
+        // are immutable and cannot be migrated. Phone hints normalise BOTH sides before comparing:
+        // a booking captured as "+61 400 111 222" would otherwise be permanently unfindable by
+        // "+61400111222". Formatting only — no trunk-prefix-to-country-code guessing.
         if (!string.IsNullOrWhiteSpace(hints.PhoneE164)
-            && MatchesAny(hints.PhoneE164, payload.PhoneE164, payload.ContactPhone, payload.CallerId))
+            && MatchesAnyPhone(hints.PhoneE164, payload.PhoneE164, payload.ContactPhone, payload.CallerId))
         {
             return true;
         }
 
         if (!string.IsNullOrWhiteSpace(hints.CallerId)
-            && MatchesAny(hints.CallerId, payload.CallerId, payload.PhoneE164, payload.ContactPhone))
+            && MatchesAnyPhone(hints.CallerId, payload.CallerId, payload.PhoneE164, payload.ContactPhone))
         {
             return true;
         }
@@ -163,21 +237,15 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
                && MatchesAny(hints.Email, payload.Email, payload.ContactEmail);
     }
 
+    private static bool MatchesAnyPhone(string? hint, params string?[] values)
+        => values.Any(v => PhoneMatching.Matches(hint, v));
+
     private static bool MatchesAny(string? hint, params string?[] values)
         => !string.IsNullOrWhiteSpace(hint)
            && values.Any(v => string.Equals(v, hint, StringComparison.OrdinalIgnoreCase));
 
     private static string ToLifecycleStatus(OperationTypeEnum operationType, OperationStatus status)
-        => status switch
-        {
-            OperationStatus.Booked when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule
-                => "modification_pending",
-            OperationStatus.Booked => "confirmed",
-            OperationStatus.Rejected or OperationStatus.Expired or OperationStatus.FailedFinal => "cancelled",
-            _ when operationType is OperationTypeEnum.Cancel => "cancellation_pending",
-            _ when operationType is OperationTypeEnum.Modify or OperationTypeEnum.Reschedule => "modification_pending",
-            _ => "confirmed",
-        };
+        => BookingLifecycleProjection.From(operationType, status);
 
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
@@ -197,6 +265,9 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
         public DateTimeOffset UpdatedAt { get; init; }
 
         public required string CanonicalPayload { get; init; }
+
+        /// <summary>From the joined <c>bookings</c> row; null until finalize writes one.</summary>
+        public string? BookingReference { get; init; }
     }
 
     private sealed record BookingProjectionParts(
@@ -207,153 +278,5 @@ public sealed class BookingReadRepository(ApplicationDbContext db) : IBookingRea
     {
         public bool MatchesBookingId(string bookingId)
             => MatchesAny(bookingId, Projection.BookingId, Operation.BookingId, Payload.BookingId, Payload.TargetBookingId);
-    }
-
-    private sealed record CanonicalBookingPayload(
-        string? BookingId,
-        string? TargetBookingId,
-        string? BookingReference,
-        string? BusinessName,
-        DateOnly? BookingDate,
-        string? ApproxTime,
-        DateTimeOffset? StartsAt,
-        int? PartySize,
-        string? PhoneE164,
-        string? ContactPhone,
-        string? CallerId,
-        string? Email,
-        string? ContactEmail)
-    {
-        private static readonly string[] BookingIdNames = ["booking_id", "bookingId"];
-        private static readonly string[] TargetBookingIdNames = ["target_booking_id", "targetBookingId"];
-        private static readonly string[] BookingReferenceNames = ["booking_reference", "bookingReference", "reference"];
-        private static readonly string[] BusinessNames = ["business_name", "businessName", "business", "venue_name", "restaurant_name"];
-        private static readonly string[] BookingDateNames = ["booking_date", "bookingDate", "date"];
-        private static readonly string[] ApproxTimeNames = ["approx_time", "approxTime", "time", "booking_time", "bookingTime"];
-        private static readonly string[] StartsAtNames = ["starts_at", "startsAt", "start_at", "startAt", "scheduled_at"];
-        private static readonly string[] PartySizeNames = ["party_size", "partySize", "guest_count", "guestCount", "guests", "people"];
-        private static readonly string[] PhoneNames = ["phone_e164", "phoneE164", "phone"];
-        private static readonly string[] ContactPhoneNames = ["contact_phone", "contactPhone"];
-        private static readonly string[] CallerIdNames = ["caller_id", "callerId"];
-        private static readonly string[] EmailNames = ["email"];
-        private static readonly string[] ContactEmailNames = ["contact_email", "contactEmail"];
-
-        public static CanonicalBookingPayload? Parse(string json)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                var startsAt = ReadDateTimeOffset(root, StartsAtNames);
-                DateOnly? bookingDate = ReadDate(root, BookingDateNames);
-                if (bookingDate is null && startsAt.HasValue)
-                    bookingDate = DateOnly.FromDateTime(startsAt.Value.DateTime);
-
-                return new CanonicalBookingPayload(
-                    ReadString(root, BookingIdNames),
-                    ReadString(root, TargetBookingIdNames),
-                    ReadString(root, BookingReferenceNames),
-                    ReadString(root, BusinessNames),
-                    bookingDate,
-                    ReadString(root, ApproxTimeNames) ?? FormatApproxTime(startsAt),
-                    startsAt,
-                    ReadInt(root, PartySizeNames),
-                    ReadString(root, PhoneNames),
-                    ReadString(root, ContactPhoneNames),
-                    ReadString(root, CallerIdNames),
-                    ReadString(root, EmailNames),
-                    ReadString(root, ContactEmailNames));
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
-        }
-
-        private static string? ReadString(JsonElement element, IReadOnlyCollection<string> names)
-        {
-            if (TryFindProperty(element, names, out var value))
-            {
-                return value.ValueKind switch
-                {
-                    JsonValueKind.String => EmptyToNull(value.GetString()),
-                    JsonValueKind.Number => value.GetRawText(),
-                    _ => null,
-                };
-            }
-
-            return null;
-        }
-
-        private static int? ReadInt(JsonElement element, IReadOnlyCollection<string> names)
-        {
-            if (!TryFindProperty(element, names, out var value))
-                return null;
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
-                return number;
-
-            return value.ValueKind == JsonValueKind.String
-                   && int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out number)
-                ? number
-                : null;
-        }
-
-        private static DateOnly? ReadDate(JsonElement element, IReadOnlyCollection<string> names)
-        {
-            var raw = ReadString(element, names);
-            return DateOnly.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
-                ? (DateOnly?)date
-                : null;
-        }
-
-        private static DateTimeOffset? ReadDateTimeOffset(JsonElement element, IReadOnlyCollection<string> names)
-        {
-            var raw = ReadString(element, names);
-            return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
-                ? (DateTimeOffset?)value
-                : null;
-        }
-
-        private static string? FormatApproxTime(DateTimeOffset? startsAt)
-            => startsAt?.ToString("HH:mm", CultureInfo.InvariantCulture);
-
-        private static string? EmptyToNull(string? value)
-            => string.IsNullOrWhiteSpace(value) ? null : value;
-
-        private static bool TryFindProperty(
-            JsonElement element,
-            IReadOnlyCollection<string> names,
-            out JsonElement value)
-        {
-            if (element.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var property in element.EnumerateObject())
-                {
-                    if (names.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
-                    {
-                        value = property.Value;
-                        return true;
-                    }
-
-                    if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array
-                        && TryFindProperty(property.Value, names, out value))
-                    {
-                        return true;
-                    }
-                }
-            }
-            else if (element.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (TryFindProperty(item, names, out value))
-                        return true;
-                }
-            }
-
-            value = default;
-            return false;
-        }
     }
 }

@@ -52,8 +52,6 @@ public class AuditMissingTerminalNotificationTests : IDisposable
                 It.IsAny<CancellationToken>()))
             .Returns((Func<CancellationToken, Task> work, CancellationToken ct) => work(ct));
 
-        _workItemRepo.Setup(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _audit.Setup(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -139,8 +137,6 @@ public class AuditMissingTerminalNotificationTests : IDisposable
         // No new work item should be created.
         _workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        _workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
-            Times.Never);
 
         // No audit event.
         _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()),
@@ -171,8 +167,6 @@ public class AuditMissingTerminalNotificationTests : IDisposable
 
         // No work item should be created (notification arrived in time).
         _workItemRepo.Verify(r => r.TryAddOpenAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
-            Times.Never);
-        _workItemRepo.Verify(r => r.AddAsync(It.IsAny<OperationWorkItem>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
         // No audit event.

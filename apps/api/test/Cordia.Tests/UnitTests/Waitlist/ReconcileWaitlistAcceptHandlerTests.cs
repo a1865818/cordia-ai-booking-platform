@@ -24,6 +24,7 @@ public class ReconcileWaitlistAcceptHandlerTests
     private readonly Mock<IBookingOperationRepository> _opRepo = new();
     private readonly Mock<IWaitlistEnrollmentRepository> _enrollmentRepo = new();
     private readonly Mock<IAuditEventRepository> _auditRepo = new();
+    private readonly Mock<IOperationWorkItemRepository> _workItemRepo = new();
     private readonly Mock<IScheduledJobRepository> _jobs = new();
 
     public ReconcileWaitlistAcceptHandlerTests()
@@ -38,7 +39,7 @@ public class ReconcileWaitlistAcceptHandlerTests
     }
 
     private ReconcileWaitlistAcceptCommandHandler CreateHandler() => new(
-        _opRepo.Object, _enrollmentRepo.Object, _auditRepo.Object,
+        _opRepo.Object, _enrollmentRepo.Object, _auditRepo.Object, _workItemRepo.Object,
         new WaitlistAcceptReconcileScheduler(_jobs.Object),
         NullLogger<ReconcileWaitlistAcceptCommandHandler>.Instance);
 
@@ -117,6 +118,79 @@ public class ReconcileWaitlistAcceptHandlerTests
         await CreateHandler().Handle(Command(attempt: WaitlistAcceptReconcileScheduler.MaxAttempts - 1), CancellationToken.None);
 
         _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// `ManualReview` is where a cancel racing this accept actually strands the operation: the
+    /// released hold makes finalize return `HoldNoLongerValid`, the operation routes to
+    /// `CompensationRequired`, and if the compensating provider-cancel comes back ambiguous it
+    /// escalates here — with NO dispatch case in `AdvanceBookingOperationCommandHandler`, so it
+    /// cannot progress without an operator.
+    ///
+    /// <para>It was in neither the handler's old private failure set nor
+    /// `OperationStateMachine._terminalStates`, so it was treated as healthy progress and re-probed
+    /// until the attempt budget ran out — then abandoned with only a log line. Probing it again can
+    /// never change the answer.</para>
+    /// </summary>
+    [Fact]
+    public async Task ManualReview_StopsProbing_AndSettlesWithAnAudit()
+    {
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Op(OperationStatus.ManualReview));
+
+        await CreateHandler().Handle(Command(attempt: 0), CancellationToken.None);
+
+        // No further probe — a human owns it now.
+        _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Durably recorded, so whoever resolves the review can see the waitlist consequence.
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "waitlist.accept_reconcile_settled"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        // Inv-16: the booking outcome is unknown, so the enrollee must NOT be stamped fulfilled —
+        // that would strand them with nothing if the review resolves as failed.
+        _enrollmentRepo.Verify(r => r.CancelAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// `CompensationRequired` is deliberately NOT treated as an ending. It has legal outgoing edges
+    /// and the driver dispatches compensation on the very next iteration of the same loop, so it
+    /// resolves on its own — usually in milliseconds. Settling the waitlist on it would record an
+    /// outcome for a state the operation is actively leaving.
+    /// </summary>
+    [Fact]
+    public async Task CompensationRequired_IsStillInFlight_AndKeepsProbing()
+    {
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Op(OperationStatus.CompensationRequired));
+
+        await CreateHandler().Handle(Command(attempt: 0), CancellationToken.None);
+
+        _jobs.Verify(j => j.AddAsync(It.IsAny<ScheduledJob>(), It.IsAny<CancellationToken>()), Times.Once);
+        _enrollmentRepo.Verify(r => r.CancelAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Abandoning the reconcile is a real decision about a guest's enrollment, so it leaves a
+    /// durable record. Previously it wrote nothing at all — only a `LogWarning` — so an enrollment
+    /// could be left neither fulfilled nor re-matched with no trace that the platform had stopped
+    /// watching.
+    /// </summary>
+    [Fact]
+    public async Task AtMaxAttempts_AuditsTheAbandonment()
+    {
+        _opRepo.Setup(r => r.GetAsync(OperationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Op(OperationStatus.ReservingCapacity));
+
+        await CreateHandler().Handle(
+            Command(attempt: WaitlistAcceptReconcileScheduler.MaxAttempts - 1), CancellationToken.None);
+
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<AuditEvent>(e => e.EventType == "waitlist.accept_reconcile_abandoned"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

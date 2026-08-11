@@ -35,12 +35,12 @@ public sealed class EvaluateOperationSlaCommandHandler(
     private const int DefaultOwnerTargetSeconds = 3600;
 
     // User-wait states — waiting on the customer, NOT an SLA breach.
-    private static readonly HashSet<OperationStatus> UserWaitStatuses =
-    [
-        OperationStatus.AwaitingPayment,
-        OperationStatus.AwaitingUserAction,
-        OperationStatus.AlternativesRequired,
-    ];
+    //
+    // Asked of the state machine rather than listed here. This set and
+    // BookingOperationRepository.SlaEligibleStatuses are two halves of one partition of the same 16
+    // statuses, and they were maintained in separate projects with nothing tying them together.
+    private static readonly IReadOnlySet<OperationStatus> UserWaitStatuses =
+        OperationStateMachine.UserWaitStates;
 
     public async Task<Unit> Handle(EvaluateOperationSlaCommand request, CancellationToken cancellationToken)
     {
@@ -161,21 +161,26 @@ public sealed class EvaluateOperationSlaCommandHandler(
         string tenantId, string operationId, DateTimeOffset now, CancellationToken ct)
     {
         // Ensure exactly ONE open work item exists (idempotency).
-        var existingWorkItem = await workItemRepo.GetOpenByOperationAsync(tenantId, operationId, ct);
-        if (existingWorkItem is null)
+        //
+        // Atomic INSERT … ON CONFLICT DO NOTHING rather than read-then-add: a lost race on
+        // read-then-add raises 23505, which aborts the entire ambient transaction rather than
+        // producing the benign "someone else already opened it" this code intends. The return value
+        // is the same signal the read gave — true when THIS call created the row — so the audit
+        // below still fires exactly once per escalation.
+        var created = await workItemRepo.TryAddOpenAsync(new OperationWorkItem
         {
-            await workItemRepo.AddAsync(new OperationWorkItem
-            {
-                TenantId = tenantId,
-                WorkItemId = $"wi_{Guid.NewGuid():N}",
-                OperationId = operationId,
-                Reason = "sla_escalation",
-                State = "open",
-                SlaDeadline = now.AddSeconds(DefaultOwnerTargetSeconds),
-                CreatedAt = now,
-                Version = 0,
-            }, ct);
+            TenantId = tenantId,
+            WorkItemId = $"wi_{Guid.NewGuid():N}",
+            OperationId = operationId,
+            Reason = "sla_escalation",
+            State = "open",
+            SlaDeadline = now.AddSeconds(DefaultOwnerTargetSeconds),
+            CreatedAt = now,
+            Version = 0,
+        }, ct);
 
+        if (created)
+        {
             // Audit: only written when we actually create the work item.
             await auditRepo.AddAsync(new AuditEvent
             {

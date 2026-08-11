@@ -72,6 +72,29 @@ class Channel(str, Enum):
     email = "email"
 
 
+class CustomerRef(BaseModel):
+    """Reference to the customer; all optional (anonymous sessions)."""
+
+    model_config = {"extra": "forbid"}
+
+    customer_id: str | None = Field(
+        default=None, description="Stable customer ID where known."
+    )
+    display_name: str | None = Field(default=None, description="Customer display name.")
+    phone_e164: str | None = Field(
+        default=None, description="E.164 phone; plain str (no pattern)."
+    )
+    contact_ref: str | None = Field(
+        default=None,
+        description=(
+            "Opaque handle to contact details held out-of-band in `guest_contacts`. "
+            "Preferred over the inline fields on the canonical payload: the payload is hashed "
+            "and immutable, so anything inline can never be erased without breaking the "
+            "idempotency chain (Inv-2/3). A ref is erasable by deleting one row."
+        ),
+    )
+
+
 class BookingRequest(BaseModel):
     """A single booking request captured during a dialog."""
 
@@ -112,6 +135,23 @@ class BookingRequest(BaseModel):
     preorder: PreorderReference | None = Field(
         default=None,
         description="Immutable pre-order reference, or None when no pre-order.",
+    )
+    # Guest identity (spec 04 §4.2): the ratified `customer_ref` / `notification_destination`
+    # slot on the canonical, hashed body, carried as the existing CustomerRef so both lanes use
+    # one shape (BookingDraft.customer already does). Without it a booking has no notification
+    # destination and `GET /api/bookings?phone_e164=` cannot find it.
+    #
+    # In the hash by design — spec 04 puts `notification_destination` in `IntentRevisionPayload`.
+    # Inv-12's scope is PAN/CVV/government-id/secrets, which this never carries. canon.v1 omits
+    # null/{} so a payload without a guest hashes exactly as it did before this field existed.
+    #
+    # NOTE the retention asymmetry: booking_intent_revisions is immutable and replayed, and the
+    # retention sweep only anonymises ConversationSession.customer_ref — so whatever lands here
+    # is permanent. Send the minimum that identifies the guest; the console never sends
+    # display_name.
+    customer: CustomerRef | None = Field(
+        default=None,
+        description="Guest reference (spec 04 §4.2); None when the guest is unknown.",
     )
     # Target/system fields stay plain - TriState is meaningless here (not customer-volunteered).
     target_booking_id: str | None = Field(
@@ -156,20 +196,6 @@ class FieldProvenance(BaseModel):
     )
     validation: FieldValidation | None = Field(
         default=None, description="Validation outcome for the field."
-    )
-
-
-class CustomerRef(BaseModel):
-    """Reference to the customer; all optional (anonymous sessions)."""
-
-    model_config = {"extra": "forbid"}
-
-    customer_id: str | None = Field(
-        default=None, description="Stable customer ID where known."
-    )
-    display_name: str | None = Field(default=None, description="Customer display name.")
-    phone_e164: str | None = Field(
-        default=None, description="E.164 phone; plain str (no pattern)."
     )
 
 

@@ -46,6 +46,25 @@ public static class NotificationStateMachine
             // SuppressedDuplicate, InvalidRecipient, Delivered, FailedPermanent
         }.ToFrozenDictionary();
 
+    /// <summary>
+    /// Terminal states — <b>derived</b> from <see cref="AllowedTransitions"/>, so the set cannot
+    /// drift from the edge map that defines it.
+    ///
+    /// <para>Added because its absence was the reason a copy existed:
+    /// <c>RecordDeliveryReceiptCommandHandler</c> kept its own
+    /// <c>{Delivered, FailedPermanent, SuppressedDuplicate, InvalidRecipient}</c> list purely because
+    /// there was no authority to ask. Every state machine that callers must interrogate needs this
+    /// query, or the callers will build their own.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<NotificationState> TerminalStates =
+        Enum.GetValues<NotificationState>()
+            .Where(s => !AllowedTransitions.ContainsKey(s))
+            .ToFrozenSet();
+
+    /// <summary>Returns <c>true</c> if <paramref name="state"/> is terminal (no outgoing edges).</summary>
+    public static bool IsTerminal(NotificationState state)
+        => TerminalStates.Contains(state);
+
     /// <summary>Returns <c>true</c> if <paramref name="to"/> is a legal successor of <paramref name="from"/>.</summary>
     public static bool IsAllowed(NotificationState from, NotificationState to)
         => AllowedTransitions.TryGetValue(from, out var targets) && targets.Contains(to);

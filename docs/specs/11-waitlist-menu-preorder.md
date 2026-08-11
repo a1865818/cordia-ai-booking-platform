@@ -428,3 +428,26 @@ Use Alba integration tests against real PostgreSQL for the concurrency/race + sa
 - **Idempotency and audit retention periods** — how long superseded `vendor_catalogs` versions, expired waitlist offers, and completed `preorder_sagas` are retained for audit before pruning (coordinate with 12/14).
 - **Initial SLO values** — the foreground catalog-read p95 targets and the waitlist-match / saga-completion SLA windows in §7 are placeholders to be ratified in 13.
 - **Auto-book consent UX + evidence format** — the exact consent capture, constraint scope, and `ConsentEvidenceId` shape required before any tenant may enable limited auto-booking (§20; coordinate with 14).
+
+### Pre-order `ManualReview` parking (implementation-resolved)
+
+`PreorderSagaState.ManualReview` (§21.4) is reached when a booking has already committed but the
+pre-order could not be bound, or when reconcile cannot confirm the saga. It never auto-advances: an
+operator and the customer either convert the pre-order to a standalone order or cancel it.
+
+Because it waits for a person, parking there MUST create an open `operations_work_items` row in the
+same transaction as the state change — keyed to the delegated spec-06 operation, reason
+`preorder_manual_review:{saga_id}`, with an SLA deadline (4 hours; longer than an internal review
+because resolution requires the customer's agreement, not just an operator's attention).
+
+Previously both routes wrote only an audit event and a neutral "under review" notice. Neither is a
+queue: audit events are append-only history with no deadline and no assignee, and neither is counted
+by the `fulfillment.manual_review.depth` gauge. A saga holding a **committed booking** could sit
+indefinitely, waiting for a conversation nobody knew to have, while being invisible to every surface
+an operator or an alert actually reads.
+
+`PreorderSagaStateMachine` exposes `IsTerminal` (Completed, FailedFinal — **listed**, not derived
+from edge-map absence, because the unwired legacy members `HoldingCapacity`, `AuthorizingPayment` and
+`CompensatingHold` are also absent yet are dead states rather than endings) and
+`IsResolvedForReconcile`, which additionally covers `ManualReview`: a reconciler must stop there,
+while anything reporting a final outcome must not treat it as an ending.

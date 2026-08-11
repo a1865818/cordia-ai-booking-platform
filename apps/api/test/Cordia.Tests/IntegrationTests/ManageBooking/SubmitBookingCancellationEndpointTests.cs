@@ -55,8 +55,12 @@ public class SubmitBookingCancellationEndpointTests(AcceptanceApiFixture fixture
         var outbox = await ctx.OutboxMessages.AsNoTracking().SingleAsync(o => o.OperationId == "op-can");
         Assert.Equal("booking.command.requested.v1", outbox.MessageType);
 
-        var audit = await ctx.AuditEvents.AsNoTracking().SingleAsync(a => a.OperationId == "op-can");
-        Assert.Equal("booking_cancellation_accepted", audit.EventType);
+        // `Any`, not `Single`: this asserts the ACCEPTANCE audit exists, and the acceptance is not
+        // the only thing that can audit this operation. The outbox row written above is real, so a
+        // background consumer may legitimately pick the cancellation up and add its own row before
+        // this line runs — which made the assertion fail intermittently on a correct system.
+        Assert.True(await ctx.AuditEvents.AsNoTracking()
+            .AnyAsync(a => a.OperationId == "op-can" && a.EventType == "booking_cancellation_accepted"));
     }
 
     [Fact]
@@ -172,6 +176,80 @@ public class SubmitBookingCancellationEndpointTests(AcceptanceApiFixture fixture
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
         });
+    }
+
+    [Fact]
+    public async Task SubmitCancellation_EmptyGrant_Is400_NotAVerificationPrompt()
+    {
+        // The console's historical request shape. `grant_id` is NotEmpty-validated, so an empty
+        // grant never reaches the authorization spine — it is a 400 malformed request, NOT a 403
+        // the operator can resolve by verifying. A client cannot "recover" from this; it has to
+        // obtain the grant BEFORE submitting.
+        var tenantId = $"t8-can-empty-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-empty", "cust-empty", "grant-empty", VerificationActionEnum.Cancel);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(Body("bk-empty", 3, "op-empty", "idem-empty", grantId: "")).ToUrl("/api/bookings/bk-empty/cancellations");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.BadRequest);
+        });
+    }
+
+    [Fact]
+    public async Task SubmitCancellation_WrongGrant_Returns403WithAResolvableDiscriminator()
+    {
+        // A present-but-wrong grant IS resolvable: re-run step-up for the right action. `title` is
+        // prose for a human; the extensions are what a client can branch on.
+        var tenantId = $"t8-can-disc-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-disc", "cust-disc", "grant-disc", VerificationActionEnum.Modify);
+
+        var result = await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(Body("bk-disc", 3, "op-disc", "idem-disc", "grant-disc")).ToUrl("/api/bookings/bk-disc/cancellations");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
+        });
+
+        using var problem = JsonDocument.Parse(await result.ReadAsTextAsync());
+        var root = problem.RootElement;
+
+        Assert.Equal("verification_required", root.GetProperty("code").GetString());
+        Assert.Equal("cancel", root.GetProperty("action").GetString());
+        Assert.Equal("bk-disc", root.GetProperty("target_booking_id").GetString());
+
+        // The customer identity is exactly what the caller has not yet proven a right to see.
+        Assert.False(root.TryGetProperty("customer_ref", out _));
+    }
+
+    [Fact]
+    public async Task SubmitCancellation_WrongGrant_LeavesTheBookingAndTheKeyUntouched()
+    {
+        // The grant check runs INSIDE the transaction that already flipped the booking to
+        // cancellation_pending and elected the idempotency record. If the rollback were incomplete,
+        // a refused cancel would strand the booking mid-cancellation and burn the key.
+        var tenantId = $"t8-can-roll-{Guid.NewGuid():N}";
+        await SeedBookingAndGrantAsync(tenantId, "bk-roll", "cust-roll", "grant-roll", VerificationActionEnum.Modify);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson(Body("bk-roll", 3, "op-roll", "idem-roll", "grant-roll")).ToUrl("/api/bookings/bk-roll/cancellations");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
+        });
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var booking = await ctx.Bookings.AsNoTracking()
+            .SingleAsync(b => b.TenantId == tenantId && b.BookingId == "bk-roll");
+        Assert.Equal(BookingLifecycleStatus.Confirmed, booking.LifecycleStatus);
+        Assert.Equal(3, booking.Version);
+
+        // The key is free, so a retry with the RIGHT grant may reuse it (Inv-2) even though
+        // changing grant_id changes the canonical request hash.
+        Assert.False(await ctx.IdempotencyRecords.AsNoTracking()
+            .AnyAsync(r => r.TenantId == tenantId && r.IdempotencyKey == "idem-roll"));
+        Assert.False(await ctx.BookingOperations.AsNoTracking()
+            .AnyAsync(o => o.TenantId == tenantId && o.OperationId == "op-roll"));
     }
 
     private async Task SeedBookingAndGrantAsync(

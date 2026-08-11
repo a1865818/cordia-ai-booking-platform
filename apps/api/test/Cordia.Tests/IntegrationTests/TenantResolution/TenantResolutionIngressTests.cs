@@ -79,8 +79,8 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     [Fact]
     public async Task Telephony_FullIngress_Returns200_JwsVerifies_CreatesExactlyOneSession_WithAuditAndCorrelation()
     {
-        var tenantId = $"tr-tel-{Guid.NewGuid():N}";
-        var endpointId = $"ep-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("tr-tel");
+        var endpointId = TestIds.New("ep");
         var did = $"+1555{Guid.NewGuid():N}"[..14];
 
         await SeedEndpointAsync(tenantId, endpointId, TenantChannel.Voice, SignalType.PhoneNumber, did);
@@ -143,9 +143,9 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     [Fact]
     public async Task Messaging_FullIngress_Returns200_JwsVerifies_CreatesExactlyOneSession_WithAuditAndCorrelation()
     {
-        var tenantId = $"tr-msg-{Guid.NewGuid():N}";
-        var endpointId = $"ep-{Guid.NewGuid():N}";
-        var recipient = $"page-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("tr-msg");
+        var endpointId = TestIds.New("ep");
+        var recipient = TestIds.New("page");
 
         await SeedEndpointAsync(tenantId, endpointId, TenantChannel.Messaging, SignalType.MessagingRecipient, recipient);
 
@@ -189,7 +189,7 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     public async Task Telephony_NoMatchingEndpoint_Returns422_NoSession_AuditsTenantNotResolved()
     {
         var did = $"+1555{Guid.NewGuid():N}"[..14]; // never seeded
-        var correlationId = $"corr_{Guid.NewGuid():N}";
+        var correlationId = TestIds.New("corr_");
 
         await fixture.Host.Scenario(x =>
         {
@@ -215,8 +215,8 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     [Fact]
     public async Task Messaging_NoMatchingEndpoint_Returns422_NoSession_AuditsTenantNotResolved()
     {
-        var recipient = $"page-{Guid.NewGuid():N}"; // never seeded
-        var correlationId = $"corr_{Guid.NewGuid():N}";
+        var recipient = TestIds.New("page"); // never seeded
+        var correlationId = TestIds.New("corr_");
 
         await fixture.Host.Scenario(x =>
         {
@@ -241,10 +241,10 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     [Fact]
     public async Task Telephony_InboundProviderCorrelation_IsEchoedOntoSessionAndAudit()
     {
-        var tenantId = $"tr-corr-{Guid.NewGuid():N}";
-        var endpointId = $"ep-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("tr-corr");
+        var endpointId = TestIds.New("ep");
         var did = $"+1555{Guid.NewGuid():N}"[..14];
-        var providerCorr = $"pcall{Guid.NewGuid():N}"; // well-formed: ^[A-Za-z0-9_-]{1,64}$
+        var providerCorr = TestIds.New("pcall"); // well-formed: ^[A-Za-z0-9_-]{1,64}$
 
         await SeedEndpointAsync(tenantId, endpointId, TenantChannel.Voice, SignalType.PhoneNumber, did);
 
@@ -280,7 +280,7 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
         // No X-Tenant-Id and no X-Tenant-Context ⇒ the request reaches a tenant-scoped endpoint with no
         // resolved tenant ⇒ TenantGuard.RequireTenant throws TenantScopeMissingException ⇒ 400. Proves
         // the fail-closed guard runs BEFORE any tenant-scoped data access (Inv-13 / Inv-11).
-        var sessionId = $"sess_{Guid.NewGuid():N}";
+        var sessionId = TestIds.New("sess_");
         var body = JsonSerializer.Serialize(new { seq = 1, turn_id = "t1", speaker = "agent", text = "hello" });
 
         await fixture.Host.Scenario(x =>
@@ -295,8 +295,8 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     public async Task DownstreamTenantScopedEndpoint_WithVerifiedContext_ResolvesTenant()
     {
         // First mint a real signed context + session via a telephony resolution.
-        var tenantId = $"tr-inv13-{Guid.NewGuid():N}";
-        var endpointId = $"ep-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("tr-inv13");
+        var endpointId = TestIds.New("ep");
         var did = $"+1555{Guid.NewGuid():N}"[..14];
 
         await SeedEndpointAsync(tenantId, endpointId, TenantChannel.Voice, SignalType.PhoneNumber, did);
@@ -327,7 +327,7 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     {
         // A malformed / unverifiable X-Tenant-Context must be rejected by the middleware with 401 —
         // never reaching the controller (which, tenant-less, would otherwise 400 at the guard).
-        var sessionId = $"sess_{Guid.NewGuid():N}";
+        var sessionId = TestIds.New("sess_");
         var body = JsonSerializer.Serialize(new { seq = 1, turn_id = "t1", speaker = "agent", text = "hello" });
 
         await fixture.Host.Scenario(x =>
@@ -357,10 +357,10 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     [Fact]
     public async Task SessionInsert_NonUniqueFailure_AuditsSessionInsertFailed_AndCreatesNoSession()
     {
-        var tenantId = $"tr-fail-{Guid.NewGuid():N}";
-        var endpointId = $"ep-failclosed-{Guid.NewGuid():N}";
+        var tenantId = TestIds.New("tr-fail");
+        var endpointId = TestIds.New("ep-failclosed");
         var did = $"+1555{Guid.NewGuid():N}"[..14];
-        var constraintName = $"tmp_failclosed_{Guid.NewGuid():N}";
+        var constraintName = TestIds.New("tmp_failclosed_");
 
         await SeedEndpointAsync(tenantId, endpointId, TenantChannel.Voice, SignalType.PhoneNumber, did);
 
@@ -411,10 +411,10 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
     public async Task AmbiguousEndpoint_IsStructurallyPreventedBy_PartialUniqueIndex()
     {
         var did = $"+1555{Guid.NewGuid():N}"[..14];
-        var tenantA = $"tr-amb-a-{Guid.NewGuid():N}";
-        var tenantB = $"tr-amb-b-{Guid.NewGuid():N}";
+        var tenantA = TestIds.New("tr-amb-a");
+        var tenantB = TestIds.New("tr-amb-b");
 
-        await SeedEndpointAsync(tenantA, $"ep-{Guid.NewGuid():N}", TenantChannel.Voice, SignalType.PhoneNumber, did);
+        await SeedEndpointAsync(tenantA, TestIds.New("ep"), TenantChannel.Voice, SignalType.PhoneNumber, did);
 
         // A second ACTIVE endpoint for the same signal (different tenant) must be rejected by
         // uq_channel_signal_active (23505) — hence the resolver can never observe an ambiguous match.
@@ -422,7 +422,7 @@ public class TenantResolutionIngressTests(TenantResolutionApiFixture fixture)
         ctx.TenantChannelEndpoints.Add(new TenantChannelEndpoint
         {
             TenantId = tenantB,
-            ChannelEndpointId = $"ep-{Guid.NewGuid():N}",
+            ChannelEndpointId = TestIds.New("ep"),
             Channel = TenantChannel.Voice,
             SignalType = SignalType.PhoneNumber,
             SignalValue = did,

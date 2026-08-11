@@ -68,6 +68,20 @@ public static class MetricNames
     /// <summary>Capacity conditional-write race losses (counter).</summary>
     public const string FulfillmentCapacityRaceLossTotal = "fulfillment.capacity.race_loss_total";
 
+    /// <summary>
+    /// Bookings held WITHOUT a capacity check, because no <c>capacity_slots</c> row exists for the
+    /// derived key (counter).
+    ///
+    /// <para>Not an error — an un-provisioned resource is legitimately "availability mode = live",
+    /// and the untracked path exists for exactly that. It is a counter because the untracked path
+    /// was previously <b>silent</b>: with no writer for <c>capacity_slots</c> the table was empty
+    /// everywhere, so this branch took 100% of traffic and nothing anywhere said so. Double-booking
+    /// was prevented by nothing at the capacity layer, and the only way to discover it was to read
+    /// the handler. A venue that believes it has declared capacity and sees this counter climbing
+    /// is looking at the gap between what it declared and what the engine can key on.</para>
+    /// </summary>
+    public const string FulfillmentCapacityUntrackedTotal = "fulfillment.capacity.untracked_total";
+
     /// <summary>Capacity holds successfully acquired (counter).</summary>
     public const string FulfillmentHoldAcquiredTotal = "fulfillment.hold.acquired_total";
 
@@ -184,6 +198,33 @@ public static class MetricNames
     /// Inv-8/Inv-9 watchdog — fires the missing-notification-for-terminal-outcome alert (§25.4).
     /// </summary>
     public const string NotificationMissingTerminalTotal = "notification.missing_terminal_total";
+
+    /// <summary>
+    /// Intent revisions past their retention window that still carry guest contact data and cannot
+    /// be erased (counter, re-reported each sweep).
+    ///
+    /// <para>Inv-12-adjacent standing exposure, not an action. The payload is hashed and
+    /// <c>payload_hash</c> binds the confirmation to it, so redaction breaks the idempotency chain
+    /// (Inv-2/3) — the sweep counts rather than erases. Emitting it as a counter is what makes the
+    /// exposure trend visible: a Warning log answers "is there any?" once, a counter answers "is it
+    /// growing?", which is the question the deferred spec 12/14 retention ruling actually turns
+    /// on. Zero is the normal case for a venue taking no guest contact.</para>
+    /// </summary>
+    public const string RetentionUnerasableContactTotal = "retention.unerasable_contact_total";
+
+    /// <summary>
+    /// Vendor catalogs stuck mid-ingestion past the stall threshold (counter, re-reported each
+    /// sweep).
+    ///
+    /// <para>The D4 amendment (owner ruling 2026-08-06) added <c>extract_failed</c> to the status
+    /// vocabulary, so a stalled extraction now IS settled into a status that says so, and this
+    /// counter records each such settlement rather than merely flagging a row left in place. The
+    /// <c>state</c> tag carries the status the catalog was stuck in (<c>scanning</c> or
+    /// <c>extracting</c>) when it was failed. Before any of this, staleness was computed
+    /// client-side only, so a stuck extraction was invisible unless an operator happened to open
+    /// the menu screen.</para>
+    /// </summary>
+    public const string MenuIngestionStalledTotal = "menu.ingestion_stalled_total";
 
     // -------------------------------------------------------------------------
     // Tag (label) key constants

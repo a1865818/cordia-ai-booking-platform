@@ -14,6 +14,12 @@ namespace Cordia.Api.Middleware;
 /// <para>Registered AFTER <see cref="TenantContextVerificationMiddleware"/> in <c>Program.cs</c>: the
 /// verification middleware runs first and, on a valid <c>X-Tenant-Context</c>, sets the tenant; this
 /// shim then observes a non-empty <see cref="TenantContext.TenantId"/> and does nothing.</para>
+///
+/// <para><b>Registration is conditional.</b> <c>Program.cs</c> adds this middleware only when
+/// <c>Tenancy:AllowHeaderShim</c> is true, which it defaults to only in Development. Ordering alone
+/// is not a security control: where this runs and no signed context is present, a caller names the
+/// tenant whose data they receive. With the shim off, a request carrying no verified context fails
+/// closed at <c>TenantGuard.RequireTenant</c> rather than being served another tenant's rows.</para>
 /// </summary>
 public sealed class TenantResolutionMiddleware(RequestDelegate next)
 {

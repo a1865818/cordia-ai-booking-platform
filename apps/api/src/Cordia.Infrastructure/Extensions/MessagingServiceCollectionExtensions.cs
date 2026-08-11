@@ -71,6 +71,11 @@ internal static class MessagingServiceCollectionExtensions
         // Messaging:RetentionSweep:Enabled=false in appsettings.Test.json.
         services.AddHostedService<RetentionSweepHostedService>();
 
+        // Docs §12 gap 8: settles catalogs stuck mid-ingestion into the terminal `extract_failed`
+        // (D4 amendment, owner ruling 2026-08-06). This one WRITES — recovery from it is a fresh
+        // upload. Disabled via Messaging:MenuIngestionMonitor:Enabled=false in appsettings.Test.json.
+        services.AddHostedService<MenuIngestionMonitorHostedService>();
+
         return services;
     }
 }

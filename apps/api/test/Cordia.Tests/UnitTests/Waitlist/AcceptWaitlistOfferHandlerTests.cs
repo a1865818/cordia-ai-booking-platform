@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.ReconcileAccept;
+using Cordia.Application.Common.Audit;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Exceptions;
@@ -60,7 +61,8 @@ public class AcceptWaitlistOfferHandlerTests
     private AcceptWaitlistOfferCommandHandler CreateHandler() => new(
         _offerRepo.Object, _enrollmentRepo.Object, _hasher.Object,
         _mediator.Object, _auditRepo.Object,
-        new WaitlistAcceptReconcileScheduler(_jobs.Object), _uow.Object);
+        new WaitlistAcceptReconcileScheduler(_jobs.Object),
+        new AuditWriter(_auditRepo.Object), _uow.Object);
 
     [Fact]
     public async Task Accept_Submits_HashMatching_Confirmed_Intent_Under_Offer_Operation_And_Claims()
@@ -73,7 +75,7 @@ public class AcceptWaitlistOfferHandlerTests
                 It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
 
-        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None);
 
         var cmd = Assert.Single(_submitted);
         var req = cmd.Request;
@@ -103,7 +105,7 @@ public class AcceptWaitlistOfferHandlerTests
         _offerRepo.Setup(r => r.GetAsync(OfferId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Accepted));
 
-        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None);
 
         // Safe replay: still submits to 04 (idempotent key) so a crash after the claim self-heals ...
         Assert.Single(_submitted);
@@ -127,7 +129,7 @@ public class AcceptWaitlistOfferHandlerTests
         _enrollmentRepo.Setup(r => r.GetAsync(EnrollmentId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(fulfilled);
 
-        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None);
 
         // Safe replay: re-submits to 04 (idempotent key) and never re-claims.
         Assert.Single(_submitted);
@@ -149,7 +151,7 @@ public class AcceptWaitlistOfferHandlerTests
             .ReturnsAsync(cancelled);
 
         await Assert.ThrowsAsync<InvalidWaitlistOfferTransitionException>(() =>
-            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None));
+            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None));
 
         Assert.Empty(_submitted);
     }
@@ -161,7 +163,7 @@ public class AcceptWaitlistOfferHandlerTests
             .ReturnsAsync(SampleOffer(WaitlistOfferStatus.Declined));
 
         await Assert.ThrowsAsync<InvalidWaitlistOfferTransitionException>(() =>
-            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None));
+            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None));
 
         Assert.Empty(_submitted);
     }
@@ -181,7 +183,7 @@ public class AcceptWaitlistOfferHandlerTests
             .ReturnsAsync(0);
 
         // The booking was already minted, so the accept must NOT throw 409...
-        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None);
+        await CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None);
 
         Assert.Single(_submitted); // booking minted (record-before-state)
         // ...and it schedules a reconcile to settle the orphaned operation against the enrollment.
@@ -195,7 +197,7 @@ public class AcceptWaitlistOfferHandlerTests
             .ReturnsAsync((WaitlistOffer?)null);
 
         await Assert.ThrowsAsync<WaitlistOfferNotFoundException>(() =>
-            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1"), CancellationToken.None));
+            CreateHandler().Handle(new AcceptWaitlistOfferCommand(TenantId, OfferId, "cust_1", "operator", "waitlist test"), CancellationToken.None));
     }
 
     private static WaitlistOffer SampleOffer(WaitlistOfferStatus status) => new()

@@ -5,6 +5,7 @@ import { Icon } from "../../ui/Icon";
 import { SectionLabel } from "../../ui/SectionLabel";
 import { DepChip } from "../../ui/StatusTags";
 import { Pills } from "../../ui/Pills";
+import { DemoBadge } from "../../ui/DemoBadge";
 
 export function DepositsScreen() {
   const [depFilter, setDepFilter] = useState('all');
@@ -12,6 +13,8 @@ export function DepositsScreen() {
 
   return (
     <div>
+      {/* MOCK: no endpoint yet — spec 09 payment surface not exposed yet. */}
+      <div className="mb-3"><DemoBadge reason="spec 09 payment surface not exposed yet" /></div>
       {/* Payout hero */}
       <div className="bg-ink rounded-[16px] p-[18px_19px] mb-4 text-white">
         <div className="flex items-start justify-between">

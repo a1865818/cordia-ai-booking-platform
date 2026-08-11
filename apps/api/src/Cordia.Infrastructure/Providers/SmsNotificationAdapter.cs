@@ -30,6 +30,24 @@ public sealed class SmsNotificationAdapter(ILogger<SmsNotificationAdapter> logge
         RenderedMessage message,
         CancellationToken ct = default)
     {
+        // A real SMS provider addresses the message with `message.Destination`; this stub has no
+        // network I/O, so it records only WHETHER one was resolved. The value itself is never
+        // logged — it is the raw phone number, and only the tokenised MinimizedRecipient is safe
+        // to emit (Inv-12 hygiene).
+        //
+        // A missing destination is NOT failed here, because this stub cannot tell "nobody to send
+        // to" from "nothing to send over" and refusing would turn a stub limitation into a lane
+        // outage. Waitlist offers DO resolve through this resolver now (it grew a waitlist branch
+        // that reads the enrollment's customer_ref), so a null destination on that lane means the
+        // enrolment carried no deliverable address — a real gap, not a routing quirk. A real
+        // adapter must fail closed — see the note in SendNotificationCommandHandler step 7.
+        if (string.IsNullOrWhiteSpace(message.Destination))
+        {
+            logger.LogWarning(
+                "SmsNotificationAdapter.SendAsync key={Key} recipient={Recipient} resolved no destination.",
+                providerIdempotencyKey, message.MinimizedRecipient);
+        }
+
         var providerMessageId = DeterministicProviderMessageId(providerIdempotencyKey);
         logger.LogInformation(
             "SmsNotificationAdapter.SendAsync key={Key} pmsg={Pmsg}", providerIdempotencyKey, providerMessageId);

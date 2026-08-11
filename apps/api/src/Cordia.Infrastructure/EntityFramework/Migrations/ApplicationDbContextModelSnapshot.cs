@@ -25,7 +25,7 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
 
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "attempt_outcome_enum", new[] { "abandoned", "ambiguous", "dispatching", "planned", "reconciled", "rejected", "succeeded", "transient_failure" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "booking_lifecycle_status_enum", new[] { "cancellation_pending", "cancelled", "confirmed", "modification_pending" });
-            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "catalog_status_enum", new[] { "approved", "draft_ready", "extracting", "in_review", "published", "quarantined", "scanning", "superseded", "uploaded" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "catalog_status_enum", new[] { "approved", "draft_ready", "extract_failed", "extracting", "in_review", "published", "quarantined", "scanning", "superseded", "uploaded" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "channel_enum", new[] { "email", "messaging", "voice", "web" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "consent_state", new[] { "alternative_offered", "declined", "granted", "not_required" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "deposit_status_enum", new[] { "created", "expired", "link_sent", "paid" });
@@ -131,6 +131,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<BookingLifecycleStatus>("LifecycleStatus")
                         .HasColumnType("booking_lifecycle_status_enum")
                         .HasColumnName("lifecycle_status");
+
+                    b.Property<string>("PendingOperationId")
+                        .HasColumnType("text")
+                        .HasColumnName("pending_operation_id");
 
                     b.Property<string>("ProviderReference")
                         .HasColumnType("text")
@@ -707,6 +711,79 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("deposit_sessions", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.GuestContact", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ContactRef")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("contact_ref");
+
+                    b.Property<string>("ContactFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("contact_fingerprint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email");
+
+                    b.Property<string>("EmailFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("email_fingerprint");
+
+                    b.Property<DateTimeOffset>("LastUsedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("PhoneE164")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("phone_e164");
+
+                    b.Property<string>("PhoneFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("phone_fingerprint");
+
+                    b.HasKey("TenantId", "ContactRef")
+                        .HasName("pk_guest_contacts");
+
+                    b.HasIndex("TenantId", "ContactFingerprint")
+                        .IsUnique()
+                        .HasDatabaseName("ix_guest_contacts_tenant_id_contact_fingerprint");
+
+                    b.HasIndex("TenantId", "EmailFingerprint")
+                        .HasDatabaseName("ix_guest_contacts_tenant_id_email_fingerprint");
+
+                    b.HasIndex("TenantId", "LastUsedAt")
+                        .HasDatabaseName("ix_guest_contacts_tenant_id_last_used_at");
+
+                    b.HasIndex("TenantId", "PhoneFingerprint")
+                        .HasDatabaseName("ix_guest_contacts_tenant_id_phone_fingerprint");
+
+                    b.ToTable("guest_contacts", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.IdempotencyRecord", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1277,6 +1354,36 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("tenant_channel_endpoints", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.TenantDisplayName", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId")
+                        .HasName("pk_tenant_display_names");
+
+                    b.ToTable("tenant_display_names", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.VendorCatalog", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1309,6 +1416,12 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<CatalogStatus>("Status")
                         .HasColumnType("catalog_status_enum")
                         .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("StatusChangedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("status_changed_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()

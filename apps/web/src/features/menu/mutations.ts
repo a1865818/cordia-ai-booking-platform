@@ -1,0 +1,135 @@
+/**
+ * Menu catalog lifecycle mutations.
+ *
+ * All inherit `retry: false` — no idempotency keys exist on this family, and a repeat is
+ * guarded only by the state machine. Publishing invalidates the settings domain: the
+ * published items ARE the create drawer's bookable services (they share the catalog-items
+ * query), so what can be booked changes the moment a publish lands.
+ */
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "../../api/queryKeys";
+import { isApiError } from "../../api/problem";
+import { approveCatalog, publishCatalog, sendCatalogForReview, uploadMenuCatalog , editCatalogItems, type CatalogItemEdit } from "./api";
+
+export interface UploadMenuVariables {
+  sourceArtifactRef: string;
+  versionLabel?: string;
+}
+
+export function useUploadMenuCatalog() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sourceArtifactRef, versionLabel }: UploadMenuVariables) =>
+      uploadMenuCatalog(sourceArtifactRef, versionLabel),
+    // `onSettled`, not `onSuccess`. A new catalog exists and the discovery list predates it —
+    // but the upload can COMMIT and still fail here, if the 202 is lost in transit. On that path
+    // `onSuccess` never runs, the list is never refreshed, and the catalog the server did create
+    // is invisible: the operator sees a failure, uploads again, and the venue ends up with two.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.settings.catalogList() });
+    },
+  });
+}
+
+export interface CatalogTransitionVariables {
+  catalogId: string;
+}
+
+/**
+ * Every catalog LIFECYCLE transition invalidates the discovery list **and the moved catalog's own
+ * draft**.
+ *
+ * The list is fetched with `staleTime: Infinity` and no focus/reconnect refetch (an audited,
+ * owner-gated read must not fire because someone alt-tabbed), so nothing else would ever refresh
+ * it. Without this, the panel's merge kept overwriting a status the server had just confirmed in
+ * a write response with the one from the mount-time snapshot: an approved catalog re-rendered as
+ * `in_review`, offering Approve again, which then 409'd with no way out but a page reload.
+ *
+ * **The draft key needed the same treatment, and only the list got it.** `CatalogDraftEditor`
+ * reads `catalogDraft(catalogId)` under the identical never-refetch policy, and its stepper and
+ * save controls are driven by that query's `status`. So approving while the editor was open left
+ * it showing `in_review` with the controls still live, and the next edit 409'd — the exact
+ * dead-end described above, reached through the other cache entry. Invalidating both keeps the
+ * mounted editor consistent with the transition that just happened.
+ *
+ * `onSettled`, not `onSuccess`: a 409 means the catalog is not where this session thought it was,
+ * which is exactly when the stale snapshot most needs replacing.
+ */
+function useCatalogLifecycleMutation(
+  mutationFn: (variables: CatalogTransitionVariables) => Promise<unknown>
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSettled: (_data, _error, variables) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.settings.catalogList() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.settings.catalogDraft(variables.catalogId),
+      });
+    },
+  });
+}
+
+export function useSendCatalogForReview() {
+  return useCatalogLifecycleMutation(({ catalogId }) => sendCatalogForReview(catalogId));
+}
+
+export function useApproveCatalog() {
+  return useCatalogLifecycleMutation(({ catalogId }) => approveCatalog(catalogId));
+}
+
+export function usePublishCatalog() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ catalogId }: CatalogTransitionVariables) => publishCatalog(catalogId),
+    onSettled: () => {
+      // The published-items list (Settings panel AND the create drawer's services) is
+      // stale either way: a success changed it, and a 409 means someone else's action did.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.settings.all() });
+    },
+  });
+}
+
+export interface EditCatalogItemsVariables {
+  catalogId: string;
+  edits: readonly CatalogItemEdit[];
+}
+
+/**
+ * Applies owner edits to an in_review catalog.
+ *
+ * `retry: false` is inherited: the edit family carries no idempotency key, so a silent re-send
+ * could apply the same change twice. Invalidates the draft read on both outcomes — a success
+ * changed it, and a failure may mean someone else did.
+ */
+export function useEditCatalogItems() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ catalogId, edits }: EditCatalogItemsVariables) =>
+      editCatalogItems(catalogId, edits),
+    onSettled: (_d, _e, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.settings.catalogDraft(variables.catalogId),
+      });
+    },
+  });
+}
+
+/** Operator-facing message for a failed catalog action. */
+export function menuActionFailureMessage(error: unknown, action: string): string {
+  if (isApiError(error) && error.status === 403) {
+    return "The platform refused this — menu management needs the owner role, and this session's role was not accepted.";
+  }
+  if (isApiError(error) && error.status === 409) {
+    // "There is no status endpoint to check" stopped being true when `GET /api/menu/catalogs`
+    // landed — and this mutation has just invalidated it, so the panel beside this message is
+    // already showing the real status. Telling the operator to blind-retry sent them at an action
+    // that cannot succeed (another session published the catalog) while the answer was on screen.
+    return "The catalog isn't in the right state for that — extraction may still be running, or another session already moved it. The list beside this has just been refreshed, so check the catalog's current status before trying again.";
+  }
+  if (isApiError(error) && error.status === 404) {
+    return "That catalog no longer exists on the platform.";
+  }
+  return error instanceof Error && error.message ? error.message : `Could not ${action}`;
+}

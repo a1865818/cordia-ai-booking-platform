@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Generated;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.Observability;
@@ -38,7 +39,11 @@ public class ReconcileOperationCommandHandlerTests
             _retryPolicy.Object, CreateEscalator(), _uow.Object, new Metrics());
 
     private static BookingOperation MakeOp(
-        string tenantId, string operationId, OperationStatus status, long version = 0) =>
+        string tenantId,
+        string operationId,
+        OperationStatus status,
+        long version = 0,
+        OperationTypeEnum operationType = OperationTypeEnum.Create) =>
         new()
         {
             TenantId = tenantId,
@@ -47,6 +52,10 @@ public class ReconcileOperationCommandHandlerTests
             IntentRevision = 1,
             Status = status,
             Version = version,
+            // Must be explicit: `Cancel` is the ZERO value of the generated enum, so leaving it
+            // unset silently makes every operation here a cancellation. These tests reconcile a
+            // create — the "finalize" step path.
+            OperationType = operationType,
         };
 
     private static WorkflowAttempt MakeAttempt(
@@ -311,6 +320,99 @@ public class ReconcileOperationCommandHandlerTests
     }
 
     // ── No effect proven → transition to Held + CreateBooking NEVER called ───────────────────
+
+    /// <summary>
+    /// Modify and Reschedule need the same escape as Cancel, and for the same reasons.
+    ///
+    /// <para>`Created`/`AlreadyExists` prove a booking EXISTS — true of a modified booking and an
+    /// unmodified one alike — so the create-shaped lookup cannot establish whether the amendment
+    /// landed, and the not-proven path re-creates. A modify writes a "modify" step, never
+    /// "finalize", so `step` and `latest` are always null: every redelivery reads attempt 1 of 4
+    /// with 0 elapsed, the retry budget never exhausts, and the provider is re-invoked blind
+    /// forever with no route to ManualReview. This became reachable when
+    /// `ModifyBookingCommandHandler` started routing ambiguous outcomes here.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(OperationTypeEnum.Modify)]
+    [InlineData(OperationTypeEnum.Reschedule)]
+    public async Task Handle_ModifyOrReschedule_EscalatesToAHumanInsteadOfRunningTheCreateLookup(
+        OperationTypeEnum operationType)
+    {
+        var (tenantId, opId) = ("t-modify", "op-modify");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, operationType: operationType));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.ManualReview,
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var outcome = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, outcome);
+
+        // No provider lookup at all, and above all no re-create.
+        _adapter.Verify(a => a.LookupByIdempotencyKeyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // A human, not another blind pass through Held.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Held,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_CancelOperation_EscalatesToAHumanInsteadOfRunningTheCreateLookup()
+    {
+        // The §16.2 lookup is create-shaped: Created/AlreadyExists prove a booking EXISTS, which
+        // says nothing about whether a cancellation landed, and the no-effect path RE-CREATES the
+        // booking. A cancel also never writes a "finalize" step, so the budget could never
+        // exhaust and this would loop forever, re-invoking the provider blind.
+        var (tenantId, opId) = ("t-cancel", "op-cancel");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling,
+                operationType: OperationTypeEnum.Cancel));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.ManualReview,
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var outcome = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, outcome);
+
+        // Not one provider lookup, and above all no re-create.
+        _adapter.Verify(a => a.LookupByIdempotencyKeyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.LookupByReferenceAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.GetStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // It went to a human, not back to Held.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Held,
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 
     [Fact]
     public async Task Handle_NoEffect_TransitionsToHeld_CreateNeverCalled()

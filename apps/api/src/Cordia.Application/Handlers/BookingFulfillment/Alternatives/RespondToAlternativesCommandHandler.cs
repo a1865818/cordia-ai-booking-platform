@@ -23,6 +23,7 @@ public sealed class RespondToAlternativesCommandHandler(
     IBookingOperationRepository opRepo,
     IOutboxRepository outboxRepo,
     IAuditEventRepository auditRepo,
+    IBookingRepository bookingRepo,
     IUnitOfWork uow)
     : IRequestHandler<RespondToAlternativesCommand, Unit>
 {
@@ -111,6 +112,12 @@ public sealed class RespondToAlternativesCommandHandler(
                 if (rows == 0)
                     throw new OperationConflictException(
                         command.OperationId, "Concurrent update — retry.");
+
+                // A declined MUTATION gives the booking row its lifecycle back — FailedFinal is
+                // terminal, so this is the last chance anything has to clear the pending status the
+                // manage-booking front door parked.
+                await BookingPendingLifecycle.RevertOnFailureAsync(
+                    bookingRepo, command.TenantId, current, now, ct2);
 
                 // Spec 11 §5.3: a pre-order op signals the saga (→ compensate items) instead of
                 // emitting the customer failure notification directly.

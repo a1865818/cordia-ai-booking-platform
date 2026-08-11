@@ -1,4 +1,6 @@
 ﻿using System.Text.Json;
+using Cordia.Application.Handlers.BookingFulfillment.CancelBooking;
+using Cordia.Application.Handlers.BookingFulfillment.ModifyBooking;
 using Cordia.Application.Handlers.BookingFulfillment.Compensate;
 using Cordia.Application.Handlers.BookingFulfillment.Finalize;
 using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
@@ -78,26 +80,8 @@ public sealed class AdvanceBookingOperationCommandHandler(
                 if (OperationStateMachine.IsTerminal(op.Status))
                     return Unit.Value;
 
-                IBaseRequest? stepCommand = op.Status switch
-                {
-                    OperationStatus.Accepted or OperationStatus.Validating
-                        => new ValidateOperationCommand(command.TenantId, command.OperationId),
-                    OperationStatus.ReservingCapacity
-                        => new ReserveCapacityCommand(command.TenantId, command.OperationId),
-                    // T7: Held routes to RequestPayment (which either goes Held→Finalizing no-deposit,
-                    // or Held→AwaitingPayment deposit path). Finalizing routes directly to Finalize.
-                    OperationStatus.Held
-                        => new RequestPaymentCommand(command.TenantId, command.OperationId),
-                    OperationStatus.Finalizing
-                        => new FinalizeBookingCommand(command.TenantId, command.OperationId),
-                    OperationStatus.Reconciling
-                        => new ReconcileOperationCommand(command.TenantId, command.OperationId),
-                    OperationStatus.CompensationRequired
-                        => new CompensateOperationCommand(command.TenantId, command.OperationId),
-                    // States that require external input or are handled by later tickets: stop and wait.
-                    // ManualReview is handled by T10; AwaitingPayment/AwaitingUserAction/AlternativesRequired etc.
-                    _ => null,
-                };
+                IBaseRequest? stepCommand = StepCommandFor(
+                    command.TenantId, command.OperationId, op.Status, op.OperationType);
 
                 if (stepCommand is null)
                     break; // AwaitingUserAction, AwaitingPayment, AlternativesRequired, etc. — wait states
@@ -132,6 +116,70 @@ public sealed class AdvanceBookingOperationCommandHandler(
     }
 
     /// <summary>
+    /// The driver's dispatch table: which step, if any, advances an operation in this state.
+    /// Returns <see langword="null"/> for a state the platform will not advance on its own.
+    ///
+    /// <para>Extracted from the drive loop so <see cref="HasDriverStep"/> can be DERIVED from it
+    /// rather than restated. The loop's <c>_ =&gt; null</c> arm fails safe but silently — add a
+    /// status to D1 and operations in it park forever, with no exception, no log and nothing failing
+    /// in CI. <c>WorkflowDefinitionTests</c> now enumerates this against
+    /// <c>OperationStateMachine.IsDriverDispatchable</c>, so a new state must either get a step here
+    /// or be explicitly classified as a wait state — and forgetting both is a test failure.</para>
+    /// </summary>
+    internal static IBaseRequest? StepCommandFor(
+        string tenantId,
+        string operationId,
+        OperationStatus status,
+        Domain.Generated.OperationTypeEnum operationType)
+        => status switch
+        {
+            OperationStatus.Accepted or OperationStatus.Validating
+                => new ValidateOperationCommand(tenantId, operationId),
+            OperationStatus.ReservingCapacity
+                => new ReserveCapacityCommand(tenantId, operationId),
+            // T7: Held routes to RequestPayment (which either goes Held→Finalizing no-deposit,
+            // or Held→AwaitingPayment deposit path). Finalizing routes directly to Finalize.
+            OperationStatus.Held
+                => new RequestPaymentCommand(tenantId, operationId),
+            // Spec 08 §5.3: at Finalizing the external call differs by operation type —
+            // a create books with the provider, a cancel un-books. This is the one place
+            // the driver is type-aware; everything else stays status-driven.
+            OperationStatus.Finalizing when operationType == Domain.Generated.OperationTypeEnum.Cancel
+                => new CancelBookingCommand(tenantId, operationId),
+            // Modify/reschedule has its own fulfilment step: FinalizeBookingCommandHandler
+            // calls CreateBookingAsync unconditionally, so routing one there would put a
+            // SECOND, disconnected booking into the venue's system while the original
+            // stayed pending — and report `booked` for it. ModifyBookingCommandHandler
+            // amends the existing booking in one provider call instead, preserving the
+            // original reservation (§9.4.8).
+            OperationStatus.Finalizing when operationType
+                is Domain.Generated.OperationTypeEnum.Modify
+                or Domain.Generated.OperationTypeEnum.Reschedule
+                => new ModifyBookingCommand(tenantId, operationId),
+            OperationStatus.Finalizing
+                => new FinalizeBookingCommand(tenantId, operationId),
+            OperationStatus.Reconciling
+                => new ReconcileOperationCommand(tenantId, operationId),
+            OperationStatus.CompensationRequired
+                => new CompensateOperationCommand(tenantId, operationId),
+            // States that require external input or are owned by a human: stop and wait.
+            // ManualReview exits only via the typed operator commands (Inv-15);
+            // AwaitingPayment/AwaitingUserAction/AlternativesRequired wait on the customer.
+            _ => null,
+        };
+
+    /// <summary>
+    /// Whether the driver has a step for <paramref name="status"/> — <b>derived by asking
+    /// <see cref="StepCommandFor"/></b>, never by listing states again.
+    ///
+    /// <para>The operation type is irrelevant to the QUESTION: every type-aware arm is under
+    /// <c>Finalizing</c>, which has a step for all of them. Passing <c>Create</c> is therefore not a
+    /// simplification, it is the general answer.</para>
+    /// </summary>
+    internal static bool HasDriverStep(OperationStatus status)
+        => StepCommandFor("t", "op", status, Domain.Generated.OperationTypeEnum.Create) is not null;
+
+    /// <summary>
     /// Persists the poison work-item, still-confirming notification, and audit event atomically
     /// (Inv-14: business state committed BEFORE dead-lettering the transport message).
     ///
@@ -149,23 +197,25 @@ public sealed class AdvanceBookingOperationCommandHandler(
 
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
-            // Create work item only if none open (idempotent).
-            var existing = await workItemRepo.GetOpenByOperationAsync(tenantId, operationId, ct2);
-            if (existing is null)
+            // Create the work item, at most one open per operation.
+            //
+            // Atomic INSERT … ON CONFLICT DO NOTHING rather than read-then-add, for the reason
+            // ManualReviewEscalator documents at length: a losing read-then-add raises 23505, which
+            // aborts this whole transaction — and this is the transaction that must commit the
+            // business side-effects BEFORE the message is dead-lettered (Inv-14). Losing that race
+            // would dead-letter a message with no work item and no notification recorded.
+            var now = DateTimeOffset.UtcNow;
+            await workItemRepo.TryAddOpenAsync(new OperationWorkItem
             {
-                var now = DateTimeOffset.UtcNow;
-                await workItemRepo.AddAsync(new OperationWorkItem
-                {
-                    TenantId = tenantId,
-                    WorkItemId = $"wi_{Guid.NewGuid():N}",
-                    OperationId = operationId,
-                    Reason = $"poison:{errorClass}",
-                    State = "open",
-                    SlaDeadline = now.AddHours(1),
-                    CreatedAt = now,
-                    Version = 0,
-                }, ct2);
-            }
+                TenantId = tenantId,
+                WorkItemId = $"wi_{Guid.NewGuid():N}",
+                OperationId = operationId,
+                Reason = $"poison:{errorClass}",
+                State = "open",
+                SlaDeadline = now.AddHours(1),
+                CreatedAt = now,
+                Version = 0,
+            }, ct2);
 
             // Emit notification.still_confirming.v1 ONCE (deterministic message_id dedup).
             var outboxExists = await outboxRepo.ExistsAsync(tenantId, deterministicOutboxId, ct2);

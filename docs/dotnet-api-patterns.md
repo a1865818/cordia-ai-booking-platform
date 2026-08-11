@@ -130,6 +130,47 @@ dead-letter handling), `Extensions/` (DI, `AddInfrastructure()`).
   (quicktype suffixes the type name with `Enum`) so `[PgName]`/`[JsonStringEnumMemberName]`
   attributes are generated, then register the pg enum in the Npgsql data source.
 
+## Transactions, locking, and state ownership
+
+**Lock ordering.** When one transaction takes row locks on more than one table — or more than one
+row of a table — the acquisition order must be **global and total**, or two transactions taking the
+same rows in different orders will deadlock (`40P01`). Two rules, both learned the hard way here:
+
+- Fix the **order**, never add a `40P01`/`40001` retry wrapper. A retry treats the symptom and hides
+  the next inversion everywhere in the system.
+- When a transaction touches several rows of one table, order them by a **total** key (ascending id),
+  not by their role in the operation. "Previous then new" and "old then new" are not orders — two
+  transactions can disagree about which row is which.
+
+Acquire the whole set **up front**, before the first write, so later steps re-touch rows the
+transaction already holds and can re-order nothing. Express the order in **one** place; a rule each
+call site re-derives is a rule each call site can get wrong.
+
+The capacity tables' concrete rule (**CLO**) is owned by
+[`docs/specs/07-capacity-and-holds.md`](specs/07-capacity-and-holds.md) — holds before slots, each
+set ascending by id, with a documented carve-out for inserts. `ICapacityLockOrder` implements it.
+
+**Isolation** is READ COMMITTED (`UnitOfWork` opens with no isolation argument). Do not raise it to
+work around a race: the conditional-write pattern (`UPDATE … WHERE <guard>`, then branch on
+rows-affected) is the sanctioned mechanism and depends on those semantics.
+
+**Constraint violations abort the whole transaction.** PostgreSQL does not let you catch a `23505`
+and carry on — every subsequent command in that transaction fails with "current transaction is
+aborted", including the COMMIT. So for "insert unless someone already did", use
+`INSERT … ON CONFLICT DO NOTHING` and branch on rows-affected; **never** read-then-insert, and never
+try to catch the violation. `CapacitySlotRepository.TryAddAsync`,
+`IdempotencyRepository.ElectCreatorAsync` and `OperationWorkItemRepository.TryAddOpenAsync` are the
+worked examples.
+
+**State ownership.** A state machine in `Cordia.Domain` owns its states *and their classifications*.
+Handlers, repositories and read models must **ask** it (`IsTerminal`, `IsAwaitingUser`,
+`IsSlaEligible`, …) rather than keep a private set — a duplicated state set fails **silently** when
+the enum moves. Where a materialised collection is genuinely required (EF Core cannot translate a
+method call into SQL), **derive** it from the state machine rather than retyping the members.
+`StateOwnershipArchitectureTests` enforces this by reflection and fails on any new unjustified
+collection; see [`docs/specs/06-booking-workflow-and-fulfillment.md`](specs/06-booking-workflow-and-fulfillment.md)
+§19.1 for the permitted exceptions.
+
 ## Generated shared types
 
 Types in `Cordia.Domain.Generated` (from `libs/shared-schemas`) are **read-only** —

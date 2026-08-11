@@ -38,7 +38,7 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
     private static ReleaseExpiredHoldsCommandHandler BuildHandler(ApplicationDbContext ctx)
     {
         var holdRepo = new CapacityHoldRepository(ctx);
-        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
+        var capacityReservation = new FirstPartyCapacityReservation(ctx, holdRepo, new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics());
         var auditRepo = new AuditEventRepository(ctx);
         return new ReleaseExpiredHoldsCommandHandler(capacityReservation, auditRepo, NullLogger<ReleaseExpiredHoldsCommandHandler>.Instance, new Metrics());
     }
@@ -113,7 +113,7 @@ public class ReleaseExpiredHoldsTests(PostgresFixture fixture)
         {
             await using var tx = await ctx.Database.BeginTransactionAsync();
             var holdRepo = new CapacityHoldRepository(ctx);
-            var svc = new FirstPartyCapacityReservation(ctx, holdRepo, new Cordia.Infrastructure.Observability.Metrics());
+            var svc = new FirstPartyCapacityReservation(ctx, holdRepo, new CapacityLockOrder(new CapacityHoldRepository(ctx), new CapacitySlotRepository(ctx)), new Cordia.Infrastructure.Observability.Metrics());
             var outcome = await svc.ReserveAsync(MakeReserveRequest(tenantId, operationId, slotId), default);
             Assert.Equal(ReservationStatus.Held, outcome.Status);
             holdId = outcome.Hold!.HoldId;

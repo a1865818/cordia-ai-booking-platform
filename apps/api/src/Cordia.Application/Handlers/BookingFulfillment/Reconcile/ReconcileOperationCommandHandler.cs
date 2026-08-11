@@ -59,6 +59,48 @@ public sealed class ReconcileOperationCommandHandler(
         var tenantId = command.TenantId;
         var operationId = command.OperationId;
 
+        // Neither a cancellation NOR a modification can be reconciled by the lookup below. That
+        // lookup is create-shaped: `Created`/`AlreadyExists` prove a booking EXISTS at the
+        // provider, which says nothing about whether a cancellation landed or whether an
+        // amendment was applied — a modified booking and an unmodified one both simply exist.
+        // The not-proven path then recreates the booking.
+        //
+        // Worse, this handler reads the "finalize" step, which neither lane ever writes — a cancel
+        // writes "cancel" and a modify writes "modify". So `step` and `latest` are always null,
+        // every redelivery sees attempt 1 of 4 with 0 elapsed, the budget never exhausts, and the
+        // provider is re-invoked blind, forever, with no escape to ManualReview. The derived
+        // provider key is wrong for the same reason: it is keyed on "finalize" while
+        // ModifyBookingCommandHandler dispatches under the bare operation id, so the lookup could
+        // not prove an effect even when one exists.
+        //
+        // Modify/Reschedule was left out when this guard was written for Cancel, and became
+        // reachable the moment ModifyBookingCommandHandler started routing its ambiguous outcomes
+        // here. Escalate to a human instead of guessing (Inv-7).
+        if (op.OperationType is Domain.Generated.OperationTypeEnum.Cancel
+            or Domain.Generated.OperationTypeEnum.Modify
+            or Domain.Generated.OperationTypeEnum.Reschedule)
+        {
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                var opInsideTxn = await opRepo.GetAsync(operationId, ct2);
+                if (opInsideTxn is not null && opInsideTxn.Status == OperationStatus.Reconciling)
+                {
+                    await manualReviewEscalator.EscalateAsync(
+                        tenantId,
+                        operationId,
+                        opInsideTxn.Version,
+                        OperationStatus.Reconciling,
+                        reason: opInsideTxn.OperationType == Domain.Generated.OperationTypeEnum.Cancel
+                            ? "cancel_reconcile_requires_review"
+                            : "modify_reconcile_requires_review",
+                        slaDeadline: DateTimeOffset.UtcNow.AddMinutes(30),
+                        ct: ct2);
+                }
+            }, ct);
+
+            return StepOutcome.Wait;
+        }
+
         // Derive the stable idempotency key for the finalize step (Inv-2/3/7).
         var step = await stepRepo.GetByOperationAndTypeAsync(tenantId, operationId, StepType, ct);
         var latest = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct);

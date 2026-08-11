@@ -30,6 +30,8 @@ public sealed class GrantAuthorizationService(
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
@@ -44,7 +46,40 @@ public sealed class GrantAuthorizationService(
 
         if (grant is null)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
+            throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
+        }
+
+        return grant;
+    }
+
+    public async Task<VerificationGrant> RequireGrantScopeAsync(
+        string tenantId,
+        string grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        string targetType,
+        string? actorId = null,
+        string? actorRole = null,
+        CancellationToken ct = default)
+    {
+        var grant = await grants.FindGrantByIdIgnoringConsumptionAsync(
+            tenantId,
+            grantId,
+            customerRef,
+            action,
+            targetBookingId,
+            DateTimeOffset.UtcNow,
+            ct);
+
+        if (grant is null)
+        {
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
 
@@ -58,6 +93,8 @@ public sealed class GrantAuthorizationService(
         VerificationActionEnum action,
         string? targetBookingId,
         string targetType,
+        string? actorId = null,
+        string? actorRole = null,
         CancellationToken ct = default)
     {
         var rows = await grants.ConsumeAsync(
@@ -70,10 +107,26 @@ public sealed class GrantAuthorizationService(
             ct);
         if (rows == 0)
         {
-            await WriteDenyAuditAsync(tenantId, grantId, customerRef, action, targetBookingId, targetType);
+            await WriteDenyAuditAsync(
+                tenantId, grantId, customerRef, action, targetBookingId, targetType,
+                reason: null, actorId, actorRole);
             throw new VerificationRequiredException(tenantId, customerRef, action, targetBookingId);
         }
     }
+
+    public Task WriteDenyAsync(
+        string tenantId,
+        string? grantId,
+        string customerRef,
+        VerificationActionEnum action,
+        string? targetBookingId,
+        string targetType,
+        string reason,
+        string? actorId = null,
+        string? actorRole = null)
+        => WriteDenyAuditAsync(
+            tenantId, grantId ?? string.Empty, customerRef, action, targetBookingId, targetType,
+            reason, actorId, actorRole);
 
     private async Task WriteDenyAuditAsync(
         string tenantId,
@@ -81,7 +134,10 @@ public sealed class GrantAuthorizationService(
         string customerRef,
         VerificationActionEnum action,
         string? targetBookingId,
-        string targetType)
+        string targetType,
+        string? reason = null,
+        string? actorId = null,
+        string? actorRole = null)
     {
         // The deny audit is best-effort relative to the DENIAL ITSELF: both callers write it
         // immediately BEFORE throwing VerificationRequiredException (the 403). If the audit store
@@ -97,8 +153,16 @@ public sealed class GrantAuthorizationService(
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: tenantId,
-                    ActorType: "customer",
-                    ActorId: customerRef,
+                    // A staff-asserted caller is recorded as staff — but ONLY when they actually
+                    // named themselves. A role with no actor id is not an identification, and
+                    // pairing it with a blank ActorId produced the one thing a deny record must
+                    // never be: an "operator was refused" row that cannot say which operator.
+                    // Falling back to the customer ref (blank on this door's pre-grant denials)
+                    // made it worse by attributing a staff attempt to nobody at all.
+                    ActorType: StaffRole.IsKnown(actorRole) && !string.IsNullOrWhiteSpace(actorId)
+                        ? actorRole!
+                        : "customer",
+                    ActorId: FirstNonBlank(actorId, customerRef) ?? "unknown",
                     Action: "verification.grant_denied",
                     // The resource type the grant authorizes — "booking" by default, but a transcript
                     // read (targetBookingId null, from GetTranscript) is a "conversation_session", not a
@@ -117,6 +181,7 @@ public sealed class GrantAuthorizationService(
                     {
                         requested_action = action.ToString(),
                         grant_id = grantId,
+                        reason,
                     }),
                 // CancellationToken.None (B2): the denial record must survive both the caller's
                 // transaction rollback AND a client disconnect that cancels the request token.
@@ -131,5 +196,16 @@ public sealed class GrantAuthorizationService(
                 action,
                 targetType);
         }
+    }
+
+    private static string? FirstNonBlank(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+                return candidate;
+        }
+
+        return null;
     }
 }

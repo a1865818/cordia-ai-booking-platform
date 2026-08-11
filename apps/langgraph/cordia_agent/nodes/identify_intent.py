@@ -160,7 +160,18 @@ async def identify_intent(state: AgentState) -> dict:
                     session_id=state.session_id,
                     schema_version=_DRAFT_SCHEMA_VERSION,
                     tenant_policy_version=state.tenant_policy_version or "unknown",
-                    request=BookingRequest(operation=operation),
+                    # The guest goes on the REQUEST as well as the draft.
+                    #
+                    # The revision is built from ``draft.request`` (``read_back`` passes it
+                    # straight to ``build_revision`` as the canonical payload), so a customer kept
+                    # only on the draft never reaches the hashed payload the API receives. The
+                    # booking then lands with no notification destination and cannot be found by
+                    # ``GET /api/bookings?phone_e164=`` — the exact loss ``BookingRequest.customer``
+                    # was added to prevent. This is the only site that can set it: the reclassify
+                    # branch round-trips the existing request, and no later node writes it.
+                    request=BookingRequest(
+                        operation=operation, customer=state.customer
+                    ),
                     source=state.source,
                     customer=state.customer,
                 )
