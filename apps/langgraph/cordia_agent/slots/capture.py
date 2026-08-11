@@ -235,11 +235,16 @@ def required_candidate_fields_present(draft: BookingDraft) -> bool:
 class SlotExtractor(Protocol):
     """Port: abstracts the model-backed slot extractor from production nodes.
 
-    Production registers the real model-backed extractor at startup.
+    Production registers the real model-backed extractor at startup
+    (:class:`cordia_agent.slots.extractor.ModelSlotExtractor`).
     Tests register a deterministic fake via :func:`register_slot_extractor`.
+
+    ``extract`` is **async**: the production implementation issues a model call,
+    and ``capture_fields`` is already an async node, so awaiting the port is the
+    only bridge that neither blocks the event loop nor nests a second one.
     """
 
-    def extract(self, text: str) -> list[SlotCapture]:
+    async def extract(self, text: str) -> list[SlotCapture]:
         """Extract slot captures from *text*.
 
         Args:

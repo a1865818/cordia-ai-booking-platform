@@ -27,9 +27,11 @@ async def capture_fields(state: AgentState) -> dict:
     """Extract and apply slot captures from the current transcript (§8.4).
 
     1. If ``state.draft`` is ``None``, nothing to capture — returns empty dict.
-    2. Calls :func:`~cordia_agent.slots.capture.get_slot_extractor` to extract
+    2. Calls :func:`~cordia_agent.slots.capture.get_slot_extractor` and awaits
+       its ``extract`` to obtain
        :class:`~cordia_agent.slots.capture.SlotCapture` objects from
-       ``state.transcript_text``.
+       ``state.transcript_text``.  The port is async because the production
+       extractor is model-backed.
     3. Applies captures via :func:`~cordia_agent.slots.capture.capture_slots`
        respecting ``state.transcript_is_final`` (Inv-1).
     4. If the request changed (material update) AND ``tenant_id`` + ``session_id``
@@ -46,7 +48,7 @@ async def capture_fields(state: AgentState) -> dict:
         return {}
 
     extractor = get_slot_extractor()
-    captures = extractor.extract(state.transcript_text or "")
+    captures = await extractor.extract(state.transcript_text or "")
 
     updated_draft = capture_slots(
         state.draft,
