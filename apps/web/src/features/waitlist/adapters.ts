@@ -3,9 +3,10 @@
  */
 
 import type { WaitlistItem } from "../../data/console";
-import { SERVICES } from "../../data/console";
 import { remainingLabel } from "../../components/ui/Countdown";
 import type { WaitlistEnrollmentSummary } from "./api";
+
+export type ServiceNameLookup = Record<string, { name: string }>;
 
 /** "Wants" phrasing from the acceptable window the guest enrolled with. */
 export function wantLabel(from: string | null | undefined, to: string | null | undefined): string {
@@ -61,12 +62,15 @@ export function offerExpiryLabel(expiresAt: string | null | undefined, now = Dat
   return remainingLabel(expiresAt, now);
 }
 
-export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistItem {
+export function toWaitlistItem(
+  enrollment: WaitlistEnrollmentSummary,
+  serviceNames?: ServiceNameLookup
+): WaitlistItem {
   const serviceId = enrollment.service_id ?? "";
   return {
     id: enrollment.enrollment_id ?? "",
     name: enrollment.customer_ref ?? "Guest",
-    service: SERVICES[serviceId]?.name ?? serviceId,
+    service: serviceNames?.[serviceId]?.name ?? serviceId,
     want: wantLabel(enrollment.acceptable_from, enrollment.acceptable_to),
     // Per-guest auto-book reflects the explicit grant recorded at enrollment; silent
     // auto-book is prohibited by default (spec 11 §20, Inv-1), so this is never assumed.
@@ -91,7 +95,8 @@ export function toWaitlistItem(enrollment: WaitlistEnrollmentSummary): WaitlistI
 }
 
 export function toWaitlistItems(
-  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined
+  enrollments: readonly WaitlistEnrollmentSummary[] | null | undefined,
+  serviceNames?: ServiceNameLookup
 ): WaitlistItem[] {
-  return (enrollments ?? []).map(toWaitlistItem);
+  return (enrollments ?? []).map((e) => toWaitlistItem(e, serviceNames));
 }

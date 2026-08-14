@@ -5,7 +5,11 @@ import type { SensitiveReadPurpose } from "./purposes";
 export type ListSessionsResponse =
   paths["/api/conversation-sessions"]["get"]["responses"][200]["content"]["application/json"];
 
-export type ConversationSessionSummary = NonNullable<ListSessionsResponse["sessions"]>[number];
+export type ConversationSessionSummary = NonNullable<ListSessionsResponse["sessions"]>[number] & {
+  preview?: string | null;
+  prov?: string | null;
+  status?: string | null;
+};
 
 export type TranscriptView =
   paths["/api/conversation-sessions/{sessionId}/transcript"]["get"]["responses"][200]["content"]["application/json"];

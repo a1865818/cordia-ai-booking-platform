@@ -121,6 +121,29 @@ describe("conversation adapters", () => {
     expect(thread.live).toBe(true);
     expect(thread.channel).toBe("phone");
     expect(thread.name).toBe("cust-1");
+    expect(thread.preview).toBe("");
+    expect(thread.status).toBeUndefined();
+    expect(thread.prov).toBeUndefined();
+  });
+
+  it("fills preview when the session carries one and stamps status/prov only if sent", () => {
+    const [thread] = toThreads([
+      {
+        session_id: "s3",
+        channel: "web",
+        customer_ref: "cust-3",
+        consent_state: null,
+        recording_allowed: null,
+        started_at: "2026-08-01T00:00:00Z",
+        ended_at: "2026-08-01T00:10:00Z",
+        preview: "See you Thursday",
+        prov: "ai",
+        status: "confirmed",
+      },
+    ]);
+    expect(thread.preview).toBe("See you Thursday");
+    expect(thread.prov).toBe("ai");
+    expect(thread.status).toBe("confirmed");
   });
 
   it("treats an ended session as not live", () => {
@@ -177,12 +200,53 @@ describe("customer adapters", () => {
 
     expect(customer.name).toBe("cust-1");
     expect(customer.visits).toBe(3);
-    expect(customer.fav).toBe("Gel manicure");
+    expect(customer.fav).toBe("gel");
     expect(customer.lastVisit).toBe("Yesterday");
     // Fields the API does not model are left empty, never fabricated.
     expect(customer.phone).toBe("");
     expect(customer.tags).toEqual([]);
     expect(customer.note).toBe("");
+    expect(customer.isOperator).toBe(false);
+    expect(customer.noShows).toBe(0);
+  });
+
+  it("labels the last service from the live catalog when one is provided", () => {
+    const [customer] = toCustomers(
+      [
+        {
+          customer_ref: "cust-1",
+          booking_count: 1,
+          first_seen_at: null,
+          last_seen_at: null,
+          last_service_id: "gel",
+          last_booking_id: null,
+        },
+      ],
+      Date.now(),
+      { gel: { name: "Gel manicure" } }
+    );
+    expect(customer.fav).toBe("Gel manicure");
+  });
+
+  it("uses origin for isOperator and maps notes, tags and no-shows from the payload", () => {
+    const [staff] = toCustomers([
+      {
+        customer_ref: "front_desk",
+        booking_count: 2,
+        first_seen_at: null,
+        last_seen_at: null,
+        last_service_id: null,
+        last_booking_id: null,
+        origin: "staff",
+        no_show_count: 3,
+        tags: ["vip"],
+        note: "window table",
+      },
+    ]);
+    expect(staff.isOperator).toBe(true);
+    expect(staff.noShows).toBe(3);
+    expect(staff.tags).toEqual(["vip"]);
+    expect(staff.note).toBe("window table");
   });
 
   it("formats last-seen labels across the ranges", () => {
@@ -200,7 +264,29 @@ describe("waitlist adapters", () => {
       { enrollment_id: "w1", customer_ref: "cust-1", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "2026-08-01T09:00:00Z", acceptable_to: "2026-08-01T11:00:00Z", auto_book_authorized: true, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_id: null, latest_offer_status: null, latest_offer_expires_at: null },
     ]);
     expect(granted.auto).toBe(true);
-    expect(granted.service).toBe("Gel manicure");
+    expect(granted.service).toBe("gel");
+
+    const [labelled] = toWaitlistItems(
+      [
+        {
+          enrollment_id: "w3",
+          customer_ref: "cust-3",
+          service_id: "gel",
+          location_id: "loc",
+          party_size: 1,
+          acceptable_from: "",
+          acceptable_to: "",
+          auto_book_authorized: false,
+          cancelled: false,
+          created_at: "2026-07-01T00:00:00Z",
+          latest_offer_id: null,
+          latest_offer_status: null,
+          latest_offer_expires_at: null,
+        },
+      ],
+      { gel: { name: "Gel manicure" } }
+    );
+    expect(labelled.service).toBe("Gel manicure");
 
     const [ungranted] = toWaitlistItems([
       { enrollment_id: "w2", customer_ref: "cust-2", service_id: "gel", location_id: "loc", party_size: 2, acceptable_from: "", acceptable_to: "", auto_book_authorized: false, cancelled: false, created_at: "2026-07-01T00:00:00Z", latest_offer_id: null, latest_offer_status: null, latest_offer_expires_at: null },

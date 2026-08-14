@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { btn, shell } from "./atoms";
+import { hasSession } from "../../api/session";
 
 export function LandingNav() {
   const [menuOpen, setMenuOpen] = useState(false);
   const close = () => setMenuOpen(false);
+  const consoleTo = hasSession() ? "/dashboard" : "/login";
 
   return (
     <header
@@ -38,7 +40,7 @@ export function LandingNav() {
         </nav>
 
         <div className="ml-auto flex items-center gap-[18px] max-[768px]:gap-2">
-          <Link to="/dashboard" className="text-[15px] font-medium whitespace-nowrap max-[768px]:hidden">Sign in</Link>
+          <Link to={consoleTo} className="text-[15px] font-medium whitespace-nowrap max-[768px]:hidden">Sign in</Link>
           <a
             href="#start"
             className={btn("lime", "md", "max-[640px]:px-[14px] max-[640px]:py-[9px] max-[640px]:text-[13px] max-[480px]:px-3 max-[480px]:py-2 max-[480px]:text-[12.5px]")}
@@ -77,7 +79,7 @@ export function LandingNav() {
         <a href="#pricing" onClick={close} className="block text-base font-medium text-ink border-b border-hair py-[14px] px-8 max-[640px]:px-5">Pricing</a>
         <a href="#customers" onClick={close} className="block text-base font-medium text-ink border-b border-hair py-[14px] px-8 max-[640px]:px-5">Customers</a>
         <div className="flex gap-2 pt-[14px] px-8 pb-[18px] max-[640px]:px-5">
-          <Link to="/dashboard" className={btn("ghost", "md", "flex-1")} onClick={close}>Sign in</Link>
+          <Link to={consoleTo} className={btn("ghost", "md", "flex-1")} onClick={close}>Sign in</Link>
           <a href="#start" className={btn("lime", "md", "flex-1")} onClick={close}>Start for free</a>
         </div>
       </div>

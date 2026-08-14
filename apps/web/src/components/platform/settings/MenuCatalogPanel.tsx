@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
+import { sessionIdentity, sessionIdentityHint } from "../../../features/session/identity";
 import {
   catalogFromResponse, hasFailed, listCatalogs, looksStuck, STALE_INGESTION_SECONDS,
 } from "../../../features/menu/api";
@@ -257,7 +257,7 @@ export function MenuCatalogPanel() {
   if (!isOwner) {
     return (
       <Panel style={{ marginBottom: 18 }}>
-        <div title={SESSION_IDENTITY_HINT}>
+        <div title={sessionIdentityHint()}>
           <PermissionGate
             requiredRole="owner"
             role={session.role}

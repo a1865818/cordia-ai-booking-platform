@@ -2,7 +2,7 @@ import React from "react";
 import { Icon } from "../../ui/Icon";
 import { PrimaryButton } from "../../ui/Button";
 import { IconName } from "../../ui/Icon";
-import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
+import { sessionIdentity, sessionIdentityHint } from "../../../features/session/identity";
 
 const SCREEN_TITLES: Record<string, [string, string]> = {
   today:         ['Today',              'Today'],
@@ -10,7 +10,7 @@ const SCREEN_TITLES: Record<string, [string, string]> = {
   conversations: ['Agent activity',     'Conversations'],
   waitlist:      ['Auto-booking',       'Waitlist'],
   customers:     ['Directory',          'Customers'],
-  deposits:      ['Stripe Connect',     'Deposits & payouts'],
+  deposits:      ['Payouts',            'Deposits & payouts'],
   campaigns:     ['Approval required',  'Campaigns'],
   analytics:     ['Last 7 days',        'Analytics'],
   settings:      ['Workspace',          'Settings'],
@@ -26,6 +26,8 @@ interface HeaderProps {
   scrolled?: boolean;
   sub?: string;
   onOpenSearch?: () => void;
+  /** Guest-facing venue name from `GET /api/tenant-profile`. Empty → tenant id. */
+  venueName?: string;
 }
 
 function GlobalSearch({ onOpen }: { onOpen?: () => void }) {
@@ -60,36 +62,29 @@ function GlobalSearch({ onOpen }: { onOpen?: () => void }) {
 }
 
 /**
- * The tenant this console is reading and writing.
+ * The venue this console is operating.
  *
- * Shows the value actually sent as `X-Tenant-Id`, not a name — the previous literal
- * ("Bella Nails") named a business that is not the tenant.
- *
- * A venue display name IS now retrievable (`GET /api/tenant-profile/display-name`, set from
- * Settings), so the identifier shown here is a deliberate choice rather than a missing endpoint:
- * this label's job is to say which tenant the console is reading and writing, and a friendly name
- * would hide exactly the value that answers that question.
- *
- * Not a button, and no chevron: there is no workspace switcher, and an affordance that opens
- * nothing is a claim about a capability the console does not have.
+ * Prefers the guest-facing display name from the tenant profile. Falls back to the tenant
+ * id actually sent as `X-Tenant-Id` when the profile has not loaded or has no name.
  */
-function WorkspaceLabel() {
+function WorkspaceLabel({ venueName }: { venueName?: string }) {
   const session = sessionIdentity();
+  const label = venueName?.trim() || session.tenant;
   return (
     <div
       className="flex items-center gap-2 h-[36px] px-3 border border-cd-border rounded-[9px] bg-white text-[13px] font-medium text-ink whitespace-nowrap"
       style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
-      title={SESSION_IDENTITY_HINT}
+      title={sessionIdentityHint()}
     >
       <span className="w-5 h-5 rounded-[6px] bg-ink text-white flex items-center justify-center text-[10px] font-bold">
         {session.tenantInitial}
       </span>
-      {session.tenant}
+      {label}
     </div>
   );
 }
 
-export function Header({ device, screen, primaryLabel, onPrimary, extra, scrolled, sub, onOpenSearch }: HeaderProps) {
+export function Header({ device, screen, primaryLabel, onPrimary, extra, scrolled, sub, onOpenSearch, venueName }: HeaderProps) {
   const isPhone = device === 'phone';
   const tt = SCREEN_TITLES[screen] || SCREEN_TITLES.today;
   const subtitle = sub ?? tt[0];
@@ -116,7 +111,7 @@ export function Header({ device, screen, primaryLabel, onPrimary, extra, scrolle
       <div className="flex items-center gap-[9px] shrink-0">
         {!isPhone && extra}
         {!isPhone && <GlobalSearch onOpen={onOpenSearch} />}
-        {!isPhone && <WorkspaceLabel />}
+        {!isPhone && <WorkspaceLabel venueName={venueName} />}
         {primaryLabel && (
           <PrimaryButton icon={'plus' as IconName} onClick={onPrimary}>{primaryLabel}</PrimaryButton>
         )}

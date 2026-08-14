@@ -7,6 +7,7 @@ import { Chip } from "../../ui/Chip";
 import { DepTag, ProvTag } from "../../ui/StatusTags";
 import { PrimaryButton, GhostButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
+import { useRecordAttendance } from "../../../features/bookings/mutations";
 
 function useRetained<T>(val: T | null, open: boolean): T | null {
   const ref = useRef<T | null>(val);
@@ -54,6 +55,7 @@ export function BookingDetailDrawer({
 }: BookingDetailDrawerProps) {
   const b = useRetained(booking, open);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const attendance = useRecordAttendance();
 
   useEffect(() => {
     if (open) setConfirmCancel(false);
@@ -120,11 +122,6 @@ export function BookingDetailDrawer({
       {verificationGate && <div className="mb-[14px]">{verificationGate}</div>}
       <div className="rounded-[13px] p-[4px_14px] mb-[14px]" style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
         <MetaRow label="Service">{b.serviceName}</MetaRow>
-        {/* No "With" row. `Booking.staff` is a grid lane, not an assignment: the platform models
-            no resource, so `adapters.ts` sets every live booking to `UNASSIGNED_RESOURCE_ID`
-            ("s1") — and `staffById("s1")` matched the mock `STAFF[0]`, so this row read
-            "With: Linh Pham · Technician · Bay 1" for EVERY real booking, naming an invented
-            person as the one who handled it. Same defect as the grid's fabricated lanes. */}
         <MetaRow label="When">
           {dayLabel}
           <div className="font-mono text-[11px] text-ink">{fmtRange(b.start, b.dur)}</div>
@@ -152,6 +149,24 @@ export function BookingDetailDrawer({
             worse than a missing one: it is the field an engineer would quote in an incident. */}
       </div>
 
+      {isRealBooking && (
+        <div className="flex gap-2 mb-[14px]">
+          <GhostButton
+            style={{ flex: 1 }}
+            disabled={attendance.isPending}
+            onClick={() => attendance.mutate({ bookingId: b.id, attendance: "attended" })}
+          >
+            Mark attended
+          </GhostButton>
+          <GhostButton
+            style={{ flex: 1 }}
+            disabled={attendance.isPending}
+            onClick={() => attendance.mutate({ bookingId: b.id, attendance: "no_show" })}
+          >
+            Mark no-show
+          </GhostButton>
+        </div>
+      )}
       {b.prov === 'ai' && (
         <button
           onClick={() => b.transcript ? onViewTranscript(b.transcript) : undefined}

@@ -794,6 +794,17 @@ function ListView({
   );
 }
 
+function ClosedPill() {
+  return (
+    <span
+      className="font-mono text-[10px] tracking-[0.06em] uppercase px-[9px] py-1 rounded-full shrink-0"
+      style={{ color: '#55554F', background: '#F2F2F0' }}
+    >
+      Closed
+    </span>
+  );
+}
+
 // ── TodayScreen ───────────────────────────────────────────────────────────
 export interface TodayScreenProps {
   device: 'phone' | 'desktop';
@@ -826,6 +837,8 @@ export interface TodayScreenProps {
    * must not render as "No bookings", the same rule Queue and Waitlist hold.
    */
   loaded?: boolean;
+  /** True when operating hours say this weekday is closed. */
+  dayClosed?: boolean;
 }
 
 const VIEW_OPTS   = [{ value: 'diagram', label: 'Diagram' }, { value: 'list', label: 'List' }];
@@ -839,7 +852,7 @@ const TIME_OPTS   = [
 export function TodayScreen({
   device, week, onPrevWeek, onNextWeek, onGoToToday, selDay, setSelDay,
   openBooking, goQueue, queueCount,
-  bookings, onDragReschedule, onDragRefused, resourceLabel, resources, loaded = true,
+  bookings, onDragReschedule, onDragRefused, resourceLabel, resources, loaded = true, dayClosed = false,
 }: TodayScreenProps) {
   const isPhone = device === 'phone';
   const [calView,    setCalView]    = useState<'diagram' | 'list'>('diagram');
@@ -865,18 +878,6 @@ export function TodayScreen({
     if (next > 6) { onNextWeek(); setSelDay(0); return; }
     setSelDay(next);
   }
-  // No "Closed" pill. `dayBounds().closed` came from `SETTINGS.hours` — a hand-written constant
-  // that SettingsScreen renders under a "no operating-hours endpoint yet" badge. Telling an
-  // operator their venue is closed on the strength of that is the same fabrication, unbadged,
-  // on the live schedule.
-  // Which column IS today, asked of the ticking clock rather than of the week as it was built.
-  //
-  // `week.todayIndex` is computed when the week is built from the schedule window, and the week is
-  // rebuilt only when a parent state change moves that window. A console left open across local
-  // midnight therefore kept yesterday's column marked as today — the now-line stayed on it and the
-  // "remaining" tile went on counting against a day that had ended, while the real current day was
-  // treated as an ordinary column. `now` already ticks every 30 seconds, so this corrects itself
-  // within one tick with no new timer.
   const todayIndex = todayIndexAt(week, now);
   const isToday = todayIndex === selDay;
   const dayBookings = bookings.filter(b => b.day === selDay && isActive(b.status));
@@ -900,6 +901,7 @@ export function TodayScreen({
           </button>
           <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
             <span className="text-[14px] font-semibold truncate" style={{ color: '#0A0A0A' }}>{selectedDayLabel}</span>
+            {dayClosed && <ClosedPill />}
           </div>
           <button
             aria-label="Next day"
@@ -1005,6 +1007,7 @@ export function TodayScreen({
           <h2 className="text-[16px] font-semibold tracking-[-0.02em] m-0" style={{ color: '#0A0A0A' }}>
             {selectedDayLabel}
           </h2>
+          {dayClosed && <ClosedPill />}
           {queueCount > 0 && (
             <button
               onClick={goQueue}

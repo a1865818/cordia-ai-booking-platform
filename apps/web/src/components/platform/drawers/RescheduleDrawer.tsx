@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Booking, fmtT, TIME_SLOTS } from "../../../data/console";
 import { dayOptions, shortDayLabel, type ConsoleWeek } from "../../../features/bookings/week";
+import type { GridResource } from "../../../features/bookings/resources";
+import { timeSlotsFromHours, type OperatingHour } from "../../../features/settings/hours";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
@@ -48,34 +50,37 @@ interface RescheduleDrawerProps {
   booking: Booking | null;
   onClose: () => void;
   onDone: (id: string, patch: { day: number; start: number; staff: string; dur: number }) => void;
+  hours?: OperatingHour[];
+  resources?: readonly GridResource[];
 }
 
-export function RescheduleDrawer({ open, device, week, booking, onClose, onDone }: RescheduleDrawerProps) {
+export function RescheduleDrawer({ open, device, week, booking, onClose, onDone, hours, resources }: RescheduleDrawerProps) {
   const b = useRetained(booking, open);
   const [day, setDay] = useState('0');
   const [time, setTime] = useState('600');
+  const namedResources = (resources ?? []).filter(r => r.name);
+  const showStaffPicker = namedResources.length > 0;
+  const [resourceId, setResourceId] = useState('');
 
   useEffect(() => {
     if (open && booking) {
       setDay(String(booking.day));
       setTime(String(booking.start));
+      setResourceId(booking.staff);
     }
   }, [open, booking?.id]);
 
-  /**
-   * The slot list, guaranteed to contain the booking's CURRENT start.
-   *
-   * A `<select>` whose value matches no `<option>` renders blank, so a booking outside the fixed
-   * list showed an empty "New time" and the operator could not even see what they were moving
-   * from. Widening `TIME_SLOTS` covers the ordinary cases; this covers the rest — an overnight
-   * booking, or one made before the list was widened — without inventing a venue constraint.
-   */
+  const baseSlots = useMemo(() => {
+    const slots = timeSlotsFromHours(hours);
+    return slots.length > 0 ? slots : TIME_SLOTS;
+  }, [hours]);
+
   const timeOptions = useMemo(() => {
     const current = b ? String(b.start) : null;
-    if (current === null || TIME_SLOTS.some(o => o.value === current)) return TIME_SLOTS;
-    return [...TIME_SLOTS, { value: current, label: fmtT(b!.start) }]
+    if (current === null || baseSlots.some(o => o.value === current)) return baseSlots;
+    return [...baseSlots, { value: current, label: fmtT(b!.start) }]
       .sort((x, y) => Number(x.value) - Number(y.value));
-  }, [b]);
+  }, [b, baseSlots]);
 
   if (!b) return <Drawer open={open} onClose={onClose} device={device} title="Reschedule">{null}</Drawer>;
 
@@ -97,7 +102,12 @@ export function RescheduleDrawer({ open, device, week, booking, onClose, onDone 
     // `toCanonicalPayload` omits entirely — so the reschedule wrote a payload with no duration and
     // the booking came back from the projection as `duration_minutes: null`, collapsing to the
     // grid's 60-minute default. A 90-minute service silently became a 60-minute one, durably.
-    onDone(b!.id, { day: Number(day), start: Number(time), staff: b!.staff, dur: b!.dur });
+    onDone(b!.id, {
+      day: Number(day),
+      start: Number(time),
+      staff: showStaffPicker && resourceId ? resourceId : b!.staff,
+      dur: b!.dur,
+    });
     onClose();
   }
 
@@ -128,10 +138,18 @@ export function RescheduleDrawer({ open, device, week, booking, onClose, onDone 
               </Field>
             </div>
           </div>
-          {/* No "With" picker. `STAFF` is invented (`data/console.ts`), the platform models no
-              resource, and the chosen value was discarded on submit — `buildSubmission` has no
-              field for it. Offering a control that silently drops its own input is worse than
-              not offering it. */}
+          {showStaffPicker && (
+            <Field label="With">
+              <SelectField
+                value={resourceId}
+                onChange={setResourceId}
+                options={namedResources.map(r => ({
+                  value: r.id,
+                  label: r.role ? `${r.name} · ${r.role}` : r.name,
+                }))}
+              />
+            </Field>
+          )}
       </fieldset>
     </Drawer>
   );

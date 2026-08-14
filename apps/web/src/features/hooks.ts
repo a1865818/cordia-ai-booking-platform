@@ -16,6 +16,15 @@ import type { SensitiveReadPurpose } from "./conversations/purposes";
 import { listCustomers } from "./customers/api";
 import { listEnrollments } from "./waitlist/api";
 import { getConsentPolicy, listCatalogItems } from "./settings/api";
+import { getTenantProfile } from "./settings/profile";
+import { getOperatingHours } from "./settings/hours";
+import { getGuardrails } from "./settings/guardrails";
+import { listKnowledge } from "./settings/knowledge";
+import { getDepositPolicy } from "./settings/depositPolicy";
+import { listStaffResources } from "./resources/api";
+import { getPayoutSummary, listDeposits } from "./deposits/api";
+import { listCampaigns } from "./campaigns/api";
+import { getKpis, type ReportingWindow } from "./reporting/api";
 
 export function useBookingSchedule(window: ScheduleWindow, enabled = true) {
   return useQuery({
@@ -133,6 +142,86 @@ export function useCatalogItems(query = "", enabled = true) {
   return useQuery({
     queryKey: queryKeys.settings.catalogItems(query),
     queryFn: ({ signal }) => listCatalogItems(query || undefined, 50, signal),
+    enabled,
+  });
+}
+
+export function useTenantProfile(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.settings.profile(),
+    queryFn: ({ signal }) => getTenantProfile(signal),
+    enabled,
+  });
+}
+
+export function useOperatingHours(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.settings.hours(),
+    queryFn: ({ signal }) => getOperatingHours(signal),
+    enabled,
+  });
+}
+
+export function useGuardrails(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.settings.guardrails(),
+    queryFn: ({ signal }) => getGuardrails(signal),
+    enabled,
+  });
+}
+
+export function useKnowledge(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.settings.knowledge(),
+    queryFn: ({ signal }) => listKnowledge(signal),
+    enabled,
+  });
+}
+
+export function useDepositPolicy(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.settings.depositPolicy(),
+    queryFn: ({ signal }) => getDepositPolicy(signal),
+    enabled,
+  });
+}
+
+export function useStaffResources(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.resources.list(),
+    queryFn: ({ signal }) => listStaffResources(signal),
+    enabled,
+  });
+}
+
+export function useDeposits(status?: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.deposits.list({ status }),
+    queryFn: ({ signal }) => listDeposits(status ? { status } : {}, signal),
+    enabled,
+  });
+}
+
+export function usePayoutSummary(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.payouts.summary(),
+    queryFn: ({ signal }) => getPayoutSummary(signal),
+    enabled,
+  });
+}
+
+export function useCampaigns(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.campaigns.list(),
+    queryFn: ({ signal }) => listCampaigns(signal),
+    enabled,
+  });
+}
+
+export function useKpis(window: ReportingWindow, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.reporting.kpis(window.from, window.to),
+    queryFn: ({ signal }) => getKpis(window, signal),
     enabled,
   });
 }

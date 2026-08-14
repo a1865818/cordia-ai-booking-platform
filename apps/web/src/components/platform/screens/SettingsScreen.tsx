@@ -1,45 +1,58 @@
-import React, { useState } from "react";
-import { SETTINGS, SettingsKnowledge, Service, TenantConfig, BUSINESS_TYPES } from "../../../data/console";
+import React, { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { BUSINESS_TYPES, fmtDur, fmtT, parseTime, type TenantConfig } from "../../../data/console";
 import { Toggle } from "../../ui/Toggle";
 import { Panel } from "../../ui/Panel";
 import { SectionLabel } from "../../ui/SectionLabel";
 import { Icon, IconName } from "../../ui/Icon";
-import { DemoBadge } from "../../ui/DemoBadge";
 import { ErrorState } from "../../ui/ErrorState";
 import { Skeleton } from "../../ui/Skeleton";
 import { MoneyAmount } from "../../ui/MoneyAmount";
-import { useCatalogItems, useConsentPolicy } from "../../../features/hooks";
+import { queryKeys } from "../../../api/queryKeys";
+import {
+  useCatalogItems, useConsentPolicy, useDepositPolicy, useGuardrails, useKnowledge,
+  useOperatingHours, useTenantProfile,
+} from "../../../features/hooks";
+import { setTenantProfile } from "../../../features/settings/profile";
+import { setOperatingHours, toHHmm, type OperatingHour } from "../../../features/settings/hours";
+import { setGuardrails, type Guardrail } from "../../../features/settings/guardrails";
+import { createKnowledge, updateKnowledge } from "../../../features/settings/knowledge";
+import { setDepositPolicy } from "../../../features/settings/depositPolicy";
 import { MenuCatalogPanel } from "../settings/MenuCatalogPanel";
 import { VenueNamePanel } from "../settings/VenueNamePanel";
+import { StaffRosterPanel } from "../settings/StaffRosterPanel";
 import { CapacitySlotPanel } from "../settings/CapacitySlotPanel";
 import { BookingLookupPanel } from "../operations/BookingLookupPanel";
 import { DeadLetterReplayPanel } from "../operations/DeadLetterReplayPanel";
 import { ModelTraceViewerPanel } from "../operations/ModelTraceViewerPanel";
 import { PreorderRecoveryPanel } from "../operations/PreorderRecoveryPanel";
 
-// ---- Business setup ----
+function tenantFromProfile(businessType: string | null | undefined): TenantConfig {
+  const bt = BUSINESS_TYPES.find(b => b.key === businessType) ?? BUSINESS_TYPES.find(b => b.key === "other")!;
+  return {
+    name: "",
+    businessType: bt.key,
+    resourceLabel: bt.resourceLabel,
+    resourceLabelPlural: bt.resourceLabelPlural,
+  };
+}
 
 interface BusinessSetupProps {
   tenantCfg: TenantConfig;
-  onUpdateTenant: (t: TenantConfig) => void;
-  device?: 'phone' | 'desktop';
+  onSelect: (key: string) => void;
+  device?: "phone" | "desktop";
+  busy?: boolean;
 }
 
-function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps) {
-  function select(key: string) {
-    const bt = BUSINESS_TYPES.find(b => b.key === key);
-    if (!bt) return;
-    onUpdateTenant({ ...tenantCfg, businessType: key, resourceLabel: bt.resourceLabel, resourceLabelPlural: bt.resourceLabelPlural });
-  }
-
+function BusinessSetup({ tenantCfg, onSelect, device, busy }: BusinessSetupProps) {
   return (
     <Panel style={{ marginBottom: 18 }}>
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: device === 'phone' ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)',
+          display: "grid",
+          gridTemplateColumns: device === "phone" ? "repeat(2, 1fr)" : "repeat(4, 1fr)",
           gap: 10,
-          padding: '4px 0 2px',
+          padding: "4px 0 2px",
         }}
       >
         {BUSINESS_TYPES.map(bt => {
@@ -48,18 +61,20 @@ function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps
             <button
               key={bt.key}
               type="button"
-              onClick={() => select(bt.key)}
+              disabled={busy}
+              onClick={() => onSelect(bt.key)}
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
                 gap: 7,
-                padding: '12px 8px 10px',
+                padding: "12px 8px 10px",
                 borderRadius: 12,
-                border: `1.5px solid ${active ? '#0A0A0A' : '#EAEAEA'}`,
-                background: active ? '#EBEBEA' : '#FAFAF9',
-                cursor: 'pointer',
-                transition: 'all 120ms ease',
+                border: `1.5px solid ${active ? "#0A0A0A" : "#EAEAEA"}`,
+                background: active ? "#EBEBEA" : "#FAFAF9",
+                cursor: busy ? "not-allowed" : "pointer",
+                opacity: busy ? 0.7 : 1,
+                transition: "all 120ms ease",
                 fontFamily: "'Inter Tight', system-ui, sans-serif",
               }}
             >
@@ -68,23 +83,23 @@ function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps
                   width: 34,
                   height: 34,
                   borderRadius: 9,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: active ? '#DDF247' : '#F1F1EE',
-                  transition: 'background 120ms ease',
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: active ? "#DDF247" : "#F1F1EE",
+                  transition: "background 120ms ease",
                 }}
               >
-                <Icon name={bt.icon as IconName} size={17} strokeWidth={1.9} color={active ? '#0A0A0A' : '#6B6B6B'} />
+                <Icon name={bt.icon as IconName} size={17} strokeWidth={1.9} color={active ? "#0A0A0A" : "#6B6B6B"} />
               </span>
               <span
                 style={{
                   fontSize: 11.5,
                   fontWeight: 600,
-                  color: active ? '#0A0A0A' : '#55554F',
-                  textAlign: 'center',
+                  color: active ? "#0A0A0A" : "#55554F",
+                  textAlign: "center",
                   lineHeight: 1.25,
-                  letterSpacing: '-0.01em',
+                  letterSpacing: "-0.01em",
                 }}
               >
                 {bt.label}
@@ -95,7 +110,7 @@ function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps
       </div>
       <div
         className="flex items-center justify-between"
-        style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid #EFEFEF' }}
+        style={{ marginTop: 14, paddingTop: 13, borderTop: "1px solid #EFEFEF" }}
       >
         <div>
           <div className="text-[13.5px] font-medium text-ink">Resource unit</div>
@@ -103,7 +118,7 @@ function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps
         </div>
         <span
           className="font-mono text-[12px] font-semibold px-[10px] py-[5px] rounded-[8px]"
-          style={{ background: '#F1F1EE', color: '#0A0A0A' }}
+          style={{ background: "#F1F1EE", color: "#0A0A0A" }}
         >
           {tenantCfg.resourceLabel} / {tenantCfg.resourceLabelPlural}
         </span>
@@ -112,261 +127,108 @@ function BusinessSetup({ tenantCfg, onUpdateTenant, device }: BusinessSetupProps
   );
 }
 
-// ---- Services management ----
-
-interface ServiceRowProps {
-  svc: Service;
-  onEdit: () => void;
-  onDelete: () => void;
-}
-
-function ServiceRow({ svc, onEdit, onDelete }: ServiceRowProps) {
-  const dur = (() => {
-    const h = Math.floor(svc.dur / 60), m = svc.dur % 60;
-    return (h ? h + 'h' : '') + (m ? (h ? ' ' : '') + m + 'm' : '');
-  })();
-
-  return (
-    <div
-      className="flex items-center gap-3 py-[10px]"
-      style={{ borderBottom: '1px solid #EFEFEF' }}
-    >
-      <div className="flex-1 min-w-0">
-        <div className="text-[13.5px] font-semibold text-ink">{svc.name}</div>
-        <div className="font-mono text-[11px] text-t3 mt-[2px]">
-          {dur} · A${svc.dep} deposit
-        </div>
-      </div>
-      <button
-        type="button"
-        onClick={onEdit}
-        className="w-8 h-8 flex items-center justify-center rounded-[8px] border border-cd-border bg-white cursor-pointer hover:bg-wash transition-colors"
-      >
-        <Icon name="edit" size={14} strokeWidth={1.9} color="#6B6B6B" />
-      </button>
-      <button
-        type="button"
-        onClick={onDelete}
-        className="w-8 h-8 flex items-center justify-center rounded-[8px] border border-cd-border bg-white cursor-pointer hover:bg-[#FFF2F2] transition-colors"
-      >
-        <Icon name="trash" size={14} strokeWidth={1.9} color="#D23B30" />
-      </button>
-    </div>
-  );
-}
-
-interface ServiceEditorProps {
-  initial: Service | null;
-  onSave: (s: Service) => void;
-  onCancel: () => void;
-}
-
-const DUR_OPTS = [15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 240];
-
-function fmtDurOpt(m: number): string {
-  const h = Math.floor(m / 60), mm = m % 60;
-  return (h ? h + 'h' : '') + (mm ? (h ? ' ' : '') + mm + 'm' : '');
-}
-
-function ServiceEditor({ initial, onSave, onCancel }: ServiceEditorProps) {
-  const [name, setName] = useState(initial?.name ?? '');
-  const [dur, setDur] = useState(initial?.dur ?? 60);
-  const [dep, setDep] = useState(initial?.dep ?? 0);
-
-  function save() {
-    if (!name.trim()) return;
-    onSave({
-      key: initial?.key ?? name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, ''),
-      name: name.trim(),
-      dur,
-      dep,
-    });
-  }
-
-  const inputStyle: React.CSSProperties = {
-    height: 38, border: '1px solid #EAEAEA', borderRadius: 9,
-    padding: '0 10px', fontFamily: "'Inter Tight', system-ui, sans-serif",
-    fontSize: 13, color: '#0A0A0A', background: '#fff', outline: 'none',
-    width: '100%',
-  };
-
-  return (
-    <div
-      className="rounded-[12px] p-[13px_14px]"
-      style={{ background: '#FBFBFA', border: '1px solid #E5E5E5', marginTop: 4 }}
-    >
-      <div className="mb-[10px]">
-        <div className="text-[11.5px] font-semibold text-t2 mb-[5px]">Service name</div>
-        <input
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="e.g. Full set, Lawn mow…"
-          style={inputStyle}
-          autoFocus
-        />
-      </div>
-      <div className="flex gap-[10px] mb-[12px]">
-        <div className="flex-1">
-          <div className="text-[11.5px] font-semibold text-t2 mb-[5px]">Duration</div>
-          <div className="relative">
-            <select
-              value={dur}
-              onChange={e => setDur(Number(e.target.value))}
-              style={{ ...inputStyle, appearance: 'none', paddingRight: 28, cursor: 'pointer' }}
-            >
-              {DUR_OPTS.map(m => (
-                <option key={m} value={m}>{fmtDurOpt(m)}</option>
-              ))}
-            </select>
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
-              <Icon name="chevD" size={13} strokeWidth={2.2} color="#9A9A9A" />
-            </span>
-          </div>
-        </div>
-        <div className="flex-1">
-          <div className="text-[11.5px] font-semibold text-t2 mb-[5px]">Deposit (A$)</div>
-          <input
-            type="number"
-            min={0}
-            value={dep}
-            onChange={e => setDep(Math.max(0, Number(e.target.value)))}
-            style={inputStyle}
-          />
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={save}
-          disabled={!name.trim()}
-          className="text-[12.5px] font-semibold text-white bg-ink px-4 py-[7px] rounded-[8px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
-        >
-          {initial ? 'Save changes' : 'Add service'}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="text-[12.5px] text-t2 bg-transparent border-none cursor-pointer hover:text-ink px-2"
-          style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-interface ServicesManagementProps {
-  services: Service[];
-  onUpdateServices: (s: Service[]) => void;
-}
-
-function ServicesManagement({ services, onUpdateServices }: ServicesManagementProps) {
-  const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-
-  function handleEdit(updated: Service) {
-    onUpdateServices(services.map(s => s.key === updated.key ? updated : s));
-    setEditingKey(null);
-  }
-
-  function handleAdd(svc: Service) {
-    const key = services.some(s => s.key === svc.key)
-      ? svc.key + '_' + Date.now()
-      : svc.key;
-    onUpdateServices([...services, { ...svc, key }]);
-    setAdding(false);
-  }
-
-  function handleDelete(key: string) {
-    onUpdateServices(services.filter(s => s.key !== key));
-  }
-
-  return (
-    <Panel style={{ marginBottom: 18 }}>
-      {services.map(svc => (
-        <div key={svc.key}>
-          {editingKey === svc.key ? (
-            <ServiceEditor
-              initial={svc}
-              onSave={handleEdit}
-              onCancel={() => setEditingKey(null)}
-            />
-          ) : (
-            <ServiceRow
-              svc={svc}
-              onEdit={() => { setAdding(false); setEditingKey(svc.key); }}
-              onDelete={() => handleDelete(svc.key)}
-            />
-          )}
-        </div>
-      ))}
-      {services.length === 0 && !adding && (
-        <div className="py-6 text-center text-[13px] text-t3">No services yet.</div>
-      )}
-      {adding ? (
-        <ServiceEditor initial={null} onSave={handleAdd} onCancel={() => setAdding(false)} />
-      ) : (
-        <button
-          type="button"
-          onClick={() => { setEditingKey(null); setAdding(true); }}
-          className="flex items-center gap-[6px] text-[13px] font-semibold text-ink mt-[10px] bg-transparent border-none cursor-pointer hover:opacity-70 transition-opacity p-0"
-          style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
-        >
-          <Icon name="plus" size={15} strokeWidth={2.4} color="#0A0A0A" />
-          Add service
-        </button>
-      )}
-    </Panel>
-  );
-}
-
-// ---- Main screen ----
+const inputStyle: React.CSSProperties = {
+  height: 38, border: "1px solid #EAEAEA", borderRadius: 9,
+  padding: "0 10px", fontFamily: "'Inter Tight', system-ui, sans-serif",
+  fontSize: 13, color: "#0A0A0A", background: "#fff", outline: "none",
+};
 
 interface SettingsScreenProps {
-  services: Service[];
-  tenantCfg: TenantConfig;
-  onUpdateServices: (s: Service[]) => void;
-  onUpdateTenant: (t: TenantConfig) => void;
-  device?: 'phone' | 'desktop';
+  device?: "phone" | "desktop";
 }
 
-export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdateTenant, device }: SettingsScreenProps) {
-  const [guards, setGuards] = useState<Record<string, boolean>>(() => {
-    const o: Record<string, boolean> = {};
-    SETTINGS.guardrails.forEach(g => (o[g.id] = g.on));
-    return o;
-  });
-  const [reqDep, setReqDep] = useState(SETTINGS.deposit.require);
-  const [kb, setKb] = useState<SettingsKnowledge[]>(SETTINGS.knowledge.map(k => ({ ...k })));
-  const [editing, setEditing] = useState<number | null>(null);
-  const [draft, setDraft] = useState('');
-
-  // Live, read-only surfaces the API actually exposes today.
-  const consentPolicy = useConsentPolicy('web');
+export function SettingsScreen({ device }: SettingsScreenProps) {
+  const queryClient = useQueryClient();
+  const consentPolicy = useConsentPolicy("web");
   const catalog = useCatalogItems();
   const catalogItems = catalog.data ?? [];
+  const profileQuery = useTenantProfile();
+  const hoursQuery = useOperatingHours();
+  const guardrailsQuery = useGuardrails();
+  const knowledgeQuery = useKnowledge();
+  const depositQuery = useDepositPolicy();
+
+  const tenantCfg = tenantFromProfile(profileQuery.data?.business_type);
+
+  const profileMut = useMutation({
+    mutationFn: setTenantProfile,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.settings.profile() }); },
+  });
+  const hoursMut = useMutation({
+    mutationFn: setOperatingHours,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.settings.hours() }); },
+  });
+  const guardMut = useMutation({
+    mutationFn: setGuardrails,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.settings.guardrails() }); },
+  });
+  const depositMut = useMutation({
+    mutationFn: setDepositPolicy,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.settings.depositPolicy() }); },
+  });
+
+  const [hoursDraft, setHoursDraft] = useState<OperatingHour[] | null>(null);
+  useEffect(() => {
+    if (hoursQuery.data?.hours) setHoursDraft(hoursQuery.data.hours.map(h => ({ ...h })));
+  }, [hoursQuery.data]);
+
+  const [editingKb, setEditingKb] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [newQ, setNewQ] = useState("");
+  const [kbBusy, setKbBusy] = useState(false);
+
+  const hours = hoursDraft ?? hoursQuery.data?.hours ?? [];
+  const guardrails = guardrailsQuery.data?.guardrails ?? [];
+  const knowledge = knowledgeQuery.data?.entries ?? [];
+  const deposit = depositQuery.data;
+
+  async function saveKnowledge(id: string) {
+    if (!draft.trim()) return;
+    setKbBusy(true);
+    try {
+      await updateKnowledge(id, { a: draft.trim(), status: "answered" });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.settings.knowledge() });
+      setEditingKb(null);
+    } finally {
+      setKbBusy(false);
+    }
+  }
+
+  async function addKnowledge() {
+    if (!newQ.trim()) return;
+    setKbBusy(true);
+    try {
+      await createKnowledge({ q: newQ.trim() });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.settings.knowledge() });
+      setNewQ("");
+    } finally {
+      setKbBusy(false);
+    }
+  }
 
   return (
     <div>
-      {/* Business setup — local state only. `api/tenant-profile` exposes the display NAME (and
-          the panel below saves it for real); nothing there accepts a business type, so these
-          choices are not persisted. Saying "no tenant-profile endpoint" was false, and was
-          disproved nine lines further down by the venue-name panel. */}
-      <div className="flex items-center gap-[8px]">
-        <SectionLabel>Business setup</SectionLabel>
-        <DemoBadge reason="no endpoint accepts a business type — this choice is not saved (the venue name below is)" />
-      </div>
-      <BusinessSetup tenantCfg={tenantCfg} onUpdateTenant={onUpdateTenant} device={device} />
+      <SectionLabel>Business setup</SectionLabel>
+      {profileQuery.isPending && <div className="mb-[18px]"><Skeleton h={120} /></div>}
+      {profileQuery.isError && (
+        <div className="mb-[18px]">
+          <ErrorState inline error={profileQuery.error} onRetry={() => void profileQuery.refetch()} />
+        </div>
+      )}
+      {!profileQuery.isPending && !profileQuery.isError && (
+        <BusinessSetup
+          tenantCfg={tenantCfg}
+          device={device}
+          busy={profileMut.isPending}
+          onSelect={(key) => profileMut.mutate({ business_type: key })}
+        />
+      )}
 
-      {/* Consent policy — live (spec 14). Read-only: no editing endpoint exists yet. */}
-      {/* First, because leaving it unset silently breaks booking lookup by phone. */}
       <SectionLabel>Venue name</SectionLabel>
       <VenueNamePanel />
 
-      {/* Ships with the availability read it feeds — a read over a table nothing fills would
-          report "nothing available" for every venue that has not used this panel. */}
+      <StaffRosterPanel />
+
       <CapacitySlotPanel />
 
       <SectionLabel>Consent policy</SectionLabel>
@@ -385,14 +247,14 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
               <div>
                 <div className="text-[13.5px] font-medium text-ink">Notice required before recording</div>
                 <div className="text-[11.5px] text-t3 mt-[1px]">
-                  Policy {consentPolicy.data?.consent_policy_version ?? 'unknown'}
+                  Policy {consentPolicy.data?.consent_policy_version ?? "unknown"}
                   {consentPolicy.data?.jurisdiction_policy_id
                     ? ` · ${consentPolicy.data.jurisdiction_policy_id}`
-                    : ''}
+                    : ""}
                 </div>
               </div>
               <span className="text-[12.5px] font-semibold text-ink">
-                {consentPolicy.data?.notice_required ? 'Yes' : 'No'}
+                {consentPolicy.data?.notice_required ? "Yes" : "No"}
               </span>
             </div>
             {consentPolicy.data?.notice_text && (
@@ -404,7 +266,6 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
         )}
       </Panel>
 
-      {/* Published menu catalog — live (spec 11). */}
       <div className="flex items-center gap-[8px]">
         <SectionLabel>Menu catalog</SectionLabel>
       </div>
@@ -426,28 +287,19 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
         {catalogItems.slice(0, 8).map((item, i) => (
           <div key={item.item_id ?? i}
             className="flex items-center justify-between py-[11px]"
-            style={{ borderBottom: i < Math.min(catalogItems.length, 8) - 1 ? '1px solid #EFEFEF' : 'none' }}>
+            style={{ borderBottom: i < Math.min(catalogItems.length, 8) - 1 ? "1px solid #EFEFEF" : "none" }}>
             <div className="min-w-0">
               <div className="text-[13.5px] text-ink font-medium truncate">{item.name ?? item.item_id}</div>
               {item.category && <div className="text-[11.5px] text-t3 mt-[1px]">{item.category}</div>}
             </div>
-            {/* Rendered unconditionally: an item the catalog records no price for says so,
-                rather than leaving a blank that reads as a failed load. */}
             <MoneyAmount minor={item.price_minor} currency={item.currency} />
           </div>
         ))}
       </Panel>
 
-      {/* Menu catalog management — the owner upload→review→approve→publish flow (spec 11
-          §21, D4). Live writes; the read-only published list above is its outcome. */}
       <SectionLabel>Menu catalog management</SectionLabel>
       <MenuCatalogPanel />
 
-      {/* Operator recovery (docs §13 group A). Three endpoints that were live with no surface:
-          dead-letter replay, the audited model-trace read, and pre-order manual resolution.
-          Each is driven by an id the operator arrived with — none of the three has a list
-          endpoint, and none of these panels invents one. */}
-      {/* Identity-first lookup: the endpoint has worked all along with no screen calling it. */}
       <SectionLabel>Find a booking</SectionLabel>
       <BookingLookupPanel />
 
@@ -456,69 +308,149 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
       <ModelTraceViewerPanel />
       <PreorderRecoveryPanel />
 
-      {/* Services — a local sketch, and now explicitly not what bookings are made against.
-          The create drawer books against the published Menu catalog above, so this list no
-          longer reaches any durable record at all. The badge has to say so: otherwise an
-          operator edits a service here and reasonably expects the booking form to follow. */}
-      <div className="flex items-center gap-[8px]">
-        <SectionLabel>Services</SectionLabel>
-        <DemoBadge reason="no services endpoint — this list is not saved and is not what bookings are made against; the Menu catalog above is" />
-      </div>
-      <ServicesManagement services={services} onUpdateServices={onUpdateServices} />
-
-      {/* Hours */}
-      <div className="flex items-center gap-[8px]">
-        <SectionLabel>Hours</SectionLabel>
-        <DemoBadge reason="no operating-hours endpoint yet" />
-      </div>
+      <SectionLabel>Services</SectionLabel>
       <Panel style={{ marginBottom: 18 }}>
-        {SETTINGS.hours.map((h, i) => (
-          <div key={h.d}
+        {catalog.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+        {!catalog.isPending && catalog.isError && (
+          <div className="py-2">
+            <ErrorState inline error={catalog.error} onRetry={() => void catalog.refetch()} />
+          </div>
+        )}
+        {!catalog.isPending && !catalog.isError && catalogItems.length === 0 && (
+          <div className="py-4 text-[12.5px] text-t3">
+            No published items yet. Create them in the menu catalog above.
+          </div>
+        )}
+        {catalogItems.map((item, i) => (
+          <div
+            key={item.item_id ?? i}
             className="flex items-center justify-between py-[11px]"
-            style={{ borderBottom: i < SETTINGS.hours.length - 1 ? '1px solid #EFEFEF' : 'none' }}>
-            <span className="text-[13.5px] text-ink font-medium">{h.d}</span>
-            {h.on
-              ? <span className="font-mono text-[12px] text-t2">{h.open} – {h.close}</span>
-              : <span className="text-[12px] text-t3">Closed</span>}
+            style={{ borderBottom: i < catalogItems.length - 1 ? "1px solid #EFEFEF" : "none" }}
+          >
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-semibold text-ink truncate">{item.name ?? item.item_id}</div>
+              <div className="font-mono text-[11px] text-t3 mt-[2px]">
+                {item.duration_minutes != null ? fmtDur(item.duration_minutes) : "Duration not set"}
+              </div>
+            </div>
+            <MoneyAmount minor={item.price_minor} currency={item.currency} />
           </div>
         ))}
       </Panel>
 
-      {/* Deposit policy */}
-      <div className="flex items-center gap-[8px]">
-        <SectionLabel>Deposit policy</SectionLabel>
-        <DemoBadge reason="spec 09 payment surface deferred" />
-      </div>
+      <SectionLabel>Hours</SectionLabel>
       <Panel style={{ marginBottom: 18 }}>
-        <div className="flex items-center justify-between py-3 border-b border-hair">
-          <div>
-            <div className="text-[13.5px] font-medium text-ink">Require a deposit</div>
-            <div className="text-[11.5px] text-t3 mt-[1px]">
-              {SETTINGS.deposit.amountPolicy} · refundable up to {SETTINGS.deposit.refundWindow}
-            </div>
+        {hoursQuery.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+        {hoursQuery.isError && (
+          <div className="py-2">
+            <ErrorState inline error={hoursQuery.error} onRetry={() => void hoursQuery.refetch()} />
           </div>
-          <Toggle on={reqDep} onClick={() => setReqDep(v => !v)} />
-        </div>
-        <div className="flex items-center justify-between py-3">
-          <span className="text-[13.5px] text-ink">Per-service amounts</span>
-          <span className="inline-flex items-center gap-[5px] text-[12px] text-t2">
-            {services.length} services
-            <Icon name="chevR" size={14} strokeWidth={2.2} color="#9A9A9A" />
-          </span>
-        </div>
+        )}
+        {hours.map((h, i) => (
+          <div key={h.d}
+            className="flex items-center justify-between gap-3 py-[11px]"
+            style={{ borderBottom: i < hours.length - 1 ? "1px solid #EFEFEF" : "none" }}>
+            <span className="text-[13.5px] text-ink font-medium w-[42px] shrink-0">{h.d}</span>
+            <Toggle
+              on={h.on}
+              onClick={() => setHoursDraft(prev => (prev ?? hours).map((row, idx) => idx === i ? { ...row, on: !row.on } : row))}
+            />
+            {h.on ? (
+              <div className="flex items-center gap-2 min-w-0">
+                <input
+                  type="time"
+                  value={toHHmm(parseTime(h.open))}
+                  onChange={e => setHoursDraft(prev => (prev ?? hours).map((row, idx) => idx === i ? { ...row, open: e.target.value } : row))}
+                  aria-label={`${h.d} open`}
+                  style={{ ...inputStyle, width: 118 }}
+                />
+                <span className="text-[12px] text-t3">–</span>
+                <input
+                  type="time"
+                  value={toHHmm(parseTime(h.close))}
+                  onChange={e => setHoursDraft(prev => (prev ?? hours).map((row, idx) => idx === i ? { ...row, close: e.target.value } : row))}
+                  aria-label={`${h.d} close`}
+                  style={{ ...inputStyle, width: 118 }}
+                />
+                <span className="font-mono text-[11px] text-t3 hidden md:inline">
+                  {fmtT(parseTime(h.open))} – {fmtT(parseTime(h.close))}
+                </span>
+              </div>
+            ) : (
+              <span className="text-[12px] text-t3">Closed</span>
+            )}
+          </div>
+        ))}
+        {hours.length > 0 && (
+          <button
+            type="button"
+            disabled={hoursMut.isPending}
+            onClick={() => hoursMut.mutate(hours.map(h => ({
+              ...h,
+              open: toHHmm(parseTime(h.open)),
+              close: toHHmm(parseTime(h.close)),
+            })))}
+            className="text-[12.5px] font-semibold text-white bg-ink px-4 py-[7px] rounded-[8px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40 mt-3"
+            style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+          >
+            {hoursMut.isPending ? "Saving…" : "Save hours"}
+          </button>
+        )}
       </Panel>
 
-      {/* Guardrails — local state only. A toggle that appears to arm or disarm a safety rule
-          while writing nothing is worse than no toggle at all. */}
-      <div className="flex items-center gap-[8px]">
-        <SectionLabel>Agent guardrails</SectionLabel>
-        <DemoBadge reason="no guardrail endpoint — these toggles are not saved" />
-      </div>
+      <SectionLabel>Deposit policy</SectionLabel>
       <Panel style={{ marginBottom: 18 }}>
-        {SETTINGS.guardrails.map((g, i) => (
+        {depositQuery.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+        {depositQuery.isError && (
+          <div className="py-2">
+            <ErrorState inline error={depositQuery.error} onRetry={() => void depositQuery.refetch()} />
+          </div>
+        )}
+        {deposit && (
+          <>
+            <div className="flex items-center justify-between py-3 border-b border-hair">
+              <div>
+                <div className="text-[13.5px] font-medium text-ink">Require a deposit</div>
+                <div className="text-[11.5px] text-t3 mt-[1px]">
+                  {deposit.amount_policy} · refundable up to {deposit.refund_window}
+                </div>
+              </div>
+              <Toggle
+                on={deposit.require}
+                disabled={depositMut.isPending}
+                onClick={() => depositMut.mutate({ ...deposit, require: !deposit.require })}
+              />
+            </div>
+            <div className="flex items-center justify-between py-3 border-b border-hair">
+              <span className="text-[13.5px] text-ink">No-show only</span>
+              <Toggle
+                on={deposit.no_show_only}
+                disabled={depositMut.isPending}
+                onClick={() => depositMut.mutate({ ...deposit, no_show_only: !deposit.no_show_only })}
+              />
+            </div>
+            {deposit.amount_minor != null && (
+              <div className="flex items-center justify-between py-3">
+                <span className="text-[13.5px] text-ink">Amount</span>
+                <MoneyAmount minor={deposit.amount_minor} currency={deposit.currency} />
+              </div>
+            )}
+          </>
+        )}
+      </Panel>
+
+      <SectionLabel>Agent guardrails</SectionLabel>
+      <Panel style={{ marginBottom: 18 }}>
+        {guardrailsQuery.isPending && <div className="py-3"><Skeleton h={52} /></div>}
+        {guardrailsQuery.isError && (
+          <div className="py-2">
+            <ErrorState inline error={guardrailsQuery.error} onRetry={() => void guardrailsQuery.refetch()} />
+          </div>
+        )}
+        {guardrails.map((g, i) => (
           <div key={g.id}
             className="flex items-center gap-3 py-3"
-            style={{ borderBottom: i < SETTINGS.guardrails.length - 1 ? '1px solid #EFEFEF' : 'none' }}>
+            style={{ borderBottom: i < guardrails.length - 1 ? "1px solid #EFEFEF" : "none" }}>
             <div className="flex-1">
               <div className="text-[13.5px] text-ink flex items-center gap-[7px]">
                 {g.label}
@@ -526,37 +458,47 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
               </div>
               {g.locked && <div className="text-[11px] text-t3 mt-[2px]">Core safety rule · always on</div>}
             </div>
-            {g.locked
-              ? <span className="font-mono text-[10px] tracking-[0.06em] uppercase px-[9px] py-1 rounded-full"
-                  style={{ color: '#0B6431', background: '#E7F6EC' }}>On</span>
-              : <Toggle on={guards[g.id]} onClick={() => setGuards(s => ({ ...s, [g.id]: !s[g.id] }))} />}
+            <Toggle
+              on={g.on}
+              disabled={g.locked || guardMut.isPending}
+              onClick={() => {
+                if (g.locked) return;
+                const next: Guardrail[] = guardrails.map(row => row.id === g.id ? { ...row, on: !row.on } : row);
+                guardMut.mutate(next);
+              }}
+            />
           </div>
         ))}
       </Panel>
 
-      {/* Knowledge base */}
       <SectionLabel line right={
-        <span className="font-mono text-[10.5px] text-t3">{kb.filter(k => k.status === 'needs-answer').length} needs an answer</span>
+        <span className="font-mono text-[10.5px] text-t3">
+          {knowledge.filter(k => k.status === "needs-answer").length} needs an answer
+        </span>
       }>
         Agent knowledge base
       </SectionLabel>
-      {/* Answers are held in component state; nothing persists them, so "Save" is local. */}
-      <div className="mb-[9px]"><DemoBadge reason="no knowledge-base endpoint — answers are not saved" /></div>
+      {knowledgeQuery.isPending && <div className="mb-3"><Skeleton h={72} /></div>}
+      {knowledgeQuery.isError && (
+        <div className="mb-3">
+          <ErrorState inline error={knowledgeQuery.error} onRetry={() => void knowledgeQuery.refetch()} />
+        </div>
+      )}
       <div className="flex flex-col gap-2">
-        {kb.map((k, i) => (
-          <div key={i}
+        {knowledge.map((k) => (
+          <div key={k.id}
             className="bg-white rounded-[13px] p-[13px_15px]"
-            style={{ border: `1px solid ${k.status === 'needs-answer' ? '#F0DCA8' : '#EAEAEA'}` }}>
+            style={{ border: `1px solid ${k.status === "needs-answer" ? "#F0DCA8" : "#EAEAEA"}` }}>
             <div className="flex items-start justify-between gap-[10px]">
               <div className="text-[13.5px] font-semibold text-ink">{k.q}</div>
-              {k.status === 'needs-answer' && (
+              {k.status === "needs-answer" && (
                 <span className="shrink-0 text-[10px] font-semibold px-2 py-[2px] rounded-full"
-                  style={{ background: '#FBF3DF', color: '#7E5606' }}>
+                  style={{ background: "#FBF3DF", color: "#7E5606" }}>
                   Needs answer
                 </span>
               )}
             </div>
-            {k.status === 'needs-answer' && editing === i ? (
+            {k.status === "needs-answer" && editingKb === k.id ? (
               <div className="mt-3">
                 <textarea
                   value={draft}
@@ -568,25 +510,21 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
                 />
                 <div className="flex gap-2 mt-2">
                   <button
-                    disabled={!draft.trim()}
-                    onClick={() => {
-                      if (!draft.trim()) return;
-                      setKb(prev => prev.map((item, idx) => idx === i ? { ...item, a: draft.trim(), status: 'answered' as const } : item));
-                      setEditing(null);
-                    }}
+                    disabled={!draft.trim() || kbBusy}
+                    onClick={() => { void saveKnowledge(k.id); }}
                     className="text-[12.5px] font-semibold text-white bg-ink px-3 py-1.5 rounded-[7px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
                   >Save</button>
                   <button
-                    onClick={() => setEditing(null)}
+                    onClick={() => setEditingKb(null)}
                     className="text-[12.5px] text-t2 bg-transparent border-none cursor-pointer hover:text-ink"
                     style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
                   >Cancel</button>
                 </div>
               </div>
-            ) : k.status === 'needs-answer' ? (
+            ) : k.status === "needs-answer" ? (
               <button
-                onClick={() => { setEditing(i); setDraft(k.a || ''); }}
+                onClick={() => { setEditingKb(k.id); setDraft(k.a || ""); }}
                 className="mt-2 text-[12px] font-semibold text-[#2F6BEB] bg-transparent border-none cursor-pointer hover:underline p-0"
                 style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
               >+ Add answer</button>
@@ -595,6 +533,24 @@ export function SettingsScreen({ services, tenantCfg, onUpdateServices, onUpdate
             )}
           </div>
         ))}
+        <div className="flex gap-2 mt-1">
+          <input
+            value={newQ}
+            onChange={e => setNewQ(e.target.value)}
+            placeholder="Add a question the agent should know…"
+            className="flex-1 h-[40px] border border-cd-border rounded-[10px] px-3 text-[13px] text-ink outline-none"
+            style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+          />
+          <button
+            type="button"
+            disabled={!newQ.trim() || kbBusy}
+            onClick={() => { void addKnowledge(); }}
+            className="text-[12.5px] font-semibold text-white bg-ink px-3 py-1.5 rounded-[8px] border-none cursor-pointer hover:brightness-110 disabled:opacity-40"
+            style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+          >
+            Add
+          </button>
+        </div>
       </div>
       <div className="h-2" />
     </div>

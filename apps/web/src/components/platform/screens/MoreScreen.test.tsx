@@ -43,24 +43,29 @@ describe("MoreScreen", () => {
     expect(screen.getByText("0 waiting · auto-book on")).toBeInTheDocument();
   });
 
-  it("never states an amount of money held", () => {
-    // `PAYOUT.held` is a hand-written constant and spec 09 has shipped no payment surface, so
-    // the platform has never held a cent. This was the most credible fabrication in the product.
+  it("states no amount of money held until a payout summary is passed in", () => {
     renderScreen({ waitlistCount: 3 });
     expect(screen.queryByText(/A\$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/held/)).not.toBeInTheDocument();
     expect(screen.queryByText(/next payout/)).not.toBeInTheDocument();
   });
 
-  it("badges every row whose figures have no backend", () => {
-    renderScreen();
-    // Deposits and Campaigns both.
-    expect(screen.getAllByText("Demo data")).toHaveLength(2);
+  it("shows the payout held line when one is provided", () => {
+    renderScreen({ depositsSub: "A$120 held" });
+    expect(screen.getByText("A$120 held")).toBeInTheDocument();
   });
 
-  it("claims nothing is awaiting approval", () => {
-    // The campaigns row carried a hard-coded amber `1` badge — a claim that something needed
-    // the operator's attention, on a screen no endpoint and no spec owns.
+  it("does not badge deposits or campaigns — both have endpoints", () => {
+    renderScreen();
+    expect(screen.queryByText("Demo data")).not.toBeInTheDocument();
+  });
+
+  it("reports awaiting campaigns when a count is provided", () => {
+    renderScreen({ campaignsSub: "2 awaiting approval" });
+    expect(screen.getByText("2 awaiting approval")).toBeInTheDocument();
+  });
+
+  it("claims nothing is awaiting approval until campaigns have loaded", () => {
     renderScreen();
     expect(screen.queryByText("1 awaiting your approval")).not.toBeInTheDocument();
   });

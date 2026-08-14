@@ -1,4 +1,9 @@
 import "@testing-library/jest-dom";
+import { afterEach } from "vitest";
+
+afterEach(() => {
+  sessionStorage.removeItem("cordia.operator_session");
+});
 
 // jsdom implements no layout, so `scrollIntoView` is simply absent — any component that
 // scrolls a ref into view (the conversation thread does on every new message) throws in a

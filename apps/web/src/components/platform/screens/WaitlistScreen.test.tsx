@@ -61,9 +61,9 @@ describe("waitlist auto-book consent", () => {
     expect(onToggleAuto).toHaveBeenCalledWith("enr_1");
   });
 
-  it("badges the venue-level switch, which persists nowhere", () => {
+  it("does not badge the venue-level auto-book switch — it is saved", () => {
     renderScreen([item({ isLive: true })]);
-    expect(screen.getByText("Demo data")).toBeInTheDocument();
+    expect(screen.queryByText("Demo data")).not.toBeInTheDocument();
   });
 });
 

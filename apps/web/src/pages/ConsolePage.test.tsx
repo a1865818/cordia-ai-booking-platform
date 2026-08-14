@@ -18,11 +18,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 
 vi.mock("../features/bookings/api", () => ({
   getBookingSchedule: vi.fn(),
   getBookingDetails: vi.fn(),
   getOperationStatus: vi.fn(),
+  recordAttendance: vi.fn(),
 }));
 vi.mock("../features/operations/api", async (importOriginal) => ({
   // `statusFromResponse` stays real: the follow-up toasts echo what it reads from the body.
@@ -45,16 +47,48 @@ vi.mock("../features/bookings/submit", async (importOriginal) => ({
   submitBooking: vi.fn(),
 }));
 vi.mock("../features/conversations/api", () => ({ listSessions: vi.fn(), getTranscript: vi.fn() }));
-vi.mock("../features/customers/api", () => ({ listCustomers: vi.fn() }));
+vi.mock("../features/customers/api", () => ({ listCustomers: vi.fn(), getCustomer: vi.fn(), setCustomerNotes: vi.fn() }));
 vi.mock("../features/waitlist/api", () => ({
   listEnrollments: vi.fn(), cancelEnrollment: vi.fn(), acceptOffer: vi.fn(), declineOffer: vi.fn(),
-  enrollGuest: vi.fn(),
+  enrollGuest: vi.fn(), listWaitlistLocations: vi.fn(),
 }));
 vi.mock("../features/settings/api", () => ({ listCatalogItems: vi.fn(), getConsentPolicy: vi.fn() }));
 vi.mock("../features/reporting/api", async (importOriginal) => ({
   // `rangeToWindow` is pure date maths the screen needs; only the fetchers are stubbed.
   ...(await importOriginal<typeof import("../features/reporting/api")>()),
-  getBookingFunnel: vi.fn(), getBookingOverview: vi.fn(),
+  getBookingFunnel: vi.fn(), getBookingOverview: vi.fn(), getKpis: vi.fn(),
+}));
+vi.mock("../features/settings/profile", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/settings/profile")>()),
+  getTenantProfile: vi.fn(), setTenantProfile: vi.fn(),
+}));
+vi.mock("../features/settings/hours", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/settings/hours")>()),
+  getOperatingHours: vi.fn(), setOperatingHours: vi.fn(),
+}));
+vi.mock("../features/resources/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/resources/api")>()),
+  listStaffResources: vi.fn(), createStaffResource: vi.fn(),
+}));
+vi.mock("../features/campaigns/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/campaigns/api")>()),
+  listCampaigns: vi.fn(),
+}));
+vi.mock("../features/deposits/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/deposits/api")>()),
+  listDeposits: vi.fn(), getPayoutSummary: vi.fn(),
+}));
+vi.mock("../features/settings/guardrails", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/settings/guardrails")>()),
+  getGuardrails: vi.fn(),
+}));
+vi.mock("../features/settings/knowledge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/settings/knowledge")>()),
+  listKnowledge: vi.fn(),
+}));
+vi.mock("../features/settings/depositPolicy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/settings/depositPolicy")>()),
+  getDepositPolicy: vi.fn(),
 }));
 
 import { ConsolePage } from "./ConsolePage";
@@ -67,9 +101,17 @@ import {
 } from "../features/operations/api";
 import { listSessions } from "../features/conversations/api";
 import { listCustomers } from "../features/customers/api";
-import { listEnrollments } from "../features/waitlist/api";
+import { listEnrollments, listWaitlistLocations } from "../features/waitlist/api";
 import { listCatalogItems } from "../features/settings/api";
-import { getBookingFunnel, getBookingOverview } from "../features/reporting/api";
+import { getBookingFunnel, getBookingOverview, getKpis } from "../features/reporting/api";
+import { getTenantProfile } from "../features/settings/profile";
+import { getOperatingHours } from "../features/settings/hours";
+import { listStaffResources } from "../features/resources/api";
+import { listCampaigns } from "../features/campaigns/api";
+import { getPayoutSummary, listDeposits } from "../features/deposits/api";
+import { getGuardrails } from "../features/settings/guardrails";
+import { listKnowledge } from "../features/settings/knowledge";
+import { getDepositPolicy } from "../features/settings/depositPolicy";
 
 function Providers({ children }: { children: ReactNode }) {
   const client = new QueryClient({
@@ -78,7 +120,11 @@ function Providers({ children }: { children: ReactNode }) {
       mutations: { retry: false },
     },
   });
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </MemoryRouter>
+  );
 }
 
 /** Every list resolves successfully and empty — the "fresh tenant" case. */
@@ -91,12 +137,42 @@ function allEmpty() {
   vi.mocked(listSessions).mockResolvedValue({ sessions: [] } as never);
   vi.mocked(listCustomers).mockResolvedValue({ customers: [], truncated: false } as never);
   vi.mocked(listEnrollments).mockResolvedValue({ enrollments: [] } as never);
+  vi.mocked(listWaitlistLocations).mockResolvedValue({ locations: [] } as never);
   vi.mocked(listCatalogItems).mockResolvedValue([] as never);
   vi.mocked(getBookingFunnel).mockResolvedValue({
     accepted: 0, confirmed: 0, notified: 0,
   } as never);
   vi.mocked(getBookingOverview).mockResolvedValue({
     per_day: [], channels: [], top_services: [], breakdown_truncated: false,
+  } as never);
+  vi.mocked(getKpis).mockResolvedValue({
+    kpis: [
+      { key: "bookings", value: null, unit: "count", delta: null, up: null, available: false },
+      { key: "noshow", value: null, unit: "percent", delta: null, up: null, available: false },
+      { key: "ai", value: null, unit: "percent", delta: null, up: null, available: false },
+      { key: "rev", value: null, unit: "minor", delta: null, up: null, available: false },
+    ],
+    handled: null,
+  } as never);
+  vi.mocked(getTenantProfile).mockResolvedValue({
+    tenant_id: "t1", display_name: "", business_type: null, waitlist_auto_book: true,
+  } as never);
+  vi.mocked(getOperatingHours).mockResolvedValue({
+    hours: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => ({
+      d, open: "09:00", close: "18:00", on: true,
+    })),
+  } as never);
+  vi.mocked(listStaffResources).mockResolvedValue({ resources: [] } as never);
+  vi.mocked(listCampaigns).mockResolvedValue({ campaigns: [] } as never);
+  vi.mocked(listDeposits).mockResolvedValue({ deposits: [] } as never);
+  vi.mocked(getPayoutSummary).mockResolvedValue({
+    held_minor: 0, available_minor: 0, currency: "AUD",
+    next_date: null, next_amount_minor: null, account: "Not connected",
+  } as never);
+  vi.mocked(getGuardrails).mockResolvedValue({ guardrails: [] } as never);
+  vi.mocked(listKnowledge).mockResolvedValue({ entries: [] } as never);
+  vi.mocked(getDepositPolicy).mockResolvedValue({
+    require: false, amount_policy: "", no_show_only: false, refund_window: "",
   } as never);
 }
 
@@ -220,12 +296,10 @@ describe("ConsolePage — a failed load is named, never rendered as an empty scr
 });
 
 describe("ConsolePage — rule 2: nothing is asserted that the API does not record", () => {
-  it("paints no campaign badge — nothing is awaiting approval", async () => {
+  it("paints no campaign badge when nothing is awaiting approval", async () => {
     renderConsole();
     await waitFor(() => expect(listOperations).toHaveBeenCalled());
 
-    // `campCount` was a hard-coded `1`, rendered as an amber badge on a screen no endpoint and
-    // no spec owns. A nav badge is a claim that something needs the operator's attention.
     const campaigns = screen.getByRole("button", { name: /campaigns/i });
     expect(campaigns.textContent).not.toMatch(/\b1\b/);
   });
@@ -332,11 +406,20 @@ describe("ConsolePage — rule 2: nothing is asserted that the API does not reco
     await waitFor(() => expect(screen.getAllByText("No bookings").length).toBeGreaterThan(0));
   });
 
-  it("never labels a day Closed — no operating-hours endpoint exists", async () => {
+  it("does not label a day Closed when operating hours have the day open", async () => {
     renderConsole();
     await waitFor(() => expect(getBookingSchedule).toHaveBeenCalled());
-    // The pill came from `SETTINGS.hours`, the same constant SettingsScreen badges as demo.
     expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+  });
+
+  it("labels the selected day Closed when operating hours say it is", async () => {
+    vi.mocked(getOperatingHours).mockResolvedValue({
+      hours: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => ({
+        d, open: "09:00", close: "18:00", on: false,
+      })),
+    } as never);
+    renderConsole();
+    await waitFor(() => expect(screen.getByText("Closed")).toBeInTheDocument());
   });
 
   it("does not report a 'clients' count it never computed", async () => {

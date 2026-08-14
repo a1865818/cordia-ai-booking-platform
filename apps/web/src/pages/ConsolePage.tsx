@@ -1,17 +1,17 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useNavigate } from "react-router";
 import {
-  Booking, THREADS, MESSAGES,
-  QueueItem, WaitlistItem,
-  Service, SERVICE_LIST, TenantConfig, TENANT,
+  Booking, QueueItem, WaitlistItem, TenantConfig, BUSINESS_TYPES, money,
 } from "../data/console";
 
 import {
   useAvailability, useBookingSchedule, useCatalogItems, useCustomers, useOpenWorkItems, useOperations, useSessions,
   useTranscript, useWaitlistEnrollments,
+  useTenantProfile, useOperatingHours, useStaffResources, useCampaigns, usePayoutSummary,
 } from "../features/hooks";
 import { toAvailableSlots } from "../features/bookings/availability";
 import { toBookableServices } from "../features/bookings/services";
-import { UNASSIGNED_RESOURCES } from "../features/bookings/resources";
+import { toGridResources, UNASSIGNED_RESOURCES } from "../features/bookings/resources";
 import { toBookings, weekWindow } from "../features/bookings/adapters";
 import { updateForKey, valueForKey, type ScopedTo } from "../features/bookings/scoped";
 import { buildWeek, dayLabel, shiftWeekWindow } from "../features/bookings/week";
@@ -27,7 +27,7 @@ import { toMessages, toThreads } from "../features/conversations/adapters";
 import { toCustomers } from "../features/customers/adapters";
 import { toWaitlistItems } from "../features/waitlist/adapters";
 import { prefillFromWaitlist, type CreatePrefill } from "../features/waitlist/prefill";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBookingDetails } from "../features/bookings/api";
 import { submitBooking } from "../features/bookings/submit";
 import { preflightReschedule } from "../features/bookings/preflight";
@@ -42,9 +42,14 @@ import { SENSITIVE_READ_PURPOSES, type SensitiveReadPurpose } from "../features/
 import { getActor } from "../api/config";
 import { queryKeys } from "../api/queryKeys";
 import { isApiVerificationRequiredError } from "../api/problem";
+import { clearSession } from "../api/session";
+import { logout } from "../features/auth/api";
+import { setTenantProfile } from "../features/settings/profile";
+import { dayBoundsFromHours } from "../features/settings/hours";
+import { toConsoleCampaign } from "../features/campaigns/api";
 
 import { Skeleton } from "../components/ui/Skeleton";
-import { DemoBadge, PartialBadge } from "../components/ui/DemoBadge";
+import { PartialBadge } from "../components/ui/DemoBadge";
 import { ErrorState } from "../components/ui/ErrorState";
 
 import { StatusBar } from "../components/platform/console/StatusBar";
@@ -134,6 +139,7 @@ function listLabels(labels: string[]): string {
 }
 
 export function ConsolePage() {
+  const navigate = useNavigate();
   const device = useDevice();
   const isPhone = device === 'phone';
   const isDesktop = !isPhone;
@@ -166,10 +172,15 @@ export function ConsolePage() {
     if (isDesktop && screen === 'more') setScreen('today');
   }, [isDesktop, screen]);
 
-  // Sign-out — respect the Vite base path (import.meta.env.BASE_URL) so we land
-  // on the app root even when the SPA is served under a prefix (VITE_BASE_PATH).
-  function handleSignOut() {
-    window.location.href = import.meta.env.BASE_URL;
+  // Sign-out revokes the server session when it can, then always drops the local one.
+  async function handleSignOut() {
+    try {
+      await logout();
+    } catch {
+      // A failed revoke must not trap the operator in a console they asked to leave.
+    }
+    clearSession();
+    navigate("/login");
   }
 
   // Waitlist actions
@@ -186,16 +197,11 @@ export function ConsolePage() {
   const [selDay, setSelDay] = useState(() => (new Date().getDay() + 6) % 7);
 
   // Conversations
-  //
-  // The SELECTION, which is not necessarily a conversation that exists. It starts on a demo id,
-  // and the demo threads are replaced wholesale once the sessions read lands — see `convOpen`
-  // below, which is the one every consumer must use.
-  const [selectedConv, setSelectedConv] = useState('c3');
+  const [selectedConv, setSelectedConv] = useState('');
   const [convView, setConvView] = useState<'list' | 'thread'>('list');
   const [takenOver, setTakenOver] = useState<Set<string>>(new Set());
 
   // Waitlist
-  const [autoBook, setAutoBook] = useState(true);
   const [waitlist, setWaitlist] = useState<WaitlistItem[]>([]);
 
   /**
@@ -255,15 +261,9 @@ export function ConsolePage() {
   // Customers — focus a specific customer from CommandPalette
   const [customerFocus, setCustomerFocus] = useState<string | null>(null);
 
-  // Business config
-  const [services, setServices] = useState<Service[]>(() => [...SERVICE_LIST]);
-  const [tenantCfg, setTenantCfg] = useState<TenantConfig>(() => ({ ...TENANT }));
-
   // ---- Live server state -------------------------------------------------
-  // Bookings, the queue and the waitlist are seeded EMPTY and only ever show server rows.
-  // Conversations and customers fall back to LABELLED demo rows while their query has not
-  // produced data — which includes a failure, so the fallback always arrives with the named
-  // load error and a DemoBadge beside it, never presented as the venue's own data.
+  // Bookings, the queue, conversations, customers and the waitlist only ever show server rows.
+  // A failed load is an ErrorState, never a labelled demo fallback.
   const queryClient = useQueryClient();
   // The displayed week is state, not a constant: the grid can move week to week, and every
   // date on screen is derived from THIS window rather than from a hard-coded literal. The
@@ -311,10 +311,47 @@ export function ConsolePage() {
     () => (catalogQuery.data ? toBookableServices(catalogQuery.data) : undefined),
     [catalogQuery.data]
   );
+  const profileQuery = useTenantProfile();
+  const hoursQuery = useOperatingHours();
+  const staffQuery = useStaffResources();
+  const campaignsQuery = useCampaigns();
+  const payoutQuery = usePayoutSummary();
+
+  const tenantCfg: TenantConfig = useMemo(() => {
+    const bt = BUSINESS_TYPES.find(b => b.key === profileQuery.data?.business_type)
+      ?? BUSINESS_TYPES.find(b => b.key === "other")!;
+    return {
+      name: profileQuery.data?.display_name ?? "",
+      businessType: bt.key,
+      resourceLabel: bt.resourceLabel,
+      resourceLabelPlural: bt.resourceLabelPlural,
+    };
+  }, [profileQuery.data]);
+
+  const autoBook = profileQuery.data?.waitlist_auto_book ?? false;
+  const profileMut = useMutation({
+    mutationFn: setTenantProfile,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.settings.profile() }); },
+  });
+
+  const hours = hoursQuery.data?.hours;
+  const gridResources = useMemo(() => {
+    const active = (staffQuery.data?.resources ?? []).filter(r => r.active);
+    return toGridResources(active);
+  }, [staffQuery.data]);
+  const scheduleResources = gridResources.length > 0 ? gridResources : [...UNASSIGNED_RESOURCES];
+
+  const serviceNames = useMemo(() => {
+    const map: Record<string, { name: string; dur?: number }> = {};
+    for (const s of bookableServices ?? []) {
+      map[s.id] = { name: s.name, dur: s.durationMinutes ?? undefined };
+    }
+    return map;
+  }, [bookableServices]);
 
   const liveBookings = useMemo(
-    () => toBookings(scheduleQuery.data?.bookings, { weekStart: week.start }),
-    [scheduleQuery.data, week.start]
+    () => toBookings(scheduleQuery.data?.bookings, { weekStart: week.start, serviceNames }),
+    [scheduleQuery.data, week.start, serviceNames]
   );
 
   /** Moves the grid a whole week; the rows follow because the window is the query key. */
@@ -336,33 +373,29 @@ export function ConsolePage() {
     [operationsQuery.data, workItemIndex]
   );
   const liveThreads = useMemo(() => toThreads(sessionsQuery.data?.sessions), [sessionsQuery.data]);
-  const liveWaitlist = useMemo(() => toWaitlistItems(waitlistQuery.data?.enrollments), [waitlistQuery.data]);
-  const liveCustomers = useMemo(() => toCustomers(customersQuery.data?.customers), [customersQuery.data]);
+  const liveWaitlist = useMemo(
+    () => toWaitlistItems(waitlistQuery.data?.enrollments, serviceNames),
+    [waitlistQuery.data, serviceNames]
+  );
+  const liveCustomers = useMemo(
+    () => toCustomers(customersQuery.data?.customers, undefined, serviceNames),
+    [customersQuery.data, serviceNames]
+  );
 
-  const showingDemoThreads = sessionsQuery.data === undefined;
-  const sourceThreads = showingDemoThreads ? THREADS : liveThreads;
+  const sourceThreads = liveThreads;
 
   /**
    * The conversation actually on screen — resolved here so the thread the operator SEES and the
    * thread every gate is keyed on are the same one.
    *
-   * `selectedConv` starts on the demo id `c3`, and the demo threads are swapped out wholesale the
-   * moment the sessions read lands. `ConversationsScreen` used to paper over the mismatch with a
-   * `threads.find(...) || threads[0]` fallback, which rendered a REAL guest session whose id
-   * nothing else knew about: `openSessionIsLive` was false, so no transcript was fetched and no
-   * purpose was ever asked for, and the message map had no entry for it — a live conversation
-   * displayed as a confident, completely empty thread. "Take over this chat" recorded the
-   * selection rather than the thread on screen for the same reason, so the Live dot never cleared.
-   *
-   * Resolving the fallback HERE instead makes that impossible: there is one id, and it is a member
-   * of the list being rendered.
+   * `selectedConv` starts empty. Until the operator picks a thread, fall back to the first
+   * live session so the pane and every transcript gate share one id that is actually in the list.
    */
   const convOpen = sourceThreads.some(t => t.id === selectedConv)
     ? selectedConv
     : (sourceThreads[0]?.id ?? selectedConv);
 
-  // Only fetch a transcript for a session that came from the API — the demo thread ids
-  // are not real sessions and would 404.
+  // Only fetch a transcript for a session that came from the API.
   const openSessionIsLive = liveThreads.some(t => t.id === convOpen);
   /**
    * Why this operator is reading a transcript. Chosen per conversation and never defaulted: it is
@@ -504,11 +537,12 @@ export function ConsolePage() {
   }, []);
 
   const queueCount = queue.length;
-  // No campaign badge. A nav badge is a claim that something needs the operator's attention, and
-  // campaigns are entirely demo data — no endpoint and no spec owns them, so nothing is awaiting
-  // approval. This was a hard-coded `1`, painted amber on the sidebar and duplicated as a second
-  // literal inside MoreScreen.
-  const campCount = 0;
+  const campCount = useMemo(
+    () => (campaignsQuery.data?.campaigns ?? [])
+      .map(toConsoleCampaign)
+      .filter(c => c.status === "awaiting").length,
+    [campaignsQuery.data]
+  );
   // A thread only counts as "live" until it's taken over by a human.
   //
   // Computed from SERVER threads only — never from the demo fallback. This drives a dot in the
@@ -1189,11 +1223,9 @@ export function ConsolePage() {
                 duration: 5000,
               })}
               resourceLabel={tenantCfg.resourceLabel}
-              // One unnamed lane: the platform models no resource, so the grid names none.
-              resources={UNASSIGNED_RESOURCES}
-              // "No bookings" is a claim about the day; it may only be made once the schedule
-              // has answered for THIS week.
+              resources={scheduleResources}
               loaded={scheduleQuery.data !== undefined}
+              dayClosed={hoursQuery.data ? dayBoundsFromHours(hoursQuery.data.hours, selDay).closed : false}
             />
             </>
           );
@@ -1212,32 +1244,17 @@ export function ConsolePage() {
             />
           );
         case 'conversations': {
-          // Fall back to demo threads only while the session list has never loaded — a
-          // successful-but-empty result is a real answer ("no conversations yet") and must
-          // not be replaced with fabricated rows.
           const displayThreads = sourceThreads.map(t =>
             takenOver.has(t.id) ? { ...t, live: false } : t
           );
-          // Transcript for the open thread is fetched on demand; it is a sensitive read
-          // and carries actor + reason-code headers (spec 14 §4.2).
-          //
-          // A live session that has NOT loaded gets an explicit empty entry rather than
-          // falling through to MESSAGES: the mock map has no key for a real session id, so
-          // the pane rendered a clean empty conversation for a failed or forbidden read of
-          // the most sensitive data in the product.
           const liveMessages = transcriptQuery.data
-            ? { ...MESSAGES, [convOpen]: toMessages(transcriptQuery.data) }
+            ? { [convOpen]: toMessages(transcriptQuery.data) }
             : openSessionIsLive
-              ? { ...MESSAGES, [convOpen]: [] }
-              : MESSAGES;
-          // The read does not happen until the operator says why. Rendered only for a real
-          // session — the demo threads are not transcripts and nothing is disclosed by them.
+              ? { [convOpen]: [] }
+              : {};
           const needsPurpose = openSessionIsLive && transcriptPurpose === null;
           return (
             <>
-              {showingDemoThreads && (
-                <div className="mb-3"><DemoBadge reason="conversations have not loaded yet" /></div>
-              )}
               {needsPurpose && (
                 <div
                   className="mb-3 rounded-[13px] p-[14px]"
@@ -1295,7 +1312,7 @@ export function ConsolePage() {
             <WaitlistScreen
               device={device}
               autoBook={autoBook}
-              toggleAutoBook={() => setAutoBook(v => !v)}
+              toggleAutoBook={() => profileMut.mutate({ waitlist_auto_book: !autoBook })}
               waitlist={waitlist}
               onToggleAuto={toggleWaitlistAuto}
               onRemove={removeFromWaitlist}
@@ -1332,13 +1349,7 @@ export function ConsolePage() {
           return <AnalyticsScreen device={device} range={analyticsRange} onRangeChange={setAnalyticsRange} />;
         case 'settings':
           return (
-            <SettingsScreen
-              services={services}
-              tenantCfg={tenantCfg}
-              onUpdateServices={setServices}
-              onUpdateTenant={setTenantCfg}
-              device={device}
-            />
+            <SettingsScreen device={device} />
           );
         case 'more':
           return (
@@ -1349,6 +1360,12 @@ export function ConsolePage() {
               // Undefined until the waitlist has loaded, so the row says "guests waiting" rather
               // than claiming a count it does not have (a successful-but-empty answer is 0).
               waitlistCount={waitlistQuery.data ? waitlist.length : undefined}
+              depositsSub={payoutQuery.data
+                ? `${money(payoutQuery.data.held_minor / 100)} held`
+                : undefined}
+              campaignsSub={campaignsQuery.data
+                ? (campCount === 0 ? "None awaiting approval" : `${campCount} awaiting approval`)
+                : undefined}
             />
           );
         default:
@@ -1407,6 +1424,7 @@ export function ConsolePage() {
           scrolled={scrolled}
           sub={headerSub}
           onOpenSearch={() => setCmdOpen(true)}
+          venueName={profileQuery.data?.display_name}
         />
 
         {/* Scrollable content — dot pattern shows in padding gaps, bg-white panels cover it */}
@@ -1475,6 +1493,8 @@ export function ConsolePage() {
         customers={customersQuery.data ? liveCustomers : undefined}
         availability={availableSlots}
         prefill={createPrefill}
+        hours={hours}
+        resources={scheduleResources}
         // The drawer was reopened while a submission was in flight and the server accepted it
         // anyway. The drawer cannot poll an operation that belongs to a form it no longer shows,
         // so the console refreshes instead: the accepted operation appears in the queue and the
@@ -1494,6 +1514,8 @@ export function ConsolePage() {
         booking={activeBooking}
         onClose={closeDrawer}
         onDone={onRescheduleDone}
+        hours={hours}
+        resources={scheduleResources}
       />
       <EnrollWaitlistDrawer
         open={drawer.kind === 'enroll'}

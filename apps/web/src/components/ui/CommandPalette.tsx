@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { IconName } from './Icon';
-import { CUSTOMERS, type Customer } from '../../data/console';
+import type { Customer } from '../../data/console';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -10,10 +10,8 @@ interface CommandPaletteProps {
   onCreateBooking: () => void;
   onOpenCustomer: (id: string) => void;
   /**
-   * The tenant's real customers. When this is `undefined` the list has never loaded, and the
-   * palette falls back to demo names **labelled as such** — searching the mock array
-   * unlabelled meant Cmd-K offered six fabricated people, and selecting one focused an id
-   * that exists nowhere.
+   * The tenant's real customers. When this is `undefined` the list has never loaded and
+   * customer search is empty — never the mock directory.
    */
   customers?: Customer[];
 }
@@ -63,14 +61,12 @@ export function CommandPalette({ open, onClose, onNavigate, onCreateBooking, onO
     onSelect: () => { onNavigate(s.key); onClose(); },
   }));
 
-  const showingDemoCustomers = customers === undefined;
-  const searchable = customers ?? CUSTOMERS;
+  const searchable = customers ?? [];
   const customerItems: Item[] = q.length > 1
     ? searchable.filter(c => c.name.toLowerCase().includes(q)).slice(0, 4).map(c => ({
         icon: 'user' as IconName,
         label: c.name,
-        // Demo rows say so; a live row shows what the API actually knows about them.
-        sub: showingDemoCustomers ? 'Demo data' : (c.fav || `${c.visits} bookings`),
+        sub: c.fav || `${c.visits} bookings`,
         onSelect: () => { onOpenCustomer(c.id); onClose(); },
       }))
     : [];

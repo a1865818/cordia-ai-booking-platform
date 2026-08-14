@@ -45,6 +45,16 @@ describe("toCanonicalPayload", () => {
     ]);
     expect("location_id" in payload).toBe(false);
     expect("target_booking_id" in payload).toBe(false);
+    expect("resource_id" in payload).toBe(false);
+  });
+
+  it("includes resource_id only when it is a real staff id, not the unassigned sentinel", () => {
+    expect(
+      (toCanonicalPayload({ ...draft, resourceId: "staff_alex" }) as Record<string, unknown>).resource_id
+    ).toBe("staff_alex");
+    expect(
+      "resource_id" in (toCanonicalPayload({ ...draft, resourceId: "s1" }) as Record<string, unknown>)
+    ).toBe(false);
   });
 
   it("includes the modify target when present", () => {

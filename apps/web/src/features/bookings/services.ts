@@ -9,9 +9,8 @@
  * durable intent. The Settings badge said "changes are not saved", which was true about
  * persistence and silent about that.
  *
- * `SERVICES` keeps its other job — turning a `service_id` on a row the API returned into a
- * readable label, falling back to the raw id when it misses. Labelling an id is not the same
- * as minting one.
+ * Display names for those ids come from the same catalog, falling back to the raw id when it
+ * misses. Labelling an id is not the same as minting one.
  */
 
 import type { CatalogItem } from "../settings/api";

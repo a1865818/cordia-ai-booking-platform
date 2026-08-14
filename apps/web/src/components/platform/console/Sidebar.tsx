@@ -1,7 +1,7 @@
 import { Icon } from "../../ui/Icon";
 import { Logo } from "../../ui/Logo";
 import { NAV_OPERATE, NAV_MANAGE, NavItem } from "./nav";
-import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
+import { sessionIdentity, sessionIdentityHint } from "../../../features/session/identity";
 
 interface SidebarProps {
   screen: string;
@@ -118,7 +118,7 @@ export function Sidebar({ screen, go, queueCount, campCount, hasLive, isCollapse
       <div className={`mt-auto flex items-center ${isCollapsed ? 'justify-center' : 'gap-[10px]'} px-2 pt-[11px] pb-[2px] border-t border-hair group`}>
         <span
           className="w-[30px] h-[30px] shrink-0 rounded-[9px] bg-ink text-white flex items-center justify-center text-[12px] font-semibold"
-          title={SESSION_IDENTITY_HINT}
+          title={sessionIdentityHint()}
         >
           {session.actorInitials}
         </span>
@@ -128,7 +128,7 @@ export function Sidebar({ screen, go, queueCount, campCount, hasLive, isCollapse
                 No endpoint returns a display name for the ACTOR, so the raw identity is shown.
                 (The tenant does have one — `GET /api/tenant-profile/display-name` — but this row
                 names who is signed in and where, which is what the raw values answer.) */}
-            <div className="min-w-0 flex-1" title={SESSION_IDENTITY_HINT}>
+            <div className="min-w-0 flex-1" title={sessionIdentityHint()}>
               <div className="text-[13px] font-semibold truncate">{session.actor}</div>
               <div className="text-[11px] text-t3 truncate">{session.tenant} · {session.role}</div>
             </div>

@@ -21,7 +21,7 @@ import {
   isApiIdempotencyConflictError,
   isApiVerificationRequiredError,
 } from "../../api/problem";
-import { getBookingDetails, getOperationStatus, type OperationStatusView } from "./api";
+import { getBookingDetails, getOperationStatus, recordAttendance, type AttendanceValue, type OperationStatusView } from "./api";
 import { getOrCreateAttempt, resetAttempt } from "./identity";
 import { submitCancellation } from "./submit";
 import { POLL_TIMEOUT_MS, nextInterval } from "./useOperationStatus";
@@ -345,4 +345,20 @@ export function offerFailureMessage(error: unknown, action: "accept" | "decline"
     return "That offer no longer exists.";
   }
   return error instanceof Error ? error.message : `Could not ${action} this offer`;
+}
+
+// ---------------------------------------------------------------------------
+// Attendance
+// ---------------------------------------------------------------------------
+
+export function useRecordAttendance() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ bookingId, attendance }: { bookingId: string; attendance: AttendanceValue }) =>
+      recordAttendance(bookingId, attendance),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bookings.all() });
+    },
+  });
 }

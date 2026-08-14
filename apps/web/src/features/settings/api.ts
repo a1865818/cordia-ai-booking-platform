@@ -32,6 +32,7 @@ const CatalogItemSchema = z
     price_minor: z.number().nullish(),
     currency: z.string().nullish(),
     status: z.string().nullish(),
+    duration_minutes: z.number().nullish(),
   })
   .passthrough();
 

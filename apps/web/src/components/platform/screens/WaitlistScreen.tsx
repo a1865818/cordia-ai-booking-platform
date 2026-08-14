@@ -4,7 +4,6 @@ import { Avatar } from "../../ui/Avatar";
 import { Countdown } from "../../ui/Countdown";
 import { Icon } from "../../ui/Icon";
 import { Toggle } from "../../ui/Toggle";
-import { DemoBadge } from "../../ui/DemoBadge";
 import { useTickingNow } from "../../../hooks/useTickingNow";
 import { SectionLabel } from "../../ui/SectionLabel";
 
@@ -49,10 +48,7 @@ export function WaitlistScreen({
           <Icon name="zap" size={19} fill="#DDF247" />
         </span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-[8px]">
-            <div className="text-[15px] font-semibold text-ink">Auto-book from waitlist</div>
-            <DemoBadge reason="no venue auto-book setting endpoint — this switch is not saved" />
-          </div>
+          <div className="text-[15px] font-semibold text-ink">Auto-book from waitlist</div>
           <div className="text-[12.5px] text-t2 mt-[3px] leading-[1.45]">
             When a matching slot opens, the agent offers it to the next eligible guest and books on
             reply. Whether a guest is eligible is <strong>their</strong> decision, recorded when they
