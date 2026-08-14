@@ -1,36 +1,51 @@
-﻿using Cordia.Domain.Interfaces;
+﻿using System.Buffers.Text;
+using System.Text;
+using System.Text.Json;
+using Cordia.Domain.Exceptions;
+using Cordia.Domain.Interfaces;
 using Cordia.Domain.TenantResolution;
 using Cordia.Infrastructure.Services;
 
 namespace Cordia.Api.Middleware;
 
 /// <summary>
-/// The API-side trust boundary for a presented signed <c>TenantContext</c> (spec-15 Phase 4, Inv-13)
-/// — the mirror of the langgraph <c>resolve_tenant</c> node. When an inbound request carries the
-/// <c>X-Tenant-Context</c> header, its compact HS256 JWS is verified via
-/// <see cref="ITenantContextSigner"/>; on success the verified <c>tenant_id</c> becomes authoritative
-/// for the request and is folded into the ambient correlation context BEFORE any handler touches data.
+/// The API-side trust boundary for a presented signed context (spec-15 Phase 4 + G1 web-origin).
+/// When an inbound request carries <c>X-Tenant-Context</c>, the unverified JWS header <c>typ</c>
+/// is peeked and dispatched:
 ///
-/// <para>Runs AFTER <c>CorrelationMiddleware</c> (so the correlation id already exists) and BEFORE the
-/// <c>TenantResolutionMiddleware</c> <c>X-Tenant-Id</c> dev/test shim — the shim is gated so it can
-/// never override a tenant this middleware verified.</para>
+/// <list type="bullet">
+/// <item><c>opctx+jws</c> — <see cref="IOperatorSessionSigner.Verify"/>, then set
+/// <see cref="TenantContext.TenantId"/> AND <see cref="ActorContext"/> (actor id/role).
+/// Operator sessions are rare vs channel traffic, so this path also loads the
+/// <c>operator_sessions</c> row by session id. Missing or revoked → 401.
+/// <b>Exception:</b> <c>POST /api/auth/logout</c> skips the DB revocation check so a second
+/// logout of a revoked-but-unexpired token still returns 204. JWS expiry is always enforced.
+/// Forged-after-logout tokens therefore fail on every other request as soon as
+/// <c>revoked_at</c> is set; they would otherwise work until <c>expires_at</c>.</item>
+/// <item><c>tenantctx+jws</c> (or any other typ) — existing <see cref="ITenantContextSigner.Verify"/>.
+/// Sets tenant only; does NOT populate <see cref="ActorContext"/>.</item>
+/// <item>No header — pass through (endpoints fail closed at <c>TenantGuard</c>).</item>
+/// </list>
 ///
-/// <para>On verification failure <see cref="ITenantContextSigner.Verify"/> throws
-/// <see cref="Cordia.Domain.Exceptions.TenantContextVerificationException"/>, which
-/// <c>UseExceptionHandler</c> (first in the pipeline) maps to HTTP 401 via the GlobalExceptionHandler.
-/// When no header is present this middleware does nothing — endpoints that require a tenant then fail
-/// closed at <c>TenantGuard.RequireTenant</c> (Inv-11).</para>
+/// <para>Runs AFTER <c>CorrelationMiddleware</c> and BEFORE the <c>X-Tenant-Id</c> shim.
+/// Verification failure throws <see cref="TenantContextVerificationException"/> → HTTP 401.</para>
 /// </summary>
 public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
 {
-    /// <summary>Request header carrying the signed compact-JWS <c>TenantContext</c>.</summary>
+    /// <summary>Request header carrying the signed compact-JWS context.</summary>
     public const string HeaderName = "X-Tenant-Context";
 
-    /// <summary>Verifies an inbound signed context (when present) and folds its tenant into the request.</summary>
+    private const string OperatorTyp = "opctx+jws";
+    private const string LogoutPath = "/api/auth/logout";
+
+    /// <summary>Verifies an inbound signed context (when present) and folds its tenant (and actor, for opctx) into the request.</summary>
     public async Task InvokeAsync(
         HttpContext context,
-        ITenantContextSigner signer,
+        ITenantContextSigner tenantSigner,
+        IOperatorSessionSigner operatorSigner,
+        IOperatorSessionRepository sessions,
         TenantContext tenantContext,
+        ActorContext actorContext,
         ICorrelationContext correlation)
     {
         if (context.Request.Headers.TryGetValue(HeaderName, out var values))
@@ -38,23 +53,80 @@ public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
             var jws = values.ToString();
             if (!string.IsNullOrWhiteSpace(jws))
             {
-                // Inv-13: a tenant identity is accepted ONLY from a context that verifies here. Verify
-                // throws TenantContextVerificationException on ANY failure (unknown/retired kid, bad
-                // signature, expired, future issued_at beyond skew, wrong typ, malformed) → 401. Never
-                // logs the token or the signing key.
-                var claims = signer.Verify(jws);
-
-                // Authoritative tenant for the request scope, set BEFORE the handler runs so the EF
-                // global query filter and TenantGuard both see the verified identity.
-                tenantContext.TenantId = claims.TenantId;
-
-                // Fold the verified tenant into the ambient correlation context so every downstream
-                // log / trace / audit line carries it (§25.1). CorrelationMiddleware already set the
-                // correlation id; we only add the tenant, preserving the rest.
-                correlation.Set(correlation.Current with { TenantId = claims.TenantId });
+                if (PeekTyp(jws) == OperatorTyp)
+                    await BindOperatorSessionAsync(
+                        jws, context, operatorSigner, sessions, tenantContext, actorContext, correlation);
+                else
+                    BindTenantContext(jws, tenantSigner, tenantContext, correlation);
             }
         }
 
         await next(context);
+    }
+
+    private static void BindTenantContext(
+        string jws,
+        ITenantContextSigner signer,
+        TenantContext tenantContext,
+        ICorrelationContext correlation)
+    {
+        var claims = signer.Verify(jws);
+        tenantContext.TenantId = claims.TenantId;
+        correlation.Set(correlation.Current with { TenantId = claims.TenantId });
+    }
+
+    private static async Task BindOperatorSessionAsync(
+        string jws,
+        HttpContext http,
+        IOperatorSessionSigner signer,
+        IOperatorSessionRepository sessions,
+        TenantContext tenantContext,
+        ActorContext actorContext,
+        ICorrelationContext correlation)
+    {
+        var claims = signer.Verify(jws);
+
+        // Set tenant BEFORE the session lookup so the EF query filter matches the claim.
+        tenantContext.TenantId = claims.TenantId;
+        correlation.Set(correlation.Current with { TenantId = claims.TenantId });
+
+        // Skip DB revocation on logout so a second POST /api/auth/logout of a revoked-but-unexpired
+        // token still returns 204. Every other path (including GET /api/auth/session) fails closed.
+        var skipRevocationCheck = HttpMethods.IsPost(http.Request.Method)
+            && http.Request.Path.StartsWithSegments(LogoutPath, StringComparison.OrdinalIgnoreCase);
+
+        if (!skipRevocationCheck)
+        {
+            var session = await sessions.GetAsync(claims.TenantId, claims.SessionId, http.RequestAborted);
+            if (session is null || session.RevokedAt is not null)
+                throw new TenantContextVerificationException("Operator session is not active.");
+        }
+
+        actorContext.ActorId = claims.ActorId;
+        actorContext.ActorRole = claims.ActorRole;
+    }
+
+    /// <summary>
+    /// Peeks the unverified JWS header <c>typ</c> (first compact-JWS segment). Returns null when
+    /// the header cannot be decoded — the tenant-context verifier then fail-closes as malformed.
+    /// </summary>
+    internal static string? PeekTyp(string jws)
+    {
+        var dot = jws.IndexOf('.');
+        if (dot <= 0)
+            return null;
+
+        try
+        {
+            var headerJson = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(jws.AsSpan(0, dot)));
+            using var doc = JsonDocument.Parse(headerJson);
+            return doc.RootElement.TryGetProperty("typ", out var typ) && typ.ValueKind == JsonValueKind.String
+                ? typ.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }
