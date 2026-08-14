@@ -46,4 +46,7 @@ public class VendorCatalogItem : ITenantScoped
 
     /// <summary>Draft-only: source location within the artifact (§3); never customer-facing.</summary>
     public string? SourceLocation { get; set; }
+
+    /// <summary>Optional service duration in minutes; null when the item is not time-boxed.</summary>
+    public int? DurationMinutes { get; set; }
 }

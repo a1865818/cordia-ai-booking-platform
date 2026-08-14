@@ -2,6 +2,7 @@
 using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.Console.GetBookingOverview;
 using Cordia.Application.Handlers.Reporting.GetBookingFunnel;
+using Cordia.Application.Handlers.Reporting.GetKpis;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
@@ -56,9 +57,9 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
     /// Analytics screen.
     ///
     /// Complements <c>GET /api/reporting/funnel</c>, which owns the separated funnel counts.
-    /// Deliberately carries no "agent vs human" split: nothing in the data model records who
-    /// handled a booking, and inventing that number would state a non-authoritative outcome
-    /// (Inv-16).
+    /// The agent-vs-human split now lives on <c>GET /api/reporting/kpis</c>
+    /// (<c>handled</c> / attributed source) and is reported only when bookings in the window
+    /// actually carry an attributed source.
     /// </summary>
     /// <param name="from">Window start (inclusive). Default: 7 days ago.</param>
     /// <param name="to">Window end (exclusive). Default: now.</param>
@@ -93,6 +94,32 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
             overview.TopServices
                 .Select(s => new OverviewServiceView(s.ServiceId, s.Count))
                 .ToList()));
+    }
+
+    /// <summary>
+    /// KPI strip over [from, to) with an equal-length prior window for deltas.
+    ///
+    /// Defaults to the last 7 days when omitted — the same default as
+    /// <see cref="GetOverview"/>. Window cap matches overview (400 days).
+    /// </summary>
+    /// <param name="from">Window start (inclusive). Default: 7 days ago.</param>
+    /// <param name="to">Window end (exclusive). Default: now.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("kpis")]
+    [ProducesResponseType(typeof(KpisView), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<KpisView>> GetKpis(
+        [FromQuery] DateTimeOffset? from,
+        [FromQuery] DateTimeOffset? to,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var resolvedTo = to ?? DateTimeOffset.UtcNow;
+        var resolvedFrom = from ?? resolvedTo.AddDays(-7);
+
+        return Ok(await mediator.Send(
+            new GetKpisQuery(tenant.TenantId, resolvedFrom, resolvedTo), ct));
     }
 }
 

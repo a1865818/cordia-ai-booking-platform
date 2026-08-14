@@ -34,4 +34,17 @@ public interface IDepositSessionRepository
         DepositStatus next,
         DateTimeOffset? paidAt = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Recent deposit sessions for the tenant, newest <c>CreatedAt</c> first.
+    /// Optional <paramref name="status"/>, <paramref name="from"/>, and <paramref name="to"/>
+    /// filter on status and created-at range.
+    /// </summary>
+    Task<IReadOnlyList<DepositSession>> ListAsync(
+        string tenantId,
+        DepositStatus? status,
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        int limit,
+        CancellationToken ct = default);
 }

@@ -33,6 +33,7 @@ public class BookingRepository(ApplicationDbContext db) : IBookingRepository
             // Materializing as Confirmed is a release like any other: nothing is outstanding.
             existing.PendingOperationId = null;
             existing.CustomerId = booking.CustomerId;
+            existing.AttributedSource = booking.AttributedSource;
             existing.UpdatedAt = booking.UpdatedAt;
         }
 
@@ -151,4 +152,18 @@ public class BookingRepository(ApplicationDbContext db) : IBookingRepository
                 .SetProperty(b => b.PendingOperationId, pendingOperationId)
                 .SetProperty(b => b.UpdatedAt, updatedAt),
             ct);
+
+    public Task<int> TrySetAttendanceAsync(
+        string tenantId,
+        string bookingId,
+        AttendanceStatus attendance,
+        DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+        => db.Bookings
+            .Where(b => b.TenantId == tenantId && b.BookingId == bookingId)
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(b => b.Attendance, attendance)
+                    .SetProperty(b => b.UpdatedAt, updatedAt),
+                ct);
 }

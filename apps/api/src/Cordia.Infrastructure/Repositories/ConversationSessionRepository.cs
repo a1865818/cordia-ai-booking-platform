@@ -90,4 +90,15 @@ public class ConversationSessionRepository(ApplicationDbContext db) : IConversat
                     .SetProperty(x => x.ConsentRecordedAt, recordedAt)
                     .SetProperty(x => x.Version, x => x.Version + 1),
                 ct);
+
+    public async Task<int> SetPreviewAsync(
+        string tenantId,
+        string sessionId,
+        string? preview,
+        CancellationToken ct = default)
+        => await db.ConversationSessions
+            .Where(s => s.TenantId == tenantId && s.SessionId == sessionId)
+            .ExecuteUpdateAsync(
+                s => s.SetProperty(x => x.Preview, preview),
+                ct);
 }

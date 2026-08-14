@@ -55,6 +55,7 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
             price_minor = i.PriceMinor,
             currency = i.Currency,
             category = i.Category,
+            duration_minutes = i.DurationMinutes,
         }));
     }
 
@@ -79,6 +80,7 @@ public class CatalogController(IMediator mediator, ITenantContext tenant) : Cont
             price_minor = item.PriceMinor,
             currency = item.Currency,
             category = item.Category,
+            duration_minutes = item.DurationMinutes,
             // §4.2 rich fields: ALL four jsonb columns are emitted as nested JSON (array/object),
             // never as a double-encoded string — allergen_info especially must reach consumers as
             // structured data, not an opaque blob (§21.2 never invent/omit allergens).

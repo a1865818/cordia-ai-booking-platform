@@ -5,7 +5,7 @@ namespace Cordia.Application.Handlers.Menu.SearchVendorCatalog;
 
 /// <summary>
 /// Token-bounded result row for catalog search (spec 11 §7 / §21.2): name,
-/// description, and price only — never draft-only fields (extraction_confidence /
+/// description, price, and optional duration — never draft-only fields (extraction_confidence /
 /// source_location are excluded by construction, Inv-16).
 /// </summary>
 public sealed record CatalogItemSummary(
@@ -14,7 +14,8 @@ public sealed record CatalogItemSummary(
     string Description,
     long PriceMinor,
     string Currency,
-    string? Category);
+    string? Category,
+    int? DurationMinutes = null);
 
 /// <summary>
 /// Paged search over the <b>published</b> vendor catalog (spec 11 §5.2, §7). Backs the
@@ -35,7 +36,7 @@ public sealed class SearchVendorCatalogQueryHandler(IVendorCatalogRepository rep
         var items = await repo.SearchPublishedItemsAsync(
             request.Query, request.Category, request.Skip, request.Take, ct);
         return items
-            .Select(i => new CatalogItemSummary(i.ItemId, i.Name, i.Description, i.PriceMinor, i.Currency, i.Category))
+            .Select(i => new CatalogItemSummary(i.ItemId, i.Name, i.Description, i.PriceMinor, i.Currency, i.Category, i.DurationMinutes))
             .ToList();
     }
 }

@@ -841,7 +841,7 @@ public sealed class FinalizeBookingCommandHandler(
         }
     }
 
-    private static Booking BuildBookingAggregate(
+    internal static Booking BuildBookingAggregate(
         string tenantId,
         BookingOperation operation,
         string providerReference,
@@ -883,6 +883,7 @@ public sealed class FinalizeBookingCommandHandler(
             Version = 0,
             LifecycleStatus = BookingLifecycleStatus.Confirmed,
             CustomerId = customerRef,
+            AttributedSource = operation.AttributedSource,
             CreatedAt = operation.CreatedAt,
             UpdatedAt = now,
         };

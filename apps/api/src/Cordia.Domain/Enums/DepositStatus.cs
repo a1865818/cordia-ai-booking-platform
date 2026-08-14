@@ -22,4 +22,8 @@ public enum DepositStatus
     [PgName("expired")]
     [JsonStringEnumMemberName("expired")]
     Expired,
+
+    [PgName("refunded")]
+    [JsonStringEnumMemberName("refunded")]
+    Refunded,
 }

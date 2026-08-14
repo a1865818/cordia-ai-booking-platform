@@ -54,7 +54,9 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
                 EnumWireNames.ToWireName(s.ConsentState),
                 s.RecordingAllowed,
                 s.StartedAt,
-                s.EndedAt)).ToList()));
+                s.EndedAt,
+                s.Preview,
+                s.Prov)).ToList()));
     }
 
     [HttpPost("{sessionId}/consent")]
@@ -173,7 +175,9 @@ public sealed record ConversationSessionView(
     [property: JsonPropertyName("consent_state")] string? ConsentState,
     [property: JsonPropertyName("recording_allowed")] bool? RecordingAllowed,
     [property: JsonPropertyName("started_at")] DateTimeOffset StartedAt,
-    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt);
+    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt,
+    [property: JsonPropertyName("preview")] string? Preview,
+    [property: JsonPropertyName("prov")] string? Prov);
 
 public sealed record ListConversationSessionsResponse(
     [property: JsonPropertyName("sessions")] IReadOnlyList<ConversationSessionView> Sessions);

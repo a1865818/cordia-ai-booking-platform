@@ -27,6 +27,7 @@ internal sealed record CanonicalBookingPayload(
     int? DurationMinutes,
     string? ServiceId,
     string? LocationId,
+    string? ResourceId,
     string? PhoneE164,
     string? ContactPhone,
     string? CallerId,
@@ -51,6 +52,7 @@ internal sealed record CanonicalBookingPayload(
     private static readonly string[] DurationNames = ["duration_minutes", "durationMinutes", "duration"];
     private static readonly string[] ServiceIdNames = ["service_id", "serviceId", "service"];
     private static readonly string[] LocationIdNames = ["location_id", "locationId", "location"];
+    private static readonly string[] ResourceIdNames = ["resource_id", "resourceId"];
     private static readonly string[] PhoneNames = ["phone_e164", "phoneE164", "phone"];
     private static readonly string[] ContactPhoneNames = ["contact_phone", "contactPhone"];
     private static readonly string[] CallerIdNames = ["caller_id", "callerId"];
@@ -81,6 +83,7 @@ internal sealed record CanonicalBookingPayload(
                 ReadInt(root, DurationNames),
                 ReadString(root, ServiceIdNames),
                 ReadString(root, LocationIdNames),
+                ReadString(root, ResourceIdNames),
                 ReadString(root, PhoneNames),
                 ReadString(root, ContactPhoneNames),
                 ReadString(root, CallerIdNames),

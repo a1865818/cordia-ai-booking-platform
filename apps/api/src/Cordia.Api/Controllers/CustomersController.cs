@@ -1,5 +1,8 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Handlers.Console.GetCustomer;
 using Cordia.Application.Handlers.Console.ListCustomers;
+using Cordia.Application.Handlers.Console.SetCustomerNotes;
+using Cordia.Domain.Console;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
@@ -8,9 +11,11 @@ using Microsoft.AspNetCore.Mvc;
 namespace Cordia.Api.Controllers;
 
 /// <summary>
-/// Read-only customer directory for the operations console.
+/// Read-only customer directory for the operations console, plus operator notes.
 ///
-/// GET api/customers?query=&amp;limit= → <see cref="ListCustomersResponse"/> (200 | 400)
+/// GET  api/customers?query=&amp;limit= → <see cref="ListCustomersResponse"/> (200 | 400)
+/// GET  api/customers/{ref} → <see cref="CustomerView"/> (200 | 404)
+/// PUT  api/customers/{ref}/notes → <see cref="CustomerView"/> (200 | 403) operator + reason
 ///
 /// There is no customers table (spec 12 owns all DDL and does not ratify one): this is an
 /// aggregate over booking operations and their confirmed intent revisions, keyed by
@@ -65,14 +70,66 @@ public class CustomersController(IMediator mediator, ITenantContext tenant) : Co
 
         return Ok(new ListCustomersResponse(
             result.Truncated,
-            result.Customers.Select(c => new CustomerView(
-                c.CustomerRef,
-                c.BookingCount,
-                c.FirstSeenAt,
-                c.LastSeenAt,
-                c.LastServiceId,
-                c.LastBookingId)).ToList()));
+            result.Customers.Select(ToView).ToList()));
     }
+
+    /// <summary>
+    /// One customer: booking history plus operator notes. Same minimisation as the list —
+    /// never an unmasked phone or email.
+    /// </summary>
+    [HttpGet("{customerRef}")]
+    [ProducesResponseType(typeof(CustomerView), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CustomerView>> Get(string customerRef, CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var customer = await mediator.Send(new GetCustomerQuery(tenant.TenantId, customerRef), ct);
+        return customer is null ? NotFound() : Ok(ToView(customer));
+    }
+
+    /// <summary>Upserts operator notes and tags. Operator-gated; returns the same shape as GET.</summary>
+    [HttpPut("{customerRef}/notes")]
+    [ProducesResponseType(typeof(CustomerView), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<CustomerView>> PutNotes(
+        string customerRef,
+        [FromBody] SetCustomerNotesRequest? body,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+
+        var customer = await mediator.Send(
+            new SetCustomerNotesCommand(
+                tenant.TenantId,
+                customerRef,
+                body?.Note,
+                body?.Tags,
+                actor ?? string.Empty,
+                actorRole ?? string.Empty,
+                reasonCode ?? string.Empty),
+            ct);
+
+        return Ok(ToView(customer));
+    }
+
+    private static CustomerView ToView(CustomerSummary c)
+        => new(
+            c.CustomerRef,
+            c.BookingCount,
+            c.FirstSeenAt,
+            c.LastSeenAt,
+            c.LastServiceId,
+            c.LastBookingId,
+            c.Origin,
+            c.NoShowCount,
+            c.Tags,
+            c.Note);
 }
 
 public sealed record CustomerView(
@@ -81,9 +138,17 @@ public sealed record CustomerView(
     [property: JsonPropertyName("first_seen_at")] DateTimeOffset? FirstSeenAt,
     [property: JsonPropertyName("last_seen_at")] DateTimeOffset? LastSeenAt,
     [property: JsonPropertyName("last_service_id")] string? LastServiceId,
-    [property: JsonPropertyName("last_booking_id")] string? LastBookingId);
+    [property: JsonPropertyName("last_booking_id")] string? LastBookingId,
+    [property: JsonPropertyName("origin")] string? Origin,
+    [property: JsonPropertyName("no_show_count")] int NoShowCount,
+    [property: JsonPropertyName("tags")] IReadOnlyList<string> Tags,
+    [property: JsonPropertyName("note")] string? Note);
 
 public sealed record ListCustomersResponse(
     /// <summary>True when the search scanned its ceiling without exhausting the tenant.</summary>
     [property: JsonPropertyName("truncated")] bool Truncated,
     [property: JsonPropertyName("customers")] IReadOnlyList<CustomerView> Customers);
+
+public sealed record SetCustomerNotesRequest(
+    [property: JsonPropertyName("note")] string? Note,
+    [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags);

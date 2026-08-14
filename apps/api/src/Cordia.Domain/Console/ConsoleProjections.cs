@@ -34,7 +34,22 @@ public sealed record ScheduledBooking(
     string? LifecycleStatus,
     OperationStatus OperationStatus,
     OperationTypeEnum OperationType,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    /// <summary>Who created the booking. Null on historical rows, or while still in flight with none stamped.</summary>
+    AttributedSource? AttributedSource,
+    /// <summary>Guest attendance. Null while there is no booking row; otherwise unknown/attended/no_show.</summary>
+    AttendanceStatus? AttendanceStatus,
+    /// <summary>Staff member assigned on the canonical payload, if any.</summary>
+    string? ResourceId,
+    /// <summary>Channel of the conversation session that produced the intent, when known.</summary>
+    TenantChannel? Channel,
+    /// <summary>Source session of the confirmed revision, when known.</summary>
+    string? SessionId,
+    /// <summary>
+    /// Latest deposit for this operation when it is Paid, Created or LinkSent.
+    /// Null when there is no such session — never 0 in that case, so the UI does not claim a hold.
+    /// </summary>
+    int? DepositAmountMinor);
 
 /// <summary>
 /// A page of scheduled bookings. <paramref name="Truncated"/> is true when the scan hit its
@@ -86,7 +101,14 @@ public sealed record ConversationSessionSummary(
     ConsentState? ConsentState,
     bool? RecordingAllowed,
     DateTimeOffset StartedAt,
-    DateTimeOffset? EndedAt);
+    DateTimeOffset? EndedAt,
+    /// <summary>Redacted last-turn snippet for the list row. Null until a turn has been persisted.</summary>
+    string? Preview,
+    /// <summary>
+    /// Who is speaking on this thread. Sessions themselves are not attributed, so this is
+    /// null unless a caller has a separate fact to stamp. Never invented.
+    /// </summary>
+    string? Prov);
 
 /// <summary>A waitlist enrollment plus the state of its most recent offer, if any.</summary>
 public sealed record WaitlistEnrollmentSummary(
@@ -120,7 +142,16 @@ public sealed record CustomerSummary(
     DateTimeOffset? FirstSeenAt,
     DateTimeOffset? LastSeenAt,
     string? LastServiceId,
-    string? LastBookingId);
+    string? LastBookingId,
+    /// <summary>
+    /// <c>guest</c> when any finalized booking is Agent-attributed; <c>staff</c> when any is
+    /// Operator-attributed and none are Agent; otherwise null. Never invented.
+    /// </summary>
+    string? Origin,
+    /// <summary>Count of this customer's bookings with <see cref="AttendanceStatus.NoShow"/>. 0 is real.</summary>
+    int NoShowCount,
+    IReadOnlyList<string> Tags,
+    string? Note);
 
 /// <summary>One day's counts for the analytics chart.</summary>
 public sealed record OverviewDay(DateOnly Date, int Accepted, int Booked);
@@ -132,10 +163,49 @@ public sealed record OverviewChannel(TenantChannel Channel, int Count);
 public sealed record OverviewService(string ServiceId, int Count);
 
 /// <summary>
+/// Guest vs staff origin for a customer, derived from finalized-booking attribution.
+/// Agent wins (guest); else any Operator is staff; else unknown.
+/// </summary>
+public static class CustomerOrigin
+{
+    public const string Guest = "guest";
+    public const string Staff = "staff";
+
+    public static string? From(IEnumerable<AttributedSource?> finalizedSources)
+    {
+        var anyAgent = false;
+        var anyOperator = false;
+        foreach (var source in finalizedSources)
+        {
+            if (source == AttributedSource.Agent) anyAgent = true;
+            else if (source == AttributedSource.Operator) anyOperator = true;
+        }
+
+        if (anyAgent) return Guest;
+        if (anyOperator) return Staff;
+        return null;
+    }
+}
+
+/// <summary>
+/// Authoritative counts for the KPI strip over one window. The handler compares two of
+/// these (current vs prior) — this type never invents a delta.
+/// </summary>
+public sealed record KpiFacts(
+    int Booked,
+    int KnownAttendance,
+    int NoShow,
+    int Attributed,
+    int AgentAttributed,
+    int OperatorAttributed,
+    long PaidDepositMinor);
+
+/// <summary>
 /// Aggregates for the Analytics screen over [from, to).
 ///
-/// Deliberately does NOT include an "agent vs human" split: nothing in the data model
-/// records who handled a booking, and inventing a number would violate Inv-16.
+/// The agent-vs-human split lives on <c>GET /api/reporting/kpis</c>
+/// (<c>kpis.handled</c> / <c>attributed_source</c>), which reports it only when
+/// bookings in the window actually carry an attributed source.
 /// </summary>
 public sealed record BookingOverview(
     string TenantId,
