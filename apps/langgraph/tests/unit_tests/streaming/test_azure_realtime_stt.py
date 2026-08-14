@@ -559,9 +559,7 @@ async def test_a_silent_service_while_audio_flows_raises_timeout_error(
             yield speech(1)
             await asyncio.sleep(0.01)
 
-    provider = AzureRealtimeSTTProvider(
-        settings, connect=make_realtime_connect(socket)
-    )
+    provider = AzureRealtimeSTTProvider(settings, connect=make_realtime_connect(socket))
 
     with pytest.raises(TimeoutError):
         async for _ in provider.transcribe(never_ending()):

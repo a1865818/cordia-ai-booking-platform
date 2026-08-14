@@ -79,6 +79,9 @@ class CatalogItem(BaseModel):
     name: str = Field(description="Item display name.")
     description: str = Field(description="Item description.")
     price: Money = Field(description="Item price.")
+    duration_minutes: int | None = Field(
+        default=None, description="Optional service duration in minutes."
+    )
     category: str | None = Field(default=None, description="Optional menu category.")
     modifiers: list[CatalogModifier] | None = Field(
         default=None, description="Optional selectable modifiers (§21.3)."

@@ -1032,6 +1032,22 @@
           "description": "Stable location ID, a TriState, or absent.",
           "title": "Location Id"
         },
+        "resource_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Staff/resource identifier assigned to this booking, a TriState, or absent.",
+          "title": "Resource Id"
+        },
         "starts_at": {
           "anyOf": [
             {
@@ -1237,6 +1253,19 @@
         "price": {
           "$ref": "#/$defs/Money",
           "description": "Item price."
+        },
+        "duration_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional service duration in minutes.",
+          "title": "Duration Minutes"
         },
         "category": {
           "anyOf": [

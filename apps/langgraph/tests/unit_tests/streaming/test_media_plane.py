@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 def tone(frequency_hz: float, rate_hz: int, seconds: float) -> bytes:
     samples = array.array("h")
     for index in range(int(rate_hz * seconds)):
-        samples.append(int(12000 * math.sin(2.0 * math.pi * frequency_hz * index / rate_hz)))
+        samples.append(
+            int(12000 * math.sin(2.0 * math.pi * frequency_hz * index / rate_hz))
+        )
     return samples.tobytes()
 
 
@@ -64,7 +66,9 @@ class RecordingDelivery:
 
     async def fetch(self, locator: str) -> bytes:
         for index, (audio, metadata, _) in enumerate(self.chunks):
-            expected = f"rec/{metadata.turn_id}/{metadata.chunk_seq}/{metadata.frame_seq}"
+            expected = (
+                f"rec/{metadata.turn_id}/{metadata.chunk_seq}/{metadata.frame_seq}"
+            )
             if expected == locator and index == index:
                 return audio
         raise KeyError(locator)
@@ -192,9 +196,7 @@ async def test_a_new_turn_starts_with_clean_filter_state() -> None:
 @pytest.mark.unit
 async def test_container_formats_are_refused_with_a_usable_message() -> None:
     """wav/mp3 cannot be resampled chunk-wise; say so rather than emitting noise."""
-    sink = TranscodingAudioSink(
-        delivery=RecordingDelivery(), egress=AudioEgress.pstn()
-    )
+    sink = TranscodingAudioSink(delivery=RecordingDelivery(), egress=AudioEgress.pstn())
     with pytest.raises(ValueError, match="TTS_RESPONSE_FORMAT=pcm"):
         await sink.write(b"RIFF....", meta(content_type="audio/wav"))
 

@@ -15,11 +15,8 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.contracts.security import RedactionPolicy, SessionConsentState
-from cordia_agent.tools._external_stubs import (
-    BookingDraft,
-    Confirmation,
-    IntentRevision,
-)
+from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.state import BookingDraft
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
     RequestHumanHandoffStatus,
@@ -128,6 +125,9 @@ class CatalogItem(BaseModel):
     )
     currency: str = Field(description="ISO 4217 currency code for price_minor.")
     catalog_version: str = Field(description="Catalog version this item was read from.")
+    duration_minutes: int | None = Field(
+        default=None, description="Optional service duration in minutes."
+    )
 
 
 class CatalogSearchResult(BaseModel):

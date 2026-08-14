@@ -38,19 +38,53 @@ _TENANT_CONTEXT = TenantContext(
 DECLARED: dict[str, dict] = {
     "dinner": {
         "status": "resolved",
-        "matches": [{"resource_id": "dinner", "kind": "service", "name": "Dinner sitting", "aliases": []}],
-        "resolved": {"resource_id": "dinner", "kind": "service", "name": "Dinner sitting", "aliases": []},
+        "matches": [
+            {
+                "resource_id": "dinner",
+                "kind": "service",
+                "name": "Dinner sitting",
+                "aliases": [],
+            }
+        ],
+        "resolved": {
+            "resource_id": "dinner",
+            "kind": "service",
+            "name": "Dinner sitting",
+            "aliases": [],
+        },
     },
     "the fitzroy room": {
         "status": "resolved",
-        "matches": [{"resource_id": "fitzroy", "kind": "location", "name": "Fitzroy dining room", "aliases": []}],
-        "resolved": {"resource_id": "fitzroy", "kind": "location", "name": "Fitzroy dining room", "aliases": []},
+        "matches": [
+            {
+                "resource_id": "fitzroy",
+                "kind": "location",
+                "name": "Fitzroy dining room",
+                "aliases": [],
+            }
+        ],
+        "resolved": {
+            "resource_id": "fitzroy",
+            "kind": "location",
+            "name": "Fitzroy dining room",
+            "aliases": [],
+        },
     },
     "sitting": {
         "status": "ambiguous",
         "matches": [
-            {"resource_id": "lunch", "kind": "service", "name": "Lunch sitting", "aliases": []},
-            {"resource_id": "dinner", "kind": "service", "name": "Dinner sitting", "aliases": []},
+            {
+                "resource_id": "lunch",
+                "kind": "service",
+                "name": "Lunch sitting",
+                "aliases": [],
+            },
+            {
+                "resource_id": "dinner",
+                "kind": "service",
+                "name": "Dinner sitting",
+                "aliases": [],
+            },
         ],
         "resolved": None,
     },
@@ -79,7 +113,9 @@ def install_client(*, status: int = 200, fail: bool = False) -> list[dict[str, s
 
     set_tool_client(
         ToolClient(
-            httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://test"),
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(handle), base_url="http://test"
+            ),
             tenant_context=_TENANT_CONTEXT,
         )
     )
@@ -120,7 +156,7 @@ async def test_an_alias_phrase_resolves_too() -> None:
 
 @pytest.mark.unit
 async def test_an_undeclared_name_captures_nothing() -> None:
-    """"a haircut" must not become a service_id. The draft stays incomplete and
+    """ "a haircut" must not become a service_id. The draft stays incomplete and
     clarify asks — which is the entire point of resolving rather than guessing."""
     install_client()
 

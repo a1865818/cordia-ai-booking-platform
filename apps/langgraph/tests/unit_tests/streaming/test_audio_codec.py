@@ -23,11 +23,15 @@ from cordia_agent.streaming.providers.audio_codec import (
 )
 
 
-def tone(frequency_hz: float, rate_hz: int, seconds: float, amplitude: int = 12000) -> bytes:
+def tone(
+    frequency_hz: float, rate_hz: int, seconds: float, amplitude: int = 12000
+) -> bytes:
     """Render a mono 16-bit sine wave."""
     samples = array.array("h")
     for index in range(int(rate_hz * seconds)):
-        samples.append(int(amplitude * math.sin(2.0 * math.pi * frequency_hz * index / rate_hz)))
+        samples.append(
+            int(amplitude * math.sin(2.0 * math.pi * frequency_hz * index / rate_hz))
+        )
     return samples.tobytes()
 
 
@@ -147,7 +151,9 @@ def test_flush_discards_a_truncated_sample_rather_than_clicking() -> None:
     ("source", "target", "taps"),
     [(0, 8000, 16), (24000, 0, 16), (-1, 8000, 16), (24000, 8000, 0)],
 )
-def test_invalid_configuration_fails_closed(source: int, target: int, taps: int) -> None:
+def test_invalid_configuration_fails_closed(
+    source: int, target: int, taps: int
+) -> None:
     """A nonsensical conversion raises at construction, not mid-call."""
     with pytest.raises(ValueError):
         PcmResampler(source_rate_hz=source, target_rate_hz=target, taps_per_phase=taps)

@@ -92,6 +92,13 @@ class ExtractedSlots(BaseModel):
             "identifier. Never invent an ID from a place name."
         ),
     )
+    resource_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable staff/resource ID, ONLY if the customer stated an explicit "
+            "identifier. Never invent an ID from a name."
+        ),
+    )
     service_name: str | None = Field(
         default=None,
         description=(
@@ -147,9 +154,10 @@ Rules:
 - Extract ONLY what the customer actually said in this utterance. Never guess, \
 never carry over defaults, never invent identifiers.
 - Leave a field null when it was not stated or you are unsure.
-- `service_id` / `location_id` / `target_booking_id` are opaque system \
-identifiers. Return one ONLY when the customer literally spoke an identifier \
-(e.g. "service svc_001"). A description like "a haircut" is NOT an identifier.
+- `service_id` / `location_id` / `resource_id` / `target_booking_id` are opaque \
+system identifiers. Return one ONLY when the customer literally spoke an \
+identifier (e.g. "service svc_001"). A description like "a haircut" is NOT an \
+identifier.
 - `service_name` / `location_name` are the opposite: put what the customer \
 actually CALLED the thing there, word for word ("dinner", "the Fitzroy room", \
 "a haircut"). Do not clean it up, do not turn it into an identifier, and do not \
@@ -299,7 +307,7 @@ def _to_captures(slots: ExtractedSlots) -> list[SlotCapture]:
             )
         )
 
-    for field in ("service_id", "location_id", "target_booking_id"):
+    for field in ("service_id", "location_id", "resource_id", "target_booking_id"):
         value = getattr(slots, field)
         if isinstance(value, str) and value.strip():
             add(field, value.strip())

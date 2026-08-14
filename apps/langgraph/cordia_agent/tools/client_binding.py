@@ -63,7 +63,7 @@ from cordia_agent.tools.foreground import (
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from cordia_agent.tools._external_stubs import BookingDraft
+    from cordia_agent.state import BookingDraft
 
 
 _log = logging.getLogger(__name__)

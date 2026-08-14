@@ -46,9 +46,7 @@ def _collect_metric_names(reader: InMemoryMetricReader) -> set[str]:
     return names
 
 
-def _collect_data_points(
-    reader: InMemoryMetricReader, metric_name: str
-) -> list[dict]:
+def _collect_data_points(reader: InMemoryMetricReader, metric_name: str) -> list[dict]:
     data = reader.get_metrics_data()
     points = []
     if data and data.resource_metrics:
@@ -74,7 +72,10 @@ def _collect_data_points(
 @pytest.mark.unit
 def test_metric_name_values_match_csharp_contract() -> None:
     """Assert every agent metric name matches the C# MetricNames constants."""
-    assert MetricNames.AGENT_TURN_TIME_TO_FIRST_RESPONSE_MS == "agent.turn.time_to_first_response_ms"
+    assert (
+        MetricNames.AGENT_TURN_TIME_TO_FIRST_RESPONSE_MS
+        == "agent.turn.time_to_first_response_ms"
+    )
     assert MetricNames.AGENT_TURN_LATENCY_MS == "agent.turn.latency_ms"
     assert MetricNames.AGENT_BARGEIN_SUCCESS_TOTAL == "agent.bargein.success_total"
     assert MetricNames.AGENT_BARGEIN_ATTEMPT_TOTAL == "agent.bargein.attempt_total"
@@ -82,8 +83,14 @@ def test_metric_name_values_match_csharp_contract() -> None:
     assert MetricNames.AGENT_STT_CONFIDENCE == "agent.stt.confidence"
     assert MetricNames.AGENT_CLARIFICATION_TOTAL == "agent.clarification_total"
     assert MetricNames.AGENT_SPELLBACK_TOTAL == "agent.spellback_total"
-    assert MetricNames.AGENT_DRAFT_VALIDATION_FAILURE_TOTAL == "agent.draft.validation_failure_total"
-    assert MetricNames.AGENT_CONFIRMATION_ABANDONMENT_TOTAL == "agent.confirmation.abandonment_total"
+    assert (
+        MetricNames.AGENT_DRAFT_VALIDATION_FAILURE_TOTAL
+        == "agent.draft.validation_failure_total"
+    )
+    assert (
+        MetricNames.AGENT_CONFIRMATION_ABANDONMENT_TOTAL
+        == "agent.confirmation.abandonment_total"
+    )
     assert MetricNames.AGENT_TOOL_ERROR_TOTAL == "agent.tool.error_total"
     assert MetricNames.AGENT_TOOL_TIMEOUT_TOTAL == "agent.tool.timeout_total"
     assert MetricNames.AGENT_HANDOFF_TOTAL == "agent.handoff_total"
@@ -108,7 +115,9 @@ def test_record_tool_error_produces_data_point() -> None:
     counter = meter.create_counter(MetricNames.AGENT_TOOL_ERROR_TOTAL)
 
     try:
-        counter.add(1, {"tool": "check_candidate_availability", "category": "not_found"})
+        counter.add(
+            1, {"tool": "check_candidate_availability", "category": "not_found"}
+        )
 
         points = _collect_data_points(reader, MetricNames.AGENT_TOOL_ERROR_TOTAL)
         assert len(points) >= 1
@@ -161,7 +170,9 @@ def test_record_tool_timeout_helper_does_not_raise() -> None:
 
 
 @pytest.mark.unit
-def test_init_metrics_no_endpoint_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_metrics_no_endpoint_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """init_metrics with no OTLP endpoint must not raise and must not connect."""
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     # Reset the module guard so init_metrics runs fresh.
@@ -185,7 +196,9 @@ def test_init_metrics_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_init_metrics_with_endpoint_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_metrics_with_endpoint_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """init_metrics with an endpoint set must not raise (even if unreachable)."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
     metrics_mod._initialised = False

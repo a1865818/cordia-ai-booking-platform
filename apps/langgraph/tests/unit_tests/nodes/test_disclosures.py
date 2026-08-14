@@ -90,9 +90,7 @@ async def test_read_back_records_the_terms_it_just_presented() -> None:
 @pytest.mark.unit
 async def test_informational_availability_adds_the_inv16_caveat() -> None:
     """An unheld slot must be disclosed as advisory, not presented as a guarantee."""
-    state = AgentState(
-        draft=_draft(), availability_mode=AvailabilityMode.INFORMATIONAL
-    )
+    state = AgentState(draft=_draft(), availability_mode=AvailabilityMode.INFORMATIONAL)
     update = await read_back(state)
 
     assert AVAILABILITY_ADVISORY in update["disclosures_presented"]
@@ -176,7 +174,9 @@ def _client(policy: dict, *, record_status: int = 200) -> ToolClient:
         return httpx.Response(404, content=b'{"status":"not_found"}')
 
     return ToolClient(
-        httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://test"),
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(handle), base_url="http://test"
+        ),
         tenant_context=_TENANT_CONTEXT,
     )
 

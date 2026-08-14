@@ -47,9 +47,7 @@ def transcript_events(text: str) -> list[dict[str, object]]:
     ]
 
 
-def sequenced_connect(
-    sockets: list[FakeRealtimeSocket], captured: list[ConnectRecord]
-):
+def sequenced_connect(sockets: list[FakeRealtimeSocket], captured: list[ConnectRecord]):
     """A connect factory handing out *sockets* in order, recording each call."""
 
     async def connect(url: str, headers: Mapping[str, str]) -> FakeRealtimeSocket:
@@ -127,7 +125,9 @@ async def test_prewarm_is_idempotent(realtime_settings: AzureAudioSettings) -> N
     captured: list[ConnectRecord] = []
     provider = AzureRealtimeSTTProvider(
         realtime_settings,
-        connect=make_realtime_connect(FakeRealtimeSocket(when_drained="block"), captured),
+        connect=make_realtime_connect(
+            FakeRealtimeSocket(when_drained="block"), captured
+        ),
     )
 
     await provider.prewarm()
@@ -187,7 +187,8 @@ async def test_a_stale_transcript_never_leaks_into_the_next_turn(
     """
     socket = TurnScriptedSocket(
         [
-            transcript_events("book a table for four") + transcript_events("and a high chair"),
+            transcript_events("book a table for four")
+            + transcript_events("and a high chair"),
             transcript_events("yes, go ahead"),
         ]
     )
@@ -240,7 +241,9 @@ async def test_a_session_lost_mid_call_is_replaced_transparently(
     """A dropped socket must not degrade the rest of the call to silence."""
     captured: list[ConnectRecord] = []
     dead = FakeRealtimeSocket([ConnectionClosedOK(None, None)], when_drained="block")
-    replacement = FakeRealtimeSocket(transcript_events("recovered"), when_drained="block")
+    replacement = FakeRealtimeSocket(
+        transcript_events("recovered"), when_drained="block"
+    )
     provider = AzureRealtimeSTTProvider(
         realtime_settings, connect=sequenced_connect([dead, replacement], captured)
     )

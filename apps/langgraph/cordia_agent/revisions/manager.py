@@ -88,6 +88,7 @@ _MATERIAL_FIELDS: tuple[str, ...] = (
     "operation",
     "service_id",
     "location_id",
+    "resource_id",
     "starts_at",
     "party_size",
     "duration_minutes",
@@ -112,8 +113,9 @@ _MATERIAL_FIELDS: tuple[str, ...] = (
 def is_material_change(old: BookingRequest, new: BookingRequest) -> bool:
     """Return True if any material booking field changed between two requests.
 
-    Material fields: operation, service_id, location_id, starts_at, party_size,
-    duration_minutes, target_booking_id, customer.  Non-material fields such as
+    Material fields: operation, service_id, location_id, resource_id, starts_at,
+    party_size, duration_minutes, target_booking_id, customer.  Non-material
+    fields such as
     ``special_requests`` or ``target_booking_version`` are intentionally ignored
     (a change in ``special_requests`` alone does NOT trigger a new revision).
     """

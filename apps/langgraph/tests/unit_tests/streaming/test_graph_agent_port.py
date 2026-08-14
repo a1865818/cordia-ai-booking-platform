@@ -75,7 +75,9 @@ class ScriptedGraph:
         return generate()
 
 
-def transcript(text: str = "book me a table", turn_id: str = "turn-1") -> TranscriptFinalFrame:
+def transcript(
+    text: str = "book me a table", turn_id: str = "turn-1"
+) -> TranscriptFinalFrame:
     return TranscriptFinalFrame(
         type=StreamFrameType.TRANSCRIPT_FINAL,
         tenant_id="tenant-1",
@@ -95,7 +97,10 @@ def task_start(node: str) -> tuple[str, dict[str, Any]]:
 
 
 def task_end(node: str) -> tuple[str, dict[str, Any]]:
-    return ("tasks", {"id": "t1", "name": node, "error": None, "result": {}, "interrupts": []})
+    return (
+        "tasks",
+        {"id": "t1", "name": node, "error": None, "result": {}, "interrupts": []},
+    )
 
 
 async def drain(port: GraphAgentPort, frame: TranscriptFinalFrame) -> list[Any]:
@@ -110,7 +115,9 @@ async def drain(port: GraphAgentPort, frame: TranscriptFinalFrame) -> list[Any]:
 @pytest.mark.unit
 async def test_transcript_maps_onto_agent_input_state() -> None:
     """frame.text → transcript_text, frame.turn_id → current_turn_id, final=True."""
-    graph = ScriptedGraph([("updates", {"clarify": {"pending_clarify_prompt": "When?"}})])
+    graph = ScriptedGraph(
+        [("updates", {"clarify": {"pending_clarify_prompt": "When?"}})]
+    )
     port = GraphAgentPort(graph, session=SESSION)
 
     await drain(port, transcript("tomorrow at seven", turn_id="turn-9"))
@@ -160,7 +167,10 @@ async def test_each_speaking_node_becomes_a_delta_then_one_final() -> None:
     graph = ScriptedGraph(
         [
             ("updates", {"read_back": {"read_back_text": "Four people at 7pm."}}),
-            ("updates", {"submit_intent": {"submission_message": "I've submitted that."}}),
+            (
+                "updates",
+                {"submit_intent": {"submission_message": "I've submitted that."}},
+            ),
         ]
     )
     port = GraphAgentPort(graph, session=SESSION)
@@ -179,7 +189,10 @@ async def test_deltas_concatenate_to_exactly_the_final_text() -> None:
     """TTSChunker diffs the final against the deltas; a mismatch is heard twice."""
     graph = ScriptedGraph(
         [
-            ("updates", {"consent_gate": {"pending_consent_notice": "We record calls."}}),
+            (
+                "updates",
+                {"consent_gate": {"pending_consent_notice": "We record calls."}},
+            ),
             ("updates", {"clarify": {"pending_clarify_prompt": "How many people?"}}),
         ]
     )
@@ -204,7 +217,9 @@ async def test_silent_nodes_produce_no_frames() -> None:
     )
     port = GraphAgentPort(graph, session=SESSION)
 
-    deltas = [f for f in await drain(port, transcript()) if isinstance(f, AgentTextDeltaFrame)]
+    deltas = [
+        f for f in await drain(port, transcript()) if isinstance(f, AgentTextDeltaFrame)
+    ]
     assert [d.delta for d in deltas] == ["Another time?"]
 
 
@@ -240,7 +255,9 @@ async def test_handoff_speaks_even_though_the_node_records_no_text() -> None:
 @pytest.mark.unit
 async def test_frames_carry_the_transcript_envelope() -> None:
     """Session/turn/correlation identity is propagated, not invented."""
-    graph = ScriptedGraph([("updates", {"clarify": {"pending_clarify_prompt": "When?"}})])
+    graph = ScriptedGraph(
+        [("updates", {"clarify": {"pending_clarify_prompt": "When?"}})]
+    )
     port = GraphAgentPort(graph, session=SESSION)
 
     for frame in await drain(port, transcript(turn_id="turn-42")):
@@ -268,7 +285,9 @@ async def test_a_slow_node_emits_progress_with_real_elapsed_time() -> None:
     )
     port = GraphAgentPort(graph, session=SESSION, progress_interval_seconds=0.02)
 
-    progress = [f for f in await drain(port, transcript()) if isinstance(f, ToolProgressFrame)]
+    progress = [
+        f for f in await drain(port, transcript()) if isinstance(f, ToolProgressFrame)
+    ]
 
     assert progress, "a node held for 120ms must produce at least one progress frame"
     assert all(f.tool_name == "check_candidate_availability" for f in progress)
@@ -307,7 +326,9 @@ async def test_progress_stops_once_the_node_finishes() -> None:
     )
     port = GraphAgentPort(graph, session=SESSION, progress_interval_seconds=0.02)
 
-    progress = [f for f in await drain(port, transcript()) if isinstance(f, ToolProgressFrame)]
+    progress = [
+        f for f in await drain(port, transcript()) if isinstance(f, ToolProgressFrame)
+    ]
     assert len(progress) <= 4, (
         f"progress kept firing after the node ended: {[f.elapsed_ms for f in progress]}"
     )
@@ -349,7 +370,9 @@ async def test_abandoning_the_stream_does_not_orphan_the_graph_task() -> None:
     assert isinstance(first, AgentTextDeltaFrame)
     await stream.aclose()
 
-    running = [t for t in asyncio.all_tasks() if t.get_name() == "cordia-agent-graph-turn"]
+    running = [
+        t for t in asyncio.all_tasks() if t.get_name() == "cordia-agent-graph-turn"
+    ]
     assert not running, "the graph pump outlived the abandoned turn"
 
 

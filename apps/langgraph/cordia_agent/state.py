@@ -116,6 +116,11 @@ class BookingRequest(BaseModel):
         union_mode="left_to_right",
         description="Stable location ID, a TriState, or absent.",
     )
+    resource_id: TriState | str | None = Field(
+        default=None,
+        union_mode="left_to_right",
+        description="Staff/resource identifier assigned to this booking, a TriState, or absent.",
+    )
     starts_at: AwareDatetime | TriState | None = Field(
         default=None, description="Offset-aware start, a TriState, or absent."
     )

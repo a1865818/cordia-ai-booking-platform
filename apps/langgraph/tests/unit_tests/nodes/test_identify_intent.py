@@ -177,7 +177,9 @@ async def test_identify_intent_builds_initial_draft_when_session_ready() -> None
 
 
 @pytest.mark.unit
-async def test_identify_intent_puts_the_customer_on_the_request_not_only_the_draft() -> None:
+async def test_identify_intent_puts_the_customer_on_the_request_not_only_the_draft() -> (
+    None
+):
     """The revision is built from ``draft.request`` (read_back passes it straight to
     build_revision as the canonical payload), so a customer kept only on the draft never
     reaches the hashed payload the API receives — the booking would land with no

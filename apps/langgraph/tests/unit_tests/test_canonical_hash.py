@@ -54,7 +54,9 @@ def test_corpus_loads() -> None:
 def test_golden_vector(name: str, payload: str, expected: str) -> None:
     result = canonical_hash(json.loads(payload))
     assert result.version == CANON_VERSION
-    assert result.value == expected, f"{name}: canonical json was {canonical_json(json.loads(payload))}"
+    assert result.value == expected, (
+        f"{name}: canonical json was {canonical_json(json.loads(payload))}"
+    )
 
 
 def test_equivalence_groups_agree() -> None:

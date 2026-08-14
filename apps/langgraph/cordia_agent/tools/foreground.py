@@ -14,7 +14,7 @@ from __future__ import annotations
 from langchain_core.tools import tool
 
 from cordia_agent.models.submission import SubmitConfirmedIntentRequest
-from cordia_agent.tools._external_stubs import BookingDraft
+from cordia_agent.state import BookingDraft
 from cordia_agent.tools.client import get_tool_client
 from cordia_agent.tools.contracts import (
     AvailabilityRequest,

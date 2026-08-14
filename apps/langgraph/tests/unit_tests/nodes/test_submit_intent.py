@@ -473,6 +473,7 @@ async def test_single_flight_concurrent_same_op_id_exactly_one_submit() -> None:
         f"§27.3 single-flight: expected exactly 1 submit call, got {submit_call_count}"
     )
 
+
 # ---------------------------------------------------------------------------
 # Recovery is for INCONCLUSIVE outcomes only (handoff doc §8)
 # ---------------------------------------------------------------------------

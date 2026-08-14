@@ -1,7 +1,7 @@
 """Unit tests for pure-read foreground tool I/O models (spec 03 §4.3 / §6.1).
 
 Covers: PolicyValidationResult, OperationStatusView, VerificationGrantView,
-VerificationAction value set, _external_stubs re-export seam identity,
+VerificationAction value set, canonical-model identity,
 and optional view models (TenantContextView, CustomerContextView, CatalogItem).
 """
 
@@ -243,30 +243,31 @@ def test_verification_action_value_set() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _external_stubs seam — proves no duplicate class declaration
+# No duplicate model declarations — the schema exporter depends on it
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_external_stubs_booking_draft_is_canonical() -> None:
-    """BookingDraft re-exported from _external_stubs IS the canonical state.BookingDraft."""
-    from cordia_agent.tools._external_stubs import BookingDraft
+def test_contracts_booking_draft_is_canonical() -> None:
+    """The BookingDraft the tool contracts use IS cordia_agent.state.BookingDraft.
 
-    assert BookingDraft is _state_module.BookingDraft, (
-        "_external_stubs.BookingDraft must be the same object as cordia_agent.state.BookingDraft; "
-        "a duplicate class declaration would break schema export (duplicate-title failure)."
-    )
+    Not merely structurally equal — the SAME object. A second class with the
+    same title reaches the schema exporter as a duplicate ``$defs`` entry and
+    ``validate_no_duplicates`` fails the build, so this pins the one property
+    that keeps Python, C# and TypeScript describing one model rather than two.
+    """
+    from cordia_agent.tools import contracts
+
+    assert contracts.BookingDraft is _state_module.BookingDraft
 
 
 @pytest.mark.unit
-def test_external_stubs_confirmation_is_canonical() -> None:
-    """Confirmation re-exported from _external_stubs IS the canonical models.intent.Confirmation."""
-    from cordia_agent.tools._external_stubs import Confirmation
+def test_contracts_confirmation_and_revision_are_canonical() -> None:
+    """Same guarantee for the two spec-02 intent models."""
+    from cordia_agent.tools import contracts
 
-    assert Confirmation is _intent_module.Confirmation, (
-        "_external_stubs.Confirmation must be the same object as "
-        "cordia_agent.models.intent.Confirmation; a duplicate class would break schema export."
-    )
+    assert contracts.Confirmation is _intent_module.Confirmation
+    assert contracts.IntentRevision is _intent_module.IntentRevision
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +339,7 @@ def test_catalog_item_round_trip() -> None:
     assert item.item_id == "item-001"
     assert item.price_minor == 9000
     assert item.description is None
+    assert item.duration_minutes is None
 
 
 @pytest.mark.unit

@@ -78,7 +78,9 @@ def test_azure_ai_provider_builds_foundry_client() -> None:
 
 def test_responses_surface_sets_responses_kwargs() -> None:
     model = load_chat_model(
-        _settings(deployment="o4-mini", api_surface="responses", reasoning_effort="medium")
+        _settings(
+            deployment="o4-mini", api_surface="responses", reasoning_effort="medium"
+        )
     )
 
     assert model.use_responses_api is True

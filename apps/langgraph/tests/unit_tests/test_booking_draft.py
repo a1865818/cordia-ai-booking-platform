@@ -60,10 +60,12 @@ def test_booking_request_accepts_tristate_inline() -> None:  # DQ1=A
         service_id="svc_1",
         party_size=TriState.unknown,
         location_id=TriState.declined,
+        resource_id=TriState.absent,
     )
     assert req.service_id == "svc_1"
     assert req.party_size == TriState.unknown
     assert req.location_id == TriState.declined
+    assert req.resource_id == TriState.absent
     assert req.starts_at is None
 
 
@@ -72,28 +74,43 @@ def test_booking_request_accepts_tristate_inline() -> None:  # DQ1=A
 def test_str_tristate_fields_deserialize_sentinels_as_tristate(sentinel: str) -> None:
     """Raw sentinel strings must validate to TriState, not plain str (DQ1=A).
 
-    service_id/location_id are str-subclass-enum unions; smart-mode would
-    downgrade the sentinel strings to plain str. union_mode=left_to_right keeps them.
+    service_id/location_id/resource_id are str-subclass-enum unions; smart-mode
+    would downgrade the sentinel strings to plain str. union_mode=left_to_right
+    keeps them.
     """
     req = BookingRequest.model_validate(
-        {"operation": "create", "service_id": sentinel, "location_id": sentinel}
+        {
+            "operation": "create",
+            "service_id": sentinel,
+            "location_id": sentinel,
+            "resource_id": sentinel,
+        }
     )
     assert isinstance(req.service_id, TriState)
     assert req.service_id is TriState(sentinel)
     assert isinstance(req.location_id, TriState)
     assert req.location_id is TriState(sentinel)
+    assert isinstance(req.resource_id, TriState)
+    assert req.resource_id is TriState(sentinel)
 
 
 @pytest.mark.unit
 def test_str_tristate_fields_keep_real_ids_as_str() -> None:
     """Non-sentinel strings still validate as plain str values (DQ1=A)."""
     req = BookingRequest.model_validate(
-        {"operation": "create", "service_id": "svc_1", "location_id": "loc_1"}
+        {
+            "operation": "create",
+            "service_id": "svc_1",
+            "location_id": "loc_1",
+            "resource_id": "staff_1",
+        }
     )
     assert req.service_id == "svc_1"
     assert not isinstance(req.service_id, TriState)
     assert req.location_id == "loc_1"
     assert not isinstance(req.location_id, TriState)
+    assert req.resource_id == "staff_1"
+    assert not isinstance(req.resource_id, TriState)
 
 
 @pytest.mark.unit

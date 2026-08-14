@@ -40,6 +40,7 @@ CAPTURABLE_FIELDS: frozenset[str] = frozenset(
     {
         "service_id",
         "location_id",
+        "resource_id",
         "starts_at",
         "party_size",
         "duration_minutes",
