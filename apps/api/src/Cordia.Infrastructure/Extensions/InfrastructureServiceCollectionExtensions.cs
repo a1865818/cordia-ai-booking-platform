@@ -1,4 +1,5 @@
-﻿using Cordia.Domain.Enums;
+﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
@@ -14,6 +15,7 @@ using Cordia.Infrastructure.Services;
 using Cordia.Infrastructure.Services.Retention;
 using Cordia.Infrastructure.Storage;
 using Cordia.Infrastructure.TenantResolution;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,7 +67,11 @@ public static class InfrastructureServiceCollectionExtensions
                         .MapEnum<SignalType>("signal_type_enum")
                         .MapEnum<EndpointStatus>("endpoint_status_enum")
                         .MapEnum<HoldStatus>("hold_status_enum")
-                        .MapEnum<ReleaseReason>("release_reason_enum"))
+                        .MapEnum<ReleaseReason>("release_reason_enum")
+                        .MapEnum<AttributedSource>("attributed_source_enum")
+                        .MapEnum<AttendanceStatus>("attendance_status_enum")
+                        .MapEnum<CampaignStatus>("campaign_status_enum")
+                        .MapEnum<KnowledgeStatus>("knowledge_status_enum"))
                 .UseSnakeCaseNamingConvention();
         });
 
@@ -75,6 +81,9 @@ public static class InfrastructureServiceCollectionExtensions
         // the setter is observed by the DbContext's global query filter.
         services.AddScoped<ITenantContext, TenantContext>();
         services.AddScoped<TenantContext>(sp => (TenantContext)sp.GetRequiredService<ITenantContext>());
+
+        services.AddScoped<IActorContext, ActorContext>();
+        services.AddScoped<ActorContext>(sp => (ActorContext)sp.GetRequiredService<IActorContext>());
 
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
         services.AddScoped<IBookingOperationRepository, BookingOperationRepository>();
@@ -100,6 +109,15 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IVendorCatalogRepository, VendorCatalogRepository>();
         services.AddScoped<IGuestContactRepository, GuestContactRepository>();
         services.AddScoped<ITenantDisplayNameRepository, TenantDisplayNameRepository>();
+        services.AddScoped<IOperatorRepository, OperatorRepository>();
+        services.AddScoped<IOperatorSessionRepository, OperatorSessionRepository>();
+        services.AddScoped<ITenantProfileRepository, TenantProfileRepository>();
+        services.AddScoped<ITenantDepositPolicyRepository, TenantDepositPolicyRepository>();
+        services.AddScoped<IAgentGuardrailsRepository, AgentGuardrailsRepository>();
+        services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>();
+        services.AddScoped<IStaffResourceRepository, StaffResourceRepository>();
+        services.AddScoped<ICustomerOperatorNotesRepository, CustomerOperatorNotesRepository>();
+        services.AddScoped<ICampaignRepository, CampaignRepository>();
         services.AddScoped<ITenantChannelEndpointRepository, TenantChannelEndpointRepository>();
         services.AddScoped<IPreorderSagaRepository, PreorderSagaRepository>();
 
@@ -139,6 +157,13 @@ public static class InfrastructureServiceCollectionExtensions
         // (Secrets:TenantContextSigningKeys); they are never logged or serialized.
         services.AddSingleton<ITenantContextSigner, JwsTenantContextSigner>();
 
+        // G1 web-origin operator session — same signing keys as tenant context, distinct typ
+        // (opctx+jws) and claim set. PasswordHasher is ASP.NET Identity's PBKDF2 hasher.
+        services.AddSingleton<IOperatorSessionSigner, JwsOperatorSessionSigner>();
+        services.AddSingleton<IPasswordHasher<Operator>, PasswordHasher<Operator>>();
+        services.AddOptions<OperatorSessionOptions>()
+            .BindConfiguration(OperatorSessionOptions.SectionName);
+
         // Spec 15 Phase 3 — TenantContext TTL, bound from the "TenantContext" config section.
         services.AddOptions<TenantContextOptions>()
             .BindConfiguration(TenantContextOptions.SectionName);
@@ -161,7 +186,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IBookingProviderAdapter, StubBookingProviderAdapter>();
 
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).
-        services.AddSingleton<IDepositPolicy, NoDepositPolicy>();
+        services.AddScoped<IDepositPolicy, TenantDepositPolicyProvider>();
         services.AddSingleton<IVerificationService, NoUserActionRequiredService>();
 
         // Spec 11 — menu ingestion ports (deterministic stubs; real ClamAV / LangGraph extractor

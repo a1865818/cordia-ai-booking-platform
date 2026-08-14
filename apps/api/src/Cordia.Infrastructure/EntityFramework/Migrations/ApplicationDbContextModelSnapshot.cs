@@ -25,16 +25,20 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "attempt_outcome_enum", new[] { "abandoned", "ambiguous", "dispatching", "planned", "reconciled", "rejected", "succeeded", "transient_failure" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "attendance_status_enum", new[] { "attended", "no_show", "unknown" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "attributed_source_enum", new[] { "agent", "operator" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "booking_lifecycle_status_enum", new[] { "cancellation_pending", "cancelled", "confirmed", "modification_pending" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "campaign_status_enum", new[] { "awaiting", "rejected", "scheduled", "sent" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "catalog_status_enum", new[] { "approved", "draft_ready", "extract_failed", "extracting", "in_review", "published", "quarantined", "scanning", "superseded", "uploaded" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "channel_enum", new[] { "email", "messaging", "voice", "web" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "consent_state", new[] { "alternative_offered", "declined", "granted", "not_required" });
-            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "deposit_status_enum", new[] { "created", "expired", "link_sent", "paid" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "deposit_status_enum", new[] { "created", "expired", "link_sent", "paid", "refunded" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "dlq_replay_state_enum", new[] { "discarded", "quarantined", "replayed" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "endpoint_status_enum", new[] { "active", "disabled" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "hold_status_enum", new[] { "active", "expired", "finalized", "reconciling", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "idempotency_status_enum", new[] { "completed", "failed", "in_progress" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "inbox_outcome_enum", new[] { "admitted", "completed", "rejected" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "knowledge_status_enum", new[] { "answered", "needs-answer" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "message_priority_enum", new[] { "critical", "high", "normal" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "notification_channel_enum", new[] { "channel", "email", "sms" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "notification_event_enum", new[] { "action_required", "booking_confirmed", "cancel_or_modify_confirmed", "final_failure", "no_capacity_alternatives", "preorder_cancelled", "request_accepted", "still_pending", "waitlist_offer", "waitlist_offer_expired" });
@@ -52,6 +56,78 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "waitlist_offer_status_enum", new[] { "accepted", "declined", "expired", "matched", "offered", "pending", "released" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "workflow_step_status_enum", new[] { "failed", "in_progress", "pending", "succeeded", "terminal" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("Cordia.Domain.Entities.AgentGuardrails", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TogglesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("toggles_json")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId")
+                        .HasName("pk_agent_guardrails");
+
+                    b.ToTable("agent_guardrails", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.AgentKnowledgeEntry", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("EntryId")
+                        .HasColumnType("text")
+                        .HasColumnName("entry_id");
+
+                    b.Property<string>("Answer")
+                        .HasColumnType("text")
+                        .HasColumnName("answer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Question")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("question");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("source");
+
+                    b.Property<KnowledgeStatus>("Status")
+                        .HasColumnType("knowledge_status_enum")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "EntryId")
+                        .HasName("pk_agent_knowledge_entries");
+
+                    b.ToTable("agent_knowledge_entries", "public");
+                });
 
             modelBuilder.Entity("Cordia.Domain.Entities.AuditEvent", b =>
                 {
@@ -112,6 +188,16 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<string>("BookingId")
                         .HasColumnType("text")
                         .HasColumnName("booking_id");
+
+                    b.Property<AttendanceStatus>("Attendance")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("attendance_status_enum")
+                        .HasDefaultValue(AttendanceStatus.Unknown)
+                        .HasColumnName("attendance");
+
+                    b.Property<AttributedSource?>("AttributedSource")
+                        .HasColumnType("attributed_source_enum")
+                        .HasColumnName("attributed_source");
 
                     b.Property<string>("BookingReference")
                         .IsRequired()
@@ -273,6 +359,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("operation_id");
 
+                    b.Property<AttributedSource?>("AttributedSource")
+                        .HasColumnType("attributed_source_enum")
+                        .HasColumnName("attributed_source");
+
                     b.Property<string>("BookingId")
                         .HasColumnType("text")
                         .HasColumnName("booking_id");
@@ -346,6 +436,85 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasDatabaseName("ix_booking_operations_tenant_id_intent_id_intent_revision");
 
                     b.ToTable("booking_operations", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.Campaign", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("CampaignId")
+                        .HasColumnType("text")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at");
+
+                    b.Property<string>("ApprovedBy")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("approved_by");
+
+                    b.Property<string>("AudienceDescription")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("audience_description");
+
+                    b.Property<TenantChannel>("Channel")
+                        .HasColumnType("channel_enum")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<int>("RecipientsEstimate")
+                        .HasColumnType("integer")
+                        .HasColumnName("recipients_estimate");
+
+                    b.Property<DateTimeOffset?>("RejectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("rejected_at");
+
+                    b.Property<DateTimeOffset?>("ScheduledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("scheduled_at");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.Property<CampaignStatus>("Status")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("campaign_status_enum")
+                        .HasDefaultValue(CampaignStatus.Awaiting)
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "CampaignId")
+                        .HasName("pk_campaigns");
+
+                    b.ToTable("campaigns", "public");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.CapacityHold", b =>
@@ -564,6 +733,11 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasColumnType("text")
                         .HasColumnName("jurisdiction_policy_id");
 
+                    b.Property<string>("Preview")
+                        .HasMaxLength(280)
+                        .HasColumnType("character varying(280)")
+                        .HasColumnName("preview");
+
                     b.Property<bool?>("RecordingAllowed")
                         .HasColumnType("boolean")
                         .HasColumnName("recording_allowed");
@@ -585,6 +759,42 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_conversation_sessions");
 
                     b.ToTable("conversation_sessions", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.CustomerOperatorNotes", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("CustomerRef")
+                        .HasColumnType("text")
+                        .HasColumnName("customer_ref");
+
+                    b.Property<string>("Note")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("")
+                        .HasColumnName("note");
+
+                    b.Property<string>("TagsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("tags_json")
+                        .HasDefaultValueSql("'[]'::jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "CustomerRef")
+                        .HasName("pk_customer_operator_notes");
+
+                    b.ToTable("customer_operator_notes", "public");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.DeadLetterMessage", b =>
@@ -1160,6 +1370,106 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("operations_work_items", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.Operator", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("OperatorId")
+                        .HasColumnType("text")
+                        .HasColumnName("operator_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("password_hash");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("role");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("active")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "OperatorId")
+                        .HasName("pk_operators");
+
+                    b.HasIndex("TenantId", "Email")
+                        .IsUnique()
+                        .HasDatabaseName("uq_operators_tenant_email");
+
+                    b.ToTable("operators", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.OperatorSession", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasColumnType("text")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("text")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset>("IssuedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("issued_at");
+
+                    b.Property<string>("OperatorId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("operator_id");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.HasKey("TenantId", "SessionId")
+                        .HasName("pk_operator_sessions");
+
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_operator_sessions_session_id");
+
+                    b.HasIndex("TenantId", "OperatorId")
+                        .HasDatabaseName("ix_operator_sessions_tenant_id_operator_id");
+
+                    b.ToTable("operator_sessions", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.OutboxMessage", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1371,6 +1681,51 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("scheduled_jobs", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.StaffResource", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ResourceId")
+                        .HasColumnType("text")
+                        .HasColumnName("resource_id");
+
+                    b.Property<bool>("Active")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("active");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Role")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("role");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "ResourceId")
+                        .HasName("pk_staff_resources");
+
+                    b.ToTable("staff_resources", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.TenantChannelEndpoint", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1432,6 +1787,61 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("tenant_channel_endpoints", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.TenantDepositPolicy", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<long?>("AmountMinor")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_minor");
+
+                    b.Property<string>("AmountPolicy")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("amount_policy");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Currency")
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("AUD")
+                        .HasColumnName("currency");
+
+                    b.Property<bool>("NoShowOnly")
+                        .HasColumnType("boolean")
+                        .HasColumnName("no_show_only");
+
+                    b.Property<string>("RefundWindow")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("refund_window");
+
+                    b.Property<bool>("Require")
+                        .HasColumnType("boolean")
+                        .HasColumnName("require");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId")
+                        .HasName("pk_tenant_deposit_policies");
+
+                    b.ToTable("tenant_deposit_policies", "public");
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.TenantDisplayName", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1460,6 +1870,45 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .HasName("pk_tenant_display_names");
 
                     b.ToTable("tenant_display_names", "public");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.TenantProfile", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("BusinessType")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("business_type");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("HoursJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("hours_json");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<bool>("WaitlistAutoBook")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("waitlist_auto_book");
+
+                    b.HasKey("TenantId")
+                        .HasName("pk_tenant_profiles");
+
+                    b.ToTable("tenant_profiles", "public");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.TenantResource", b =>
@@ -1605,6 +2054,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("description");
+
+                    b.Property<int?>("DurationMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_minutes");
 
                     b.Property<double?>("ExtractionConfidence")
                         .HasColumnType("double precision")
@@ -2159,6 +2612,16 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_operations_work_items_booking_operations_tenant_id_operatio");
+                });
+
+            modelBuilder.Entity("Cordia.Domain.Entities.OperatorSession", b =>
+                {
+                    b.HasOne("Cordia.Domain.Entities.Operator", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OperatorId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_operator_sessions_operators_tenant_id_operator_id");
                 });
 
             modelBuilder.Entity("Cordia.Domain.Entities.PreorderSaga", b =>

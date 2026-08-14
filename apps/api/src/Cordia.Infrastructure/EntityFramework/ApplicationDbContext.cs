@@ -89,6 +89,24 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<TenantDisplayName> TenantDisplayNames => Set<TenantDisplayName>();
 
+    public DbSet<Operator> Operators => Set<Operator>();
+
+    public DbSet<OperatorSession> OperatorSessions => Set<OperatorSession>();
+
+    public DbSet<TenantProfile> TenantProfiles => Set<TenantProfile>();
+
+    public DbSet<TenantDepositPolicy> TenantDepositPolicies => Set<TenantDepositPolicy>();
+
+    public DbSet<AgentGuardrails> AgentGuardrails => Set<AgentGuardrails>();
+
+    public DbSet<AgentKnowledgeEntry> AgentKnowledgeEntries => Set<AgentKnowledgeEntry>();
+
+    public DbSet<StaffResource> StaffResources => Set<StaffResource>();
+
+    public DbSet<CustomerOperatorNotes> CustomerOperatorNotes => Set<CustomerOperatorNotes>();
+
+    public DbSet<Campaign> Campaigns => Set<Campaign>();
+
     /// <summary>
     /// Guest contact held out of the immutable canonical payload so it can actually be erased
     /// (spec 12/14 retention ruling, owner decision 2026-08-06).

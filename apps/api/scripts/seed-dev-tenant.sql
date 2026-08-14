@@ -113,3 +113,79 @@ ON CONFLICT (tenant_id, slot_id) DO NOTHING;
 SELECT count(*) AS seeded_capacity_slots
 FROM public.capacity_slots
 WHERE tenant_id = 'tenant_dev_001';
+
+-- ---------------------------------------------------------------------------
+-- Console operators + tenant profile for tenant `demo`.
+-- Password for both accounts: localdev
+-- Hash is ASP.NET Core Identity PasswordHasher v3 (Microsoft.Extensions.Identity.Core 10.0.8).
+-- ---------------------------------------------------------------------------
+
+INSERT INTO public.operators (
+    tenant_id,
+    operator_id,
+    email,
+    password_hash,
+    role,
+    status,
+    created_at,
+    updated_at
+) VALUES
+    (
+        'demo',
+        'opr_demo_owner',
+        'owner@demo.local',
+        'AQAAAAIAAYagAAAAEAGMHy21rotANX+QGh6UtlDH6v20rGfPpc7n+NuupSOWiDz4HRoJMNCoRelRzdd+Mw==',
+        'owner',
+        'active',
+        now(),
+        now()
+    ),
+    (
+        'demo',
+        'opr_demo_operator',
+        'operator@demo.local',
+        'AQAAAAIAAYagAAAAEAGMHy21rotANX+QGh6UtlDH6v20rGfPpc7n+NuupSOWiDz4HRoJMNCoRelRzdd+Mw==',
+        'operator',
+        'active',
+        now(),
+        now()
+    )
+ON CONFLICT (tenant_id, operator_id) DO UPDATE SET
+    email         = EXCLUDED.email,
+    password_hash = EXCLUDED.password_hash,
+    role          = EXCLUDED.role,
+    status        = EXCLUDED.status,
+    updated_at    = now();
+
+INSERT INTO public.tenant_profiles (
+    tenant_id,
+    business_type,
+    waitlist_auto_book,
+    hours_json,
+    created_at,
+    updated_at
+) VALUES (
+    'demo',
+    'salon',
+    false,
+    '[
+        {"d":"Monday","open":"09:00","close":"18:00","on":true},
+        {"d":"Tuesday","open":"09:00","close":"18:00","on":true},
+        {"d":"Wednesday","open":"09:00","close":"18:00","on":true},
+        {"d":"Thursday","open":"09:00","close":"18:00","on":true},
+        {"d":"Friday","open":"09:00","close":"18:00","on":true},
+        {"d":"Saturday","open":"09:00","close":"18:00","on":true},
+        {"d":"Sunday","open":"09:00","close":"18:00","on":false}
+    ]'::jsonb,
+    now(),
+    now()
+)
+ON CONFLICT (tenant_id) DO UPDATE SET
+    business_type       = EXCLUDED.business_type,
+    waitlist_auto_book  = EXCLUDED.waitlist_auto_book,
+    hours_json          = EXCLUDED.hours_json,
+    updated_at          = now();
+
+SELECT tenant_id, operator_id, email, role, status
+FROM public.operators
+WHERE tenant_id = 'demo';
