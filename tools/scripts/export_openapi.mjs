@@ -247,7 +247,7 @@ try {
       ASPNETCORE_ENVIRONMENT: "Development",
       ASPNETCORE_URLS: baseUrl,
       ConnectionStrings__MAgeDBConnection: "Host=127.0.0.1;Port=5432;Database=openapi_export;Username=openapi;Password=openapi",
-      DatabaseBootstrap__Enabled: "false",
+      DatabaseBootstrap__MigrateOnStartup: "false",
       OpenApiExport__Enabled: "true",
     },
     stdio: ["ignore", "pipe", "pipe"],
