@@ -116,7 +116,7 @@ describe("conversation adapters", () => {
 
   it("treats a session with no end time as live", () => {
     const [thread] = toThreads([
-      { session_id: "s1", channel: "voice", customer_ref: "cust-1", consent_state: null, recording_allowed: null, started_at: "2026-08-01T00:00:00Z", ended_at: null },
+      { session_id: "s1", channel: "voice", customer_ref: "cust-1", consent_state: null, recording_allowed: null, started_at: "2026-08-01T00:00:00Z", ended_at: null, preview: null, prov: null },
     ]);
     expect(thread.live).toBe(true);
     expect(thread.channel).toBe("phone");
@@ -148,7 +148,7 @@ describe("conversation adapters", () => {
 
   it("treats an ended session as not live", () => {
     const [thread] = toThreads([
-      { session_id: "s2", channel: "web", customer_ref: null, consent_state: null, recording_allowed: null, started_at: "2026-08-01T00:00:00Z", ended_at: "2026-08-01T00:10:00Z" },
+      { session_id: "s2", channel: "web", customer_ref: null, consent_state: null, recording_allowed: null, started_at: "2026-08-01T00:00:00Z", ended_at: "2026-08-01T00:10:00Z", preview: null, prov: null },
     ]);
     expect(thread.live).toBe(false);
     expect(thread.name).toBe("Guest");
@@ -193,6 +193,10 @@ describe("customer adapters", () => {
           last_seen_at: "2026-08-09T00:00:00Z",
           last_service_id: "gel",
           last_booking_id: "bk_9",
+          no_show_count: 0,
+          note: null,
+          origin: null,
+          tags: null,
         },
       ],
       now
@@ -220,6 +224,10 @@ describe("customer adapters", () => {
           last_seen_at: null,
           last_service_id: "gel",
           last_booking_id: null,
+          no_show_count: 0,
+          note: null,
+          origin: null,
+          tags: null,
         },
       ],
       Date.now(),
