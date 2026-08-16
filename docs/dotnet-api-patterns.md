@@ -192,6 +192,85 @@ Alba (`AlbaHost.For<Program>`) for integration. Test folder mirrors source folde
 Each layer owns one extension: `AddApplication()`, `AddInfrastructure(config)`.
 `Program.cs` composes them. Don't scatter `services.AddScoped` calls across the codebase.
 
+## Outbound HTTP clients
+
+The API calls out over HTTP exactly once so far: `LangGraphMenuExtractorClient`
+(`Cordia.Infrastructure/Menu`) → the LangGraph extraction agent. It is the worked example for
+everything below.
+
+**Register the typed client inside `AddInfrastructure`**, next to the port it implements —
+`services.AddHttpClient<IPort, TImpl>(...)`, never an `AddHttpClient` scattered into `Program.cs`
+or a call site. Same rule, same reason as every other registration: one place to read, one place
+to change.
+
+**Own the timeout; do not inherit one.** `HttpClient.Timeout` defaults to 100 s, which is a number
+nobody chose. Bind an options value (`LangGraph:ExtractTimeoutSeconds`), set it on the typed client
+*and* on a linked `CancellationTokenSource` inside the call, and write down in the options XML doc
+*why* that number. Where the call runs inside an open transaction — the extraction call runs inside
+the ingestion inbox transaction — the timeout is also a **transaction-hold budget**, and that is the
+constraint that actually sizes it.
+
+**Translate `OperationCanceledException` at the adapter.** This is the one that bites.
+
+An `HttpClient` timeout throws `TaskCanceledException : OperationCanceledException` **even when the
+caller's token was never cancelled**. Queue-lane handlers here use a fail-secure catch of the form
+`catch (Exception ex) when (ex is not OperationCanceledException)` — deliberately, so a genuine
+shutdown aborts without settling the row. An untranslated timeout sails straight through that
+guard, rolls back the inbox transaction, un-admits the message and has it redelivered forever,
+re-running a paid model call on every loop (Inv-5). So:
+
+```csharp
+catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+{
+    throw new MenuExtractionFailedException($"… timed out after {seconds}s.");
+}
+```
+
+The `when (!ct.IsCancellationRequested)` filter is the whole thing: real caller cancellation does
+not match and propagates untouched. Put the *entire* outbound call inside the `try`, including any
+collaborator that might one day do I/O of its own — a future object-storage resolver behind the
+same port would otherwise raise its timeout outside the translation.
+
+**Never put a response body in a log line or an exception message** when the body can echo
+untrusted content. A remote error body routinely quotes the request back, and whatever answered may
+not be the service you think — a proxy, a dev server or a drifted route can put anything there. Log
+the **status code** and exception **type name**; that is the diagnostic part anyway. Deserialize
+strictly (`[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]` on every record in the
+graph, nested ones included — it is not inherited) so an unexpected field is a loud `JsonException`
+rather than a silent drop, and do not chain or log that exception either: it names the offending
+property, which is attacker-influenced text.
+
+**Bound and control-character-strip every model-derived string before it reaches Postgres.** Both
+poison-loop bugs found while building this seam land at `SaveChanges` — *after* the handler
+returned, outside its fail-secure catch — so the transaction rolls back and the message redelivers
+forever:
+
+- PostgreSQL rejects `U+0000` in `text` **and** `jsonb` (`22P05`). For a `jsonb` column, strip the
+  control characters from the **leaf strings before serializing** — `JsonSerializer` escapes them,
+  so a NUL leaves as the six ASCII characters `\u0000` and a filter run over the serialized text
+  never sees it.
+- A `text` column with no `HasMaxLength` is still bounded in practice if it is part of a btree key:
+  `(tenant_id, item_id)` overflows at `54000 index row size … exceeds btree version 4 maximum 2704`.
+  It bites unpredictably — index tuples compress, so a repetitive long value inserts and a
+  high-entropy one of the same length does not.
+- If a serialized `jsonb` value is over budget, **drop it to null, never truncate**: truncated JSON
+  is invalid JSON, which throws at `SaveChanges` — the exact failure the bound exists to prevent.
+
+**Overriding the transport in a test.** Re-enter `AddHttpClient<TClient, TImpl>()` with the *same*
+pair after `AddInfrastructure`, then append the handler:
+
+```csharp
+services.AddInfrastructure(config);
+services.AddHttpClient<IIsolatedMenuExtractor, LangGraphMenuExtractorClient>()
+    .ConfigurePrimaryHttpMessageHandler(() => handler);
+```
+
+The second call resolves to the same named-options entry the first created, so the `BaseAddress`
+and `Timeout` configured in `AddInfrastructure` still apply and only the primary handler is
+replaced. Do **not** `RemoveAll<TClient>()` and re-register — that discards both. Point
+`LangGraph:Host` at an RFC-2606 `.invalid` host in such a test, so a regression that escapes the
+fake handler fails loudly instead of quietly dialling whatever is running on localhost.
+
 ## Minimal-code checklist (before committing)
 
 - [ ] Smallest change that works — no speculative interfaces, options, or layers.

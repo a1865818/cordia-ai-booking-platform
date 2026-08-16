@@ -210,6 +210,18 @@ reading is not the same capability as asserting a receipt.
 `source_artifact_ref` references an already-stored artifact and the object-storage lifecycle is a
 known deferred item, so "Register a menu" takes a reference string rather than a file.
 
+#### G19. Menu extraction returned fabricated items — **CLOSED 2026-08-17** *(= §12 gap 12)*
+
+Never recorded here, and it should have been: `IIsolatedMenuExtractor` was bound to
+`StubIsolatedMenuExtractor`, which returned one hard-coded `Sample Dish` row for every upload. The
+review screen was therefore showing a draft that had nothing to do with the artifact, and nothing
+on it said so. Issue #87 wired the real LangGraph agent behind the same port; the stub is now an
+explicit `LangGraph:UseStubExtractor` opt-in for dev and the test host.
+
+**G18 is not closed by this.** Only `inline:`/`data:text/plain` references resolve — a real file
+still has nowhere to live, so the console can now get a truthful extraction of text it pastes and
+nothing at all from a PDF.
+
 ---
 
 ## 3. Suggested build order

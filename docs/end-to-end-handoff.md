@@ -146,9 +146,51 @@ is already in `.env.example` and `appsettings.Development.json`.
 **Optional:** everything under `CORDIA_AUDIO_*` (see `.env.example`, which
 documents each knob inline), `LANGSMITH_*`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
+**Menu extraction** — all optional; the agent falls back to the shared Azure
+deployment and sane defaults:
+
+| Var | Why |
+|---|---|
+| `AZURE_OPENAI_DEPLOYMENT_MENU_EXTRACTOR` | deployment for the `menu_extractor` role; unset ⇒ shared `AZURE_OPENAI_DEPLOYMENT`, and extraction fails closed if neither is set |
+| `CORDIA_MENU_EXTRACTION_API_KEY` | shared secret for `POST /internal/menu/extract`; set ⇒ the route requires a matching `X-Cordia-Internal-Key` (constant-time compare) else `401`, unset ⇒ no check. **ASCII only** — headers decode as latin-1, the env as UTF-8 |
+| `CORDIA_MENU_EXTRACTION_DEFAULT_CURRENCY` | ISO-4217 code for a priced row the document never attributed a currency to (default `AUD`). **Deployment-level, not per-tenant** — one value for the whole process |
+| `CORDIA_LLM_BASE_TIMEOUT_SECONDS_MENU_EXTRACTOR` | first-attempt budget (default 40 s; +15 s, 2 attempts ⇒ 95 s worst case). Wins over the shared `CORDIA_LLM_BASE_TIMEOUT_SECONDS`, which extraction otherwise honours — a conversational 8 s set there breaks it. Values whose worst case exceeds the 120 s ceiling are rejected, not clamped |
+
 Any `AZURE_OPENAI_*` or `CORDIA_AUDIO_*` var takes a `_<ROLE>` suffix override,
 so one process can drive several deployments:
 `AZURE_OPENAI_DEPLOYMENT_SLOT_EXTRACTOR=gpt-5.4-mini`.
+
+### The seam runs both ways now
+
+Until 2026-08-17 only one direction existed. There are two, and they share
+nothing — different auth, different failure semantics, different owners.
+
+**Agent → API** (the booking lane, every foreground tool call):
+`CORDIA_API_BASE_URL` → `ToolClient` → the .NET controllers, authenticated by a
+**signed `TenantContext`** the graph mints and `JwsTenantContextVerifier`
+checks. Unset ⇒ no `ToolClient` is registered and the graph dies at
+`consent_gate`.
+
+**API → agent** (the menu-ingestion lane, issue #87): `LangGraph:Host` (default
+`http://localhost:2024`, plain HTTP — `langgraph dev` does not serve TLS) +
+`LangGraph:ExtractPath` → `POST /internal/menu/extract`, called by
+`LangGraphMenuExtractorClient`. **This is the API's first outbound HTTP client**,
+so it is also the first place the `AddHttpClient` conventions in
+[`dotnet-api-patterns.md`](dotnet-api-patterns.md) apply.
+
+- Auth is an **optional shared secret**, not a signed context: the client sends
+  `X-Cordia-Internal-Key` when `Secrets:LangGraphMenuExtractionKey` is
+  configured and omits it otherwise; the route requires it only when
+  `CORDIA_MENU_EXTRACTION_API_KEY` is set. Set both or neither. Fail-open in dev
+  (`:2024` is unauthenticated on localhost), fail-closed once configured.
+- `X-Correlation-Id` rides along so the client's "HTTP 502" line can be joined
+  to the route's own log line. `artifact_ref` is sent for correlation only and
+  is **omitted when long**, because its canonical `inline:` form *is* the whole
+  menu document.
+- `LangGraph:ExtractTimeoutSeconds` (default 120) is owned deliberately, not
+  inherited from `HttpClient`'s 100 s default. The call runs inside the
+  ingestion inbox transaction, so it is a **transaction-hold budget** too; the
+  agent's own 95 s worst case fits inside it.
 
 ---
 
@@ -336,12 +378,12 @@ Ports and their real implementations. **Anything ❌ silently does nothing.**
 | `AudioSink` | ✅ `TranscodingAudioSink` (+ `WavFileMediaPlane` delivery) |
 | `AgentPort` | ✅ `GraphAgentPort` |
 | `S2SProvider` | ❌ deferred by design (spec 01 §6.2) |
-| `ExtractionModel` | ❌ menu extraction |
+| `ExtractionModel` | ✅ `AzureExtractionModel` (role `menu_extractor`; served over `POST /internal/menu/extract`) |
 | `SessionLookup` / `AgentResumeHook` / `HandoffHook` | ❌ reconnect path |
 
 ### API — stubs registered in DI, i.e. running in production today
 
-`InfrastructureServiceCollectionExtensions.cs:113-171`:
+`InfrastructureServiceCollectionExtensions.cs:139-247`:
 
 | Interface | Bound to | Effect |
 |---|---|---|
@@ -350,7 +392,7 @@ Ports and their real implementations. **Anything ❌ silently does nothing.**
 | `IValidationPolicy` | `AlwaysValidPolicy` | **validation never rejects** |
 | `IArtifactScanner` | `StubArtifactScanner` | no malware scanning |
 | `IExternalInventoryAdapter` | `StubExternalInventoryAdapter` | |
-| `IIsolatedMenuExtractor` | `StubIsolatedMenuExtractor` | |
+| `IIsolatedMenuExtractor` | `LangGraphMenuExtractorClient` (real; `StubIsolatedMenuExtractor` only when `LangGraph:UseStubExtractor=true`) | real extraction, gated |
 | `IPreorderItemReservation` | `StubPreorderItemReservation` | |
 | `IDepositPolicy` | `NoDepositPolicy` | no deposits taken |
 
@@ -362,6 +404,14 @@ The three in bold are security-relevant and currently silent. `AlwaysValidPolicy
 and `NoUserActionRequiredService` in particular mean the Inv-11 grant gate that is
 supposed to guard booking mutations is a pass-through. Fine in dev; not fine in
 front of a customer.
+
+`IIsolatedMenuExtractor` is the one row that has left this table (2026-08-17,
+issue #87): the default is now the real `LangGraphMenuExtractorClient`, and the
+stub is an explicit `LangGraph:UseStubExtractor=true` opt-in set in
+`appsettings.Development.json` and `appsettings.Test.json` only. `Program.cs`
+logs a warning when it is on outside Development, for the same reason
+`Tenancy:AllowHeaderShim` does. `IArtifactScanner` has **not** moved — uploads
+are still unscanned.
 
 ---
 
@@ -445,13 +495,22 @@ Never run two `nx` commands at once (daemon lock).
 ```bash
 bun nx run langgraph:format
 bun nx lint langgraph
-bun nx test langgraph              # 1158
+bun nx test langgraph              # 1375
 bun nx test-integration langgraph  # 51
-bun nx test api                    # 1041
-bun nx test-integration api        # 389 passed, 2 skipped
+bun nx test api                    # 1679
+bun nx test-integration api        # 653 passed, 1 skipped
 bun nx lint api
 cd apps/langgraph && uv run ruff check tests/ scripts/   # 4 pre-existing findings in observability/
 ```
+
+Counts measured 2026-08-17 on `feature/extractor`.
+
+> **Known flake in `test-integration api`.** The booking lane has a
+> pre-existing, order-dependent failure: `ManualRecoveryTests.Resume_ManualReview_
+> ReconcileFindEffect_Booked_Inv15` and `CancelFulfilmentTests.CancelOperation_…`
+> alternate — whichever runs second can fail, and each passes in isolation. It is
+> unrelated to menu extraction. A red run there is worth re-running the single
+> test before treating it as a regression.
 
 After changing Pydantic models, regenerate the shared types:
 
