@@ -6,6 +6,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.TenantResolution;
 using Cordia.Infrastructure.EntityFramework;
 using Cordia.Infrastructure.EntityFramework.Interceptors;
+using Cordia.Infrastructure.Menu;
 using Cordia.Infrastructure.Observability;
 using Cordia.Infrastructure.Providers;
 using Cordia.Infrastructure.Repositories;
@@ -19,6 +20,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Infrastructure.Extensions;
 
@@ -189,10 +191,49 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IDepositPolicy, TenantDepositPolicyProvider>();
         services.AddSingleton<IVerificationService, NoUserActionRequiredService>();
 
-        // Spec 11 — menu ingestion ports (deterministic stubs; real ClamAV / LangGraph extractor
-        // swap in later behind these ports). Stateless → singletons.
+        // Spec 11 — artifact scanning port (deterministic stub; real ClamAV swaps in later behind
+        // this port). Stateless → singleton.
         services.AddSingleton<IArtifactScanner, StubArtifactScanner>();
-        services.AddSingleton<IIsolatedMenuExtractor, StubIsolatedMenuExtractor>();
+
+        // Spec 11 / issue #87 — the menu-extraction seam.
+        services.AddOptions<LangGraphOptions>()
+            .BindConfiguration(LangGraphOptions.SectionName)
+            .Validate(o => o.ExtractTimeoutSeconds > 0,
+                "LangGraph:ExtractTimeoutSeconds must be greater than zero.")
+            .Validate(o => !string.IsNullOrWhiteSpace(o.ExtractPath),
+                "LangGraph:ExtractPath must be set.")
+            // Only meaningful for the real client — the stub never dials out, so a Host-less
+            // offline configuration must still start. Checked AT STARTUP rather than on the first
+            // ingestion: a malformed host would otherwise surface hours later as an
+            // ExtractFailed catalog with nothing pointing at the config as the cause.
+            .Validate(o => o.UseStubExtractor || o.HasUsableHost,
+                "LangGraph:Host must be an absolute http/https URI when the real menu extractor is used.")
+            .ValidateOnStart();
+
+        // #84 replaces the implementation, not the port: object-storage refs land behind this
+        // same seam. Stateless → singleton.
+        services.AddSingleton<IMenuArtifactTextResolver, InlineMenuArtifactTextResolver>();
+
+        // D-E — explicit configuration, never environment sniffing. `false` is the default, so a
+        // deployment that says nothing gets the REAL extractor; only an explicit opt-in downgrades
+        // to the stub, and Program.cs says so loudly when that happens outside Development.
+        // Read directly (rather than through IOptions) because the branch is a REGISTRATION
+        // decision: it has to be made while the container is still being built.
+        if (configuration.GetValue($"{LangGraphOptions.SectionName}:UseStubExtractor", false))
+        {
+            services.AddSingleton<IIsolatedMenuExtractor, StubIsolatedMenuExtractor>();
+        }
+        else
+        {
+            services.AddHttpClient<IIsolatedMenuExtractor, LangGraphMenuExtractorClient>((sp, client) =>
+            {
+                var langGraph = sp.GetRequiredService<IOptions<LangGraphOptions>>().Value;
+                client.BaseAddress = new Uri(langGraph.Host, UriKind.Absolute);
+                // Belt to the client's own linked CTS: two independent deadlines at the same value,
+                // both of which surface as OperationCanceledException and are translated there.
+                client.Timeout = TimeSpan.FromSeconds(langGraph.ExtractTimeoutSeconds);
+            });
+        }
 
         // Spec 11 — pre-order item-reservation port (deterministic stub; real POS adapter swaps in
         // later behind this port). Stateless → singleton. Payment is no longer a saga concern: the

@@ -272,6 +272,38 @@ else
         app.Environment.EnvironmentName);
 }
 
+// Spec 11 / issue #87 (D-E) — the deterministic stub menu extractor, announced the same way and
+// for the same reason as the two gates above.
+//
+// `LangGraph:UseStubExtractor` defaults to false, so the real isolated agent runs unless a
+// deployment opts out explicitly. Where it IS opted out, every menu upload settles to the same
+// fabricated sample item: the owner sees a DraftReady catalog that looks like a successful
+// extraction and is entirely made up, and no uploaded document is ever read. That is exactly what
+// a developer machine and the test host want, and a confident falsehood anywhere else (Inv-16) —
+// so it must be findable by grepping startup. Only the enabled branch is announced; the real
+// client is the expected state and needs no line.
+if (app.Configuration.GetValue($"{Cordia.Infrastructure.Menu.LangGraphOptions.SectionName}:UseStubExtractor", false))
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "Menu extraction is served by the STUB extractor ({Environment}); uploaded documents are "
+            + "never read and every ingestion yields the same sample item. Expected on a developer "
+            + "machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "Menu extraction is served by the STUB extractor OUTSIDE DEVELOPMENT ({Environment}) "
+            + "because LangGraph:UseStubExtractor was set explicitly. Uploaded menus are NEVER read: "
+            + "every ingestion settles to DraftReady carrying the same fabricated sample item, which "
+            + "an owner cannot tell apart from a real extraction (Inv-16). Turn it off unless the "
+            + "LangGraph extraction agent is genuinely unavailable.",
+            app.Environment.EnvironmentName);
+    }
+}
+
 // --- Pipeline ---
 app.UseSerilogRequestLogging();
 app.UseSwagger();

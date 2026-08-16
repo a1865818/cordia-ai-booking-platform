@@ -44,6 +44,9 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
                 ["Messaging:StepSweeper:Enabled"] = "false",
                 ["Messaging:NotificationReconcile:Enabled"] = "false",
                 ["Messaging:MissingNotificationAudit:Enabled"] = "false",
+                // The real extractor is now the DI default, so this suite must opt into the stub
+                // explicitly or it would point at localhost:2024 (issue #87 D-E).
+                ["LangGraph:UseStubExtractor"] = "true",
             })
             .Build();
 
