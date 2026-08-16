@@ -33,16 +33,16 @@ from cordia_agent.state import (
     OperationType,
     SourceInfo,
 )
-from cordia_agent.streaming.providers.fake import (
-    FakeHandoffHook,
-    FakeSessionLookup,
-)
 from cordia_agent.streaming.reconnect import (
     ReconnectHandler,
     ReconnectOutcome,
     ReconnectSessionContext,
 )
 from cordia_agent.streaming.turn_manager import TurnManager
+from tests._stubs.streaming_providers_fake import (
+    FakeHandoffHook,
+    FakeSessionLookup,
+)
 from tests.integration_tests.streaming.conftest import (
     _KNOWN_OP_ID,
     CHANNEL_REF,

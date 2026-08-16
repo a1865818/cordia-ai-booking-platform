@@ -25,6 +25,7 @@ vi.mock("../waitlist/api", () => ({
 vi.mock("./api", () => ({
   getBookingDetails: vi.fn(),
   getOperationStatus: vi.fn(),
+  recordAttendance: vi.fn(),
 }));
 vi.mock("./submit", () => ({
   submitCancellation: vi.fn(),

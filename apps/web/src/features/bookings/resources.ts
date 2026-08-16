@@ -1,20 +1,12 @@
 /**
  * The lanes the schedule grid draws bookings on.
  *
- * **The platform models no resource.** `BookingRequest` has no field for a staff member, room
- * or table; `ScheduledBookingView` returns none; there is no resources endpoint in the
- * contract. The grid nevertheless rendered four invented people (`STAFF` in `data/console.ts`
- * — Linh Pham, Trang Vo, Mai Dang, Tony Bui), stacked every live booking into lane one, printed
- * "<service> · Linh" beside real bookings, and offered a "With" picker whose value was
- * discarded on submit.
- *
- * So the grid now draws **one unnamed lane**, following the same ruling the rest of the console
- * already follows for things the API does not record — `prov: "unknown"`, `channel: null`,
- * `dep: 0`, the deleted `MOCK_WAIT`: omit rather than fabricate.
- *
- * This is a prop rather than a constant precisely so it can stop being one lane. When a
- * resources endpoint exists, pass the real lanes and every consumer below works unchanged.
+ * `GET /api/resources` is the roster. Until that list has loaded — or when it is empty —
+ * the grid draws one unnamed lane (`UNASSIGNED_RESOURCES`) so every booking still has a
+ * column. Assigned rows use `resource_id` from the schedule projection.
  */
+
+import type { StaffResource, StaffResourceListResponse } from "../resources/api";
 
 export interface GridResource {
   id: string;
@@ -29,7 +21,7 @@ export interface GridResource {
 }
 
 /**
- * The lane every booking lands on while no resource dimension exists.
+ * The lane a booking lands on when the schedule named no resource.
  *
  * The id is kept as `s1` — the value `adapters.ts` has always written into `Booking.staff` —
  * so no persisted or in-flight row changes meaning. It addresses nothing on the server either
@@ -41,3 +33,20 @@ export const UNASSIGNED_RESOURCE_ID = "s1";
 export const UNASSIGNED_RESOURCES: readonly GridResource[] = [
   { id: UNASSIGNED_RESOURCE_ID, name: "", role: "" },
 ];
+
+/** Maps a staff-resource list onto grid lanes. Empty list → the unassigned fallback. */
+export function toGridResources(
+  api: StaffResourceListResponse | readonly StaffResource[] | null | undefined
+): GridResource[] {
+  const rows: readonly StaffResource[] = Array.isArray(api)
+    ? api
+    : api != null && "resources" in api
+      ? api.resources
+      : [];
+  if (rows.length === 0) return [...UNASSIGNED_RESOURCES];
+  return rows.map((r) => ({
+    id: r.resource_id,
+    name: r.name,
+    role: r.role ?? "",
+  }));
+}

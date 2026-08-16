@@ -41,21 +41,34 @@ ALLOWED: set[tuple[str, str]] = {
     ("load_context", "identify_intent"),
     ("identify_intent", "capture_fields"),
     ("capture_fields", "clarify"),
-    ("clarify", "capture_fields"),
+    # clarify asks and ENDs the turn; the customer's answer arrives as the next
+    # invocation.  See PER_TURN_BOUNDARY below.
+    ("clarify", END),
     ("capture_fields", "verify_identity"),
     ("verify_identity", "capture_fields"),
     ("verify_identity", "human_handoff"),
+    ("verify_identity", END),
     ("capture_fields", "check_candidates"),
-    ("check_candidates", "capture_fields"),
+    ("check_candidates", "clarify"),
     ("check_candidates", "read_back"),
     ("capture_fields", "read_back"),
     ("read_back", "await_confirmation"),
-    ("await_confirmation", "capture_fields"),
+    ("await_confirmation", END),
     ("await_confirmation", "submit_intent"),
     ("submit_intent", END),
     ("submit_intent", "capture_fields"),
     ("submit_intent", "human_handoff"),
     ("human_handoff", END),
+}
+
+# Edges that were in the original §8.3 drawing and are deliberately GONE.  Each
+# one re-entered a node with an unchanged transcript, so it reproduced the state
+# that sent it there and looped until GraphRecursionError.  A turn now ends at
+# the point where only the customer can supply the missing information.
+PER_TURN_BOUNDARY: set[tuple[str, str]] = {
+    ("clarify", "capture_fields"),
+    ("check_candidates", "capture_fields"),
+    ("await_confirmation", "capture_fields"),
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +102,49 @@ def test_forbidden_transitions_absent() -> None:
     ]
     present = [t for t in forbidden if t in edges]
     assert not present, f"Forbidden transitions found: {present}"
+
+
+@pytest.mark.unit
+def test_no_edge_reopens_a_closed_turn() -> None:
+    """The cycle-forming edges the per-turn boundary replaced must stay gone."""
+    present = sorted(PER_TURN_BOUNDARY & _edges())
+    assert not present, (
+        f"cycle-forming edges reintroduced: {present}. Each of these re-runs a "
+        "node over an unchanged transcript; the turn must END instead."
+    )
+
+
+@pytest.mark.unit
+def test_every_path_can_end_a_turn() -> None:
+    """Every node can reach END without the customer saying anything new.
+
+    This is the property the voice channel actually needs: a turn must be able
+    to terminate inside the graph.  Before the per-turn boundary, three nodes
+    could only leave via an edge that led back to themselves.
+    """
+    edges = _edges()
+    adjacency: dict[str, list[str]] = {}
+    for source, target in edges:
+        adjacency.setdefault(source, []).append(target)
+
+    nodes = {source for source, _ in edges} - {START}
+    for node in sorted(nodes):
+        visited: set[str] = set()
+        queue: deque[str] = deque([node])
+        reached_end = False
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            for neighbour in adjacency.get(current, []):
+                if neighbour == END:
+                    reached_end = True
+                    break
+                queue.append(neighbour)
+            if reached_end:
+                break
+        assert reached_end, f"{node} cannot reach END"
 
 
 @pytest.mark.unit

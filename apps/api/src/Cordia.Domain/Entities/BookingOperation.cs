@@ -25,6 +25,9 @@ public class BookingOperation : ITenantScoped, ICorrelatable
 
     public string? BookingId { get; set; }
 
+    /// <summary>Who created the operation. Null on historical rows means unknown.</summary>
+    public AttributedSource? AttributedSource { get; set; }
+
     /// <summary>
     /// True when this operation carries a pre-order (spec 11 §5.3). Set at acceptance (04) when the
     /// confirmed revision's canonical payload contains a non-empty <c>PreorderReference</c>. The 06

@@ -74,6 +74,14 @@ def test_canonical_payload_hash_is_hex_string() -> None:
     int(h, 16)  # raises ValueError if not valid hex
 
 
+@pytest.mark.unit
+def test_canonical_payload_hash_omitted_optional_resource_id_unchanged() -> None:
+    """Absent/None resource_id is omitted by canon.v1, so the hash matches a payload without it."""
+    omitted = _create_request(service_id="svc_1", party_size=2)
+    explicit_none = _create_request(service_id="svc_1", party_size=2, resource_id=None)
+    assert canonical_payload_hash(omitted) == canonical_payload_hash(explicit_none)
+
+
 # ---------------------------------------------------------------------------
 # build_revision
 # ---------------------------------------------------------------------------
@@ -137,6 +145,14 @@ def test_is_material_change_detects_location_id_change() -> None:
     """Changing location_id is a material change → True."""
     old = _create_request(location_id="loc_1")
     new = _create_request(location_id="loc_2")
+    assert is_material_change(old, new) is True
+
+
+@pytest.mark.unit
+def test_is_material_change_detects_resource_id_change() -> None:
+    """Changing resource_id is a material change → True."""
+    old = _create_request(resource_id="staff_1")
+    new = _create_request(resource_id="staff_2")
     assert is_material_change(old, new) is True
 
 

@@ -62,15 +62,10 @@ describe("CommandPalette customer search", () => {
     expect(screen.queryByText("cust_9f2a")).not.toBeInTheDocument();
   });
 
-  it("labels demo names when the customer list has never loaded", () => {
-    // Previously Cmd-K searched the mock CUSTOMERS array unlabelled, so it offered six
-    // fabricated people and focused an id that exists nowhere.
+  it("does not offer fabricated names when the customer list has never loaded", () => {
     open({ customers: undefined });
-
     search("sarah");
-
-    expect(screen.getByText("Sarah Nguyen")).toBeInTheDocument();
-    expect(screen.getAllByText("Demo data").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Sarah Nguyen")).not.toBeInTheDocument();
   });
 
   it("offers no customers at all when the tenant genuinely has none", () => {

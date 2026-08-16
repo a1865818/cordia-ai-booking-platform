@@ -1,8 +1,10 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Console.ListBookingSchedule;
 using Cordia.Application.Handlers.ManageBooking.FindManageableBookings;
 using Cordia.Application.Handlers.ManageBooking.GetBookingDetails;
+using Cordia.Application.Handlers.ManageBooking.RecordAttendance;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingCancellation;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingModification;
 using Cordia.Application.Handlers.ManageBooking.ValidateBookingChange;
@@ -21,7 +23,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
-public class BookingsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class BookingsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Finds minimized, non-sensitive booking candidates for Manage Booking.</summary>
     [HttpGet]
@@ -86,7 +88,13 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
                 b.CustomerRef,
                 b.LifecycleStatus,
                 OperationStatusNames.ToWireName(b.OperationStatus),
-                b.UpdatedAt)).ToList()));
+                b.UpdatedAt,
+                EnumWireNames.ToWireName(b.AttributedSource),
+                EnumWireNames.ToWireName(b.AttendanceStatus) ?? "unknown",
+                b.ResourceId,
+                EnumWireNames.ToWireName(b.Channel),
+                b.SessionId,
+                b.DepositAmountMinor)).ToList()));
     }
 
     /// <summary>Default schedule page size when the caller does not specify one.</summary>
@@ -137,6 +145,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         var targetBookingId = string.IsNullOrWhiteSpace(request.TargetBookingId)
             ? bookingId
             : request.TargetBookingId;
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new ValidateBookingChangeQuery(
@@ -146,8 +155,8 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
                 request.ExpectedBookingVersion,
                 request.RequestedFields,
                 request.GrantId,
-                actor ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedActor,
+                resolvedRole),
             ct);
 
         return Ok(new ValidateBookingChangeResponse(result.Status, result.Validation));
@@ -205,6 +214,39 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
     }
 
     /// <summary>
+    /// Records whether the guest attended. Operator-gated (owner satisfies). 404 if the booking
+    /// does not exist for this tenant. Does not change lifecycle status.
+    /// </summary>
+    [HttpPost("{bookingId}/attendance")]
+    [ProducesResponseType(typeof(RecordAttendanceResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<RecordAttendanceResult>> RecordAttendance(
+        string bookingId,
+        [FromBody] RecordAttendanceRequest request,
+        [FromHeader(Name = "X-Actor")] string? actor,
+        [FromHeader(Name = "X-Actor-Role")] string? actorRole,
+        [FromHeader(Name = "X-Reason-Code")] string? reasonCode,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
+
+        var result = await mediator.Send(
+            new RecordAttendanceCommand(
+                tenant.TenantId,
+                bookingId,
+                request.Attendance ?? string.Empty,
+                resolvedActor,
+                resolvedRole,
+                reasonCode ?? string.Empty),
+            ct);
+
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    /// <summary>
     /// Durably accepts a confirmed booking intent.
     /// Returns 202 with a <c>Location</c> header pointing to the status URL (spec 04 §10.4).
     ///
@@ -228,9 +270,10 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
-            new SubmitConfirmedIntentCommand(tenant.TenantId, request, grantId, actor, actorRole), ct);
+            new SubmitConfirmedIntentCommand(tenant.TenantId, request, grantId, resolvedActor, resolvedRole), ct);
 
         return result switch
         {
@@ -259,6 +302,9 @@ public sealed record ValidateBookingChangeResponse(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("validation")] BookingChangeValidation Validation);
 
+public sealed record RecordAttendanceRequest(
+    [property: JsonPropertyName("attendance")] string? Attendance);
+
 /// <summary>
 /// One row of the console schedule grid. Carries the opaque <c>customer_ref</c> rather than
 /// a name or contact detail (spec 14 minimisation) — those stay behind the
@@ -276,7 +322,13 @@ public sealed record ScheduledBookingView(
     [property: JsonPropertyName("customer_ref")] string? CustomerRef,
     [property: JsonPropertyName("lifecycle_status")] string? LifecycleStatus,
     [property: JsonPropertyName("operation_status")] string OperationStatus,
-    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt);
+    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
+    [property: JsonPropertyName("attributed_source")] string? AttributedSource,
+    [property: JsonPropertyName("attendance")] string Attendance,
+    [property: JsonPropertyName("resource_id")] string? ResourceId,
+    [property: JsonPropertyName("channel")] string? Channel,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("deposit_amount_minor")] int? DepositAmountMinor);
 
 public sealed record BookingScheduleResponse(
     [property: JsonPropertyName("from")] DateTimeOffset From,

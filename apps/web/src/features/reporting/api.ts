@@ -27,6 +27,34 @@ export function getBookingOverview(window: ReportingWindow, signal?: AbortSignal
   return fetchApi<BookingOverview>(`/api/reporting/overview?${windowQuery(window)}`, { signal });
 }
 
+export interface KpiMetric {
+  key: string;
+  value: number | null;
+  unit: string;
+  delta: number | null;
+  up: boolean | null;
+  available: boolean;
+}
+
+export interface HandledSplit {
+  ai: number;
+  you: number;
+}
+
+export interface KpisView {
+  from: string;
+  to: string;
+  prior_from: string;
+  prior_to: string;
+  kpis: KpiMetric[];
+  handled: HandledSplit | null;
+}
+
+/** KPI strip over the same window as overview, with an equal-length prior window for deltas. */
+export function getKpis(window: ReportingWindow, signal?: AbortSignal) {
+  return fetchApi<KpisView>(`/api/reporting/kpis?${windowQuery(window)}`, { signal });
+}
+
 /** Resolves a range selector to a concrete UTC window ending now. */
 export function rangeToWindow(range: "7d" | "30d" | "90d", now = new Date()): ReportingWindow {
   const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;

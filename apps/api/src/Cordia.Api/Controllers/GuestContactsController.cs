@@ -45,7 +45,8 @@ public class GuestContactsController(
     IGuestContactRepository contacts,
     ITenantContext tenant,
     IAuditWriter audit,
-    IUnitOfWork uow) : ControllerBase
+    IUnitOfWork uow,
+    IActorContext actorContext) : ControllerBase
 {
     /// <summary>Returns the handle to put on the booking's canonical payload.</summary>
     [HttpPost]
@@ -95,6 +96,7 @@ public class GuestContactsController(
         }
 
         GuestContact contact = null!;
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         // ONE transaction for the PII write and the record of it.
         //
@@ -113,8 +115,8 @@ public class GuestContactsController(
             await audit.WriteAsync(
                 new AuditRecord(
                     TenantId: tenant.TenantId,
-                    ActorType: StaffRole.IsKnown(actorRole) ? actorRole! : "operator",
-                    ActorId: string.IsNullOrWhiteSpace(actor) ? "unknown" : actor,
+                    ActorType: StaffRole.IsKnown(resolvedRole) ? resolvedRole : "operator",
+                    ActorId: string.IsNullOrWhiteSpace(resolvedActor) ? "unknown" : resolvedActor,
                     Action: "guest_contact.minted",
                     TargetType: "guest_contact",
                     TargetId: contact.ContactRef,

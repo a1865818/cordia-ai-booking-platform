@@ -19,6 +19,7 @@ Tests:
 
 from __future__ import annotations
 
+import datetime
 import inspect
 import json
 
@@ -27,6 +28,7 @@ import pytest
 from pydantic import ValidationError
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
+from cordia_agent.models.intent import IntentRevision
 from cordia_agent.readback.renderer import status_wording
 from cordia_agent.safety.injection_harness import (
     ToolAllowlist,
@@ -35,7 +37,7 @@ from cordia_agent.safety.injection_harness import (
     label_untrusted,
 )
 from cordia_agent.safety.tenant_context import TenantContext
-from cordia_agent.state import Channel
+from cordia_agent.state import BookingRequest, Channel, OperationType
 from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 from cordia_agent.tools.contracts import (
     SubmitCancellationInput,
@@ -75,6 +77,20 @@ def _make_tenant_context(*, allowed_tools: list[str] | None = None) -> TenantCon
     )
 
 
+def _minimal_revision() -> IntentRevision:
+    """The canonical revision the API re-hashes server-side (spec 04 §4.2)."""
+    return IntentRevision(
+        intent_id="intent_001",
+        revision=1,
+        canonical_payload=BookingRequest(operation=OperationType.create),
+        schema_version="draft.v1",
+        tenant_policy_version="policy.v1",
+        payload_hash="hash_abc",
+        created_at=datetime.datetime(2026, 6, 25, 10, 0, tzinfo=datetime.UTC),
+        source_session_id="sess_inv_001",
+    )
+
+
 def _make_json_response(status_code: int, body: dict) -> httpx.Response:
     return httpx.Response(
         status_code=status_code,
@@ -101,6 +117,7 @@ class TestInv1StructuralNoStringToSubmit:
                 intent_id="intent_001",
                 intent_revision=1,
                 intent_payload_hash="hash_abc",
+                revision=_minimal_revision(),
                 confirmation="yes book it",  # RAW STRING — must be rejected
             )
         errors = exc_info.value.errors()
@@ -119,6 +136,7 @@ class TestInv1StructuralNoStringToSubmit:
                 intent_id="intent_002",
                 intent_revision=1,
                 intent_payload_hash="hash_def",
+                revision=_minimal_revision(),
                 confirmation={"text": "please book"},  # invalid Confirmation shape
             )
 

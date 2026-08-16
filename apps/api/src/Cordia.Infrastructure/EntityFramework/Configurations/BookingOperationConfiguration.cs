@@ -21,6 +21,8 @@ public class BookingOperationConfiguration : IEntityTypeConfiguration<BookingOpe
         // Spec 11 §5.3 — pre-order operations delegate booking to 06 but signal the saga instead of
         // emitting a customer outcome. Migration generated in Phase 6 (see divergence-fixes plan).
         builder.Property(e => e.IsPreorder).HasColumnName("is_preorder").HasDefaultValue(false);
+        builder.Property(e => e.AttributedSource)
+            .HasColumnType("attributed_source_enum");
 
         // FK to the exact intent revision (tenant_id, intent_id, intent_revision) → revisions PK
         builder.HasOne<BookingIntentRevision>()

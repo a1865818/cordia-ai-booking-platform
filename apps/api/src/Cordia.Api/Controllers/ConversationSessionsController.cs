@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Console.ListConversationSessions;
 using Cordia.Application.Handlers.Security.AppendTranscriptTurn;
 using Cordia.Application.Handlers.Security.GetTranscript;
@@ -21,7 +22,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/conversation-sessions")]
-public class ConversationSessionsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class ConversationSessionsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 50;
@@ -54,7 +55,9 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
                 EnumWireNames.ToWireName(s.ConsentState),
                 s.RecordingAllowed,
                 s.StartedAt,
-                s.EndedAt)).ToList()));
+                s.EndedAt,
+                s.Preview,
+                s.Prov)).ToList()));
     }
 
     [HttpPost("{sessionId}/consent")]
@@ -146,9 +149,10 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
 
         // Header wins over query (same precedence as BookingsController.GetDetails).
         var grantId = string.IsNullOrWhiteSpace(grantHeader) ? grantQuery : grantHeader;
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var view = await mediator.Send(
-            new GetTranscriptQuery(tenant.TenantId, sessionId, grantId, actor, actorRole, reasonCode), ct);
+            new GetTranscriptQuery(tenant.TenantId, sessionId, grantId, resolvedActor, resolvedRole, reasonCode), ct);
 
         return Ok(view);
     }
@@ -173,7 +177,9 @@ public sealed record ConversationSessionView(
     [property: JsonPropertyName("consent_state")] string? ConsentState,
     [property: JsonPropertyName("recording_allowed")] bool? RecordingAllowed,
     [property: JsonPropertyName("started_at")] DateTimeOffset StartedAt,
-    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt);
+    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt,
+    [property: JsonPropertyName("preview")] string? Preview,
+    [property: JsonPropertyName("prov")] string? Prov);
 
 public sealed record ListConversationSessionsResponse(
     [property: JsonPropertyName("sessions")] IReadOnlyList<ConversationSessionView> Sessions);

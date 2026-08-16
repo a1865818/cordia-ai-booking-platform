@@ -12,6 +12,7 @@
 
 import { apiBaseUrl, getActor, getActorRole, getTenantId, newCorrelationId } from "./config";
 import { toApiError } from "./problem";
+import { getSession } from "./session";
 
 export { ApiError, isApiError } from "./problem";
 export type { ProblemDetails, ValidationProblemDetails, IdempotencyConflict } from "./problem";
@@ -26,6 +27,11 @@ export interface ApiRequestOptions extends RequestInit {
   reasonCode?: string;
   /** Correlation id to send instead of a freshly minted one. */
   correlationId?: string;
+  /**
+   * Omit tenant / signed-context headers. Login has no session yet and must not send a
+   * leftover `X-Tenant-Context` from a previous operator.
+   */
+  anonymous?: true;
 }
 
 function resolveUrl(path: string): string {
@@ -38,10 +44,19 @@ function resolveUrl(path: string): string {
 
 function buildHeaders(options: ApiRequestOptions | undefined): Headers {
   const headers = new Headers();
+  const anonymous = options?.anonymous === true;
+  const session = anonymous ? null : getSession();
 
   headers.set("Accept", "application/json");
-  headers.set("X-Tenant-Id", getTenantId());
   headers.set("X-Correlation-Id", options?.correlationId ?? newCorrelationId());
+
+  if (!anonymous) {
+    // Signed-in tenant wins over the Development shim (`getTenantId` also prefers session).
+    headers.set("X-Tenant-Id", session?.tenantId ?? getTenantId());
+    if (session) {
+      headers.set("X-Tenant-Context", session.tenantContext);
+    }
+  }
 
   // Only a string body is assumed to be JSON. FormData, Blob and URLSearchParams each
   // carry their own content type — and FormData in particular needs the browser to
@@ -55,8 +70,11 @@ function buildHeaders(options: ApiRequestOptions | undefined): Headers {
   }
 
   if (options?.actor) {
-    headers.set("X-Actor", options.actor === true ? getActor() : options.actor);
-    headers.set("X-Actor-Role", getActorRole());
+    headers.set(
+      "X-Actor",
+      options.actor === true ? (session?.actorId ?? getActor()) : options.actor
+    );
+    headers.set("X-Actor-Role", session?.actorRole ?? getActorRole());
   }
 
   if (options?.reasonCode) {
@@ -81,6 +99,7 @@ export async function fetchApi<T>(path: string, options?: ApiRequestOptions): Pr
     actor: _actor,
     reasonCode: _reasonCode,
     correlationId: _correlationId,
+    anonymous: _anonymous,
     ...init
   } = options ?? {};
 

@@ -1,4 +1,5 @@
 ﻿using Cordia.Domain.Entities;
+using Cordia.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -22,6 +23,12 @@ public class BookingConfiguration : IEntityTypeConfiguration<Booking>
         // key, never searched on, and an additive nullable column keeps this hot table's migration
         // non-blocking.
         builder.Property(e => e.PendingOperationId);
+        builder.Property(e => e.AttributedSource)
+            .HasColumnType("attributed_source_enum");
+        builder.Property(e => e.Attendance)
+            .HasColumnType("attendance_status_enum")
+            .HasDefaultValue(AttendanceStatus.Unknown)
+            .IsRequired();
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.Version).IsConcurrencyToken().HasDefaultValue(0L);

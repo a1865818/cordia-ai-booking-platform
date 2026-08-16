@@ -19,7 +19,8 @@ public sealed record CatalogItemDetail(
     string? AvailabilityWindow,
     string? ImageRef,
     string? MenuMetadata,
-    string? AllergenInfo);
+    string? AllergenInfo,
+    int? DurationMinutes = null);
 
 /// <summary>
 /// Single-item lookup over the <b>published</b> catalog (spec 11 §5.2, §7). Backs the
@@ -50,6 +51,7 @@ public sealed class GetCatalogItemQueryHandler(IVendorCatalogRepository repo)
             item.AvailabilityWindow,
             item.ImageRef,
             item.MenuMetadata,
-            item.AllergenInfo);
+            item.AllergenInfo,
+            item.DurationMinutes);
     }
 }

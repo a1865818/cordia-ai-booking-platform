@@ -22,7 +22,6 @@ import pytest
 
 import cordia_agent.streaming.pipeline as pipeline_module
 from cordia_agent.state import StreamFrameType
-from cordia_agent.streaming.providers.fake_s2s import FakeS2SProvider
 from cordia_agent.streaming.providers.s2s_port import (
     S2SAgentText,
     S2SAudioChunk,
@@ -43,6 +42,7 @@ from cordia_agent.streaming_models import (
     TtsAudioDeltaFrame,
     TurnCancelledFrame,
 )
+from tests._stubs.streaming_s2s_fake import FakeS2SProvider
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +113,8 @@ async def test_fake_s2s_provider_yields_scripted_events_in_order() -> None:
 @pytest.mark.unit
 def test_s2s_port_and_fake_import_no_real_provider_modules() -> None:
     """s2s_port and fake_s2s must not import any real network/provider libraries."""
-    import cordia_agent.streaming.providers.fake_s2s as fake_s2s_mod
     import cordia_agent.streaming.providers.s2s_port as s2s_port_mod
+    import tests._stubs.streaming_s2s_fake as fake_s2s_mod
 
     combined_source = "\n".join(
         [inspect.getsource(s2s_port_mod), inspect.getsource(fake_s2s_mod)]

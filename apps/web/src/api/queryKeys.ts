@@ -74,12 +74,35 @@ export const queryKeys = {
   customers: {
     all: () => [...root(), "customers"] as const,
     list: (query: string, limit: number) => [...root(), "customers", "list", query, limit] as const,
+    detail: (ref: string) => [...root(), "customers", "detail", ref] as const,
   },
 
   reporting: {
     all: () => [...root(), "reporting"] as const,
     funnel: (from: string, to: string) => [...root(), "reporting", "funnel", from, to] as const,
     overview: (from: string, to: string) => [...root(), "reporting", "overview", from, to] as const,
+    kpis: (from: string, to: string) => [...root(), "reporting", "kpis", from, to] as const,
+  },
+
+  resources: {
+    all: () => [...root(), "resources"] as const,
+    list: () => [...root(), "resources", "list"] as const,
+  },
+
+  deposits: {
+    all: () => [...root(), "deposits"] as const,
+    list: (filters: Record<string, string | number | undefined> = {}) =>
+      [...root(), "deposits", "list", stableFilter(filters)] as const,
+  },
+
+  payouts: {
+    all: () => [...root(), "payouts"] as const,
+    summary: () => [...root(), "payouts", "summary"] as const,
+  },
+
+  campaigns: {
+    all: () => [...root(), "campaigns"] as const,
+    list: () => [...root(), "campaigns", "list"] as const,
   },
 
   settings: {
@@ -88,6 +111,11 @@ export const queryKeys = {
     catalogItems: (query: string) => [...root(), "settings", "catalog-items", query] as const,
     /** The tenant's guest-facing venue name — the source for spec 08's `business_name`. */
     venueName: () => [...root(), "settings", "venue-name"] as const,
+    profile: () => [...root(), "settings", "profile"] as const,
+    hours: () => [...root(), "settings", "hours"] as const,
+    guardrails: () => [...root(), "settings", "guardrails"] as const,
+    knowledge: () => [...root(), "settings", "knowledge"] as const,
+    depositPolicy: () => [...root(), "settings", "deposit-policy"] as const,
     /** Catalog discovery — owner-gated and audited, so keyed once and never focus-refetched. */
     catalogList: () => [...root(), "settings", "catalog-list"] as const,
     /** A single catalog's DRAFT items — owner-gated and audited, so keyed per catalog. */

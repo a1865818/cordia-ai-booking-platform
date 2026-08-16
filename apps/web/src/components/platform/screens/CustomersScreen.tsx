@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect } from "react";
-import { CUSTOMERS, Customer, chMeta, money } from "../../../data/console";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Customer, chMeta, money } from "../../../data/console";
 import { Avatar } from "../../ui/Avatar";
 import { Icon } from "../../ui/Icon";
-import { DemoBadge } from "../../ui/DemoBadge";
 import { Drawer } from "../../ui/Drawer";
 import { PrimaryButton, GhostButton } from "../../ui/Button";
 import { SectionLabel } from "../../ui/SectionLabel";
 import { Tag } from "../../ui/StatusTags";
 import { Pills } from "../../ui/Pills";
+import { queryKeys } from "../../../api/queryKeys";
+import { setCustomerNotes } from "../../../features/customers/api";
 
 function useRetained<T>(val: T | null, open: boolean): T | null {
   const ref = useRef<T | null>(val);
@@ -18,18 +20,40 @@ function useRetained<T>(val: T | null, open: boolean): T | null {
 interface CustomerProfileProps {
   device: 'phone' | 'desktop';
   c: Customer | null;
-  /** True when `c` came from the API, where no-shows / spend / phone / tags do not exist. */
-  live?: boolean;
   onClose: () => void;
   onNewBooking?: () => void;
   onMessage?: (name: string) => void;
 }
 
-function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: CustomerProfileProps) {
+function CustomerProfile({ device, c, onClose, onNewBooking, onMessage }: CustomerProfileProps) {
   const open = !!c;
   const cc = useRetained(c, open);
-  const risk = !live && !!cc && cc.noShows >= 2;
+  const queryClient = useQueryClient();
+  const [noteDraft, setNoteDraft] = useState("");
+  const [editingNote, setEditingNote] = useState(false);
+
+  useEffect(() => {
+    setNoteDraft(cc?.note ?? "");
+    setEditingNote(false);
+  }, [cc?.id, cc?.note]);
+
+  const noteMut = useMutation({
+    mutationFn: (note: string) => setCustomerNotes(cc!.id, { note }),
+    onSuccess: () => {
+      setEditingNote(false);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.customers.all() });
+    },
+  });
+
+  const risk = !!cc && cc.noShows >= 2;
   const cm = cc ? chMeta(cc.channel) : null;
+  const stats: [string, string][] = cc
+    ? [
+        ['Bookings', String(cc.visits)],
+        ['No-shows', String(cc.noShows)],
+        ...(cc.spend > 0 ? [['Lifetime', money(cc.spend)] as [string, string]] : []),
+      ]
+    : [];
 
   return (
     <Drawer
@@ -63,18 +87,14 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
             <Avatar name={cc.name} size={52} radius={15} font="19px" />
             <div className="flex-1 min-w-0">
               <div className="flex gap-[6px] flex-wrap mb-[5px]">
-                {!live && cc.tags.length ? cc.tags.map(t => <Tag key={t}>{t}</Tag>) : <Tag>Customer</Tag>}
+                {cc.tags.length ? cc.tags.map(t => <Tag key={t}>{t}</Tag>) : <Tag>Customer</Tag>}
               </div>
-              <span className="font-mono text-[11.5px] text-t2">{live ? '' : cc.phone}</span>
+              {cc.phone ? <span className="font-mono text-[11.5px] text-t2">{cc.phone}</span> : null}
             </div>
           </div>
 
-          {/* Stats */}
           <div className="flex gap-[9px] mb-[14px]">
-            {(live
-              ? [['Bookings', String(cc.visits)]]
-              : [['Visits', String(cc.visits)], ['No-shows', String(cc.noShows)], ['Lifetime', money(cc.spend)]]
-            ).map((s, i) => (
+            {stats.map((s, i) => (
               <div key={i}
                 className="flex-1 rounded-[12px] p-[12px_13px]"
                 style={{
@@ -90,7 +110,6 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
             ))}
           </div>
 
-          {/* Risk warning */}
           {risk && (
             <div className="flex items-start gap-[9px] p-[11px_13px] rounded-[12px] mb-[14px]"
               style={{ background: '#FBF3DF', border: '1px solid #F0DCA8' }}>
@@ -101,21 +120,14 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
             </div>
           )}
 
-          {/* Meta */}
           <div className="bg-white border border-cd-border rounded-[14px] p-[4px_14px] mb-[14px]">
-            {/* `Usual` is the last service the API actually reports; it is shown only when
-                there is one. */}
             {cc.fav && (
               <div className="flex items-center justify-between py-[11px] border-b border-hair">
                 <span className="text-[12.5px] text-t2">Usual</span>
                 <span className="text-[13.5px] font-medium text-ink">{cc.fav}</span>
               </div>
             )}
-            {/* `Prefers` is DEMO-ONLY. `CustomerSummary` has no channel field at all, so the
-                adapter fills `channel: "web"` for every live row — and this panel used to render
-                it ungated, telling the operator that every one of their customers prefers web
-                chat. Unlike the stats block above, it was never behind `live`. */}
-            {!live && (
+            {cc.channel && cc.channel !== 'web' && (
               <div className="flex items-center justify-between py-[11px] border-b border-hair">
                 <span className="text-[12.5px] text-t2">Prefers</span>
                 <span className="inline-flex items-center gap-[5px] text-[13.5px] font-medium text-ink">
@@ -130,12 +142,55 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
             </div>
           </div>
 
-          {cc.note && (
-            <div>
-              <SectionLabel>Note</SectionLabel>
-              <div className="text-[13px] text-t2 leading-[1.55] px-[2px]">{cc.note}</div>
-            </div>
-          )}
+          <div>
+            <SectionLabel>Note</SectionLabel>
+            {editingNote ? (
+              <div>
+                <textarea
+                  value={noteDraft}
+                  onChange={e => setNoteDraft(e.target.value)}
+                  rows={3}
+                  className="w-full border border-cd-border rounded-[10px] px-3 py-2 text-[13px] text-ink resize-none outline-none"
+                  style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                />
+                <div className="flex gap-2 mt-2">
+                  <button
+                    type="button"
+                    disabled={noteMut.isPending}
+                    onClick={() => noteMut.mutate(noteDraft)}
+                    className="text-[12.5px] font-semibold text-white bg-ink px-3 py-1.5 rounded-[7px] border-none cursor-pointer disabled:opacity-40"
+                    style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setEditingNote(false); setNoteDraft(cc.note); }}
+                    className="text-[12.5px] text-t2 bg-transparent border-none cursor-pointer"
+                    style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {cc.note ? (
+                  <div className="text-[13px] text-t2 leading-[1.55] px-[2px]">{cc.note}</div>
+                ) : (
+                  <div className="text-[12.5px] text-t3 px-[2px]">No note yet.</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setEditingNote(true)}
+                  className="mt-2 text-[12px] font-semibold text-[#2F6BEB] bg-transparent border-none cursor-pointer p-0"
+                  style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
+                >
+                  {cc.note ? "Edit note" : "+ Add note"}
+                </button>
+              </>
+            )}
+          </div>
         </>
       )}
     </Drawer>
@@ -144,11 +199,7 @@ function CustomerProfile({ device, c, live, onClose, onNewBooking, onMessage }: 
 
 interface CustomersScreenProps {
   device: 'phone' | 'desktop';
-  /**
-   * Live customers from the API. When present the screen renders these instead of demo
-   * data and suppresses the stats the API does not model (no-shows, lifetime spend,
-   * phone, tags) rather than showing them as zeros.
-   */
+  /** Live customers from the API. Undefined while the list has never loaded — empty, not mocks. */
   customers?: Customer[];
   onNewBooking?: () => void;
   onMessage?: (customerName: string) => void;
@@ -157,10 +208,7 @@ interface CustomersScreenProps {
 }
 
 export function CustomersScreen({ device, customers, onNewBooking, onMessage, focusCustomerId, onClearFocus }: CustomersScreenProps) {
-  // `live` gates the stats the API does not model, so a real customer never shows a
-  // fabricated "0 no-shows" or "$0 lifetime".
-  const live = customers !== undefined;
-  const source = customers ?? CUSTOMERS;
+  const source = customers ?? [];
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<Customer | null>(null);
 
@@ -174,37 +222,6 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
   const [customerFilter, setCustomerFilter] = useState<'all' | 'vip' | 'at-risk' | 'new'>('all');
   const [sort, setSort] = useState<'default' | 'visits' | 'noshows'>('default');
 
-  // A selection made against demo rows must not survive into live data, where it would silently
-  // filter everything out or sort by a field the API never sends.
-  useEffect(() => {
-    if (!live) return;
-    if (customerFilter === 'at-risk' || customerFilter === 'new') setCustomerFilter('all');
-    if (sort === 'noshows') setSort('default');
-  }, [live, customerFilter, sort]);
-
-  /**
-   * The OPEN PROFILE must not survive it either.
-   *
-   * `sel` holds a whole `Customer` object, not an id, so a profile opened against the demo rows
-   * went on rendering that invented person's name, phone, visit count and note after the real
-   * list arrived — presented as this venue's account data, which is the exact fabrication the
-   * `DemoBadge` and the `live` gate exist to prevent. Filters and sort were already reset here for
-   * the same reason; the selection was simply missed.
-   *
-   * Re-resolved by id rather than cleared outright, so an operator who happened to open a customer
-   * that also exists in the live list keeps their place and sees the real record.
-   *
-   * Runs only on the demo→live TRANSITION: `source` is a new array on every refetch, so depending
-   * on it would re-resolve (and could close) the profile whenever the list refreshed.
-   */
-  const wasLiveRef = useRef(false);
-  useEffect(() => {
-    const becameLive = live && !wasLiveRef.current;
-    wasLiveRef.current = live;
-    if (!becameLive) return;
-    setSel(current => (current ? source.find(c => c.id === current.id) ?? null : null));
-  }, [live, source]);
-
   let list = source.filter(c => c.name.toLowerCase().includes(q.toLowerCase()));
   if (customerFilter === 'vip') list = list.filter(c => c.visits >= 5);
   if (customerFilter === 'at-risk') list = list.filter(c => c.noShows >= 2);
@@ -214,15 +231,6 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
 
   return (
     <div>
-      {/* Search */}
-      {/* These rows are invented — names, phone numbers, no-show counts and lifetime spend.
-          Without the badge an operator could phone a number that belongs to nobody. */}
-      {!live && (
-        <div className="mb-[10px]">
-          <DemoBadge reason="customers have not loaded — these are sample rows, not your account" />
-        </div>
-      )}
-
       <div className="relative mb-[10px]">
         <span className="absolute left-[13px] top-1/2 -translate-y-1/2">
           <Icon name="search" size={16} strokeWidth={2} color="#9A9A9A" />
@@ -236,22 +244,15 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
         />
       </div>
 
-      {/* Filter chips + sort */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <Pills
           value={customerFilter}
           onChange={(v) => setCustomerFilter(v as 'all' | 'vip' | 'at-risk' | 'new')}
-          // At-risk and New are hidden on LIVE rows. They filter on `noShows` and a `New` tag,
-          // neither of which the customers read returns — so on real data they always matched
-          // nothing and reported "no at-risk customers", which is an answer the console does not
-          // have. An option that can only ever say "none" is worse than no option.
           options={[
             { value: 'all',     label: 'All' },
             { value: 'vip',     label: 'VIP' },
-            ...(live ? [] : [
-              { value: 'at-risk', label: 'At-risk' },
-              { value: 'new',     label: 'New' },
-            ]),
+            { value: 'at-risk', label: 'At-risk' },
+            { value: 'new',     label: 'New' },
           ]}
         />
         <select
@@ -262,9 +263,7 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
         >
           <option value="default">Default</option>
           <option value="visits">Most visits</option>
-          {/* Demo only: the API returns no no-show count, so on live rows this sorted every
-              customer by a constant and did nothing at all. */}
-          {!live && <option value="noshows">Most no-shows</option>}
+          <option value="noshows">Most no-shows</option>
         </select>
       </div>
 
@@ -281,10 +280,6 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-[7px]">
                 <span className="text-[14.5px] font-semibold text-ink whitespace-nowrap overflow-hidden text-ellipsis">{c.name}</span>
-                {/* Not a guest. Bookings made in the console record the operator as the
-                    confirming identity, because nothing on `BookingRequest` can carry a guest —
-                    so this row counts staff-made bookings. Unlabelled it reads as the venue's
-                    busiest customer. */}
                 {c.isOperator && <Tag>You · console bookings</Tag>}
                 {c.tags.slice(0, 2).map(t => <Tag key={t}>{t}</Tag>)}
               </div>
@@ -295,17 +290,15 @@ export function CustomersScreen({ device, customers, onNewBooking, onMessage, fo
             </div>
             <div className="text-right shrink-0">
               <span className="font-mono text-[13px] font-semibold text-ink">{c.visits}</span>
-              <div className="text-[10.5px] mt-[1px]" style={{ color: !live && c.noShows >= 2 ? '#B82C22' : '#9A9A9A' }}>
-                {live
-                  ? `booking${c.visits === 1 ? '' : 's'}`
-                  : `${c.noShows} no-show${c.noShows === 1 ? '' : 's'}`}
+              <div className="text-[10.5px] mt-[1px]" style={{ color: c.noShows >= 2 ? '#B82C22' : '#9A9A9A' }}>
+                {`${c.noShows} no-show${c.noShows === 1 ? '' : 's'}`}
               </div>
             </div>
           </button>
         ))}
       </div>
       <div className="h-2" />
-      <CustomerProfile device={device} c={sel} live={live} onClose={() => setSel(null)} onNewBooking={onNewBooking} onMessage={onMessage} />
+      <CustomerProfile device={device} c={sel} onClose={() => setSel(null)} onNewBooking={onNewBooking} onMessage={onMessage} />
     </div>
   );
 }

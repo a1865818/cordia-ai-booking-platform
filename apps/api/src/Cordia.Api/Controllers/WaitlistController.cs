@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Enums;
 using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Console.ListWaitlistEnrollments;
 using Cordia.Application.Handlers.Waitlist.Accept;
 using Cordia.Application.Handlers.Waitlist.Cancel;
@@ -31,7 +32,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/waitlist")]
-public class WaitlistController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class WaitlistController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
@@ -109,6 +110,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var deposit = body.DepositTerms is { } d ? new DepositTerms(d.AmountMinor, d.Currency) : null;
         var autoBook = body.AutoBook is { } a
@@ -119,12 +121,12 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
 
         var enrollmentId = await mediator.Send(
             new EnrollWaitlistCommand(
-                tenant.TenantId, actor ?? string.Empty, body.CustomerRef,
+                tenant.TenantId, resolvedActor, body.CustomerRef,
                 body.AcceptableFrom, body.AcceptableTo, body.PartySize,
                 body.LocationId, body.ServiceId, body.OfferLifetimeSeconds,
                 deposit, body.NotificationChannel, autoBook,
                 body.IdentityRef, body.VerificationLevel, body.IdempotencyKey,
-                actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
+                resolvedRole, reasonCode ?? string.Empty), ct);
 
         return Created($"/api/waitlist/enrollments/{enrollmentId}",
             new { enrollment_id = enrollmentId, status = "enrolled" });
@@ -143,10 +145,11 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(new CancelWaitlistEnrollmentCommand(
-            tenant.TenantId, enrollmentId, actor ?? string.Empty,
-            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
+            tenant.TenantId, enrollmentId, resolvedActor,
+            resolvedRole, reasonCode ?? string.Empty), ct);
         return Ok(new { enrollment_id = enrollmentId, status = "cancelled" });
     }
 
@@ -164,10 +167,11 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(new AcceptWaitlistOfferCommand(
-            tenant.TenantId, offerId, actor ?? string.Empty,
-            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
+            tenant.TenantId, offerId, resolvedActor,
+            resolvedRole, reasonCode ?? string.Empty), ct);
         return Ok(new { offer_id = offerId, status = "accepted" });
     }
 
@@ -185,10 +189,11 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(new DeclineWaitlistOfferCommand(
-            tenant.TenantId, offerId, actor ?? string.Empty,
-            actorRole ?? string.Empty, reasonCode ?? string.Empty), ct);
+            tenant.TenantId, offerId, resolvedActor,
+            resolvedRole, reasonCode ?? string.Empty), ct);
         return Ok(new { offer_id = offerId, status = "declined" });
     }
 

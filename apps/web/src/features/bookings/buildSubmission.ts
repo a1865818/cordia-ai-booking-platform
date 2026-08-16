@@ -16,6 +16,7 @@
 import type { components } from "@cordia/api-contract";
 import { canonicalHash } from "../../api/canonicalHash";
 import type { AttemptIdentity } from "./identity";
+import { UNASSIGNED_RESOURCE_ID } from "./resources";
 
 type SubmitConfirmedIntentRequest = components["schemas"]["SubmitConfirmedIntentRequest"];
 type BookingRequest = components["schemas"]["BookingRequest"];
@@ -33,6 +34,8 @@ export interface BookingDraft {
   durationMinutes?: number;
   locationId?: string;
   specialRequests?: string[];
+  /** Staff resource this booking is assigned to, when the venue has a roster. */
+  resourceId?: string;
   targetBookingId?: string;
   targetBookingVersion?: number;
   /**
@@ -132,6 +135,9 @@ export function toCanonicalPayload(draft: BookingDraft): BookingRequest {
 
   if (draft.durationMinutes !== undefined) payload.duration_minutes = draft.durationMinutes;
   if (draft.locationId) payload.location_id = draft.locationId;
+  if (draft.resourceId && draft.resourceId !== UNASSIGNED_RESOURCE_ID) {
+    payload.resource_id = draft.resourceId;
+  }
   if (draft.specialRequests?.length) payload.special_requests = draft.specialRequests;
   if (draft.targetBookingId) payload.target_booking_id = draft.targetBookingId;
   if (draft.targetBookingVersion !== undefined) {

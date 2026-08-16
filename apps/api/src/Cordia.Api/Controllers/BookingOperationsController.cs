@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.BookingFulfillment.Alternatives;
+﻿using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.BookingFulfillment.Alternatives;
 using Cordia.Application.Handlers.BookingFulfillment.Cancellation;
 using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
@@ -28,7 +29,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/booking-operations")]
-public class BookingOperationsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class BookingOperationsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
@@ -228,14 +229,15 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         var replayCommandId = body?.ReplayCommandId is { Length: > 0 } supplied
             ? supplied
             : $"rpl_{Guid.NewGuid():N}";
-        // Spec 14 §24.5 fail-closed: no "ops" default — empty actor is rejected downstream.
-        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
+        // Spec 14 §24.5 fail-closed: a verified session wins over the shim; no "ops" default —
+        // empty actor is rejected downstream.
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         // OperationConflictException (not ManualReview, or concurrent change) → 409 via GlobalExceptionHandler.
         await mediator.Send(
             new ResumeWorkflowStepCommand(
                 tenant.TenantId, operationId, replayCommandId, resolvedActor,
-                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+                reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Accepted(new { operation_id = operationId, replay_command_id = replayCommandId });
     }
@@ -291,15 +293,16 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         var replayCommandId = body.ReplayCommandId is { Length: > 0 } supplied
             ? supplied
             : $"rpl_{Guid.NewGuid():N}";
-        // Spec 14 §24.5 fail-closed: no "ops" default — empty actor is rejected downstream.
-        var resolvedActor = string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
+        // Spec 14 §24.5 fail-closed: a verified session wins over the shim; no "ops" default —
+        // empty actor is rejected downstream.
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         // OperationConflictException (not ManualReview, or concurrent change) → 409 via GlobalExceptionHandler.
         await mediator.Send(
             new ResolveManualReviewCommand(
                 tenant.TenantId, operationId, resolution,
                 body.ProviderRef, replayCommandId, resolvedActor,
-                reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+                reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Accepted(new { operation_id = operationId, status = body.Resolution.ToLowerInvariant() });
     }

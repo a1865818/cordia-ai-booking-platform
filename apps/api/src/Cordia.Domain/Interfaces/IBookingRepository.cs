@@ -115,4 +115,15 @@ public interface IBookingRepository
         string pendingOperationId,
         DateTimeOffset updatedAt,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Records guest attendance. Returns rows affected: 1 = updated, 0 = no such booking.
+    /// Does not bump the lifecycle version — attendance is orthogonal to modify/cancel fencing.
+    /// </summary>
+    Task<int> TrySetAttendanceAsync(
+        string tenantId,
+        string bookingId,
+        AttendanceStatus attendance,
+        DateTimeOffset updatedAt,
+        CancellationToken ct = default);
 }

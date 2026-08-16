@@ -511,14 +511,23 @@ async def test_clarify_returns_empty_dict_when_no_draft() -> None:
 
 
 @pytest.mark.unit
-def test_clarify_capture_fields_topology_edge_exists() -> None:
-    """The compiled graph has clarify → capture_fields (and NOT clarify → human_handoff)."""
+def test_clarify_ends_the_turn() -> None:
+    """clarify ENDs the turn — it never loops back and never escalates directly.
+
+    The original topology drew clarify → capture_fields.  That edge re-ran the
+    extractor over the transcript that had just failed to produce the field, so
+    it produced the same draft and returned to clarify until GraphRecursionError.
+    A clarifying question can only be answered by the customer, on a later turn.
+    """
+    from langgraph.graph import END
+
     from cordia_agent.graph import build_agent_graph
 
     edges = {(e.source, e.target) for e in build_agent_graph().get_graph().edges}
 
-    assert ("clarify", "capture_fields") in edges, (
-        "clarify → capture_fields edge must be present"
+    assert ("clarify", END) in edges, "clarify → END edge must be present"
+    assert ("clarify", "capture_fields") not in edges, (
+        "clarify → capture_fields is the cycle this replaced"
     )
     assert ("clarify", "human_handoff") not in edges, (
         "clarify → human_handoff edge must NOT exist (§8.3 topology frozen)"

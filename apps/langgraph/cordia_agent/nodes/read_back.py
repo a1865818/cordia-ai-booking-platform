@@ -11,6 +11,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from cordia_agent.models.disclosures import (
+    AVAILABILITY_ADVISORY,
+    BOOKING_TERMS,
+    merge_disclosures,
+)
 from cordia_agent.readback.renderer import render_read_back
 from cordia_agent.revisions.manager import (
     build_revision,
@@ -104,12 +109,38 @@ async def read_back(state: AgentState) -> dict:
     # ------------------------------------------------------------------ render
     result = render_read_back(draft, mode)
 
+    # §5.5/§14: the read-back IS a disclosure — it presents the booking's
+    # material terms, and when availability is only informational it also
+    # presents the Inv-16 caveat that the slot is not held.  Recording that
+    # here is what makes await_confirmation's consent gate satisfiable in
+    # production; before this, nothing populated the field at all and only a
+    # scripted driver could get past it.
+    presented = [BOOKING_TERMS]
+    if mode == AvailabilityMode.INFORMATIONAL:
+        presented.append(AVAILABILITY_ADVISORY)
+
+    # §8.9: remember the turn this read-back was FIRST rendered on, so
+    # await_confirmation can tell "the customer answered the read-back" from
+    # "the customer happened to say yes on the turn that produced it".  A
+    # re-render of an unchanged read-back keeps the original turn — the
+    # customer heard it then, and that is when the clock started.
+    first_presented_turn_id = (
+        state.read_back_first_presented_turn_id
+        if state.read_back_version == result.read_back_version
+        and state.read_back_first_presented_turn_id is not None
+        else state.current_turn_id
+    )
+
     update: dict = {
         "read_back_text": result.text,
         "read_back_version": result.read_back_version,
+        "read_back_first_presented_turn_id": first_presented_turn_id,
         "current_revision": current_rev.model_dump(mode="json"),
         "current_intent_id": current_rev.intent_id,
         "read_back_interrupted": False,
+        "disclosures_presented": merge_disclosures(
+            state.disclosures_presented, *presented
+        ),
     }
 
     # Persist the projection, so every later node reads the same request this revision was hashed

@@ -15,7 +15,8 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from cordia_agent.contracts.operation_status import NormalizedOperationStatus
 from cordia_agent.contracts.security import RedactionPolicy, SessionConsentState
-from cordia_agent.tools._external_stubs import BookingDraft, Confirmation
+from cordia_agent.models.intent import Confirmation, IntentRevision
+from cordia_agent.state import BookingDraft
 from cordia_agent.tools.status_codes import (
     AvailabilityMode,
     RequestHumanHandoffStatus,
@@ -124,6 +125,9 @@ class CatalogItem(BaseModel):
     )
     currency: str = Field(description="ISO 4217 currency code for price_minor.")
     catalog_version: str = Field(description="Catalog version this item was read from.")
+    duration_minutes: int | None = Field(
+        default=None, description="Optional service duration in minutes."
+    )
 
 
 class CatalogSearchResult(BaseModel):
@@ -351,6 +355,38 @@ class VerificationSentResult(BaseModel):
     )
 
 
+class ResolvedResource(BaseModel):
+    """One service or location the tenant has actually declared (spec 03 §4.3)."""
+
+    model_config = {"extra": "forbid"}
+
+    resource_id: str = Field(description="Identifier the booking payload carries.")
+    kind: str = Field(description="'service' or 'location'.")
+    name: str = Field(description="Human name, e.g. 'Dinner sitting'.")
+    aliases: list[str] = Field(
+        default_factory=list, description="Other things a customer may call it."
+    )
+
+
+class ResolvedResourcesView(BaseModel):
+    """Output payload for resolve_tenant_resources (spec 03 §4.3).
+
+    ``resolved`` is set ONLY when the query matched exactly one resource. The
+    agent must never pick between candidates itself: ``ambiguous`` is a question
+    for the customer, not a coin toss.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    status: str = Field(description="resolved | ambiguous | no_match | listed.")
+    matches: list[ResolvedResource] = Field(
+        default_factory=list, description="Every resource the query matched."
+    )
+    resolved: ResolvedResource | None = Field(
+        default=None, description="The single unambiguous match, when there is one."
+    )
+
+
 class HandoffRequest(BaseModel):
     """Input payload for request_human_handoff (spec 03 §4.3)."""
 
@@ -392,6 +428,14 @@ class SubmitConfirmedIntentInput(BaseModel):
     """Input for submit_confirmed_intent — ALL fields REQUIRED, NO defaults (Inv-2, spec 03 §4.3 / §10.4).
 
     operation_id, idempotency_key, and intent_payload_hash are opaque strings minted by spec 04.
+
+    ``revision`` carries the whole canonical, hashed ``IntentRevision``. Spec 04 §4.2
+    makes it part of the agent→API body and Inv-1/§8.8 make it mandatory: the API
+    re-derives the canonical hash from ``revision.canonical_payload`` server-side and
+    rejects the submission unless ``confirmation.intent_payload_hash`` matches. A
+    client-asserted ``intent_payload_hash`` alone is not something the server can
+    verify, so it is retained as the agent-side §8.8 guard input but is NOT what the
+    platform trusts.
     """
 
     model_config = {"extra": "forbid"}
@@ -408,6 +452,9 @@ class SubmitConfirmedIntentInput(BaseModel):
     )
     intent_payload_hash: str = Field(
         description="Canonical payload hash; must equal the bound revision's hash (Inv-2)."
+    )
+    revision: IntentRevision = Field(
+        description="Canonical, hashed intent revision the API re-hashes and verifies (spec 04 §4.2, Inv-1)."
     )
     confirmation: Confirmation = Field(
         description="Immutable confirmation evidence bound to this revision (§8.8)."

@@ -40,4 +40,13 @@ public interface IConversationSessionRepository
         bool recordingAllowed,
         DateTimeOffset recordedAt,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets the redacted list-row snippet. Returns rows updated: 0 ⇒ no such session for this tenant.
+    /// </summary>
+    Task<int> SetPreviewAsync(
+        string tenantId,
+        string sessionId,
+        string? preview,
+        CancellationToken ct = default);
 }

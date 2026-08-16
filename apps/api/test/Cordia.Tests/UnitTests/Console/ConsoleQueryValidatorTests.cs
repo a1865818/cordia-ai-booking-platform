@@ -4,6 +4,7 @@ using Cordia.Application.Handlers.Console.ListConversationSessions;
 using Cordia.Application.Handlers.Console.ListCustomers;
 using Cordia.Application.Handlers.Console.ListOperations;
 using Cordia.Application.Handlers.Console.ListWaitlistEnrollments;
+using Cordia.Application.Handlers.Reporting.GetKpis;
 using Cordia.Domain.Enums;
 
 namespace Cordia.Tests.UnitTests.Console;
@@ -159,6 +160,23 @@ public class ConsoleQueryValidatorTests
                     TenantId,
                     From,
                     From + GetBookingOverviewValidator.MaxWindow + TimeSpan.FromDays(1))).IsValid);
-        Assert.True(validator.Validate(new GetBookingOverviewQuery(TenantId, From, From.AddDays(30))).IsValid);
+        Assert.True(
+            validator.Validate(
+                new GetBookingOverviewQuery(TenantId, From, From.AddDays(30))).IsValid);
+    }
+
+    [Fact]
+    public void Kpis_RejectsInvertedWindowAndOversizedWindow()
+    {
+        var validator = new GetKpisValidator();
+        Assert.False(validator.Validate(new GetKpisQuery(TenantId, From, From)).IsValid);
+        Assert.False(
+            validator.Validate(
+                new GetKpisQuery(
+                    TenantId,
+                    From,
+                    From + GetKpisValidator.MaxWindow + TimeSpan.FromDays(1))).IsValid);
+        Assert.True(validator.Validate(new GetKpisQuery(TenantId, From, From.AddDays(30))).IsValid);
+        Assert.Equal(GetBookingOverviewValidator.MaxWindow, GetKpisValidator.MaxWindow);
     }
 }

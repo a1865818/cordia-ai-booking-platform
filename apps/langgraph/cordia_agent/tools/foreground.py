@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from cordia_agent.tools._external_stubs import BookingDraft
+from cordia_agent.models.submission import SubmitConfirmedIntentRequest
+from cordia_agent.state import BookingDraft
 from cordia_agent.tools.client import get_tool_client
 from cordia_agent.tools.contracts import (
     AvailabilityRequest,
@@ -93,6 +94,30 @@ async def search_vendor_catalog(
         "search_vendor_catalog",
         "GET",
         "/api/catalog/items",
+        params=params,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3b. resolve_tenant_resources — PURE_READ, the name -> id seam
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def resolve_tenant_resources(
+    kind: str | None = None,
+    query: str | None = None,
+) -> ToolResultEnvelope:
+    """Resolve a service or location the customer named ("dinner", "the Fitzroy room") to the identifier a booking payload needs, against the set this tenant has actually declared. Omit query to list what exists so you can offer options. Never guess an identifier — an unresolved name is a question for the customer."""
+    params: dict[str, str] = {}
+    if kind is not None:
+        params["kind"] = kind
+    if query is not None:
+        params["query"] = query
+    return await get_tool_client().call_tool(
+        "resolve_tenant_resources",
+        "GET",
+        "/api/tenant-resources",
         params=params,
     )
 
@@ -207,11 +232,23 @@ async def submit_confirmed_intent(
 ) -> ToolResultEnvelope:
     """Submit the customer's confirmed booking intent as a durable mutation. operation_id and idempotency_key are injected verbatim — never re-minted (Inv-2). The accepted response will confirm submission, not use 'booked' language (Inv-16)."""
     inp = SubmitConfirmedIntentInput(**kwargs)
+    # The wire body is the spec 04 §4.2 contract (SubmitConfirmedIntentRequest), not the
+    # LLM tool-arg model: the API needs the whole canonical `revision` to re-derive the
+    # payload hash itself (Inv-1/§8.8). The client-asserted `intent_payload_hash` stays
+    # an agent-side guard input and is deliberately not sent — it is unverifiable.
+    body = SubmitConfirmedIntentRequest(
+        operation_id=inp.operation_id,
+        idempotency_key=inp.idempotency_key,
+        intent_id=inp.intent_id,
+        intent_revision=inp.intent_revision,
+        revision=inp.revision,
+        confirmation=inp.confirmation,
+    )
     return await get_tool_client().call_tool(
         "submit_confirmed_intent",
         "POST",
         "/api/bookings",
-        json=inp.model_dump(mode="json"),
+        json=body.model_dump(mode="json"),
         operation_id=inp.operation_id,
         idempotency_key=inp.idempotency_key,
     )
@@ -335,6 +372,7 @@ FOREGROUND_TOOLS: list = [
     submit_confirmed_intent,
     get_operation_status,
     request_human_handoff,
+    resolve_tenant_resources,
     resolve_consent_policy,
     record_consent,
     append_transcript_turn,

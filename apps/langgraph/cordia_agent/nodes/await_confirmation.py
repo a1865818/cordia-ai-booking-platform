@@ -11,6 +11,8 @@ import re
 import uuid
 from datetime import UTC, datetime
 
+from langgraph.graph import END
+
 from cordia_agent.state import AgentState  # noqa: TC001
 
 
@@ -107,8 +109,10 @@ async def await_confirmation(state: AgentState) -> dict:
     1. ``state.transcript_is_final`` is True (Inv-1: partial frames cannot confirm).
     2. ``not state.read_back_interrupted`` (§8.9: interrupted read-back is never confirmed).
     3. ``state.read_back_version`` is set (a read-back has occurred).
-    4. ``is_explicit_confirmation(state.transcript_text)`` is True.
-    5. ``consent_satisfied(state.disclosures_presented)`` is True (§5.5 / §14).
+    4. The read-back was first presented on an EARLIER turn (§8.9: the customer
+       cannot have answered something they have not yet been told).
+    5. ``is_explicit_confirmation(state.transcript_text)`` is True.
+    6. ``consent_satisfied(state.disclosures_presented)`` is True (§5.5 / §14).
 
     If consent is NOT satisfied → signal to route back to read_back via
     capture_fields (do NOT record a Confirmation).
@@ -125,6 +129,20 @@ async def await_confirmation(state: AgentState) -> dict:
 
     # Must have a read-back to confirm against
     if not state.read_back_version:
+        return {}
+
+    # §8.9: and the customer must actually have HEARD it.  read_back runs
+    # earlier in this same turn, so on the turn that first produces a read-back
+    # the customer has not been told anything yet — an affirmative in that
+    # transcript is answering something else entirely.  The live text run found
+    # this the moment the graph stopped relying on a driver to break the turn:
+    # "Yes, that's fine. I'd like to book a table…" answered the CONSENT notice
+    # and was recorded as a booking confirmation in the same breath, submitting
+    # a booking the customer had never had read back to them.
+    if (
+        state.read_back_first_presented_turn_id is not None
+        and state.read_back_first_presented_turn_id == state.current_turn_id
+    ):
         return {}
 
     # Must have an explicit confirmation utterance
@@ -202,14 +220,32 @@ def _derive_channel(state: AgentState) -> str:
 
 
 def route_after_await_confirmation(state: AgentState) -> str:
-    """Route after await_confirmation.
+    """Route after await_confirmation: submit, or END the turn awaiting a reply.
 
-    - ``"submit_intent"`` when a valid Confirmation is recorded.
-    - ``"capture_fields"`` when:
-        * consent not satisfied (gate refused to record, route back for re-read-back)
-        * no explicit confirmation / not final / interrupted (customer changed
-          details or said no — loop back to capture/clarify per §8.3 edges)
+    - ``"submit_intent"`` when a Confirmation was recorded **for this turn**.
+    - ``END`` otherwise — the customer has just been read back to and the graph
+      cannot proceed until they answer.
+
+    Two things here are deliberate and were both cycles before.
+
+    **The turn boundary.** Routing an unconfirmed read-back back to
+    ``capture_fields`` re-ran the extractor over the same transcript, rebuilt
+    the same draft, re-read it back, and arrived here again — the only reason
+    the text runner survived was that its driver broke out of ``astream`` at
+    this node.  A voice pipeline has no such driver, so the graph itself has to
+    end the turn.
+
+    **The turn check.** ``state.confirmation`` persists across turns once
+    recorded.  A submit that fails recoverably routes back to
+    ``capture_fields``, which walks forward to here again — and a stale
+    confirmation from an earlier turn would send the identical payload back to
+    ``submit_intent`` for the identical rejection, forever.  Binding the route
+    to ``source_turn_id`` means only a confirmation spoken on THIS turn can
+    submit.
     """
-    if state.confirmation is not None:
+    confirmation = state.confirmation
+    if isinstance(confirmation, dict) and confirmation.get("source_turn_id") == (
+        state.current_turn_id or "unknown"
+    ):
         return "submit_intent"
-    return "capture_fields"
+    return END

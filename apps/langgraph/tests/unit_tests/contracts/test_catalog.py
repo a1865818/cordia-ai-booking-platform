@@ -43,6 +43,7 @@ def test_catalog_item_minimal_discovery_fields() -> None:
     """name/description/price suffice; optional fields default to None."""
     item = _make_item()
     assert item.category is None
+    assert item.duration_minutes is None
     assert item.allergens is None
     assert item.dietary_labels is None
     assert item.extraction_confidence is None
@@ -55,6 +56,7 @@ def test_catalog_item_round_trip() -> None:
         category="mains",
         allergens=["fish", "dairy"],
         dietary_labels=["pescatarian"],
+        duration_minutes=90,
         extraction_confidence=0.82,
         source_location="page_2:line_5",
     )
@@ -62,6 +64,7 @@ def test_catalog_item_round_trip() -> None:
     assert restored == item
     assert restored.price.amount_minor == 3200
     assert restored.price.currency == "AUD"
+    assert restored.duration_minutes == 90
 
 
 @pytest.mark.unit
@@ -129,6 +132,7 @@ def test_catalog_item_rich_fields_default_none() -> None:
     assert item.modifiers is None
     assert item.availability_window is None
     assert item.image_ref is None
+    assert item.duration_minutes is None
 
 
 @pytest.mark.unit

@@ -70,12 +70,21 @@ describe("CreateBookingDrawer", () => {
     expect(screen.queryByText(/A\$/)).not.toBeInTheDocument();
   });
 
-  it("offers no staff picker", () => {
-    // `BookingRequest` models no resource and `buildSubmission` has no field for one, so the
-    // chosen value was discarded on submit. A control that silently drops its own input is
-    // worse than no control.
+  it("offers no staff picker when the roster has no named resources", () => {
     open();
     expect(screen.queryByText("With")).not.toBeInTheDocument();
+  });
+
+  it("offers a With picker and named staff when resources have names", () => {
+    open({
+      resources: [
+        { id: "res_linh", name: "Linh Pham", role: "Technician" },
+        { id: "res_trang", name: "Trang Vo", role: "Technician" },
+      ],
+    });
+    expect(screen.getByText("With")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Linh Pham · Technician" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Trang Vo · Technician" })).toBeInTheDocument();
   });
 
   it("tells 'we have not asked yet' apart from 'the venue has nothing bookable'", () => {

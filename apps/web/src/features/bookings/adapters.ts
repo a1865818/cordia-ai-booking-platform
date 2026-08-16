@@ -10,13 +10,13 @@
  *   Mock → `day` (index into the displayed week), `start` (minutes since midnight),
  *          `dur`, `staff`, `serviceName`, `name`
  *
- * Anything the API does not model is filled honestly rather than invented: there is no
- * staff/resource concept server-side, so every booking lands on the single unnamed lane and
- * no resource name is ever rendered beside it.
+ * Extra schedule fields (`resource_id`, `attributed_source`, `channel`, `session_id`,
+ * `deposit_amount_minor`) are mapped when present and left honest when absent.
  */
 
 import type { Booking, BookingStatus } from "../../data/console";
 import { SERVICES } from "../../data/console";
+import { toChannel } from "../conversations/adapters";
 import { UNASSIGNED_RESOURCE_ID } from "./resources";
 import type { ScheduledBooking } from "./api";
 
@@ -99,6 +99,14 @@ export function toBookingStatus(lifecycleStatus: string, operationStatus: string
 export interface ScheduleAdapterOptions {
   /** Start of the displayed week; defaults to the current week. */
   weekStart?: Date;
+  /** Catalog labels keyed by `service_id`. Falls back to `SERVICES`, then the raw id. */
+  serviceNames?: Record<string, { name: string; dur?: number }>;
+}
+
+function toProv(source: string | null | undefined): Booking["prov"] {
+  if (source === "agent") return "ai";
+  if (source === "operator") return "you";
+  return "unknown";
 }
 
 /**
@@ -121,19 +129,20 @@ export function toBooking(
   if (day < 0 || day > 6) return null;
 
   const serviceKey = row.service_id ?? "";
-  const service = SERVICES[serviceKey];
+  const catalog = options.serviceNames ?? SERVICES;
+  const service = catalog[serviceKey];
 
   // An unfinalised operation has no booking row. Falling back to the operation id keeps it on
   // the grid — it still occupies the slot — but the row must not pretend to be a booking.
   const bookingId = row.booking_id ?? null;
 
+  const depositMinor = row.deposit_amount_minor;
+
   return {
     id: bookingId ?? row.operation_id ?? "",
     isBooking: bookingId !== null,
     day,
-    // No staff/resource concept exists server-side, so everything lands on the single
-    // unnamed lane. This is a grid coordinate, not an assignment (see ./resources.ts).
-    staff: UNASSIGNED_RESOURCE_ID,
+    staff: row.resource_id ?? UNASSIGNED_RESOURCE_ID,
     start,
     dur: row.duration_minutes ?? service?.dur ?? 60,
     service: serviceKey,
@@ -146,15 +155,12 @@ export function toBooking(
     // to send. `name` is lossy for that (it falls back to the booking reference), so the ref is
     // carried separately.
     customerRef: row.customer_ref ?? null,
-    // The schedule projection carries no provenance; claiming "Booked by AI" would
-    // fabricate the very fact the API deliberately does not record.
-    prov: "unknown",
+    prov: toProv(row.attributed_source),
     status: toBookingStatus(row.lifecycle_status ?? "", row.operation_status ?? ""),
-    channel: null,
-    // `ScheduledBookingView` carries no deposit field. Reading one from the hand-written mock
-    // catalog would assert a payment hold the platform never took.
-    dep: 0,
-    transcript: null,
+    channel: row.channel ? toChannel(row.channel) : null,
+    // AUD minor units → dollars. Null means no hold; the UI already treats 0 as no hold.
+    dep: depositMinor != null ? depositMinor / 100 : 0,
+    transcript: row.session_id ?? null,
   };
 }
 

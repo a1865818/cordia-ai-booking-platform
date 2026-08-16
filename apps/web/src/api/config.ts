@@ -6,9 +6,11 @@
  *
  * Tenancy note (spec 15 / Inv-13): `X-Tenant-Id` is a **development shim**. The API only
  * honours it when a signed `X-Tenant-Context` did not already establish the tenant
- * (`TenantResolutionMiddleware`). When the signed web-origin flow lands, only this module
- * changes — no screen or feature hook needs to know.
+ * (`TenantResolutionMiddleware`). A signed-in operator session is preferred over the shim
+ * so query keys and headers follow the tenant the login response named.
  */
+
+import { getSession } from "./session";
 
 const DEFAULT_TENANT_ID = "demo";
 const DEFAULT_ACTOR = "console-operator";
@@ -31,8 +33,9 @@ export function apiBaseUrl(): string | undefined {
 
 /** Tenant sent as `X-Tenant-Id` on every request. Never empty — the API 400s on a blank tenant. */
 export function getTenantId(): string {
+  const signedIn = getSession()?.tenantId;
   return (
-    firstNonEmpty(window.APP_CONFIG?.TENANT_ID, import.meta.env.VITE_DEV_TENANT_ID) ??
+    firstNonEmpty(signedIn, window.APP_CONFIG?.TENANT_ID, import.meta.env.VITE_DEV_TENANT_ID) ??
     DEFAULT_TENANT_ID
   );
 }

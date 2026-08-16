@@ -1,9 +1,15 @@
 """Node: clarify — §8.5 Clarification confidence/validation/escalation-ladder policy.
 
 Asks the customer a targeted clarifying question when a captured field value is
-ambiguous, missing, low-confidence, or invalid, then returns to capture_fields
-to re-evaluate the updated draft (the clarify → capture_fields edge is the
-ONLY edge out of clarify; see §8.3 topology).
+ambiguous, missing, low-confidence, or invalid — or when availability came back
+empty and the only thing that can unblock the booking is a different time.
+
+Clarify ENDs the turn.  It is the point of the graph at which the agent has
+said something and can do nothing further until the customer answers, and the
+edge back to ``capture_fields`` that the original §8.3 topology drew was a
+cycle rather than a recovery: re-entering capture_fields re-ran the extractor
+over the SAME transcript, produced the same draft, and returned here until the
+recursion limit fired.  See ``graph.py`` on the per-turn boundary.
 
 Policy summary (§8.5):
   - A 4-rung escalation ladder: ASK_AGAIN → SPELL_BACK → DTMF → ESCALATE_HANDOFF.
@@ -241,6 +247,37 @@ def _pick_clarify_field(state: AgentState) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _no_availability_prompt(state: AgentState) -> str | None:
+    """Return the "that time is full" question, when that is what happened.
+
+    ``route_after_check_candidates`` sends a genuinely full slot here, and the
+    generic field prompts are all wrong for it: every required field is present
+    and correct, so "could you tell me the party size?" re-asks for something
+    the customer already said.  What is needed is a different TIME.
+
+    Returns ``None`` unless availability has actually been checked and came
+    back empty — an unchecked draft is a missing-field case, not a full one.
+    """
+    if not state.availability_checked or state.availability_candidates:
+        return None
+    if state.availability_invalid_fields:
+        # The lookup rejected a field rather than finding the slot full; the
+        # field-specific prompts below are the right answer.
+        return None
+
+    starts_at = state.draft.request.starts_at if state.draft else None
+    if starts_at is not None and not isinstance(starts_at, TriState):
+        spell = render_datetime_spell_back(starts_at)
+        return (
+            f"I'm sorry — {spell} isn't available. "
+            "Would another time work, or a different day?"
+        )
+    return (
+        "I'm sorry — that time isn't available. "
+        "Would another time work, or a different day?"
+    )
+
+
 def _build_prompt(
     action: ClarifyAction,
     field: str,
@@ -307,6 +344,21 @@ async def clarify(state: AgentState) -> dict:
         Partial state-update dict with updated internal clarification channels.
         Draft is never included in the return value (Inv-1).
     """
+    # A full slot reaches clarify with a COMPLETE draft, so the field-picking
+    # ladder below has nothing to legitimately ask about.  Handle it first.
+    no_availability = _no_availability_prompt(state)
+    if no_availability is not None:
+        attempts = state.clarification_attempts.get("starts_at", 0)
+        return {
+            "clarification_attempts": {
+                **state.clarification_attempts,
+                "starts_at": attempts + 1,
+            },
+            "pending_clarify_action": ClarifyAction.ASK_AGAIN.value,
+            "pending_clarify_prompt": no_availability,
+            "pending_clarify_field": "starts_at",
+        }
+
     field = _pick_clarify_field(state)
     if field is None:
         # No field to clarify — return empty (no-op; routing logic should

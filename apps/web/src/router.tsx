@@ -3,6 +3,8 @@ import { RootLayout } from "./layouts/RootLayout";
 import { HomePage } from "./pages/HomePage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { ConsolePage } from "./pages/ConsolePage";
+import { LoginPage } from "./pages/LoginPage";
+import { RequireSession } from "./features/auth/RequireSession";
 
 // Derive the router basename from the Vite base path (import.meta.env.BASE_URL),
 // so the SPA works when served under a prefix (VITE_BASE_PATH). Strip the
@@ -16,7 +18,15 @@ export const router = createBrowserRouter(
       element: <RootLayout />,
       children: [
         { index: true, element: <HomePage /> },
-        { path: "dashboard", element: <ConsolePage /> },
+        { path: "login", element: <LoginPage /> },
+        {
+          path: "dashboard",
+          element: (
+            <RequireSession>
+              <ConsolePage />
+            </RequireSession>
+          ),
+        },
         { path: "*", element: <NotFoundPage /> },
       ],
     },

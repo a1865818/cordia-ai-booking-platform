@@ -73,4 +73,23 @@ public interface IConsoleReadModel
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Authoritative KPI counts over [from, to). Never invents a split: attribution and
+    /// attendance figures are zero when nothing in the window carries those facts.
+    /// </summary>
+    Task<KpiFacts> GetKpiFactsAsync(
+        string tenantId,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// One derived customer plus operator notes, or <see langword="null"/> when this tenant
+    /// has neither booking history nor notes for <paramref name="customerRef"/>.
+    /// </summary>
+    Task<CustomerSummary?> GetCustomerAsync(
+        string tenantId,
+        string customerRef,
+        CancellationToken ct = default);
 }

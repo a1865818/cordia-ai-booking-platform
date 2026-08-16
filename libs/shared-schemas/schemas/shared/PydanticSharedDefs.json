@@ -51,7 +51,7 @@
     },
     "AgentInputState": {
       "additionalProperties": false,
-      "description": "Boundary input contract for the foreground agent (extra fields rejected).\n\n``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).\nA plain ``tenant_id`` field is intentionally absent \u2014 the tenant is resolved\nexclusively from the verified signed token by the resolve_tenant node.",
+      "description": "Boundary input contract for the foreground agent (extra fields rejected).\n\n``signed_tenant_context`` is the ONLY source of tenant identity (Inv-13).\nA plain ``tenant_id`` field is intentionally absent \u2014 the tenant is resolved\nexclusively from the verified signed token by the resolve_tenant node.\n\nThe transcript fields carry ONE dialog turn.  They mirror the identically\nnamed ``AgentState`` channels, so LangGraph maps them straight through and\nthe per-turn nodes (``identify_intent``, ``capture_fields``,\n``await_confirmation``, ``consent_gate``) see the utterance without any\nnode-side plumbing.  An ``AgentPort`` implementation (spec 01 \u00a7agent_port)\nmaps a ``TranscriptFinalFrame`` onto them: ``text`` \u2192\n``transcript_text``, ``turn_id`` \u2192 ``current_turn_id``, and\n``transcript_is_final=True`` because only committed finals reach the port.",
       "properties": {
         "signed_tenant_context": {
           "description": "Signed TenantContext token from the channel gateway (\u00a77); the ONLY source of tenant identity, Inv-13.",
@@ -78,6 +78,38 @@
           ],
           "default": null,
           "description": "Customer reference if known."
+        },
+        "transcript_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Transcript text for this turn.  Optional so a session can be opened (consent notice, greeting) before the customer speaks.",
+          "title": "Transcript Text"
+        },
+        "transcript_is_final": {
+          "default": false,
+          "description": "True iff the transcript is a committed final (not partial) STT result.  Defaults to False so Inv-1 fails safe: a caller must assert finality explicitly before the turn may mutate the draft or confirm a read-back.",
+          "title": "Transcript Is Final",
+          "type": "boolean"
+        },
+        "current_turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Turn/message ID for this turn; stamped onto captured fields and the confirmation record for provenance.",
+          "title": "Current Turn Id"
         }
       },
       "required": [
@@ -1000,6 +1032,22 @@
           "description": "Stable location ID, a TriState, or absent.",
           "title": "Location Id"
         },
+        "resource_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TriState"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Staff/resource identifier assigned to this booking, a TriState, or absent.",
+          "title": "Resource Id"
+        },
         "starts_at": {
           "anyOf": [
             {
@@ -1205,6 +1253,19 @@
         "price": {
           "$ref": "#/$defs/Money",
           "description": "Item price."
+        },
+        "duration_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional service duration in minutes.",
+          "title": "Duration Minutes"
         },
         "category": {
           "anyOf": [
@@ -3023,7 +3084,7 @@
     },
     "SubmitConfirmedIntentInput": {
       "additionalProperties": false,
-      "description": "Input for submit_confirmed_intent \u2014 ALL fields REQUIRED, NO defaults (Inv-2, spec 03 \u00a74.3 / \u00a710.4).\n\noperation_id, idempotency_key, and intent_payload_hash are opaque strings minted by spec 04.",
+      "description": "Input for submit_confirmed_intent \u2014 ALL fields REQUIRED, NO defaults (Inv-2, spec 03 \u00a74.3 / \u00a710.4).\n\noperation_id, idempotency_key, and intent_payload_hash are opaque strings minted by spec 04.\n\n``revision`` carries the whole canonical, hashed ``IntentRevision``. Spec 04 \u00a74.2\nmakes it part of the agent\u2192API body and Inv-1/\u00a78.8 make it mandatory: the API\nre-derives the canonical hash from ``revision.canonical_payload`` server-side and\nrejects the submission unless ``confirmation.intent_payload_hash`` matches. A\nclient-asserted ``intent_payload_hash`` alone is not something the server can\nverify, so it is retained as the agent-side \u00a78.8 guard input but is NOT what the\nplatform trusts.",
       "properties": {
         "operation_id": {
           "description": "Stable operation identifier minted by spec 04; no default (Inv-2).",
@@ -3050,6 +3111,10 @@
           "title": "Intent Payload Hash",
           "type": "string"
         },
+        "revision": {
+          "$ref": "#/$defs/IntentRevision",
+          "description": "Canonical, hashed intent revision the API re-hashes and verifies (spec 04 \u00a74.2, Inv-1)."
+        },
         "confirmation": {
           "$ref": "#/$defs/Confirmation",
           "description": "Immutable confirmation evidence bound to this revision (\u00a78.8)."
@@ -3061,6 +3126,7 @@
         "intent_id",
         "intent_revision",
         "intent_payload_hash",
+        "revision",
         "confirmation"
       ],
       "title": "SubmitConfirmedIntentInput",

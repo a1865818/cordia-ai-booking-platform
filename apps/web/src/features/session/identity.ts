@@ -1,18 +1,13 @@
 /**
  * Who the console is acting as, for display.
  *
- * There is no authentication and no profile endpoint — no `[Authorize]` exists anywhere in
- * `apps/api`, and nothing returns a venue display name or an operator profile. The only
- * identity the platform actually attributes this session to is what `api/config.ts` resolves
- * and `fetchApi` puts on the wire: `X-Tenant-Id` and `X-Actor` / `X-Actor-Role`.
- *
- * Showing those is the only honest answer. The shell previously asserted a specific person and
- * a specific venue ("Maya Chen", "Bella Nails · Owner") as plain fact, in three independently
- * hard-coded places, none of which any endpoint had ever returned — the same fabrication the
- * frozen `9-15 June` week was, one layer further out.
+ * A signed-in operator session is the source of truth. Without one, the console falls back to
+ * the Development actor/tenant `api/config.ts` resolves — the same values `fetchApi` puts on
+ * the wire as `X-Tenant-Id` and `X-Actor` / `X-Actor-Role`.
  */
 
 import { getActor, getActorRole, getTenantId } from "../../api/config";
+import { getSession, hasSession } from "../../api/session";
 
 export interface SessionIdentity {
   /** The value sent as `X-Actor` on staff writes, and recorded as the audit actor. */
@@ -42,17 +37,26 @@ export function idInitials(value: string): string {
     .toUpperCase();
 }
 
-/** The tooltip every surface that renders this identity carries, so nobody reads it as an account. */
-export const SESSION_IDENTITY_HINT =
+const DEVELOPMENT_IDENTITY_HINT =
   "Development identity. There is no sign-in yet, so this is the actor and tenant the console " +
   "sends on every request — not a user profile.";
 
+const SIGNED_IN_IDENTITY_HINT =
+  "Signed-in session. Actor, role and tenant are what this console sends on every request.";
+
+/** The tooltip every surface that renders this identity carries. */
+export function sessionIdentityHint(): string {
+  return hasSession() ? SIGNED_IN_IDENTITY_HINT : DEVELOPMENT_IDENTITY_HINT;
+}
+
 export function sessionIdentity(): SessionIdentity {
-  const actor = getActor();
-  const tenant = getTenantId();
+  const signedIn = getSession();
+  const actor = signedIn?.actorId ?? getActor();
+  const role = signedIn?.actorRole ?? getActorRole();
+  const tenant = signedIn?.tenantId ?? getTenantId();
   return {
     actor,
-    role: getActorRole(),
+    role,
     tenant,
     actorInitials: idInitials(actor),
     tenantInitial: idInitials(tenant).slice(0, 1),

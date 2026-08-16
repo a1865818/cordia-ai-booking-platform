@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, fetchApi, isApiError } from "./client";
 import { ApiIdempotencyConflictError, ApiValidationError, ApiVerificationRequiredError } from "./problem";
+import { clearSession, setSession } from "./session";
 
 function jsonResponse(status: number, body: unknown, contentType = "application/json"): Response {
   return new Response(JSON.stringify(body), {
@@ -24,11 +25,13 @@ function headersOf(spy: ReturnType<typeof captureFetch>): Headers {
 describe("fetchApi", () => {
   beforeEach(() => {
     window.APP_CONFIG = undefined;
+    sessionStorage.clear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     window.APP_CONFIG = undefined;
+    clearSession();
   });
 
   it("sends tenant and correlation headers on every request", async () => {
@@ -39,6 +42,7 @@ describe("fetchApi", () => {
     const headers = headersOf(spy);
     expect(headers.get("Accept")).toBe("application/json");
     expect(headers.get("X-Tenant-Id")).toBe("demo");
+    expect(headers.get("X-Tenant-Context")).toBeNull();
     expect(headers.get("X-Correlation-Id")).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
   });
 
@@ -98,13 +102,14 @@ describe("fetchApi", () => {
   it("does not leak the custom options into RequestInit", async () => {
     const spy = captureFetch(jsonResponse(200, {}));
 
-    await fetchApi("/api/Ping", { grantId: "g", actor: true, reasonCode: "r", correlationId: "corr_x" });
+    await fetchApi("/api/Ping", { grantId: "g", actor: true, reasonCode: "r", correlationId: "corr_x", anonymous: true });
 
     const init = spy.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(init).not.toHaveProperty("grantId");
     expect(init).not.toHaveProperty("actor");
     expect(init).not.toHaveProperty("reasonCode");
     expect(init).not.toHaveProperty("correlationId");
+    expect(init).not.toHaveProperty("anonymous");
   });
 
   it("prefixes the path with window.APP_CONFIG.API_URL when set", async () => {
@@ -250,5 +255,58 @@ describe("fetchApi", () => {
     const error = await fetchApi("/api/Ping").catch((e) => e);
 
     expect((error as ApiError).message).toBe("Request to /api/Ping failed: 500");
+  });
+
+  it("sends the session tenant and context when signed in, not the env default", async () => {
+    window.APP_CONFIG = { TENANT_ID: "runtime-tenant" };
+    setSession({
+      tenantContext: "eyJ.payload.sig",
+      actorId: "act_owner",
+      actorRole: "owner",
+      tenantId: "acme",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    const spy = captureFetch(jsonResponse(200, {}));
+
+    await fetchApi("/api/Ping");
+
+    const headers = headersOf(spy);
+    expect(headers.get("X-Tenant-Id")).toBe("acme");
+    expect(headers.get("X-Tenant-Context")).toBe("eyJ.payload.sig");
+  });
+
+  it("sends actor headers from the session when actor: true", async () => {
+    setSession({
+      tenantContext: "eyJ.payload.sig",
+      actorId: "act_owner",
+      actorRole: "owner",
+      tenantId: "acme",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    const spy = captureFetch(jsonResponse(200, {}));
+
+    await fetchApi("/api/waitlist/enrollments", { method: "POST", body: "{}", actor: true });
+
+    const headers = headersOf(spy);
+    expect(headers.get("X-Actor")).toBe("act_owner");
+    expect(headers.get("X-Actor-Role")).toBe("owner");
+  });
+
+  it("omits tenant and context headers when anonymous", async () => {
+    setSession({
+      tenantContext: "eyJ.payload.sig",
+      actorId: "act_owner",
+      actorRole: "owner",
+      tenantId: "acme",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    const spy = captureFetch(jsonResponse(200, {}));
+
+    await fetchApi("/api/auth/login", { method: "POST", body: "{}", anonymous: true });
+
+    const headers = headersOf(spy);
+    expect(headers.get("X-Tenant-Id")).toBeNull();
+    expect(headers.get("X-Tenant-Context")).toBeNull();
+    expect(headers.get("X-Correlation-Id")).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
   });
 });

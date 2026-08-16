@@ -4,7 +4,21 @@ import { fetchApi } from "../../api/client";
 export type BookingScheduleResponse =
   paths["/api/Bookings/schedule"]["get"]["responses"][200]["content"]["application/json"];
 
-export type ScheduledBooking = NonNullable<BookingScheduleResponse["bookings"]>[number];
+export type ScheduledBooking = NonNullable<BookingScheduleResponse["bookings"]>[number] & {
+  attributed_source?: string | null;
+  attendance?: string | null;
+  resource_id?: string | null;
+  channel?: string | null;
+  session_id?: string | null;
+  deposit_amount_minor?: number | null;
+};
+
+export type AttendanceValue = "attended" | "no_show";
+
+export interface RecordAttendanceResult {
+  booking_id: string;
+  attendance: string;
+}
 
 export type BookingDetailsResponse =
   paths["/api/Bookings/{bookingId}"]["get"]["responses"][200]["content"]["application/json"];
@@ -43,5 +57,18 @@ export function getOperationStatus(operationId: string, signal?: AbortSignal) {
   return fetchApi<OperationStatusView>(
     `/api/booking-operations/${encodeURIComponent(operationId)}`,
     { signal }
+  );
+}
+
+/** Records guest attendance. Operator-gated; does not change lifecycle status. */
+export function recordAttendance(bookingId: string, attendance: AttendanceValue) {
+  return fetchApi<RecordAttendanceResult>(
+    `/api/Bookings/${encodeURIComponent(bookingId)}/attendance`,
+    {
+      method: "POST",
+      actor: true,
+      reasonCode: "attendance_recorded",
+      body: JSON.stringify({ attendance }),
+    }
   );
 }

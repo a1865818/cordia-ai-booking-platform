@@ -14,13 +14,13 @@ from cordia_agent.streaming import (
     is_committable,
 )
 from cordia_agent.streaming.providers import (
-    FakeSTTProvider,
     STTFinalEvent,
     STTPartialEvent,
 )
-from cordia_agent.streaming.providers import fake as fake_provider_module
 from cordia_agent.streaming.providers import types as provider_types_module
 from cordia_agent.streaming_models import TranscriptFinalFrame, TranscriptPartialFrame
+from tests._stubs import streaming_providers_fake as fake_provider_module
+from tests._stubs.streaming_providers_fake import FakeSTTProvider
 
 
 ENVELOPE = STTFrameEnvelope(

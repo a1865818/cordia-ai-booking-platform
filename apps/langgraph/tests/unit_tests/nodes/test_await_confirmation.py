@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from langgraph.graph import END
 
 from cordia_agent.models.intent import confirmation_binds_revision
 from cordia_agent.nodes.await_confirmation import (
@@ -219,14 +220,14 @@ async def test_partial_transcript_cannot_confirm() -> None:
 
 
 @pytest.mark.unit
-async def test_partial_transcript_routes_to_capture_fields() -> None:
-    """Inv-1: partial transcript → router returns 'capture_fields'."""
+async def test_partial_transcript_ends_the_turn() -> None:
+    """Inv-1: a partial transcript cannot confirm → the turn ENDs awaiting a reply."""
     state = _base_state(
         transcript_is_final=False,
         transcript_text="yes confirm",
         confirmation=None,
     )
-    assert route_after_await_confirmation(state) == "capture_fields"
+    assert route_after_await_confirmation(state) == END
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +315,8 @@ async def test_consent_gate_empty_disclosures_refused() -> None:
 
 
 @pytest.mark.unit
-async def test_consent_gate_routes_to_capture_fields() -> None:
-    """Consent gate: empty disclosures → routes back (not 'submit_intent')."""
+async def test_consent_gate_ends_the_turn() -> None:
+    """Consent gate: empty disclosures → the turn ENDs (never 'submit_intent')."""
     state = _base_state(disclosures_presented=[], confirmation=None)
     result = await await_confirmation(state)
     # Apply the result (confirmation=None) to state and check router
@@ -327,7 +328,7 @@ async def test_consent_gate_routes_to_capture_fields() -> None:
     assert route != "submit_intent", (
         "§5.5/§14: consent gate failure must NOT route to submit_intent"
     )
-    assert route == "capture_fields"
+    assert route == END
 
 
 # ---------------------------------------------------------------------------
@@ -346,10 +347,27 @@ async def test_interrupted_read_back_not_confirmed() -> None:
 
 
 @pytest.mark.unit
-async def test_interrupted_routes_to_capture_fields() -> None:
-    """§8.9: interrupted read-back → router returns 'capture_fields'."""
+async def test_interrupted_ends_the_turn() -> None:
+    """§8.9: interrupted read-back → never confirmed, so the turn ENDs."""
     state = _base_state(read_back_interrupted=True, confirmation=None)
-    assert route_after_await_confirmation(state) == "capture_fields"
+    assert route_after_await_confirmation(state) == END
+
+
+@pytest.mark.unit
+async def test_confirmation_from_an_earlier_turn_does_not_resubmit() -> None:
+    """A stale Confirmation must not route to submit_intent on a later turn.
+
+    submit_intent routes recoverable failures back to capture_fields, which
+    walks forward to await_confirmation again.  Without the turn check the
+    confirmation recorded on the ORIGINAL turn would resubmit the identical
+    payload for the identical rejection, forever.
+    """
+    state = _base_state()
+    recorded = (await await_confirmation(state)).get("confirmation")
+    assert recorded is not None
+
+    later_turn = _base_state(confirmation=recorded, current_turn_id="turn-later")
+    assert route_after_await_confirmation(later_turn) == END
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +457,44 @@ async def test_material_change_invalidates_confirmation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# §8.9: a read-back the customer has not heard cannot be confirmed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_a_read_back_produced_this_turn_cannot_be_confirmed_this_turn() -> None:
+    """An affirmative on the turn that PRODUCED the read-back is answering
+    something else.
+
+    read_back runs earlier in the same turn, so on the first turn that renders
+    one the customer has not been told anything yet.  The live text run hit
+    exactly this: "Yes, that's fine. I'd like to book a table..." answered the
+    recording-consent notice and was recorded as a booking confirmation in the
+    same breath — submitting a booking that had never been read back.
+    """
+    state = _base_state(
+        read_back_first_presented_turn_id="turn_001",  # == current_turn_id
+    )
+    result = await await_confirmation(state)
+
+    assert result.get("confirmation") is None
+    assert route_after_await_confirmation(_base_state(**result)) == END
+
+
+@pytest.mark.unit
+async def test_the_same_read_back_confirms_on_the_following_turn() -> None:
+    """Once the customer has heard it, their "yes" means what it says."""
+    state = _base_state(
+        read_back_first_presented_turn_id="turn_000",  # an earlier turn
+    )
+    result = await await_confirmation(state)
+
+    assert result.get("confirmation") is not None
+    assert result["confirmation"]["source_turn_id"] == "turn_001"
+
+
+# ---------------------------------------------------------------------------
 # R15 — the assurance vocabulary
 # ---------------------------------------------------------------------------
 
@@ -446,11 +502,18 @@ async def test_material_change_invalidates_confirmation() -> None:
 def test_normalise_verification_level_keeps_ratified_members() -> None:
     from cordia_agent.nodes.await_confirmation import _normalise_verification_level
 
-    for level in ("unverified", "channel_verified", "identity_verified", "high_assurance"):
+    for level in (
+        "unverified",
+        "channel_verified",
+        "identity_verified",
+        "high_assurance",
+    ):
         assert _normalise_verification_level(level) == level
 
 
-def test_normalise_verification_level_coerces_everything_else_to_the_honest_floor() -> None:
+def test_normalise_verification_level_coerces_everything_else_to_the_honest_floor() -> (
+    None
+):
     """The API rejects an off-vocabulary value outright, so forwarding one loses a confirmed
     submission. Recording the honest floor is better than a 400 — and far better than the old
     behaviour, where the API silently mapped it to unverified with nothing saying so."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -48,17 +49,26 @@ class STTAdapter:
         *,
         envelope: STTFrameEnvelope,
     ) -> AsyncIterator[TranscriptFrame]:
-        """Yield transcript frames for provider recognition events."""
-        async for event in self._provider.transcribe(pcm_chunks):
-            if isinstance(event, STTPartialEvent):
-                yield self._partial_frame(event, envelope)
-                continue
+        """Yield transcript frames for provider recognition events.
 
-            if isinstance(event, STTFinalEvent):
-                if not event.is_endpoint:
-                    raise ValueError("Received non-endpoint STTFinalEvent")
-                yield self._final_frame(event, envelope)
-                return
+        The provider stream is wrapped in ``aclosing`` because this adapter
+        RETURNS at the first final rather than draining — and abandoning an
+        async generator leaves it suspended until the event loop's
+        async-generator hook finalises it, which is what actually releases the
+        provider's socket or HTTP response.  Closing it here makes that
+        deterministic instead of load-dependent.
+        """
+        async with aclosing(self._provider.transcribe(pcm_chunks)) as events:
+            async for event in events:
+                if isinstance(event, STTPartialEvent):
+                    yield self._partial_frame(event, envelope)
+                    continue
+
+                if isinstance(event, STTFinalEvent):
+                    if not event.is_endpoint:
+                        raise ValueError("Received non-endpoint STTFinalEvent")
+                    yield self._final_frame(event, envelope)
+                    return
 
     def _partial_frame(
         self, event: STTPartialEvent, envelope: STTFrameEnvelope

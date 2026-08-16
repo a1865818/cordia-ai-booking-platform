@@ -4,12 +4,12 @@ import pytest
 
 from cordia_agent.state import StreamFrameType
 from cordia_agent.streaming import BargeInController, TTSChunker, TurnManager
-from cordia_agent.streaming.providers import FakeTTSProvider
 from cordia_agent.streaming_models import (
     AgentTextDeltaFrame,
     AgentTextFinalFrame,
     TranscriptPartialFrame,
 )
+from tests._stubs.streaming_tts_fake import FakeTTSProvider
 
 
 ENVELOPE_FIELDS = {

@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.DeadLetters;
+﻿using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.DeadLetters;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
@@ -12,7 +13,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/dead-letter-messages")]
-public class DeadLetterMessagesController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class DeadLetterMessagesController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Replays a quarantined dead-letter message according to the §6.1 ID rules.
@@ -36,14 +37,15 @@ public class DeadLetterMessagesController(IMediator mediator, ITenantContext ten
 
         TenantGuard.RequireTenant(tenant);
 
-        // Spec 14 §24.5 — operator identity (X-Actor shim), staff role
-        // (X-Actor-Role, GD-1), and reason code are mandatory for replay; the
-        // validator/behavior reject empty values, the behavior denies role mismatch.
+        // Spec 14 §24.5 — operator identity, staff role (GD-1), and reason code are mandatory
+        // for replay; a verified session wins over the X-Actor/X-Actor-Role shim (ActorBinder).
+        // The validator/behavior reject empty values, the behavior denies role mismatch.
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
         var result = await mediator.Send(
             new ReplayDeadLetterCommand(
                 tenant.TenantId, body.MessageId, body.ConsumerName,
-                actor ?? string.Empty, body.ReasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedActor, body.ReasonCode ?? string.Empty,
+                resolvedRole),
             ct);
 
         return Ok(result);

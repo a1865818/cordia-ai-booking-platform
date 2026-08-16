@@ -39,6 +39,12 @@ public class Booking : ITenantScoped
 
     public string CustomerId { get; set; } = string.Empty;
 
+    /// <summary>Who created the booking. Null on historical rows means unknown.</summary>
+    public AttributedSource? AttributedSource { get; set; }
+
+    /// <summary>Guest attendance. Defaults to <see cref="AttendanceStatus.Unknown"/>.</summary>
+    public AttendanceStatus Attendance { get; set; } = AttendanceStatus.Unknown;
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }

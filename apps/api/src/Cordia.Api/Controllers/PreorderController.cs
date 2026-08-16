@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Preorder.ManualResolution;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -26,7 +27,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/preorder")]
-public class PreorderController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class PreorderController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Converts a parked pre-order to a standalone order (operator + a customer verification grant).</summary>
     [HttpPost("sagas/{sagaId}/convert-standalone")]
@@ -44,10 +45,11 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(new ConvertPreorderToStandaloneCommand(
-            tenant.TenantId, sagaId, ResolveOperator(actor), body.GrantId ?? string.Empty,
-            reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+            tenant.TenantId, sagaId, resolvedActor, body.GrantId ?? string.Empty,
+            reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { saga_id = sagaId, status = "converted_to_standalone" });
     }
@@ -68,18 +70,14 @@ public class PreorderController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(new CancelPreorderManualReviewCommand(
-            tenant.TenantId, sagaId, ResolveOperator(actor), body?.Reason,
-            reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+            tenant.TenantId, sagaId, resolvedActor, body?.Reason,
+            reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { saga_id = sagaId, status = "cancelled" });
     }
-
-    // Spec 14 §24.5 fail-closed: NO silent default — an absent X-Actor flows through as
-    // empty and is rejected by the command validator / OperatorActionBehavior.
-    private static string ResolveOperator(string? actor)
-        => string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
 }
 
 /// <summary>Body for POST /api/preorder/sagas/{sagaId}/convert-standalone. The grant is the customer's

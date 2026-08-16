@@ -1,5 +1,6 @@
 ﻿using Cordia.Domain.Console;
 using Cordia.Domain.Bookings;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
@@ -84,13 +85,17 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             ct);
 
         var resolveIdentity = await BuildCustomerResolverAsync(tenantId, matches, ct);
+        var channelBySession = await LoadChannelsAsync(tenantId, matches, ct);
+        var depositByOperation = await LoadDepositsAsync(tenantId, matches, ct);
 
         return new ScheduleResult(
             matches
                 .Select(row => ToScheduledBooking(
                     row,
                     resolveIdentity(row),
-                    latestState.TryGetValue(row.Key, out var latest) ? latest : row))
+                    latestState.TryGetValue(row.Key, out var latest) ? latest : row,
+                    channelBySession,
+                    depositByOperation))
                 .OrderBy(b => b.StartsAt)
                 .ToList(),
             truncated || hitLimit);
@@ -194,7 +199,10 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                 s.ConsentState,
                 s.RecordingAllowed,
                 s.StartedAt,
-                s.EndedAt))
+                s.EndedAt,
+                s.Preview,
+                // Sessions are not attributed; do not invent agent vs staff from the customer_ref.
+                null))
             .ToListAsync(ct);
     }
 
@@ -277,8 +285,8 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
 
         // The customers projection wants only the identity half; the reference is a schedule concern.
         var withCustomer = all
-            .Select(p => (Parsed: p, CustomerRef: resolveIdentity(p).CustomerRef))
-            .Where(x => !string.IsNullOrWhiteSpace(x.CustomerRef))
+            .Select(p => (Parsed: p, Identity: resolveIdentity(p)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Identity.CustomerRef))
             .ToList();
 
         // Matched against the MASKED value, not the raw one.
@@ -290,31 +298,156 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         var filtered = string.IsNullOrWhiteSpace(query)
             ? withCustomer
             : withCustomer
-                .Where(x => ContactMinimisation.Mask(x.CustomerRef)!
+                .Where(x => ContactMinimisation.Mask(x.Identity.CustomerRef)!
                     .Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
+        var page = filtered
+            .GroupBy(x => x.Identity.CustomerRef!, StringComparer.Ordinal)
+            .Select(ToCustomerAggregate)
+            .OrderByDescending(a => a.Summary.LastSeenAt)
+            .Take(limit)
+            .ToList();
+
+        var notes = await LoadNotesAsync(tenantId, page.Select(a => a.RawRef), ct);
+
         return new CustomerListResult(
-            filtered
-                .GroupBy(x => x.CustomerRef!, StringComparer.Ordinal)
-                .Select(g =>
-                {
-                    // Rows arrive newest-first, so the first entry is the most recent activity.
-                    var newest = g.First().Parsed;
-                    return new CustomerSummary(
-                        // Grouped on the RAW key above, so the counts stay exact; only the label
-                        // that leaves the API is minimised.
-                        ContactMinimisation.Mask(g.Key)!,
-                        g.Select(x => x.Parsed.Key).Distinct(StringComparer.Ordinal).Count(),
-                        g.Min(x => x.Parsed.Row.CreatedAt),
-                        g.Max(x => x.Parsed.Row.UpdatedAt),
-                        newest.Payload.ServiceId,
-                        newest.BookingId);
-                })
-                .OrderByDescending(c => c.LastSeenAt)
-                .Take(limit)
-                .ToList(),
+            page.Select(a => AttachNotes(a.Summary, a.RawRef, notes)).ToList(),
             truncated);
+    }
+
+    public async Task<CustomerSummary?> GetCustomerAsync(
+        string tenantId,
+        string customerRef,
+        CancellationToken ct = default)
+    {
+        var all = new List<ParsedRow>();
+        await ScanAsync(tenantId, parsed => { all.Add(parsed); return false; }, ct);
+
+        var resolveIdentity = await BuildCustomerResolverAsync(tenantId, all, ct);
+
+        var withCustomer = all
+            .Select(p => (Parsed: p, Identity: resolveIdentity(p)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Identity.CustomerRef))
+            .ToList();
+
+        var group = withCustomer
+            .GroupBy(x => x.Identity.CustomerRef!, StringComparer.Ordinal)
+            .FirstOrDefault(g =>
+                string.Equals(g.Key, customerRef, StringComparison.Ordinal)
+                || string.Equals(ContactMinimisation.Mask(g.Key), customerRef, StringComparison.Ordinal));
+
+        var noteKeys = group is null ? new[] { customerRef } : new[] { group.Key, customerRef };
+        var notes = await LoadNotesAsync(tenantId, noteKeys, ct);
+
+        if (group is null)
+        {
+            if (!notes.ContainsKey(customerRef)) return null;
+            return AttachNotes(
+                new CustomerSummary(
+                    ContactMinimisation.Mask(customerRef)!,
+                    0, null, null, null, null,
+                    Origin: null,
+                    NoShowCount: 0,
+                    Tags: [],
+                    Note: null),
+                customerRef,
+                notes);
+        }
+
+        return AttachNotes(ToCustomerAggregate(group).Summary, group.Key, notes);
+    }
+
+    public async Task<KpiFacts> GetKpiFactsAsync(
+        string tenantId,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default)
+    {
+        var bookedOps = await db.BookingOperations
+            .AsNoTracking()
+            .Where(o => o.TenantId == tenantId
+                        && o.CreatedAt >= from
+                        && o.CreatedAt < to
+                        && o.Status == OperationStatus.Booked
+                        && o.OperationType != OperationTypeEnum.Cancel)
+            .Select(o => new { o.BookingId, o.AttributedSource })
+            .ToListAsync(ct);
+
+        var bookingIds = bookedOps
+            .Select(o => o.BookingId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var bookingRows = bookingIds.Length == 0
+            ? []
+            : await db.Bookings
+                .AsNoTracking()
+                .Where(b => b.TenantId == tenantId && bookingIds.Contains(b.BookingId))
+                .Select(b => new { b.BookingId, b.AttributedSource, b.Attendance })
+                .ToListAsync(ct);
+
+        var bookingById = bookingRows
+            .GroupBy(b => b.BookingId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        var knownAttendance = 0;
+        var noShow = 0;
+        var attributed = 0;
+        var agent = 0;
+        var operatorCount = 0;
+
+        foreach (var op in bookedOps)
+        {
+            var booking = op.BookingId is not null
+                          && bookingById.TryGetValue(op.BookingId, out var found)
+                ? found
+                : null;
+
+            if (booking is not null)
+            {
+                if (booking.Attendance == AttendanceStatus.NoShow)
+                {
+                    knownAttendance++;
+                    noShow++;
+                }
+                else if (booking.Attendance == AttendanceStatus.Attended)
+                {
+                    knownAttendance++;
+                }
+            }
+
+            var source = booking?.AttributedSource ?? op.AttributedSource;
+            if (source == AttributedSource.Agent)
+            {
+                attributed++;
+                agent++;
+            }
+            else if (source == AttributedSource.Operator)
+            {
+                attributed++;
+                operatorCount++;
+            }
+        }
+
+        var paidMinor = await db.DepositSessions
+            .AsNoTracking()
+            .Where(d => d.TenantId == tenantId
+                        && d.Status == DepositStatus.Paid
+                        && (d.PaidAt ?? d.CreatedAt) >= from
+                        && (d.PaidAt ?? d.CreatedAt) < to)
+            .SumAsync(d => (long)d.AmountMinor, ct);
+
+        return new KpiFacts(
+            bookedOps.Count,
+            knownAttendance,
+            noShow,
+            attributed,
+            agent,
+            operatorCount,
+            paidMinor);
     }
 
     public async Task<BookingOverview> GetOverviewAsync(
@@ -503,7 +636,8 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             : (await db.Bookings
                     .AsNoTracking()
                     .Where(b => b.TenantId == tenantId && bookingIds.Contains(b.BookingId))
-                    .Select(b => new BookingRow(b.BookingId, b.CustomerId, b.BookingReference))
+                    .Select(b => new BookingRow(
+                        b.BookingId, b.CustomerId, b.BookingReference, b.AttributedSource, b.Attendance))
                     .ToListAsync(ct))
                 .GroupBy(b => b.BookingId, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
@@ -537,24 +671,182 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             // An in-flight operation has no booking row yet; the confirmation's identity_ref below
             // is the evidence of who confirmed the intent (spec 04 §8.8) and covers that gap.
             if (!string.IsNullOrWhiteSpace(booking?.CustomerId))
-                return new BookingIdentity(booking!.CustomerId, reference);
+                return new BookingIdentity(
+                    booking!.CustomerId, reference, booking.AttributedSource, booking.Attendance);
 
             var intentKey = $"{parsed.Row.IntentId}#{parsed.Row.IntentRevision}";
             return new BookingIdentity(
                 identityByIntent.TryGetValue(intentKey, out var identityRef) ? identityRef : null,
-                reference);
+                reference,
+                booking?.AttributedSource,
+                booking?.Attendance);
         };
     }
 
     /// <summary>What the <c>bookings</c> row contributes to a console projection.</summary>
-    private sealed record BookingRow(string BookingId, string? CustomerId, string? BookingReference);
+    private sealed record BookingRow(
+        string BookingId,
+        string? CustomerId,
+        string? BookingReference,
+        AttributedSource? AttributedSource,
+        AttendanceStatus Attendance);
 
     /// <summary>
     /// The identity facts a console row shows. Resolved together because both come from the same
     /// <c>bookings</c> lookup, and because the reference must be keyed on the booking id the row
     /// displays — not on the operation row's own (often null) <c>BookingId</c>.
     /// </summary>
-    private sealed record BookingIdentity(string? CustomerRef, string? BookingReference);
+    private sealed record BookingIdentity(
+        string? CustomerRef,
+        string? BookingReference,
+        AttributedSource? AttributedSource,
+        AttendanceStatus? Attendance);
+
+    /// <summary>
+    /// Channel of the session that produced each matched revision. Missing or blank session ids
+    /// simply do not contribute — the schedule still renders the row.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, TenantChannel>> LoadChannelsAsync(
+        string tenantId,
+        IReadOnlyCollection<ParsedRow> rows,
+        CancellationToken ct)
+    {
+        var sessionIds = rows
+            .Select(r => r.Row.SourceSessionId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (sessionIds.Length == 0)
+            return new Dictionary<string, TenantChannel>(StringComparer.Ordinal);
+
+        return (await db.ConversationSessions
+                .AsNoTracking()
+                .Where(s => s.TenantId == tenantId && sessionIds.Contains(s.SessionId))
+                .Select(s => new { s.SessionId, s.Channel })
+                .ToListAsync(ct))
+            .GroupBy(s => s.SessionId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Channel, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Latest deposit per matched operation. Missing operations simply do not contribute.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, DepositHint>> LoadDepositsAsync(
+        string tenantId,
+        IReadOnlyCollection<ParsedRow> rows,
+        CancellationToken ct)
+    {
+        var operationIds = rows
+            .Select(r => r.Row.OperationId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (operationIds.Length == 0)
+            return new Dictionary<string, DepositHint>(StringComparer.Ordinal);
+
+        return (await db.DepositSessions
+                .AsNoTracking()
+                .Where(d => d.TenantId == tenantId && operationIds.Contains(d.OperationId))
+                .Select(d => new { d.OperationId, d.AmountMinor, d.Status, d.CreatedAt })
+                .ToListAsync(ct))
+            .GroupBy(d => d.OperationId, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var latest = g.OrderByDescending(x => x.CreatedAt).First();
+                    return new DepositHint(latest.AmountMinor, latest.Status);
+                },
+                StringComparer.Ordinal);
+    }
+
+    private async Task<IReadOnlyDictionary<string, CustomerOperatorNotes>> LoadNotesAsync(
+        string tenantId,
+        IEnumerable<string> customerRefs,
+        CancellationToken ct)
+    {
+        var keys = customerRefs
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .SelectMany(r => new[] { r, ContactMinimisation.Mask(r)! })
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (keys.Length == 0)
+            return new Dictionary<string, CustomerOperatorNotes>(StringComparer.Ordinal);
+
+        return (await db.CustomerOperatorNotes
+                .AsNoTracking()
+                .Where(n => n.TenantId == tenantId && keys.Contains(n.CustomerRef))
+                .ToListAsync(ct))
+            .GroupBy(n => n.CustomerRef, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+    }
+
+    private sealed record CustomerAggregate(string RawRef, CustomerSummary Summary);
+
+    private static CustomerAggregate ToCustomerAggregate(
+        IGrouping<string, (ParsedRow Parsed, BookingIdentity Identity)> group)
+    {
+        var newest = group.First().Parsed;
+        var finalizedSources = group
+            .Where(x => x.Parsed.BookingId is not null)
+            .Select(x => x.Identity.AttributedSource);
+        var noShowCount = group
+            .Where(x => x.Identity.Attendance == AttendanceStatus.NoShow)
+            .Select(x => x.Parsed.Key)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        return new CustomerAggregate(
+            group.Key,
+            new CustomerSummary(
+                ContactMinimisation.Mask(group.Key)!,
+                group.Select(x => x.Parsed.Key).Distinct(StringComparer.Ordinal).Count(),
+                group.Min(x => x.Parsed.Row.CreatedAt),
+                group.Max(x => x.Parsed.Row.UpdatedAt),
+                newest.Payload.ServiceId,
+                newest.BookingId,
+                CustomerOrigin.From(finalizedSources),
+                noShowCount,
+                [],
+                null));
+    }
+
+    private static CustomerSummary AttachNotes(
+        CustomerSummary summary,
+        string rawRef,
+        IReadOnlyDictionary<string, CustomerOperatorNotes> notes)
+    {
+        CustomerOperatorNotes? row = null;
+        if (notes.TryGetValue(rawRef, out var byRaw))
+            row = byRaw;
+        else if (notes.TryGetValue(summary.CustomerRef, out var byMasked))
+            row = byMasked;
+
+        if (row is null) return summary;
+
+        var tags = ParseTags(row.TagsJson);
+        var note = string.IsNullOrEmpty(row.Note) ? null : row.Note;
+        return summary with { Tags = tags, Note = note };
+    }
+
+    private static IReadOnlyList<string> ParseTags(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || json == "[]") return [];
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
+    private sealed record DepositHint(int AmountMinor, DepositStatus Status);
 
     /// <summary>
     /// Operations joined to their confirmed revision, newest activity first — the same
@@ -580,6 +872,8 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                CreatedAt = op.CreatedAt,
                UpdatedAt = op.UpdatedAt,
                CanonicalPayload = rev.CanonicalPayload,
+               AttributedSource = op.AttributedSource,
+               SourceSessionId = rev.SourceSessionId,
            };
 
     /// <summary>
@@ -591,7 +885,9 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
     private static ScheduledBooking ToScheduledBooking(
         ParsedRow parsed,
         BookingIdentity identity,
-        ParsedRow state)
+        ParsedRow state,
+        IReadOnlyDictionary<string, TenantChannel> channelBySession,
+        IReadOnlyDictionary<string, DepositHint> depositByOperation)
     {
         var (row, payload, bookingId, _) = parsed;
         var stateRow = state.Row;
@@ -600,6 +896,18 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         // which falls back through `caller_id → phone_e164 → email`, so it is a raw address for
         // any booking the agent lane created. The grid only ever renders it as a label.
         var customerRef = ContactMinimisation.Mask(identity.CustomerRef);
+        var sessionId = string.IsNullOrWhiteSpace(row.SourceSessionId) ? null : row.SourceSessionId;
+        var channel = sessionId is not null
+                      && channelBySession.TryGetValue(sessionId, out var foundChannel)
+            ? foundChannel
+            : (TenantChannel?)null;
+
+        int? depositAmountMinor = null;
+        if (depositByOperation.TryGetValue(row.OperationId, out var deposit)
+            && deposit.Status is DepositStatus.Paid or DepositStatus.Created or DepositStatus.LinkSent)
+        {
+            depositAmountMinor = deposit.AmountMinor;
+        }
 
         return new ScheduledBooking(
             bookingId,
@@ -631,7 +939,14 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
             state.BookingId is null ? null : ToLifecycleStatus(stateRow.OperationType, stateRow.Status),
             stateRow.Status,
             stateRow.OperationType,
-            stateRow.UpdatedAt);
+            stateRow.UpdatedAt,
+            // Booking row wins when it has a value; otherwise the operation stamp (in-flight creates).
+            identity.AttributedSource ?? row.AttributedSource,
+            identity.Attendance,
+            payload.ResourceId,
+            channel,
+            sessionId,
+            depositAmountMinor);
     }
 
     /// <summary>
@@ -663,5 +978,9 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         public DateTimeOffset UpdatedAt { get; init; }
 
         public required string CanonicalPayload { get; init; }
+
+        public AttributedSource? AttributedSource { get; init; }
+
+        public string? SourceSessionId { get; init; }
     }
 }

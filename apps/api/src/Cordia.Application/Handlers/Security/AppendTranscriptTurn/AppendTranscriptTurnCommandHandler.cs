@@ -9,12 +9,15 @@ namespace Cordia.Application.Handlers.Security.AppendTranscriptTurn;
 
 /// <summary>
 /// The spec-14 transcript producer (§4.3 object-store row): loads the session (tenant-scoped,
-/// D12 — the session row itself is never written here), enforces the consent gate
+/// D12 — the session row itself is never written here except for the redacted list-row
+/// <c>Preview</c> snippet), enforces the consent gate
 /// (<c>RecordingAllowed == true</c> or nothing persists), re-sanitizes the already-redacted
 /// text (Inv-12 defense-in-depth: the agent runs <c>redact_text</c> pre-emit; this lane runs
 /// <c>SensitiveDataMask.Sanitize</c> pre-persist), and stores one encrypted object per turn —
 /// <c>{sessionId}.{seq:D6}</c>, purpose <c>"transcript"</c>, 90d TTL applied by the store
-/// (GD-3) and swept by the retention service. The session's first persisted turn appends a
+/// (GD-3) and swept by the retention service. After a successful persist the session's
+/// <c>Preview</c> is updated to the sanitized text truncated to 280 characters so the
+/// conversation list shows the latest turn. The session's first persisted turn appends a
 /// <c>transcript.recording_started</c> audit event (AT-LEAST-ONCE: the emptiness check and the
 /// put are not atomic, so concurrent first turns may rarely duplicate the marker — consistent
 /// with the platform's at-least-once audit posture; consumers must not assume exactly one).
@@ -30,6 +33,8 @@ public sealed class AppendTranscriptTurnCommandHandler(
 {
     public const string Purpose = "transcript";
 
+    public const int PreviewMaxLength = 280;
+
     public async Task<TranscriptTurnPersistedResult> Handle(
         AppendTranscriptTurnCommand command, CancellationToken ct)
     {
@@ -41,12 +46,13 @@ public sealed class AppendTranscriptTurnCommandHandler(
             return new TranscriptTurnPersistedResult(command.SessionId, command.Seq, Persisted: false);
 
         var now = DateTimeOffset.UtcNow;
+        var sanitized = SensitiveDataMask.Sanitize(command.Text);
         var content = JsonSerializer.SerializeToUtf8Bytes(new
         {
             turn_id = command.TurnId,
             speaker = command.Speaker,
             // Inv-12 defense-in-depth — the agent already redacted; mask again at the boundary.
-            text = SensitiveDataMask.Sanitize(command.Text),
+            text = sanitized,
             ts = now,
         });
 
@@ -57,6 +63,8 @@ public sealed class AppendTranscriptTurnCommandHandler(
             command.TenantId, Purpose,
             $"{command.SessionId}.{command.Seq.ToString("D6", System.Globalization.CultureInfo.InvariantCulture)}",
             content, ttl: null /* store applies the GD-3 transcript default */, ct);
+
+        await sessions.SetPreviewAsync(command.TenantId, command.SessionId, TruncatePreview(sanitized), ct);
 
         if (isFirstTurn)
         {
@@ -76,4 +84,7 @@ public sealed class AppendTranscriptTurnCommandHandler(
 
         return new TranscriptTurnPersistedResult(command.SessionId, command.Seq, Persisted: true);
     }
+
+    internal static string TruncatePreview(string sanitized)
+        => sanitized.Length <= PreviewMaxLength ? sanitized : sanitized[..PreviewMaxLength];
 }

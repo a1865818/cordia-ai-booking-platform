@@ -50,4 +50,29 @@ public class DepositSessionRepository(ApplicationDbContext db) : IDepositSession
                     s.SetProperty(x => x.PaidAt, paidAt.Value);
             },
             ct);
+
+    public async Task<IReadOnlyList<DepositSession>> ListAsync(
+        string tenantId,
+        DepositStatus? status,
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        int limit,
+        CancellationToken ct = default)
+    {
+        var query = db.DepositSessions
+            .AsNoTracking()
+            .Where(d => d.TenantId == tenantId);
+
+        if (status.HasValue)
+            query = query.Where(d => d.Status == status.Value);
+        if (from.HasValue)
+            query = query.Where(d => d.CreatedAt >= from.Value);
+        if (to.HasValue)
+            query = query.Where(d => d.CreatedAt <= to.Value);
+
+        return await query
+            .OrderByDescending(d => d.CreatedAt)
+            .Take(limit)
+            .ToListAsync(ct);
+    }
 }

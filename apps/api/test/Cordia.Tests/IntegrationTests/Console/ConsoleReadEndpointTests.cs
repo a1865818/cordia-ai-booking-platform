@@ -35,7 +35,8 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
         string canonicalPayload,
         OperationTypeEnum type = OperationTypeEnum.Create,
         DateTimeOffset? at = null,
-        string? sessionId = null)
+        string? sessionId = null,
+        AttributedSource? attributedSource = null)
     {
         var intentId = $"int-{Guid.NewGuid():N}";
         var operationId = $"op-{Guid.NewGuid():N}";
@@ -66,6 +67,7 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
             IntentRevision = 1,
             OperationType = type,
             Status = status,
+            AttributedSource = attributedSource,
             Version = 0,
             CreatedAt = now,
             UpdatedAt = now,
@@ -80,7 +82,11 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
     /// <c>BookingRequest</c> declares none, so customer identity has to come from the
     /// bookings row or the confirmation — which <see cref="SeedCustomerIdentityAsync"/> does.
     /// </summary>
-    private static string PayloadFor(DateTimeOffset startsAt, string serviceId, string bookingId)
+    private static string PayloadFor(
+        DateTimeOffset startsAt,
+        string serviceId,
+        string bookingId,
+        string? resourceId = null)
         => JsonSerializer.Serialize(new
         {
             operation = "create",
@@ -89,6 +95,7 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
             starts_at = startsAt.ToString("o"),
             party_size = 4,
             duration_minutes = 45,
+            resource_id = resourceId,
         });
 
 
@@ -117,7 +124,9 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
         string tenantId,
         string bookingId,
         string customerRef,
-        string? bookingReference = null)
+        string? bookingReference = null,
+        AttributedSource? attributedSource = null,
+        AttendanceStatus attendance = AttendanceStatus.Unknown)
     {
         ctx.Bookings.Add(new Booking
         {
@@ -129,6 +138,8 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
             BookingReference = bookingReference ?? bookingId,
             CustomerId = customerRef,
             LifecycleStatus = BookingLifecycleStatus.Confirmed,
+            AttributedSource = attributedSource,
+            Attendance = attendance,
             Version = 0,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
@@ -236,6 +247,78 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
         Assert.Equal("confirmed", bookings[0].GetProperty("lifecycle_status").GetString());
         Assert.Equal("booked", bookings[0].GetProperty("operation_status").GetString());
         Assert.Equal(4, bookings[0].GetProperty("party_size").GetInt32());
+    }
+
+    [Fact]
+    public async Task Schedule_IncludesProvenanceAttendanceAndResourceId()
+    {
+        var tenantId = NewTenant();
+        var start = DateTimeOffset.UtcNow.AddDays(1);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var sessionId = await SeedSessionAsync(ctx, tenantId, TenantChannel.Voice);
+        await SeedBookingOperationAsync(
+            ctx,
+            tenantId,
+            OperationStatus.Booked,
+            PayloadFor(start, "gel", "bk-prov", resourceId: "staff_alex"),
+            sessionId: sessionId,
+            attributedSource: AttributedSource.Agent);
+        await SeedCustomerIdentityAsync(
+            ctx,
+            tenantId,
+            "bk-prov",
+            "cust-a",
+            attributedSource: AttributedSource.Operator,
+            attendance: AttendanceStatus.Attended);
+
+        var from = start.AddHours(-1);
+        var to = start.AddHours(1);
+        var root = await GetJsonAsync(
+            $"/api/Bookings/schedule?from={Uri.EscapeDataString(from.ToString("o"))}&to={Uri.EscapeDataString(to.ToString("o"))}",
+            tenantId);
+
+        var row = Assert.Single(root.GetProperty("bookings").EnumerateArray().ToList());
+        Assert.Equal("operator", row.GetProperty("attributed_source").GetString());
+        Assert.Equal("attended", row.GetProperty("attendance").GetString());
+        Assert.Equal("staff_alex", row.GetProperty("resource_id").GetString());
+        Assert.Equal("voice", row.GetProperty("channel").GetString());
+        Assert.Equal(sessionId, row.GetProperty("session_id").GetString());
+        Assert.True(
+            row.GetProperty("deposit_amount_minor").ValueKind is JsonValueKind.Null,
+            "no deposit session ⇒ null, not a fabricated A$0 hold");
+    }
+
+    [Fact]
+    public async Task Schedule_ProjectsPaidOrHeldDepositAmount()
+    {
+        var tenantId = NewTenant();
+        var start = DateTimeOffset.UtcNow.AddDays(1);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var operationId = await SeedBookingOperationAsync(
+            ctx, tenantId, OperationStatus.Booked, PayloadFor(start, "gel", "bk-dep"));
+        await SeedCustomerIdentityAsync(ctx, tenantId, "bk-dep", "cust-dep");
+        ctx.DepositSessions.Add(new DepositSession
+        {
+            TenantId = tenantId,
+            DepositSessionId = $"dep-{Guid.NewGuid():N}",
+            OperationId = operationId,
+            AmountMinor = 5000,
+            Currency = "AUD",
+            Status = DepositStatus.LinkSent,
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+            CreatedAt = DateTimeOffset.UtcNow,
+            Version = 0,
+        });
+        await ctx.SaveChangesAsync();
+
+        var root = await GetJsonAsync(
+            $"/api/Bookings/schedule?from={Uri.EscapeDataString(start.AddHours(-1).ToString("o"))}&to={Uri.EscapeDataString(start.AddHours(1).ToString("o"))}",
+            tenantId);
+
+        var row = Assert.Single(root.GetProperty("bookings").EnumerateArray());
+        Assert.Equal(5000, row.GetProperty("deposit_amount_minor").GetInt32());
     }
 
 
@@ -593,6 +676,8 @@ public class ConsoleReadEndpointTests(Acceptance.AcceptanceApiFixture fixture)
         Assert.Equal(2, customers.Count);
         var a = customers.Single(c => c.GetProperty("customer_ref").GetString() == "cust-a");
         Assert.Equal(2, a.GetProperty("booking_count").GetInt32());
+        Assert.Equal(0, a.GetProperty("no_show_count").GetInt32());
+        Assert.Equal(JsonValueKind.Null, a.GetProperty("origin").ValueKind);
         // Minimisation: no name, phone or email is ever projected here.
         Assert.False(a.TryGetProperty("phone", out _));
         Assert.False(a.TryGetProperty("email", out _));

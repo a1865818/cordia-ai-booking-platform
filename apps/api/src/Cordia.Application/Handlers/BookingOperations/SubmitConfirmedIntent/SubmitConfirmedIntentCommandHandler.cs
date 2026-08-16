@@ -581,6 +581,11 @@ public sealed class SubmitConfirmedIntentCommandHandler(
                 Status = OperationStatus.Accepted,
                 SupersededOperationId = request.ReplacesOperationId,
                 IsPreorder = isPreorder,
+                // Console always sends X-Actor; the agent lane typically does not. Do not infer
+                // from confirmation_channel — that is how the guest confirmed, not who submitted.
+                AttributedSource = string.IsNullOrWhiteSpace(command.ActorId)
+                    ? AttributedSource.Agent
+                    : AttributedSource.Operator,
                 Version = 0,
                 CreatedAt = now,
                 UpdatedAt = now,

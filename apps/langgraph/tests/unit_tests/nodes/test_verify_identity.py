@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 import pytest
+from langgraph.graph import END
 
 from cordia_agent.nodes.verify_identity import (
     GrantOutcome,
@@ -315,10 +316,14 @@ def test_route_valid_outcome_is_capture_fields() -> None:
 
 
 @pytest.mark.unit
-def test_route_expired_outcome_is_capture_fields() -> None:
-    """EXPIRED outcome → route 'capture_fields' (re-verify; grant unset)."""
+def test_route_expired_outcome_ends_the_turn() -> None:
+    """EXPIRED outcome → END: a fresh code can only arrive on a later turn.
+
+    Continuing to capture_fields sent the same mutation draft straight back to
+    verify_identity with the grant still cleared — a cycle, not a retry.
+    """
     state = AgentState(verification_outcome="expired", verification_grant_id=None)
-    assert route_after_verify_identity(state) == "capture_fields"
+    assert route_after_verify_identity(state) == END
 
 
 @pytest.mark.unit
@@ -475,11 +480,12 @@ async def test_inv11_caller_id_alone_never_advances() -> None:
 
 
 @pytest.mark.unit
-async def test_expiry_enforced_routes_capture_fields_for_reverify() -> None:
-    """Expiry enforced: expired grant → outcome 'expired', grant unset, route 'capture_fields'.
+async def test_expiry_enforced_ends_turn_for_reverify() -> None:
+    """Expiry enforced: expired grant → outcome 'expired', grant unset, turn ENDs.
 
-    The node routes back to capture_fields for re-verification (not to human_handoff)
-    so the customer can retry after the grant is renewed.
+    The node does NOT escalate to human_handoff — the customer can retry once
+    the grant is renewed — but it also cannot continue this turn, because the
+    renewal has to come from them.
     """
     # Grant expires_at is in the past (relative to mock "now" inside the node)
     # We use a clearly past timestamp so it will always be expired
@@ -508,8 +514,8 @@ async def test_expiry_enforced_routes_capture_fields_for_reverify() -> None:
     )
 
     updated_state = AgentState(**{**state.model_dump(), **result})
-    assert route_after_verify_identity(updated_state) == "capture_fields", (
-        "Expired grant must route to capture_fields for re-verification"
+    assert route_after_verify_identity(updated_state) == END, (
+        "Expired grant ends the turn: the renewed code comes from the customer"
     )
 
 

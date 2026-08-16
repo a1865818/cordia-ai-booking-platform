@@ -54,7 +54,11 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
                     .MapEnum<SignalType>("signal_type_enum")
                     .MapEnum<EndpointStatus>("endpoint_status_enum")
                     .MapEnum<HoldStatus>("hold_status_enum")
-                    .MapEnum<ReleaseReason>("release_reason_enum"))
+                    .MapEnum<ReleaseReason>("release_reason_enum")
+                    .MapEnum<AttributedSource>("attributed_source_enum")
+                    .MapEnum<AttendanceStatus>("attendance_status_enum")
+                    .MapEnum<CampaignStatus>("campaign_status_enum")
+                    .MapEnum<KnowledgeStatus>("knowledge_status_enum"))
             .UseSnakeCaseNamingConvention();
 
         return new ApplicationDbContext(

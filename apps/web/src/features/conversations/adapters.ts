@@ -45,17 +45,11 @@ export function timeAgo(iso: string | null | undefined, now = Date.now()): strin
 }
 
 export function toThread(session: ConversationSessionSummary, now = Date.now()): Thread {
-  return {
+  const thread: Thread = {
     id: session.session_id ?? "",
     name: session.customer_ref ?? "Guest",
     channel: toChannel(session.channel),
-    // The list endpoint carries no transcript text (by design); the preview fills in when
-    // the thread is opened and its transcript loads.
-    preview: "",
-    // `status` and `prov` are deliberately omitted. The summary carries no outcome and no
-    // provenance, and the previous constants (`"pending"`, `"ai"`) meant every ended session
-    // was labelled pending and every thread claimed the agent had handled it — asserting two
-    // facts the API does not record (Inv-16).
+    preview: session.preview ?? "",
     ago: timeAgo(session.started_at, now),
     // A session with no end time is still open.
     live: !session.ended_at,
@@ -65,6 +59,9 @@ export function toThread(session: ConversationSessionSummary, now = Date.now()):
     consentState: session.consent_state ?? null,
     recordingAllowed: session.recording_allowed ?? null,
   };
+  if (session.status) thread.status = session.status as Thread["status"];
+  if (session.prov) thread.prov = session.prov;
+  return thread;
 }
 
 export function toThreads(

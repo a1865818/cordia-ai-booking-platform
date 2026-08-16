@@ -1,6 +1,5 @@
 import { Icon, IconName } from "../../ui/Icon";
-import { DemoBadge } from "../../ui/DemoBadge";
-import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
+import { sessionIdentity, sessionIdentityHint } from "../../../features/session/identity";
 
 interface MoreScreenProps {
   go: (s: string) => void;
@@ -8,10 +7,13 @@ interface MoreScreenProps {
   onSignOut: () => void;
   /**
    * How many guests are on the waitlist, from the live list — or `undefined` while it has
-   * never loaded. Previously this row read `WAITLIST.length`, the mock array's size, on the
-   * phone's primary navigation surface and next to a waitlist screen showing the real count.
+   * never loaded.
    */
   waitlistCount?: number;
+  /** Payout held line, or omitted until the summary has loaded. */
+  depositsSub?: string;
+  /** Awaiting-approval line, or omitted until campaigns have loaded. */
+  campaignsSub?: string;
 }
 
 interface Row {
@@ -19,11 +21,11 @@ interface Row {
   icon: IconName;
   label: string;
   sub: string;
-  /** True when `sub` describes a surface with no backend, so it must be badged. */
-  demo?: boolean;
 }
 
-export function MoreScreen({ go, autoText, onSignOut, waitlistCount }: MoreScreenProps) {
+export function MoreScreen({
+  go, autoText, onSignOut, waitlistCount, depositsSub, campaignsSub,
+}: MoreScreenProps) {
   const session = sessionIdentity();
 
   const rows: Row[] = [
@@ -31,8 +33,6 @@ export function MoreScreen({ go, autoText, onSignOut, waitlistCount }: MoreScree
       key: 'waitlist',
       icon: 'clock',
       label: 'Waitlist',
-      // The venue auto-book switch is itself unsaved local state (badged on the waitlist
-      // screen), so it is not restated as fact here.
       sub: waitlistCount === undefined
         ? 'Guests waiting for a slot'
         : `${waitlistCount} waiting · auto-book ${autoText}`,
@@ -41,26 +41,18 @@ export function MoreScreen({ go, autoText, onSignOut, waitlistCount }: MoreScree
       key: 'deposits',
       icon: 'card',
       label: 'Deposits & payouts',
-      // No money figure. `PAYOUT.held` is a hand-written constant and spec 09 has not shipped a
-      // payment surface, so the platform has never held a cent — stating an amount here was the
-      // most credible fabrication in the product.
-      sub: 'No payment surface yet',
-      demo: true,
+      sub: depositsSub ?? 'Deposits & payouts',
     },
     {
       key: 'campaigns',
       icon: 'megaphone',
       label: 'Campaigns',
-      // No "1 awaiting your approval" and no badge: nothing is awaiting approval, because no
-      // endpoint and no spec owns campaigns.
-      sub: 'No backend yet',
-      demo: true,
+      sub: campaignsSub ?? 'Campaigns',
     },
     {
       key: 'analytics',
       icon: 'chart',
       label: 'Analytics',
-      // Not "no-shows, AI handled" — neither is recorded server-side (Inv-16).
       sub: 'Funnel, bookings per day, channels',
     },
     {
@@ -88,7 +80,6 @@ export function MoreScreen({ go, autoText, onSignOut, waitlistCount }: MoreScree
               <div className="text-[14.5px] font-semibold text-ink">{r.label}</div>
               <div className="flex items-center gap-[7px] mt-[1px] flex-wrap">
                 <span className="text-[12px] text-t3">{r.sub}</span>
-                {r.demo && <DemoBadge reason="this screen has no endpoint — the figures on it are samples" />}
               </div>
             </div>
             <Icon name="chevR" size={17} strokeWidth={2.2} color="#C5C5C0" />
@@ -96,11 +87,9 @@ export function MoreScreen({ go, autoText, onSignOut, waitlistCount }: MoreScree
         ))}
       </div>
 
-      {/* Session card — the actor and tenant actually sent on every request, not an invented
-          person and venue. There is no sign-in and no profile endpoint. */}
       <div
         className="flex items-center gap-[11px] mt-4 p-[14px_15px] bg-white border border-cd-border rounded-[13px]"
-        title={SESSION_IDENTITY_HINT}
+        title={sessionIdentityHint()}
       >
         <span className="w-9 h-9 rounded-[11px] bg-ink text-white flex items-center justify-center text-[13px] font-semibold shrink-0">
           {session.actorInitials}

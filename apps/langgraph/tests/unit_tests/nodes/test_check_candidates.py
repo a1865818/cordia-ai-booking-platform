@@ -440,23 +440,28 @@ async def test_tool_call_fires_when_all_required_fields_present() -> None:
 
 
 @pytest.mark.unit
-def test_route_capture_fields_when_invalid_fields() -> None:
-    """Invalid fields present → route to 'capture_fields'."""
+def test_route_clarify_when_invalid_fields() -> None:
+    """Invalid fields present → route to 'clarify' so the turn can ask and END."""
     state = AgentState(
         availability_invalid_fields=["service_id", "party_size"],
         availability_candidates=[],
     )
-    assert route_after_check_candidates(state) == "capture_fields"
+    assert route_after_check_candidates(state) == "clarify"
 
 
 @pytest.mark.unit
-def test_route_capture_fields_when_no_candidates() -> None:
-    """No candidates (empty list) → route to 'capture_fields'."""
+def test_route_clarify_when_no_candidates() -> None:
+    """No candidates → 'clarify'.
+
+    Routing back to capture_fields was a cycle: the draft is complete and the
+    transcript is unchanged, so the extractor reproduced the same draft and
+    came straight back here until the recursion limit fired.
+    """
     state = AgentState(
         availability_invalid_fields=[],
         availability_candidates=[],
     )
-    assert route_after_check_candidates(state) == "capture_fields"
+    assert route_after_check_candidates(state) == "clarify"
 
 
 @pytest.mark.unit
@@ -470,13 +475,13 @@ def test_route_read_back_when_candidates_present() -> None:
 
 
 @pytest.mark.unit
-def test_route_capture_fields_wins_over_candidates_when_invalid_fields() -> None:
+def test_route_clarify_wins_over_candidates_when_invalid_fields() -> None:
     """Invalid fields take precedence over candidates — must re-prompt."""
     state = AgentState(
         availability_invalid_fields=["starts_at"],
         availability_candidates=[{"starts_at": "2026-07-01T10:00:00+00:00"}],
     )
-    assert route_after_check_candidates(state) == "capture_fields"
+    assert route_after_check_candidates(state) == "clarify"
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ public class ConversationSessionConfiguration : IEntityTypeConfiguration<Convers
         builder.Property(e => e.TenantId).IsRequired();
         builder.Property(e => e.SessionId).IsRequired();
         builder.Property(e => e.Version).IsConcurrencyToken().HasDefaultValue(0L);
+        builder.Property(e => e.Preview).HasMaxLength(280);
         builder.Property(e => e.StartedAt).HasDefaultValueSql("now()");
     }
 }

@@ -1,19 +1,16 @@
 /**
  * Adapts the derived customer projection to the `Customer` shape `CustomersScreen` renders.
  *
- * The API deliberately exposes very little (spec 14 minimisation): an opaque
- * `customer_ref`, a booking count, first/last activity and the last service. It has no
- * phone, no no-show count, no lifetime spend and no tags — those are mock-only fields.
- *
- * Rather than zero-filling them (a "$0 lifetime" or "0 no-shows" reads as a fact, not as
- * "unknown"), they are left empty and `CustomersScreen` suppresses those stats when it is
- * showing live rows.
+ * The API still withholds name, phone and lifetime spend (spec 14 minimisation). Those stay
+ * empty and `CustomersScreen` suppresses the stats unless the fields are present. Origin,
+ * no-show count, tags and notes are mapped when the payload carries them.
  */
 
 import type { Customer } from "../../data/console";
-import { SERVICES } from "../../data/console";
 import { getActor } from "../../api/config";
 import type { CustomerSummary } from "./api";
+
+export type ServiceNameLookup = Record<string, { name: string }>;
 
 /** Coarse "last seen" phrasing matching the mock's `lastVisit` strings. */
 export function lastSeenLabel(iso: string | null | undefined, now = Date.now()): string {
@@ -58,29 +55,33 @@ export function isOperatorRef(customerRef: string | null | undefined): boolean {
   return !!customerRef && customerRef === getActor();
 }
 
-export function toCustomer(summary: CustomerSummary, now = Date.now()): Customer {
+export function toCustomer(
+  summary: CustomerSummary,
+  now = Date.now(),
+  serviceNames?: ServiceNameLookup
+): Customer {
   const serviceId = summary.last_service_id ?? "";
   return {
-    isOperator: isOperatorRef(summary.customer_ref),
+    isOperator: summary.origin === "staff",
     id: summary.customer_ref ?? "",
     // The reference IS the identity the API exposes; no name is available.
     name: summary.customer_ref ?? "Guest",
     phone: "",
     channel: "web",
     visits: summary.booking_count ?? 0,
-    // Not modelled server-side — suppressed in the UI rather than shown as zero.
-    noShows: 0,
+    noShows: summary.no_show_count ?? 0,
     lastVisit: lastSeenLabel(summary.last_seen_at, now),
     spend: 0,
-    tags: [],
-    fav: SERVICES[serviceId]?.name ?? serviceId,
-    note: "",
+    tags: summary.tags ? [...summary.tags] : [],
+    fav: serviceNames?.[serviceId]?.name ?? serviceId,
+    note: summary.note ?? "",
   };
 }
 
 export function toCustomers(
   summaries: readonly CustomerSummary[] | null | undefined,
-  now = Date.now()
+  now = Date.now(),
+  serviceNames?: ServiceNameLookup
 ): Customer[] {
-  return (summaries ?? []).map((s) => toCustomer(s, now));
+  return (summaries ?? []).map((s) => toCustomer(s, now, serviceNames));
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SERVICES } from "../../data/console";
+import { UNASSIGNED_RESOURCE_ID } from "./resources";
 import type { ScheduledBooking } from "./api";
 import { startOfWeek, toBooking, toBookingStatus, toBookings, toDayAndStart, weekWindow } from "./adapters";
+
+const GEL = { gel: { name: "Gel manicure", dur: 45 } };
 
 function row(overrides: Partial<ScheduledBooking> = {}): ScheduledBooking {
   return {
@@ -113,19 +115,22 @@ describe("toBooking", () => {
   const weekStart = startOfWeek(new Date(2026, 7, 5));
 
   it("maps the API row onto the grid shape", () => {
-    const booking = toBooking(row(), { weekStart });
+    const booking = toBooking(row(), { weekStart, serviceNames: GEL });
     expect(booking).not.toBeNull();
     expect(booking!.id).toBe("bk_1");
     expect(booking!.service).toBe("gel");
-    expect(booking!.serviceName).toBe(SERVICES.gel.name);
+    expect(booking!.serviceName).toBe("Gel manicure");
     expect(booking!.dur).toBe(45);
     expect(booking!.name).toBe("cust-1");
     expect(booking!.status).toBe("confirmed");
+    expect(booking!.staff).toBe(UNASSIGNED_RESOURCE_ID);
+    expect(booking!.channel).toBeNull();
+    expect(booking!.transcript).toBeNull();
   });
 
   it("falls back to the service catalogue duration when the API omits one", () => {
-    const booking = toBooking(row({ duration_minutes: null }), { weekStart });
-    expect(booking!.dur).toBe(SERVICES.gel.dur);
+    const booking = toBooking(row({ duration_minutes: null }), { weekStart, serviceNames: GEL });
+    expect(booking!.dur).toBe(45);
   });
 
   it("shows the raw service id rather than inventing a name for an unknown service", () => {
@@ -145,10 +150,34 @@ describe("toBooking", () => {
   });
 
   it("does not claim a provenance the API never records", () => {
-    // §11: nothing in the data model records who handled a booking, so asserting
-    // "Booked by AI" on every live row would fabricate exactly that fact (Inv-16).
     const booking = toBooking(row(), { weekStart });
     expect(booking!.prov).toBe("unknown");
+  });
+
+  it("maps attributed_source onto console provenance", () => {
+    expect(toBooking(row({ attributed_source: "agent" }), { weekStart })!.prov).toBe("ai");
+    expect(toBooking(row({ attributed_source: "operator" }), { weekStart })!.prov).toBe("you");
+    expect(toBooking(row({ attributed_source: "something-else" }), { weekStart })!.prov).toBe("unknown");
+  });
+
+  it("places the booking on the named resource lane", () => {
+    const booking = toBooking(row({ resource_id: "staff_alex" }), { weekStart });
+    expect(booking!.staff).toBe("staff_alex");
+  });
+
+  it("maps a present channel and leaves it null when the row has none", () => {
+    expect(toBooking(row({ channel: "voice" }), { weekStart })!.channel).toBe("phone");
+    expect(toBooking(row({ channel: "messaging" }), { weekStart })!.channel).toBe("sms");
+    expect(toBooking(row({ channel: null }), { weekStart })!.channel).toBeNull();
+  });
+
+  it("converts a deposit hold from AUD minor units and treats a missing hold as 0", () => {
+    expect(toBooking(row({ deposit_amount_minor: 2500 }), { weekStart })!.dep).toBe(25);
+    expect(toBooking(row({ deposit_amount_minor: null }), { weekStart })!.dep).toBe(0);
+  });
+
+  it("carries the source session as the transcript handle", () => {
+    expect(toBooking(row({ session_id: "sess_9" }), { weekStart })!.transcript).toBe("sess_9");
   });
 
   it("drops a booking outside the displayed week rather than filing it under a wrong day", () => {

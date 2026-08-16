@@ -33,6 +33,9 @@ public class ConversationSession : ITenantScoped
 
     public string? CustomerRef { get; set; }
 
+    /// <summary>Redacted snippet for conversation list rows; max 280 characters.</summary>
+    public string? Preview { get; set; }
+
     public DateTimeOffset StartedAt { get; set; }
 
     public DateTimeOffset? EndedAt { get; set; }

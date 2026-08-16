@@ -21,12 +21,24 @@ dependencies = [
     "langchain>=1.0.0,<2.0.0",
     "langchain-core>=1.0.0,<2.0.0",
 
+    # Azure AI Foundry — the azure_ai provider surface reaches every non-OpenAI
+    # deployment in a Foundry project (Llama, Mistral, Phi, Cohere, DeepSeek).
+    # OpenAI-family deployments go through langchain-openai, above.
+    "langchain-azure-ai>=0.1.0",
+    "azure-core>=1.30.0",
+
     # Persistence
     "langgraph-checkpoint-postgres>=3.0.0,<4.0.0",
     "psycopg[binary,pool]>=3.2.10,<4.0.0",
 
     # Utilities
     "pydantic>=2.7.0,<3.0.0",
+
+    # WebSocket client for the Azure realtime transcription surface
+    # (cordia_agent/streaming/providers/azure_realtime_stt.py). Present
+    # transitively via langgraph-cli, but declared explicitly because we import
+    # it directly.
+    "websockets>=15.0.1,<16.0.0",
 
     # OpenTelemetry — observability (spec 13 T8)
     "opentelemetry-api>=1.25.0,<2.0.0",

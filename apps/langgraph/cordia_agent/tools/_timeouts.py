@@ -24,7 +24,7 @@ class SideEffectClass(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# Per-tool deadline table (seconds) — ALL 21 tools (spec 03 §6.6; +2 consent
+# Per-tool deadline table (seconds) — ALL 22 tools (spec 03 §6.6; +2 consent
 # tools from spec 14 §5.1/§7: consent gate budget < 50 ms + record round-trip).
 # ---------------------------------------------------------------------------
 
@@ -33,6 +33,9 @@ TOOL_DEADLINES: dict[str, float] = {
     "find_customer_context": 0.12,
     "search_vendor_catalog": 0.15,
     "get_catalog_item": 0.15,
+    # A small closed set, indexed and tenant-scoped; it is a dictionary
+    # lookup, and it sits on the critical path of every capture turn.
+    "resolve_tenant_resources": 0.12,
     "validate_booking_draft": 0.10,
     "check_candidate_availability": 0.40,
     "request_verification": 0.25,
@@ -53,7 +56,7 @@ TOOL_DEADLINES: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# Per-tool side-effect-class table — ALL 21 tools (spec 03 §7; spec 14 consent + transcript; spec 13 model trace).
+# Per-tool side-effect-class table — ALL 22 tools (spec 03 §7; spec 14 consent + transcript; spec 13 model trace).
 # ---------------------------------------------------------------------------
 
 TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
@@ -62,6 +65,7 @@ TOOL_SIDE_EFFECT_CLASS: dict[str, SideEffectClass] = {
     "find_customer_context": SideEffectClass.PURE_READ,
     "search_vendor_catalog": SideEffectClass.PURE_READ,
     "get_catalog_item": SideEffectClass.PURE_READ,
+    "resolve_tenant_resources": SideEffectClass.PURE_READ,
     "validate_booking_draft": SideEffectClass.PURE_READ,
     "check_verification": SideEffectClass.PURE_READ,
     "get_operation_status": SideEffectClass.PURE_READ,

@@ -54,6 +54,9 @@ public class AppendTranscriptTurnTests
         Assert.False(result.Persisted);
         _store.VerifyNoOtherCalls();
         _audit.VerifyNoOtherCalls();
+        _sessions.Verify(s => s.SetPreviewAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]
@@ -91,11 +94,36 @@ public class AppendTranscriptTurnTests
         Assert.Contains("[REDACTED]", json);
         Assert.Contains("turn_1", json);
 
+        _sessions.Verify(s => s.SetPreviewAsync(
+                Tenant, SessionId, It.Is<string>(p => p.Contains("[REDACTED]") && !p.Contains("4111111111111111")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
         _audit.Verify(a => a.WriteAsync(
                 It.Is<AuditRecord>(r =>
                     r.Action == "transcript.recording_started"
                     && r.TargetId == SessionId
                     && r.Decision == "allow"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task PersistedTurn_TruncatesPreviewTo280()
+    {
+        SetupSession(recordingAllowed: true);
+        _store.Setup(s => s.ListIdsAsync(Tenant, "transcript", $"{SessionId}.", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([$"{SessionId}.000001"]);
+        _store.Setup(s => s.PutAsync(Tenant, "transcript", $"{SessionId}.000001",
+                It.IsAny<ReadOnlyMemory<byte>>(), null, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var longText = new string('a', 400);
+        await Handler().Handle(Command(seq: 1, text: longText), CancellationToken.None);
+
+        _sessions.Verify(s => s.SetPreviewAsync(
+                Tenant, SessionId,
+                It.Is<string>(p => p.Length == AppendTranscriptTurnCommandHandler.PreviewMaxLength),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -114,5 +142,8 @@ public class AppendTranscriptTurnTests
 
         Assert.True(result.Persisted);
         _audit.VerifyNoOtherCalls();
+        _sessions.Verify(s => s.SetPreviewAsync(
+                Tenant, SessionId, "table for two", It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 }

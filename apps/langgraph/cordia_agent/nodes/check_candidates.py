@@ -18,9 +18,11 @@ Invariants:
   verified and set the tenant context on the ``ToolClient``.
 
 Routing:
-- ``route_after_check_candidates`` returns ``"capture_fields"`` when the
-  availability result has invalid fields OR no acceptable candidates, and
-  ``"read_back"`` when at least one candidate is available.
+- ``route_after_check_candidates`` returns ``"clarify"`` when the availability
+  result has invalid fields OR no acceptable candidates, and ``"read_back"``
+  when at least one candidate is available.  Clarify ends the turn, so a full
+  slot asks the customer for another time instead of re-running the extractor
+  over an unchanged transcript.
 
 Spec refs: spec 02 §8.7, §6.5, §6.6; spec 03 §4.3; Inv-13, Inv-16.
 """
@@ -94,6 +96,7 @@ async def check_candidates(state: AgentState) -> dict:
             "availability_candidates": [],
             "availability_invalid_fields": [],
             "availability_pending": availability_pending,
+            "availability_checked": True,
         }
 
     # ------------------------------------------------------------------
@@ -106,6 +109,7 @@ async def check_candidates(state: AgentState) -> dict:
         "availability_candidates": candidates_as_dicts,
         "availability_invalid_fields": result.invalid_fields,
         "availability_pending": availability_pending,
+        "availability_checked": True,
     }
 
     # Inv-16 / §6.6 degraded guard: available_pending MUST NOT be treated as
@@ -123,21 +127,31 @@ async def check_candidates(state: AgentState) -> dict:
 def route_after_check_candidates(state: AgentState) -> str:
     """Route after availability check based on candidate presence and validity (§8.7).
 
-    Returns ``"capture_fields"`` when:
+    Returns ``"clarify"`` when:
     - ``availability_invalid_fields`` is non-empty (draft has invalid fields that
       must be corrected before a valid availability lookup is possible), OR
     - ``availability_candidates`` is empty (no acceptable slot found).
 
     Returns ``"read_back"`` when at least one candidate is available.
 
+    Why ``clarify`` and not ``capture_fields``
+        Routing a zero-candidate result back to ``capture_fields`` was a cycle,
+        not a recovery: the draft is complete and the transcript is unchanged,
+        so the extractor re-ran over the same words, produced the same draft,
+        routed back here, and span until ``GraphRecursionError``.  Harmless in a
+        script; on a live call the customer got silence where "that time is
+        full, how about 7:30?" belonged.  ``clarify`` asks the question and ENDs
+        the turn, which is the only thing that can actually unblock a full slot
+        — new information from the customer.
+
     Args:
         state: Current ``AgentState`` after ``check_candidates`` has run.
 
     Returns:
-        ``"capture_fields"`` or ``"read_back"``.
+        ``"clarify"`` or ``"read_back"``.
     """
     if state.availability_invalid_fields:
-        return "capture_fields"
+        return "clarify"
     if not state.availability_candidates:
-        return "capture_fields"
+        return "clarify"
     return "read_back"

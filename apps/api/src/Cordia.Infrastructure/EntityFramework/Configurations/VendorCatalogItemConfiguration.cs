@@ -22,6 +22,7 @@ public class VendorCatalogItemConfiguration : IEntityTypeConfiguration<VendorCat
         builder.Property(e => e.AvailabilityWindow).HasColumnType("jsonb");
         builder.Property(e => e.MenuMetadata).HasColumnType("jsonb");
         builder.Property(e => e.AllergenInfo).HasColumnType("jsonb");
+        builder.Property(e => e.DurationMinutes);
 
         // FK (tenant_id, catalog_id) → vendor_catalogs ON DELETE RESTRICT
         builder.HasOne<VendorCatalog>()

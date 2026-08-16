@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CUSTOMERS, fmtT, fmtDur, TIME_SLOTS, Booking, type Customer } from "../../../data/console";
+import { fmtT, fmtDur, TIME_SLOTS, Booking, type Customer } from "../../../data/console";
 import type { BookableService } from "../../../features/bookings/services";
-import { UNASSIGNED_RESOURCE_ID } from "../../../features/bookings/resources";
+import { UNASSIGNED_RESOURCE_ID, type GridResource } from "../../../features/bookings/resources";
+import { timeSlotsFromHours, type OperatingHour } from "../../../features/settings/hours";
 import { dayOptions, shortDayLabel, todayIndexAt, type ConsoleWeek } from "../../../features/bookings/week";
 import type { AvailableSlot } from "../../../features/bookings/availability";
 import type { CreatePrefill } from "../../../features/waitlist/prefill";
@@ -113,6 +114,10 @@ interface CreateBookingDrawerProps {
    * operations belong — the queue and the grid — rather than vanishing.
    */
   onSubmissionAbandoned?: (operationId: string) => void;
+  /** Operating hours — slot picker is derived from these when present. */
+  hours?: OperatingHour[];
+  /** Named staff resources. Unnamed / empty → no "With" picker. */
+  resources?: readonly GridResource[];
 }
 
 /**
@@ -209,7 +214,7 @@ interface SubmittedBooking {
 
 export function CreateBookingDrawer({
   open, device, week, onClose, onCreated, services, servicesFailed, onRetryServices, customers,
-  availability, prefill, onSubmissionAbandoned,
+  availability, prefill, onSubmissionAbandoned, hours, resources,
 }: CreateBookingDrawerProps) {
   const [name, setName] = useState('');
   // The guest's phone, unlike their name, DOES reach the platform — but NOT through the payload.
@@ -221,9 +226,14 @@ export function CreateBookingDrawer({
   const [customerSearch, setCustomerSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [svc, setSvc] = useState('');
-  // The grid lane the optimistic row is drawn on — a coordinate, not an assignment. There is
-  // no resource dimension server-side and nothing here is submitted (see ./resources.ts).
-  const staff = UNASSIGNED_RESOURCE_ID;
+  const namedResources = (resources ?? []).filter(r => r.name);
+  const showStaffPicker = namedResources.length > 0;
+  const [resourceId, setResourceId] = useState('');
+  const staff = (showStaffPicker && resourceId) ? resourceId : UNASSIGNED_RESOURCE_ID;
+  const slotOptions = useMemo(() => {
+    const slots = timeSlotsFromHours(hours);
+    return slots.length > 0 ? slots : TIME_SLOTS;
+  }, [hours]);
   // Today's column when the displayed week is the current one, else Monday.
   //
   // Asked of the clock rather than of `week.todayIndex`, which is frozen when the week is built:
@@ -411,6 +421,7 @@ export function CreateBookingDrawer({
     setDay(String(prefill?.day ?? defaultDayIndexRef.current));
     setTime(String(prefill?.start ?? 600));
     setPartySize(String(prefill?.partySize ?? 2));
+    setResourceId(namedResources[0]?.id ?? '');
     setPhase('form'); setShowDropdown(false);
     setSubmitError(null); setOperationId(null); setStartedAt(null);
     setSubmitted(null);
@@ -504,11 +515,8 @@ export function CreateBookingDrawer({
   }, [phase, poll.status, booked, attemptKey, submitted]);
 
 
-  // The tenant's real customers once loaded; the mock array only while the list has never
-  // loaded, and then labelled — the command palette was fixed the same way. Offering six
-  // invented people as a venue's customer list is the same false claim wherever it appears.
-  const showingDemoCustomers = customers === undefined;
-  const suggestions = (customers ?? CUSTOMERS).filter(c =>
+  // The tenant's real customers once loaded. Undefined → no suggestions, never the mock directory.
+  const suggestions = (customers ?? []).filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) && customerSearch.length > 0
   ).slice(0, 6);
 
@@ -581,6 +589,7 @@ export function CreateBookingDrawer({
           // Omitted entirely when the catalog states no duration. Sending a default would
           // durably record how long the venue is booked for on the strength of a guess.
           durationMinutes: service?.durationMinutes ?? undefined,
+          resourceId: showStaffPicker && resourceId ? resourceId : undefined,
           // The guest, so the booking has somewhere to notify and can be found by phone.
           //
           // Submitted as an opaque REF, not as the number: the phone reaches the platform on the
@@ -870,7 +879,7 @@ export function CreateBookingDrawer({
                       <div>
                         <div className="text-[13.5px] font-semibold text-ink">{c.name}</div>
                         <div className="text-[11px] text-t3">
-                          {showingDemoCustomers ? 'Demo data' : (c.fav || `${c.visits} bookings`)}
+                          {c.fav || `${c.visits} bookings`}
                         </div>
                       </div>
                     </button>
@@ -942,10 +951,22 @@ export function CreateBookingDrawer({
             </div>
             <div className="flex-1">
               <Field label="Time">
-                <SelectField value={time} onChange={setTime} options={TIME_SLOTS} />
+                <SelectField value={time} onChange={setTime} options={slotOptions} />
               </Field>
             </div>
           </div>
+          {showStaffPicker && (
+            <Field label="With">
+              <SelectField
+                value={resourceId}
+                onChange={setResourceId}
+                options={namedResources.map(r => ({
+                  value: r.id,
+                  label: r.role ? `${r.name} · ${r.role}` : r.name,
+                }))}
+              />
+            </Field>
+          )}
           <AvailabilityNote slots={availability} week={week} dayIndex={Number(day)} />
           <Field
             label="Party size"

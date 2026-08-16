@@ -34,9 +34,9 @@ from cordia_agent.state import (
     StreamFrameType,
 )
 from cordia_agent.streaming import BargeInController, TurnManager
-from cordia_agent.streaming.providers.fake_tts import FakeTTSProvider
 from cordia_agent.streaming.tts_chunker import TTSChunker
 from cordia_agent.streaming_models import AgentTextDeltaFrame
+from tests._stubs.streaming_tts_fake import FakeTTSProvider
 from tests.integration_tests.streaming.conftest import (
     _TS,
     CORRELATION_ID,

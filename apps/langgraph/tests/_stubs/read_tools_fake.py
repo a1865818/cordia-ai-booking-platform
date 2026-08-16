@@ -39,7 +39,7 @@ class FakeSlotExtractor:
         """
         self._captures: list[SlotCapture] = captures or []
 
-    def extract(self, text: str) -> list[SlotCapture]:
+    async def extract(self, text: str) -> list[SlotCapture]:
         """Return the pre-configured captures, ignoring *text*.
 
         Args:

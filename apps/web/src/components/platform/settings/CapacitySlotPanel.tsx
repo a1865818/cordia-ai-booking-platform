@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../../../api/queryKeys";
-import { SESSION_IDENTITY_HINT, sessionIdentity } from "../../../features/session/identity";
+import { sessionIdentity, sessionIdentityHint } from "../../../features/session/identity";
 import { declareSlot } from "../../../features/bookings/availability";
 import { Panel } from "../../ui/Panel";
 import { PermissionGate } from "../../ui/PermissionGate";
@@ -62,7 +62,7 @@ export function CapacitySlotPanel() {
   return (
     <Panel style={{ marginBottom: 18 }}>
       <SectionLabel>Bookable capacity</SectionLabel>
-      <div title={SESSION_IDENTITY_HINT}>
+      <div title={sessionIdentityHint()}>
         <PermissionGate
           requiredRole="owner"
           role={session.role}

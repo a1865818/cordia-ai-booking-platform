@@ -48,7 +48,9 @@ def test_get_correlation_returns_none_when_unset() -> None:
     # After exiting the scope the contextvar is reset to whatever it was before,
     # which is None when no outer binding is active.
     result = get_correlation()
-    assert result is None or result is not ctx, "bind_correlation must restore prior state on exit"
+    assert result is None or result is not ctx, (
+        "bind_correlation must restore prior state on exit"
+    )
 
 
 @pytest.mark.unit

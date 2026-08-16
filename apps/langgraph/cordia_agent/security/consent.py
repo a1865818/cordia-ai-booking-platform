@@ -35,6 +35,7 @@ from typing import Literal
 from langgraph.graph import END
 
 from cordia_agent.contracts.security import SessionConsentState
+from cordia_agent.models.disclosures import RECORDING_NOTICE, merge_disclosures
 from cordia_agent.security.policy import set_redaction_policy
 from cordia_agent.state import AgentState, Channel
 from cordia_agent.tools.client_binding import (
@@ -119,22 +120,42 @@ async def _record(
         captured_at=datetime.datetime.now(datetime.UTC),
         notice_channel=_notice_channel(state),  # type: ignore[arg-type]
     )
+    # §5.5/§14: the customer HAS been shown the recording notice by the time a
+    # reply is being recorded — the notice went out on the turn that set
+    # `pending_consent_notice`.  Recording that fact here is what lets
+    # await_confirmation gate on real disclosures instead of on a value the
+    # driver patched in.  A policy with `notice_required=False` showed nothing
+    # and claims nothing.
+    disclosures = (
+        {
+            "disclosures_presented": merge_disclosures(
+                state.disclosures_presented, RECORDING_NOTICE
+            )
+        }
+        if policy.notice_required
+        else {}
+    )
+
     env = await record_consent_call(
         RecordConsentInput(session_id=state.session_id or "", consent=consent)
     )
     if not env.ok:
         # Fail-closed: not persisted ⇒ non-recorded this turn; retried next
         # turn via consent_reply (consent_state stays None, §8 failure table).
+        # The disclosure still happened — a failed PERSIST does not un-play a
+        # notice the customer already heard.
         return {
             "recording_allowed": False,
             "pending_consent_notice": None,
             "consent_reply": reply,
+            **disclosures,
         }
     return {
         "consent_state": consent.model_dump(mode="json"),
         "recording_allowed": recording_allowed,
         "pending_consent_notice": None,
         "consent_reply": None,
+        **disclosures,
     }
 
 
