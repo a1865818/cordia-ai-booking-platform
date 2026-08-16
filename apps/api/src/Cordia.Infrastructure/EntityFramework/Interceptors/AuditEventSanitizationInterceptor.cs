@@ -1,4 +1,6 @@
-﻿using Cordia.Domain.Entities;
+﻿using System.Text.Json;
+using System.Text.Json.Nodes;
+using Cordia.Domain.Entities;
 using Cordia.Domain.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -56,7 +58,9 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
                 // allowlisted system-minted refs — user-influenced keys like customer_ref are NOT exempt)
                 // intact while masking PANs in free-text fields. Free-text Sanitize would corrupt a
                 // Luhn-coincidental id to [REDACTED]. Non-JSON metadata falls back to a wholesale mask.
-                entry.Entity.Metadata = SensitiveDataMask.SanitizeJson(metadata);
+                // Control characters are dropped FIRST (see StripControlCharacters) — a masked row is
+                // no use if the INSERT itself cannot execute.
+                entry.Entity.Metadata = SensitiveDataMask.SanitizeJson(StripControlCharacters(metadata));
 
             // The free-text identity columns can be CLIENT-supplied at several of the
             // ~45 direct `new AuditEvent` sites, so each masks at this choke point
@@ -83,5 +87,86 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
     }
 
     private static string? MaskFreeText(string? value)
-        => string.IsNullOrEmpty(value) ? value : SensitiveDataMask.Sanitize(value);
+        => string.IsNullOrEmpty(value) ? value : RemoveControlCharacters(SensitiveDataMask.Sanitize(value));
+
+    /// <summary>
+    /// Drops control characters from every string VALUE in the metadata JSON — a write-availability
+    /// guard that belongs at the same choke point as the masking, for the same reason: it must hold
+    /// for EVERY write site, including ones not yet written.
+    ///
+    /// <para><b>PostgreSQL cannot store <c>U+0000</c>.</b> A <c>jsonb</c> column rejects the escape
+    /// (<c>22P05 unsupported Unicode escape sequence</c>) and a <c>text</c> column rejects the raw
+    /// byte. Until now no audit metadata carried anything but code-authored literals, so this could
+    /// not happen; the menu-extraction lane is the first to copy model-generated free text — shaped by
+    /// an untrusted uploaded document — into <c>metadata</c>, and <c>JsonSerializer</c> encodes an
+    /// embedded NUL as a perfectly valid JSON escape. The resulting failure lands in
+    /// <c>SaveChanges</c>, i.e. AFTER every handler's own error handling, so it rolls back whatever
+    /// transaction is open — for an inbox consumer that un-admits the message and it redelivers
+    /// forever (Inv-5). All control characters go, not just NUL: none of them have a legitimate
+    /// meaning in an operator-facing audit value, and NUL is merely the one the database happens to
+    /// reject today.</para>
+    ///
+    /// <para>Structural, not a string replace: naively deleting the escape text would corrupt a
+    /// document whose data legitimately contains a backslash followed by <c>u0000</c>, turning a
+    /// storable row into an unparseable one — the very failure this prevents. Object KEYS are not
+    /// walked; every metadata object in the codebase is serialized from an anonymous type, so its
+    /// keys are compile-time literals.</para>
+    /// </summary>
+    private static string StripControlCharacters(string metadata)
+    {
+        // Fast path: a control character reaches here either as a serializer-emitted \u00XX escape
+        // (System.Text.Json escapes all of them) or, for hand-assembled metadata, as a raw char.
+        if (!metadata.Contains("\\u00", StringComparison.OrdinalIgnoreCase) && !metadata.Any(char.IsControl))
+            return metadata;
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(metadata);
+        }
+        catch (JsonException)
+        {
+            // Not JSON: SanitizeJson will mask it wholesale INTO a JSON string, so raw control
+            // characters still have to go first.
+            return RemoveControlCharacters(metadata);
+        }
+
+        var changed = false;
+        var stripped = StripNode(root, ref changed);
+        return changed ? (stripped?.ToJsonString() ?? metadata) : metadata;
+    }
+
+    private static JsonNode? StripNode(JsonNode? node, ref bool changed)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (key, value) in obj.ToList())
+                {
+                    var replacement = StripNode(value, ref changed);
+                    if (!ReferenceEquals(replacement, value))
+                        obj[key] = replacement;
+                }
+                return node;
+            case JsonArray arr:
+                for (var i = 0; i < arr.Count; i++)
+                {
+                    var value = arr[i];
+                    var replacement = StripNode(value, ref changed);
+                    if (!ReferenceEquals(replacement, value))
+                        arr[i] = replacement;
+                }
+                return node;
+            case JsonValue scalar when scalar.TryGetValue<string>(out var text) && text.Any(char.IsControl):
+                changed = true;
+                return JsonValue.Create(RemoveControlCharacters(text));
+            default:
+                return node;
+        }
+    }
+
+    private static string RemoveControlCharacters(string value)
+        => value.Any(char.IsControl)
+            ? new string(value.Where(c => !char.IsControl(c)).ToArray())
+            : value;
 }

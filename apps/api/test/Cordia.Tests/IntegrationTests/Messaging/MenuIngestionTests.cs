@@ -75,7 +75,7 @@ public class MenuIngestionTests(PostgresFixture fixture)
 
     private sealed class ThrowingMenuExtractor : IIsolatedMenuExtractor
     {
-        public Task<IReadOnlyList<DraftCatalogItem>> ExtractAsync(string artifactRef, CancellationToken ct = default)
+        public Task<MenuExtractionResult> ExtractAsync(string artifactRef, CancellationToken ct = default)
             => throw new InvalidOperationException("simulated extraction failure");
     }
 
