@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.AgentKnowledge;
 using Cordia.Application.Handlers.AgentKnowledge.CreateAgentKnowledge;
 using Cordia.Application.Handlers.AgentKnowledge.UpdateAgentKnowledge;
@@ -18,7 +19,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/agent-knowledge")]
-public class AgentKnowledgeController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class AgentKnowledgeController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Lists knowledge entries. Not owner-gated.</summary>
     [HttpGet]
@@ -46,15 +47,16 @@ public class AgentKnowledgeController(IMediator mediator, ITenantContext tenant)
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new CreateAgentKnowledgeCommand(
                 tenant.TenantId,
                 body?.Q ?? string.Empty,
                 body?.A,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Created($"/api/agent-knowledge/{result.Id}", result);
@@ -75,6 +77,7 @@ public class AgentKnowledgeController(IMediator mediator, ITenantContext tenant)
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new UpdateAgentKnowledgeCommand(
@@ -82,9 +85,9 @@ public class AgentKnowledgeController(IMediator mediator, ITenantContext tenant)
                 id,
                 body?.A,
                 body?.Status,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return result is null ? NotFound() : Ok(result);

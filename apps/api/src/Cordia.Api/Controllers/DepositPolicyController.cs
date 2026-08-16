@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.DepositPolicy.GetDepositPolicy;
 using Cordia.Application.Handlers.DepositPolicy.SetDepositPolicy;
 using Cordia.Domain.Interfaces;
@@ -17,7 +18,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/deposit-policy")]
-public class DepositPolicyController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class DepositPolicyController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Reads the deposit-policy row. Not owner-gated. Missing row → require false,
@@ -45,6 +46,7 @@ public class DepositPolicyController(IMediator mediator, ITenantContext tenant) 
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new SetDepositPolicyCommand(
@@ -55,9 +57,9 @@ public class DepositPolicyController(IMediator mediator, ITenantContext tenant) 
                 body?.RefundWindow ?? string.Empty,
                 body?.AmountMinor,
                 body?.Currency,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);

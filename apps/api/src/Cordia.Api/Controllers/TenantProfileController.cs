@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Tenancy.GetOperatingHours;
 using Cordia.Application.Handlers.Tenancy.GetTenantProfile;
 using Cordia.Application.Handlers.Tenancy.SetOperatingHours;
@@ -26,7 +27,8 @@ namespace Cordia.Api.Controllers;
 public class TenantProfileController(
     IMediator mediator,
     ITenantContext tenant,
-    ITenantDisplayNameRepository displayNames) : ControllerBase
+    ITenantDisplayNameRepository displayNames,
+    IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Reads the tenant business profile joined with the guest-facing venue name.
@@ -58,15 +60,16 @@ public class TenantProfileController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new SetTenantProfileCommand(
                 tenant.TenantId,
                 body?.BusinessType,
                 body?.WaitlistAutoBook,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);
@@ -106,14 +109,15 @@ public class TenantProfileController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new SetTenantDisplayNameCommand(
                 tenant.TenantId,
                 body?.DisplayName ?? string.Empty,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);
@@ -145,14 +149,15 @@ public class TenantProfileController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new SetOperatingHoursCommand(
                 tenant.TenantId,
                 body?.Hours ?? [],
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);

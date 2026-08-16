@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Capacity.Availability;
 using Cordia.Application.Handlers.Capacity.CheckCandidateAvailability;
 using Cordia.Domain.Generated;
@@ -34,7 +35,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/availability")]
-public class AvailabilityController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class AvailabilityController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Slots starting in the window, with the free capacity each has.
@@ -82,6 +83,8 @@ public class AvailabilityController(IMediator mediator, ITenantContext tenant) :
         if (body is null)
             return Problem(statusCode: 400, title: "Missing body", detail: "A JSON body is required.");
 
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
+
         var result = await mediator.Send(
             new CreateCapacitySlotCommand(
                 tenant.TenantId,
@@ -90,9 +93,9 @@ public class AvailabilityController(IMediator mediator, ITenantContext tenant) :
                 body.LocationId,
                 body.StartsAt,
                 body.TotalCapacity,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);

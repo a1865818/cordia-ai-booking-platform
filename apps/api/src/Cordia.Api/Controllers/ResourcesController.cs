@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Resources.CreateStaffResource;
+﻿using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.Resources.CreateStaffResource;
 using Cordia.Application.Handlers.Resources.ListStaffResources;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -17,7 +18,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/resources")]
-public class ResourcesController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class ResourcesController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Lists staff members, including inactive ones, so settings can show the full roster.
@@ -45,14 +46,15 @@ public class ResourcesController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new CreateStaffResourceCommand(
                 tenant.TenantId,
                 body?.Name ?? string.Empty,
                 body?.Role,
-                actor ?? string.Empty,
-                actorRole ?? string.Empty,
+                resolvedActor,
+                resolvedRole,
                 reasonCode ?? string.Empty),
             ct);
 

@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Handlers.Deposits.ListDeposits;
+﻿using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.Deposits.ListDeposits;
 using Cordia.Application.Handlers.Deposits.RefundDeposit;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -15,7 +16,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/deposits")]
-public class DepositsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class DepositsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Lists recent deposit sessions. Filter <c>status</c> is the console vocabulary
@@ -59,14 +60,15 @@ public class DepositsController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new RefundDepositCommand(
                 tenant.TenantId,
                 id,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return result is null ? NotFound() : Ok(result);

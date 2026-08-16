@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.BookingOperations.SubmitConfirmedIntent;
 using Cordia.Application.Handlers.Console.ListBookingSchedule;
 using Cordia.Application.Handlers.ManageBooking.FindManageableBookings;
@@ -22,7 +23,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
-public class BookingsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class BookingsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Finds minimized, non-sensitive booking candidates for Manage Booking.</summary>
     [HttpGet]
@@ -144,6 +145,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         var targetBookingId = string.IsNullOrWhiteSpace(request.TargetBookingId)
             ? bookingId
             : request.TargetBookingId;
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new ValidateBookingChangeQuery(
@@ -153,8 +155,8 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
                 request.ExpectedBookingVersion,
                 request.RequestedFields,
                 request.GrantId,
-                actor ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedActor,
+                resolvedRole),
             ct);
 
         return Ok(new ValidateBookingChangeResponse(result.Status, result.Validation));
@@ -229,14 +231,15 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
             new RecordAttendanceCommand(
                 tenant.TenantId,
                 bookingId,
                 request.Attendance ?? string.Empty,
-                actor ?? string.Empty,
-                actorRole ?? string.Empty,
+                resolvedActor,
+                resolvedRole,
                 reasonCode ?? string.Empty),
             ct);
 
@@ -267,9 +270,10 @@ public class BookingsController(IMediator mediator, ITenantContext tenant) : Con
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(
-            new SubmitConfirmedIntentCommand(tenant.TenantId, request, grantId, actor, actorRole), ct);
+            new SubmitConfirmedIntentCommand(tenant.TenantId, request, grantId, resolvedActor, resolvedRole), ct);
 
         return result switch
         {

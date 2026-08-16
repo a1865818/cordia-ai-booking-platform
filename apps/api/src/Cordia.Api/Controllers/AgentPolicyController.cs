@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.AgentPolicy;
 using Cordia.Application.Handlers.AgentPolicy.SetAgentGuardrails;
 using Cordia.Domain.Interfaces;
@@ -16,7 +17,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/agent-policy")]
-public class AgentPolicyController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class AgentPolicyController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>
     /// Reads canonical guardrails with labels. Not owner-gated. Missing row → g1–g5 on, g6 off;
@@ -47,6 +48,7 @@ public class AgentPolicyController(IMediator mediator, ITenantContext tenant) : 
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var toggles = (body?.Guardrails ?? [])
             .Where(g => g is not null)
@@ -57,9 +59,9 @@ public class AgentPolicyController(IMediator mediator, ITenantContext tenant) : 
             new SetAgentGuardrailsCommand(
                 tenant.TenantId,
                 toggles,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Ok(result);

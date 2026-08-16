@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Security.GetModelTrace;
 using Cordia.Application.Handlers.Security.RecordModelTrace;
 using Cordia.Domain.Interfaces;
@@ -20,7 +21,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/model-traces")]
-public class ModelTracesController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class ModelTracesController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Stores one redacted model prompt/output under the telemetry retention tier.</summary>
     [HttpPost]
@@ -58,9 +59,10 @@ public class ModelTracesController(IMediator mediator, ITenantContext tenant) : 
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var view = await mediator.Send(
-            new GetModelTraceQuery(tenant.TenantId, traceId, actor, actorRole, reasonCode), ct);
+            new GetModelTraceQuery(tenant.TenantId, traceId, resolvedActor, resolvedRole, reasonCode), ct);
 
         return view is null ? NotFound() : Ok(view);
     }

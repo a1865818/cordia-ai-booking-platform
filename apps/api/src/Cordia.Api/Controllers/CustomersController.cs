@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Console.GetCustomer;
 using Cordia.Application.Handlers.Console.ListCustomers;
 using Cordia.Application.Handlers.Console.SetCustomerNotes;
@@ -45,7 +46,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/customers")]
-public class CustomersController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class CustomersController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultLimit = 50;
@@ -103,6 +104,7 @@ public class CustomersController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var customer = await mediator.Send(
             new SetCustomerNotesCommand(
@@ -110,8 +112,8 @@ public class CustomersController(IMediator mediator, ITenantContext tenant) : Co
                 customerRef,
                 body?.Note,
                 body?.Tags,
-                actor ?? string.Empty,
-                actorRole ?? string.Empty,
+                resolvedActor,
+                resolvedRole,
                 reasonCode ?? string.Empty),
             ct);
 

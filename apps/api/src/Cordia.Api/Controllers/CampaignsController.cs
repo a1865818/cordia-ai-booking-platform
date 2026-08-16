@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Campaigns;
 using Cordia.Application.Handlers.Campaigns.ApproveCampaign;
 using Cordia.Application.Handlers.Campaigns.CreateCampaign;
@@ -25,7 +26,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/campaigns")]
-public class CampaignsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class CampaignsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType(typeof(CampaignListResult), StatusCodes.Status200OK)]
@@ -48,6 +49,7 @@ public class CampaignsController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var created = await mediator.Send(
             new CreateCampaignCommand(
@@ -57,9 +59,9 @@ public class CampaignsController(IMediator mediator, ITenantContext tenant) : Co
                 body?.Channel ?? string.Empty,
                 body?.Message ?? string.Empty,
                 body?.Recipients,
-                actor ?? string.Empty,
+                resolvedActor,
                 reasonCode ?? string.Empty,
-                actorRole ?? string.Empty),
+                resolvedRole),
             ct);
 
         return Created($"/api/campaigns/{created.Id}", created);
@@ -79,11 +81,12 @@ public class CampaignsController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         return Ok(await mediator.Send(
             new ApproveCampaignCommand(
-                tenant.TenantId, id, actor ?? string.Empty,
-                reasonCode ?? string.Empty, actorRole ?? string.Empty),
+                tenant.TenantId, id, resolvedActor,
+                reasonCode ?? string.Empty, resolvedRole),
             ct));
     }
 
@@ -101,11 +104,12 @@ public class CampaignsController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         return Ok(await mediator.Send(
             new RejectCampaignCommand(
-                tenant.TenantId, id, actor ?? string.Empty,
-                reasonCode ?? string.Empty, actorRole ?? string.Empty),
+                tenant.TenantId, id, resolvedActor,
+                reasonCode ?? string.Empty, resolvedRole),
             ct));
     }
 
@@ -124,11 +128,12 @@ public class CampaignsController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         return Ok(await mediator.Send(
             new ScheduleCampaignCommand(
-                tenant.TenantId, id, body?.SendAt, actor ?? string.Empty,
-                reasonCode ?? string.Empty, actorRole ?? string.Empty),
+                tenant.TenantId, id, body?.SendAt, resolvedActor,
+                reasonCode ?? string.Empty, resolvedRole),
             ct));
     }
 

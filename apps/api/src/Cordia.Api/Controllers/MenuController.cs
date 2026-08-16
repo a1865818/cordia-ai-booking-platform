@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Menu.ApproveCatalog;
 using Cordia.Application.Handlers.Menu.EditCatalogItems;
 using Cordia.Application.Handlers.Menu.GetCatalogDraftItems;
@@ -32,7 +33,7 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/menu")]
-public class MenuController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class MenuController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
 {
     /// <summary>Uploads a menu artifact and enqueues ingestion. Returns 202 with the new catalog id.</summary>
     [HttpPost("catalogs")]
@@ -53,10 +54,10 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         var versionLabel = string.IsNullOrWhiteSpace(body.VersionLabel)
             ? $"menu_{DateTimeOffset.UtcNow:yyyyMMddHHmmss}"
             : body.VersionLabel;
-        var resolvedActor = ResolveActor(actor);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var catalogId = await mediator.Send(
-            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+            new UploadMenuCommand(tenant.TenantId, resolvedActor, body.SourceArtifactRef, versionLabel, reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Accepted(
             $"/api/menu/catalogs/{catalogId}",
@@ -84,9 +85,10 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
             .Select(e => new CatalogItemEdit(e.ItemId, e.Name, e.Description, e.PriceMinor))
             .ToList();
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(
-            new ReviewCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+            new ReviewCatalogCommand(tenant.TenantId, catalogId, resolvedActor, edits, reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review" });
     }
@@ -114,10 +116,11 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     {
         TenantGuard.RequireTenant(tenant);
 
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
         var result = await mediator.Send(
             new ListCatalogsQuery(
-                tenant.TenantId, ResolveActor(actor),
-                reasonCode ?? string.Empty, actorRole ?? string.Empty, limit ?? 50),
+                tenant.TenantId, resolvedActor,
+                reasonCode ?? string.Empty, resolvedRole, limit ?? 50),
             ct);
 
         return Ok(result);
@@ -149,10 +152,11 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
     {
         TenantGuard.RequireTenant(tenant);
 
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
         var result = await mediator.Send(
             new GetCatalogDraftItemsQuery(
-                tenant.TenantId, catalogId, ResolveActor(actor),
-                reasonCode ?? string.Empty, actorRole ?? string.Empty),
+                tenant.TenantId, catalogId, resolvedActor,
+                reasonCode ?? string.Empty, resolvedRole),
             ct);
 
         return Ok(result);
@@ -179,9 +183,10 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
             .Where(e => e is not null) // a null array element (e.g. "edits":[null]) must not 500
             .Select(e => new CatalogItemEdit(e.ItemId, e.Name, e.Description, e.PriceMinor))
             .ToList();
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         await mediator.Send(
-            new EditCatalogItemsCommand(tenant.TenantId, catalogId, ResolveActor(actor), edits, reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+            new EditCatalogItemsCommand(tenant.TenantId, catalogId, resolvedActor, edits, reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { catalog_id = catalogId, status = "in_review", edited = edits.Count });
     }
@@ -201,8 +206,9 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
-        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+        await mediator.Send(new ApproveCatalogCommand(tenant.TenantId, catalogId, resolvedActor, reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { catalog_id = catalogId, status = "approved" });
     }
@@ -222,16 +228,12 @@ public class MenuController(IMediator mediator, ITenantContext tenant) : Control
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
-        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, ResolveActor(actor), reasonCode ?? string.Empty, actorRole ?? string.Empty), ct);
+        await mediator.Send(new PublishCatalogCommand(tenant.TenantId, catalogId, resolvedActor, reasonCode ?? string.Empty, resolvedRole), ct);
 
         return Ok(new { catalog_id = catalogId, status = "published" });
     }
-
-    // Spec 14 §24.5 fail-closed: NO silent default — an absent X-Actor flows through as
-    // empty and is rejected by the command validator / OperatorActionBehavior.
-    private static string ResolveActor(string? actor)
-        => string.IsNullOrWhiteSpace(actor) ? string.Empty : actor;
 }
 
 /// <summary>Body for POST /api/menu/catalogs.</summary>
