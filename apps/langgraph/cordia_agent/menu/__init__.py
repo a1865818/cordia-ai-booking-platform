@@ -5,12 +5,20 @@ from cordia_agent.menu.extraction_agent import (
     ExtractionResult,
     IsolatedExtractionAgent,
 )
+from cordia_agent.menu.model_azure import (
+    AzureExtractionModel,
+    ExtractionOutcome,
+    MenuExtractionModelError,
+)
 from cordia_agent.menu.model_port import ExtractionModel
 
 
 __all__ = [
+    "AzureExtractionModel",
     "ExtractionFlag",
     "ExtractionModel",
+    "ExtractionOutcome",
     "ExtractionResult",
     "IsolatedExtractionAgent",
+    "MenuExtractionModelError",
 ]
