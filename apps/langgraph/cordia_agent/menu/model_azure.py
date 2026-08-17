@@ -87,22 +87,38 @@ DEFAULT_CURRENCY = "AUD"
 #: tight because a turn is interactive, whereas this is a batch document job —
 #: up to 256 KiB of input and structured JSON for 100+ items, i.e. a 30-120 s
 #: generation.  On the conversational budget every attempt times out, so the
-#: only outcome would be three discarded billed generations then ``ExtractFailed``.
+#: only outcome would be two discarded billed generations then ``ExtractFailed``
+#: (:data:`MENU_EXTRACTION_RETRIES` is the TOTAL attempt count that
+#: :func:`~cordia_agent.llm.invoke.ainvoke_with_timeout` iterates, not a count of
+#: extra tries on top of the first).
 #:
-#: Worst case here is 40 + 55 = 95 s, which fits inside the .NET caller's 120 s
-#: budget with headroom for HTTP and artifact resolution.
+#: Worst case here is 40 + 55 = 95 s, inside the
+#: :data:`MENU_EXTRACTION_MAX_TOTAL_SECONDS` ceiling with room for the transport
+#: the .NET caller's own budget also has to cover.
 MENU_EXTRACTION_BASE_TIMEOUT_SECONDS = 40.0
 MENU_EXTRACTION_TIMEOUT_INCREMENT_SECONDS = 15.0
 MENU_EXTRACTION_RETRIES = 2
 
 #: Hard ceiling on the WORST-CASE total of every attempt.  The caller
 #: (.NET ``LangGraph:ExtractTimeoutSeconds``) gives up at 120 s, and its HTTP
-#: call runs inside an open Postgres transaction — so any budget beyond this
+#: call runs inside an open Postgres transaction — so any budget beyond that
 #: only buys a generation nobody is still waiting for, paid for while holding a
 #: transaction.  An override that breaches it is rejected rather than clamped:
 #: silently shortening a budget an operator deliberately raised is its own
 #: surprise.
-MENU_EXTRACTION_MAX_TOTAL_SECONDS = 120.0
+#:
+#: 105 s, NOT the caller's 120 s, and the 15 s difference is the point: the
+#: caller's budget is strictly WIDER in scope than this one.  Its cancellation
+#: token is armed before the artifact resolver runs and has to cover DNS,
+#: connect, up to ~1 MiB of request transfer, this route's bounded body read,
+#: request validation and the response — none of which this ceiling sees.  Set
+#: equal to 120 s, the maximum accepted override would consume 100% of the
+#: caller's budget and the caller would be GUARANTEED to give up first on the
+#: worst case: two billed generations paid for, ``ExtractFailed`` settled anyway,
+#: and a 120 s transaction hold to show for it.  Raising
+#: ``ExtractTimeoutSeconds`` is not the alternative fix — it is also the
+#: transaction-hold budget.
+MENU_EXTRACTION_MAX_TOTAL_SECONDS = 105.0
 
 #: Per-attempt budget override.  Same ``_<ROLE>`` suffix mechanism
 #: :func:`~cordia_agent.llm.config.settings_from_env` implements, read here

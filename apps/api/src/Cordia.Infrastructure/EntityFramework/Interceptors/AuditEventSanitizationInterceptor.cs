@@ -86,8 +86,25 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
         }
     }
 
+    /// <summary>
+    /// Strips control characters and THEN masks — the order is the security property, not a style
+    /// choice.
+    ///
+    /// <para><see cref="SensitiveDataMask"/>'s PAN detector tolerates only space and dash between
+    /// digits (<c>[0-9](?:[ -]{0,3}[0-9]){12,}</c>), so <c>4111\t1111\t1111\t1111</c> never forms a
+    /// candidate run and <c>Sanitize</c> hands it back verbatim. Masking first and stripping second
+    /// then ASSEMBLES the PAN out of the fragments the detector had just declined to look at, and
+    /// persists it — proved end to end against the real interceptor and the real
+    /// <c>audit_events</c> table. Stripping first means the detector sees the digits contiguously
+    /// and masks them.</para>
+    ///
+    /// <para>This order cannot reintroduce the write-availability hazard the strip exists for
+    /// (PostgreSQL rejects <c>U+0000</c> in a <c>text</c> column): <c>Sanitize</c> only ever
+    /// replaces matched spans with <see cref="SensitiveDataMask.MaskToken"/> or returns its input
+    /// unchanged, so it never emits a control character that was not already there.</para>
+    /// </summary>
     private static string? MaskFreeText(string? value)
-        => string.IsNullOrEmpty(value) ? value : RemoveControlCharacters(SensitiveDataMask.Sanitize(value));
+        => string.IsNullOrEmpty(value) ? value : SensitiveDataMask.Sanitize(RemoveControlCharacters(value));
 
     /// <summary>
     /// Drops control characters from every string VALUE in the metadata JSON — a write-availability
@@ -114,9 +131,19 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
     /// </summary>
     private static string StripControlCharacters(string metadata)
     {
-        // Fast path: a control character reaches here either as a serializer-emitted \u00XX escape
-        // (System.Text.Json escapes all of them) or, for hand-assembled metadata, as a raw char.
-        if (!metadata.Contains("\\u00", StringComparison.OrdinalIgnoreCase) && !metadata.Any(char.IsControl))
+        // Fast path: a control character reaches here either as a JSON escape or, for
+        // hand-assembled metadata, as a raw char.
+        //
+        // ANY backslash is the trigger, not the \u00XX form specifically. System.Text.Json escapes
+        // every control character, but five of them in SHORT form — measured:
+        // Serialize(new { v = "a\tb" }) is {"v":"a\tb"} while Serialize(new { v = "a\0b" }) is
+        // {"v":"a b"}. A \u00-only probe therefore walked straight past \t \n \r \b \f, so a
+        // tab-separated PAN in metadata escaped masking entirely (the parse below un-escapes to a
+        // real control char, which StripNode then removes, letting SanitizeJson see the digits
+        // contiguously). Testing for a backslash covers every escape form there is, present and
+        // future; a metadata document that merely contains a backslash costs one parse and still
+        // returns byte-identical, because `changed` only flips when something was actually stripped.
+        if (!metadata.Contains('\\', StringComparison.Ordinal) && !metadata.Any(char.IsControl))
             return metadata;
 
         JsonNode? root;

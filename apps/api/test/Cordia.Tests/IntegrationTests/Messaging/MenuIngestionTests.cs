@@ -624,4 +624,130 @@ public class MenuIngestionTests(PostgresFixture fixture)
         var drafts = await repo.GetDraftItemsAsync(catalogId, CancellationToken.None);
         Assert.Equal(2, drafts.Count);
     }
+
+    /// <summary>
+    /// Two items whose ids are DISTINCT on the wire but IDENTICAL after the client's sanitization —
+    /// the poison loop this whole seam's bounds exist to prevent, asserted against the real database.
+    ///
+    /// <para><c>Sanitize</c> is not injective: control-character removal maps <c>"SKU\tA1"</c> and
+    /// <c>"SKUA1"</c> onto one id, and truncation to 128 chars maps any two ids sharing that prefix
+    /// onto one. Python dedupes at FULL length on the raw string and its <c>item_id</c> carries no
+    /// <c>max_length</c>, so nothing upstream can prevent either, and both ids are attacker-supplied
+    /// document content.</para>
+    ///
+    /// <para><b>Untranslated, the duplicate throws OUTSIDE the handler's fail-secure catch</b> — at
+    /// <c>AddRange</c> on EF's identity map ("another instance with the same key value for
+    /// {'TenantId', 'ItemId'} is already being tracked"), before any SQL runs, or as a duplicate-key
+    /// violation at <c>SaveChanges</c> on a redelivery. Either rolls back the inbox transaction,
+    /// un-admits the message and re-runs a paid LLM extraction on every redelivery (Inv-5). This test
+    /// pins the fixed outcome: <c>ExtractFailed</c>, audit, owner alert, inbox row COMMITTED, and no
+    /// second extraction when the same message comes back.</para>
+    /// </summary>
+    [Fact]
+    public async Task DuplicateSanitizedItemIds_SettleExtractFailed_AndTheMessageIsNotRedelivered()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+        var (tenantId, catalogId, messageId) = await SeedUploadedCatalogAndIngestMessageAsync(
+            "inline:Margherita 18.50 | Margherita 18.50");
+
+        const string Payload = """
+            {
+              "items": [
+                {
+                  "item_id": "SKU\tA1",
+                  "name": "Margherita",
+                  "description": "Tomato, mozzarella, basil.",
+                  "price": { "amount_minor": 1850, "currency": "AUD" }
+                },
+                {
+                  "item_id": "SKUA1",
+                  "name": "Margherita (large)",
+                  "description": "Tomato, mozzarella, basil.",
+                  "price": { "amount_minor": 2450, "currency": "AUD" }
+                }
+              ],
+              "flags": []
+            }
+            """;
+
+        using var handler = FakeHttpMessageHandler.RespondingJson(Payload);
+
+        await using var sp = BuildContainerWithHttpExtractor(handler, timeoutSeconds: 30);
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal(1, handler.CallCount);
+
+        await AssertSettledExtractFailedAsync(tenantId, catalogId, messageId);
+
+        // The load-bearing half: redelivery is a no-op, so the collision cost exactly one extraction
+        // rather than one per redelivery forever.
+        await RearmForRedeliveryAsync(tenantId, messageId);
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal(1, handler.CallCount);
+        await AssertSettledExtractFailedAsync(tenantId, catalogId, messageId);
+    }
+
+    /// <summary>
+    /// <c>duration_minutes</c> travels the whole way: wire → <c>DraftCatalogItem</c> → the handler's
+    /// projection → the <c>vendor_catalog_items.duration_minutes</c> column, read back off disk.
+    ///
+    /// <para>It was silently dropped at mapping while the column existed, both customer-facing reads
+    /// selected it (<c>SearchVendorCatalogQuery</c>, <c>GetCatalogItemQuery</c>) and no owner edit
+    /// could repair it — so every extracted duration was permanently null and the foreground agent
+    /// could never learn how long a time-boxed service takes. The second item pins the other half:
+    /// a duration the document never stated stays NULL, not zero (Inv-16 — an invented zero-length
+    /// service is a confident falsehood).</para>
+    /// </summary>
+    [Fact]
+    public async Task DurationMinutesOnTheWire_ReachesThePersistedDraftItem()
+    {
+        await NeutralizeExistingUnpublishedAsync();
+        var (tenantId, catalogId, _) = await SeedUploadedCatalogAndIngestMessageAsync(
+            "inline:Deep Tissue Massage 60 min 120.00 | Gift Card 50.00");
+
+        const string Payload = """
+            {
+              "items": [
+                {
+                  "item_id": "svc_1",
+                  "name": "Deep Tissue Massage",
+                  "description": "Sixty minutes.",
+                  "price": { "amount_minor": 12000, "currency": "AUD" },
+                  "duration_minutes": 60,
+                  "extraction_confidence": 0.91,
+                  "source_location": "page 1"
+                },
+                {
+                  "item_id": "svc_2",
+                  "name": "Gift Card",
+                  "description": "No duration.",
+                  "price": { "amount_minor": 5000, "currency": "AUD" }
+                }
+              ],
+              "flags": []
+            }
+            """;
+
+        using var handler = FakeHttpMessageHandler.RespondingJson(Payload);
+
+        await using var sp = BuildContainerWithHttpExtractor(handler, timeoutSeconds: 30);
+        await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal(1, handler.CallCount);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var catalog = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
+        Assert.Equal(CatalogStatus.DraftReady, catalog.Status);
+
+        var items = await assertCtx.VendorCatalogItems.AsNoTracking().IgnoreQueryFilters()
+            .Where(i => i.TenantId == tenantId && i.CatalogId == catalogId)
+            .OrderBy(i => i.ItemId)
+            .ToListAsync();
+
+        Assert.Equal(60, items.Single(i => i.ItemId == $"{catalogId}:svc_1").DurationMinutes);
+        Assert.Null(items.Single(i => i.ItemId == $"{catalogId}:svc_2").DurationMinutes);
+    }
 }

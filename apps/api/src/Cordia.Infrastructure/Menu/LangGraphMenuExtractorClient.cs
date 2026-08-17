@@ -85,9 +85,10 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
     ///
     /// <para>Two independent reasons, either sufficient. (1) The canonical ref today is
     /// <c>inline:&lt;the entire document&gt;</c>, so sending it verbatim puts the menu in the body
-    /// TWICE — and the route's <c>MAX_REQUEST_BODY_BYTES</c> is only <c>2 ×</c> the text budget,
-    /// sized to absorb JSON escaping, not a second copy. A document at the resolver's cap
-    /// overflows it and comes back <c>413</c>. (2) The ref is a <c>SensitiveDataMask</c>
+    /// TWICE, and the route's <c>MAX_REQUEST_BODY_BYTES</c> (<c>4 ×</c> the text budget) is sized to
+    /// absorb JSON escaping on ONE copy, not to carry a second one — an at-cap document plus its own
+    /// ref spends over half the transport guard on a field the route only ever reduces to a digest.
+    /// (2) The ref is a <c>SensitiveDataMask</c>
     /// control-plane key this codebase refuses to log raw; the route would reduce it to a digest
     /// anyway. Correlation rides <see cref="CorrelationHeader"/> instead, which is what the route
     /// can actually join on.</para>
@@ -270,14 +271,87 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
     /// </summary>
     private MenuExtractionResult Map(WireExtractionResponse payload)
     {
-        var items = (payload.Items ?? []).Select(MapItem).ToList();
-        var flags = (payload.Flags ?? [])
+        // A NULL or ABSENT `items`/`flags` is a contract violation, not an empty extraction.
+        //
+        // `JsonUnmappedMemberHandling.Disallow` says nothing about a member that is present-and-null
+        // or missing entirely, so `{"items":null,"flags":null}`, `{"flags":[]}` and even `{}` all
+        // deserialized happily and mapped to MenuExtractionResult(0, 0) — accepted as SUCCESS, which
+        // settles the catalog to DraftReady with zero items and reads to the owner as "your menu is
+        // empty". That is fail-OPEN in a class whose contract is "fail closed, always".
+        //
+        // The real route cannot produce it: `ExtractionResult.items` is required, `flags` has a
+        // default_factory, and the envelope is round-tripped through
+        // model_validate(...).model_dump(mode="json"). Only a NON-CONFORMING responder — a reverse
+        // proxy, a drifted route, a dev server — answers this shape, which is exactly the threat
+        // model this class documents.
+        //
+        // An empty-but-PRESENT `items: []` is deliberately NOT touched: a readable document with no
+        // priced rows is a legitimate extraction outcome on both sides of the wire (http_app.py, and
+        // model_azure.py's "rows reported but none survived → raise" vs "model reports zero rows →
+        // []"), and failing it would mislabel a readable-but-itemless menu as "artifact unreadable".
+        if (payload.Items is null || payload.Flags is null)
+        {
+            _logger.LogWarning(
+                "Menu extraction response omitted items or flags; settling the ingestion as failed.");
+            throw new MenuExtractionFailedException(
+                "Menu extraction agent returned a response with no items or flags member.");
+        }
+
+        var items = payload.Items.Select(MapItem).ToList();
+        var flags = payload.Flags
             .Select(f => new MenuExtractionFlag(
                 Sanitize(f.ItemId, MaxItemIdChars),
                 Sanitize(f.Reason, MaxFlagReasonChars) ?? string.Empty))
             .ToList();
 
+        EnsureItemIdsAreDistinct(items);
+
         return new MenuExtractionResult(items, flags);
+    }
+
+    /// <summary>
+    /// Refuses a response whose SANITIZED item ids collide — a poison loop, not a data-quality nit.
+    ///
+    /// <para><see cref="Sanitize"/> is not injective, and both of its collapsing steps are reachable
+    /// from attacker-supplied document content: control-character removal maps <c>"SKU\tA1"</c> and
+    /// <c>"SKUA1"</c> onto the same id, and truncation to <see cref="MaxItemIdChars"/> maps any two
+    /// ids sharing their first 128 characters onto the same id. Python dedupes at FULL length on the
+    /// raw string (<c>_unique_item_id</c>) and <c>ExtractedMenuItem.item_id</c> carries no
+    /// <c>max_length</c>, so nothing upstream can prevent either.</para>
+    ///
+    /// <para><b>Why it has to be caught HERE.</b> Two drafts with the same
+    /// <c>(tenant_id, item_id)</c> throw at <c>AddRange</c> inside
+    /// <c>VendorCatalogRepository.AddDraftItemsAsync</c> — EF's identity map rejects the second
+    /// instance before any SQL runs (<c>InvalidOperationException: The instance of entity type
+    /// 'VendorCatalogItem' cannot be tracked because another instance with the same key value for
+    /// {'TenantId', 'ItemId'} is already being tracked</c>) — and on a redelivery path PostgreSQL
+    /// raises <c>duplicate key value violates unique constraint</c> at <c>SaveChanges</c>. Both land
+    /// AFTER <c>IngestVendorMenuCommandHandler</c>'s fail-secure catch has closed, so the inbox
+    /// transaction rolls back, the admission is un-done, and a paid LLM extraction re-runs on every
+    /// redelivery (Inv-5).</para>
+    ///
+    /// <para><b>Throwing, not renaming.</b> Suffixing a collision would invent an id no owner and no
+    /// document ever authorised, and silently split or merge rows in a draft catalogue the owner is
+    /// about to approve. Failing closed matches this class's stated contract: the catalog settles
+    /// <c>ExtractFailed</c>, the owner is alerted, and recovery is a fresh upload.</para>
+    /// </summary>
+    private void EnsureItemIdsAreDistinct(IReadOnlyList<DraftCatalogItem> items)
+    {
+        var seen = new HashSet<string>(items.Count, StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            if (seen.Add(item.ItemId))
+                continue;
+
+            // The COUNT only — never the colliding id, which is model-shaped text derived from an
+            // untrusted document (Inv-12/16).
+            _logger.LogWarning(
+                "Menu extraction returned {Count} items with a duplicate item id after sanitization; "
+                + "settling the ingestion as failed rather than letting the draft insert throw.",
+                items.Count);
+            throw new MenuExtractionFailedException(
+                "Menu extraction agent returned two items whose ids are identical after sanitization.");
+        }
     }
 
     private DraftCatalogItem MapItem(WireCatalogItem item)
@@ -300,7 +374,16 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             Category: Sanitize(item.Category, MaxCategoryChars),
             Modifiers: SerializeModifiers(item.Modifiers),
             AvailabilityWindow: SerializeAvailabilityWindow(item.AvailabilityWindow),
-            ImageRef: Sanitize(item.ImageRef, MaxImageRefChars));
+            ImageRef: Sanitize(item.ImageRef, MaxImageRefChars),
+            // Unlike `allergens`/`dietary_labels`, this one HAS somewhere to land:
+            // vendor_catalog_items.duration_minutes exists (VendorCatalogItemConfiguration, migration
+            // 20260813121656_ConsoleCompleteness) and both customer-facing reads already select it
+            // (SearchVendorCatalogQuery, GetCatalogItemQuery). Dropping it here made every extracted
+            // duration permanently null with no way for the owner to repair it — CatalogItemEdit
+            // exposes only ItemId/Name/Description/PriceMinor — so the foreground agent could never
+            // learn how long a "60-minute massage" takes. Not bounded or sanitized: it is an int?,
+            // which carries no control characters and no length.
+            DurationMinutes: item.DurationMinutes);
     }
 
     /// <summary>
@@ -394,10 +477,17 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
     /// inserts fine while a high-entropy one of the same length (a base64 blob or a hash printed
     /// on a menu) does not — meaning it passes casual testing and fails on real hostile input.</para>
     ///
-    /// <para><b>Both failures land at <c>SaveChanges</c></b> — after the ingestion handler has
-    /// returned, outside its fail-secure catch — so the inbox transaction rolls back, the message
-    /// is redelivered, and a paid LLM extraction re-runs on every loop (Inv-5). Same reasoning,
-    /// and the same remedy, as Phase 3's <c>SanitizeAuditLabel</c> on the audit path.</para>
+    /// <para><b>Both failures land outside the ingestion handler's fail-secure catch</b> — the
+    /// oversized-index one at <c>SaveChanges</c>, after the handler has returned — so the inbox
+    /// transaction rolls back, the message is redelivered, and a paid LLM extraction re-runs on
+    /// every loop (Inv-5). Same reasoning, and the same remedy, as Phase 3's
+    /// <c>SanitizeAuditLabel</c> on the audit path.</para>
+    ///
+    /// <para><b>Neither step is injective, and that is its own hazard.</b> Truncation and
+    /// control-character removal can both collapse two distinct agent ids onto one, and duplicate
+    /// <c>item_id</c>s throw EARLIER than <c>SaveChanges</c> — at <c>AddRange</c>, on EF's identity
+    /// map — but still outside that same catch. <see cref="EnsureItemIdsAreDistinct"/> is what turns
+    /// that into a <see cref="MenuExtractionFailedException"/> the handler can actually see.</para>
     /// </summary>
     private static string? Sanitize(string? value, int maxChars)
     {

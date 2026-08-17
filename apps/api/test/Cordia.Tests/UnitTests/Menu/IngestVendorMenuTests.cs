@@ -88,6 +88,34 @@ public class IngestVendorMenuTests
     }
 
     [Fact]
+    public async Task CleanScan_CopiesEveryDraftFieldOntoThePersistedItem_IncludingDuration()
+    {
+        // `duration_minutes` came off the wire, had a column (vendor_catalog_items.duration_minutes)
+        // and was read back by BOTH customer-facing queries — and this projection dropped it, so
+        // every extracted duration was permanently null with no owner repair path (CatalogItemEdit
+        // exposes only ItemId/Name/Description/PriceMinor). The foreground agent could never learn
+        // how long a "60-minute massage" takes.
+        SetupCleanExtraction(new MenuExtractionResult(
+            [new DraftCatalogItem(
+                "svc1", "Deep Tissue Massage", "Sixty minutes.", 12000, "AUD", 0.9, "page_1",
+                Category: "Treatments", DurationMinutes: 60)],
+            []));
+
+        VendorCatalogItem? persisted = null;
+        _repo.Setup(r => r.AddDraftItemsAsync(It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<VendorCatalogItem>, CancellationToken>((items, _) => persisted = items.Single())
+            .Returns(Task.CompletedTask);
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        Assert.NotNull(persisted);
+        Assert.Equal(60, persisted.DurationMinutes);
+        Assert.Equal("Treatments", persisted.Category);
+        Assert.Equal(12000, persisted.PriceMinor);
+        Assert.Equal("page_1", persisted.SourceLocation);
+    }
+
+    [Fact]
     public async Task MalwareScan_Quarantines_AndNeverExtracts()
     {
         SetupCatalog(CatalogStatus.Uploaded);

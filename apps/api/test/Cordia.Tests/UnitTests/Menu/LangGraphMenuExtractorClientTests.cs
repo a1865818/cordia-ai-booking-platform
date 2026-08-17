@@ -132,6 +132,39 @@ public class LangGraphMenuExtractorClientTests : IDisposable
         Assert.Empty(result.Flags);
     }
 
+    [Fact]
+    public async Task Extract_DurationMinutes_IsCarriedOntoTheDraft()
+    {
+        // NOT the `allergens`/`dietary_labels` "nowhere to land" case: `duration_minutes` has a
+        // column (vendor_catalog_items.duration_minutes) and BOTH customer-facing reads already
+        // select it (SearchVendorCatalogQuery, GetCatalogItemQuery). Dropped here, every extracted
+        // duration was permanently null with no owner repair path — CatalogItemEdit exposes only
+        // ItemId/Name/Description/PriceMinor — so the foreground agent could never learn how long a
+        // "60-minute massage" takes.
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            """
+            {"items":[{"item_id":"svc_1","name":"Deep Tissue Massage","description":"60 minutes.",
+              "price":{"amount_minor":12000,"currency":"AUD"},"duration_minutes":60}],"flags":[]}
+            """);
+
+        var result = await CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken);
+
+        Assert.Equal(60, Assert.Single(result.Items).DurationMinutes);
+    }
+
+    [Fact]
+    public async Task Extract_AbsentDurationMinutes_MapsToNull_NotZero()
+    {
+        // A duration the document never stated must stay unknown. Zero would be a fabricated fact
+        // the storefront would render as a zero-length service (Inv-16).
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            """{"items":[{"item_id":"i","name":"n","description":"d","price":{"amount_minor":1,"currency":"AUD"}}],"flags":[]}""");
+
+        var result = await CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken);
+
+        Assert.Null(Assert.Single(result.Items).DurationMinutes);
+    }
+
     // ---------------------------------------------------------------------
     // The wire contract is closed (D-C)
     // ---------------------------------------------------------------------
@@ -196,6 +229,30 @@ public class LangGraphMenuExtractorClientTests : IDisposable
 
         await Assert.ThrowsAsync<MenuExtractionFailedException>(
             () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("""{"items":null,"flags":null}""")]
+    [InlineData("""{"items":null,"flags":[]}""")]
+    [InlineData("""{"items":[],"flags":null}""")]
+    [InlineData("""{"flags":[]}""")]   // items absent entirely
+    [InlineData("""{"items":[]}""")]   // flags absent entirely
+    [InlineData("{}")]                 // both absent
+    public async Task Extract_NullOrAbsentItemsOrFlags_Throws_RatherThanCountingAsAnEmptyExtraction(string json)
+    {
+        // JsonUnmappedMemberHandling.Disallow says nothing about a member that is present-and-null
+        // or missing, so every one of these deserialized happily and mapped to
+        // MenuExtractionResult(0, 0) — ACCEPTED AS SUCCESS, settling the catalog to DraftReady with
+        // zero items, which reads to the owner as "your menu is empty". Fail-open in a class whose
+        // contract is "fail closed, always".
+        //
+        // The real route cannot emit this shape (`items` is required, `flags` has a default_factory,
+        // and the envelope round-trips through model_validate(...).model_dump(mode="json")), so only
+        // a non-conforming responder does — a reverse proxy, a drifted route, a dev server. Which is
+        // precisely the threat model this class documents.
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(FakeHttpMessageHandler.RespondingJson(json))
+                .ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -454,6 +511,109 @@ public class LangGraphMenuExtractorClientTests : IDisposable
         Assert.Equal(LangGraphMenuExtractorClient.MaxItemIdChars, flag.ItemId!.Length);
     }
 
+    // ---------------------------------------------------------------------
+    // Sanitize is not injective: colliding item ids must fail HERE
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Extract_TwoItemIdsDifferingOnlyPastTheTruncationBound_Throws()
+    {
+        // Truncation to MaxItemIdChars collapses them. Python dedupes `item_id` at FULL length on the
+        // raw string (_unique_item_id) and ExtractedMenuItem.item_id has no max_length, so nothing
+        // upstream can prevent it — and both ids are attacker-supplied document content.
+        //
+        // Untranslated, the duplicate throws at AddRange on EF's identity map ("another instance with
+        // the same key value for {'TenantId', 'ItemId'} is already being tracked"), or as a
+        // duplicate-key violation at SaveChanges on a redelivery. Both land AFTER
+        // IngestVendorMenuCommandHandler's fail-secure catch has closed, so the inbox transaction
+        // rolls back and a paid LLM extraction re-runs on every redelivery (Inv-5).
+        var shared = new string('a', LangGraphMenuExtractorClient.MaxItemIdChars);
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            $$$"""
+            {"items":[
+              {"item_id":"{{{shared}}}one","name":"Soup","description":"d","price":{"amount_minor":1,"currency":"AUD"}},
+              {"item_id":"{{{shared}}}two","name":"Salad","description":"d","price":{"amount_minor":2,"currency":"AUD"}}
+            ],"flags":[]}
+            """);
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Extract_TwoItemIdsDifferingOnlyByAnEmbeddedControlCharacter_Throws()
+    {
+        // The cheaper vector, and the one no length bound would catch: "SKU<TAB>A1" and "SKUA1" are
+        // distinct strings in Python and identical after the control-character strip.
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            """
+            {"items":[
+              {"item_id":"SKU\tA1","name":"Soup","description":"d","price":{"amount_minor":1,"currency":"AUD"}},
+              {"item_id":"SKUA1","name":"Salad","description":"d","price":{"amount_minor":2,"currency":"AUD"}}
+            ],"flags":[]}
+            """);
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Extract_CollidingItemIds_AreNotLeakedIntoTheException()
+    {
+        // The ids are model-shaped text read out of an untrusted document (Inv-12/16), so the
+        // failure names the fault, never the value.
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            $$$"""
+            {"items":[
+              {"item_id":"{{{Canary}}}","name":"Soup","description":"d","price":{"amount_minor":1,"currency":"AUD"}},
+              {"item_id":"{{{Canary}}}","name":"Salad","description":"d","price":{"amount_minor":2,"currency":"AUD"}}
+            ],"flags":[]}
+            """);
+
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        AssertNothingLeaked(ex);
+    }
+
+    [Fact]
+    public async Task Extract_DistinctItemIdsThatShareALongPrefix_AreStillAccepted()
+    {
+        // The check must be a COLLISION check, not a similarity check: two ids that survive
+        // sanitization distinct are a perfectly ordinary two-item menu, and refusing them would
+        // settle a readable document to ExtractFailed for no reason.
+        var shared = new string('a', LangGraphMenuExtractorClient.MaxItemIdChars - 1);
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            $$$"""
+            {"items":[
+              {"item_id":"{{{shared}}}1","name":"Soup","description":"d","price":{"amount_minor":1,"currency":"AUD"}},
+              {"item_id":"{{{shared}}}2","name":"Salad","description":"d","price":{"amount_minor":2,"currency":"AUD"}}
+            ],"flags":[]}
+            """);
+
+        var result = await CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(2, result.Items.Select(i => i.ItemId).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task Extract_DuplicateFlagItemIds_AreStillAccepted()
+    {
+        // Only ITEM ids are a database key. Two flags may legitimately name the same item — a
+        // low-confidence price and a suspicious description on one row — and nothing about the flags
+        // list is unique-constrained.
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            """
+            {"items":[{"item_id":"i","name":"n","description":"d","price":{"amount_minor":1,"currency":"AUD"}}],
+             "flags":[{"item_id":"i","reason":"low_confidence"},{"item_id":"i","reason":"suspicious_content"}]}
+            """);
+
+        var result = await CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Flags.Count);
+    }
+
     [Theory]
     [InlineData("name", 512)]
     [InlineData("description", 4000)]
@@ -536,9 +696,10 @@ public class LangGraphMenuExtractorClientTests : IDisposable
     public async Task Extract_LongArtifactRef_IsOmittedFromTheBody()
     {
         // `inline:<the whole menu>` is the canonical ref, so echoing it would put the document in
-        // the body TWICE. The route's MAX_REQUEST_BODY_BYTES is only 2× the text budget — sized
-        // for JSON escaping, not a second copy — so a document near the cap comes back 413. The
-        // ref is also a value this codebase refuses to log raw (Inv-12).
+        // the body TWICE. The route's MAX_REQUEST_BODY_BYTES is 4× the text budget — a transport
+        // guard sized to absorb JSON escaping of ONE copy, not to carry a second one — so an at-cap
+        // document plus its own ref spends over half of it on a field the route only reduces to a
+        // digest anyway. The ref is also a value this codebase refuses to log raw (Inv-12).
         var bigMenu = new string('m', 5000);
         var handler = FakeHttpMessageHandler.RespondingJson(MinimalOkResponse);
 

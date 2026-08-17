@@ -50,6 +50,20 @@ Untrusted content never leaves through an error path
     scheme plus a digest, because ``inline:<the entire menu>`` is a legal value
     the .NET caller sends today.
 
+Joinable, without trusting the caller to be joinable safely
+    ``artifact_ref`` alone does not make this lane diagnosable: the .NET client
+    drops it above 256 characters, which is every real inline menu, so the
+    artifact token is ``none`` in practice.  Every log line here therefore also
+    carries ``correlation=``, taken from the ``X-Correlation-Id`` header the
+    client sends from its ambient correlation context — the one field that joins
+    a ``502`` on its side to the reason on this one.
+
+    That value is caller-supplied, so it is filtered rather than trusted: bounded
+    in length and restricted to a log-safe character set, else ``opaque`` (see
+    :func:`_correlation_log_token`).  An unfiltered header would let an
+    unauthenticated caller on ``:2024`` forge whole log records with a newline,
+    or repaint an operator's terminal with an ANSI escape.
+
 Bounded before buffered
     ``:2024`` is an unauthenticated port in dev, so an unbounded
     ``await request.body()`` would be a trivial memory DoS.  The body is read as
@@ -113,18 +127,61 @@ API_KEY_ENV_VAR = "CORDIA_MENU_EXTRACTION_API_KEY"
 #: Header the .NET caller puts the shared secret in.  Never logged.
 INTERNAL_KEY_HEADER = "X-Cordia-Internal-Key"
 
+#: Header carrying the caller's ambient correlation id (minted once at ingress,
+#: never re-minted mid-flow).  It is the ONLY thing that joins a log line here to
+#: the .NET client's own: ``artifact_ref`` is dropped by the client above 256
+#: characters, which is every real inline menu, so ``artifact=none`` is the norm.
+#: Logged on EVERY outcome of this route, sanitized — see
+#: :func:`_correlation_log_token`.
+CORRELATION_ID_HEADER = "X-Correlation-Id"
+
+#: Longest correlation id written to a log line verbatim.  Comfortably clears the
+#: real shapes (a GUID, or the ``cat_<32 hex>`` catalog id the lane falls back
+#: to) while denying an unauthenticated caller a kilobyte of log line per
+#: request.
+MAX_CORRELATION_ID_CHARS = 64
+
+#: Non-alphanumeric characters a correlation id may contain and still be logged
+#: verbatim.  ``-`` covers a dashed GUID; ``_`` is NOT optional — the .NET lane
+#: falls back to the catalog id, ``cat_<guid:N>``, so omitting it would reduce
+#: essentially every real ingestion to ``correlation=opaque`` and re-open exactly
+#: the gap this token exists to close.
+_CORRELATION_EXTRA_CHARS = frozenset("-_")
+
 #: Ceiling on the menu document itself, matching the .NET-side artifact
 #: resolver's cap (D-B) so the two boundaries agree on what "too big" means.
 MAX_MENU_TEXT_BYTES = 256 * 1024
 
-#: Ceiling on the raw REQUEST BODY, which is a JSON envelope around the
-#: document and therefore legitimately larger than it: every ``"``, newline and
-#: control character in a menu costs an extra byte or five once escaped.  Twice
-#: the text budget absorbs that with room to spare while still bounding what an
-#: unauthenticated caller can make this process buffer.  It is a transport
-#: guard, NOT the contract — :data:`MAX_MENU_TEXT_BYTES` is the authoritative
-#: cap and is applied to the decoded text as well.
-MAX_REQUEST_BODY_BYTES = 2 * MAX_MENU_TEXT_BYTES
+#: Ceiling on the raw REQUEST BODY, which is a JSON envelope around the document
+#: and therefore legitimately larger than it.  The multiplier is FOUR because
+#: the worst case is measured, not guessed: the .NET caller serializes with
+#: ``System.Text.Json``'s default ``JavaScriptEncoder``, which escapes EVERY
+#: non-ASCII character to ``\uXXXX``.  Serializing a document that sits exactly
+#: on :data:`MAX_MENU_TEXT_BYTES` through the client's own options gives these
+#: body-to-text ratios:
+#:
+#: - ASCII: 1.0x — only the document's own quotes and newlines are escaped.
+#: - CJK (3 UTF-8 bytes/char): 2.0x — 3 bytes in, 6 out.
+#: - accented Latin (2 bytes/char): 3.0x — 2 bytes in, 6 out.
+#: - emoji (4 bytes, astral): 3.0x — 4 bytes in, 12 out, a surrogate PAIR
+#:   escaped as two ``\uXXXX`` sequences.
+#:
+#: At ``2 *`` the cap, every Vietnamese, Czech, Polish or emoji-bearing menu was
+#: rejected with a ``413`` at roughly a THIRD of the documented 256 KiB, and the
+#: owner saw only ``ExtractFailed`` with no explanation.  ``4 *`` clears the real
+#: 3x worst case with envelope room left over and still bounds what an
+#: unauthenticated caller can make this process buffer.
+#:
+#: Configuring the client to emit relaxed UTF-8 is NOT the alternative fix:
+#: measured, both ``UnsafeRelaxedJsonEscaping`` and
+#: ``JavaScriptEncoder.Create(UnicodeRanges.All)`` still emit non-BMP characters
+#: as surrogate escapes, so emoji-heavy menus would keep failing while looking
+#: fixed.
+#:
+#: This is a transport guard, NOT the contract — :data:`MAX_MENU_TEXT_BYTES` is
+#: the authoritative cap and is still applied to the DECODED text, so nothing a
+#: larger envelope admits can exceed the agreed document size.
+MAX_REQUEST_BODY_BYTES = 4 * MAX_MENU_TEXT_BYTES
 
 #: Document-level flag reason raised when the model returned rows that could not
 #: be mapped.  Partial row loss is otherwise invisible: the port returns a bare
@@ -409,6 +466,49 @@ def _artifact_log_token(artifact_ref: str | None) -> str:
     return f"{safe_scheme}:{digest}"
 
 
+def _correlation_log_token(request: Request) -> str:
+    """Reduce the :data:`CORRELATION_ID_HEADER` to something safe to log.
+
+    Unlike :func:`_artifact_log_token` this keeps the value ITSELF rather than a
+    digest — a digest would be useless, since the whole point is to match the id
+    the .NET client already logged on its own side.  That makes it
+    caller-supplied text on its way into a log aggregator, so it is filtered
+    rather than trusted: over-long, non-ASCII, or carrying anything outside
+    ``[A-Za-z0-9]`` plus :data:`_CORRELATION_EXTRA_CHARS` and it becomes
+    ``"opaque"``.  A newline would otherwise forge a whole log record and an ANSI
+    escape could rewrite an operator's terminal.
+
+    Absent (or blank) reads as ``"none"``, never as an empty field: a log line
+    ending in ``correlation=`` is indistinguishable from a truncated one, and
+    "the caller sent no id" is itself the diagnosis when the .NET side believed
+    it had one.
+
+    Args:
+        request: The inbound request.
+
+    Returns:
+        The correlation id verbatim, ``"none"`` when the header is absent or
+        blank, or ``"opaque"`` when the value is not safe to log.
+    """
+    raw = request.headers.get(CORRELATION_ID_HEADER)
+    if raw is None:
+        return "none"
+    candidate = raw.strip()
+    if not candidate:
+        return "none"
+    if len(candidate) > MAX_CORRELATION_ID_CHARS:
+        return "opaque"
+    # `str.isalnum` is True for non-ASCII letters and digits too (Starlette
+    # decodes header bytes as latin-1, so any high byte arrives as one), hence
+    # the explicit `isascii` guard rather than `isalnum` alone.
+    if not all(
+        char.isascii() and (char.isalnum() or char in _CORRELATION_EXTRA_CHARS)
+        for char in candidate
+    ):
+        return "opaque"
+    return candidate
+
+
 # NOTE — `extract_menu`'s docstring is deliberately ONE plain line, unlike every
 # other docstring in this module.  A route endpoint's docstring is not private:
 # the LangGraph server hands it to Starlette's `SchemaGenerator`, which YAML-
@@ -422,22 +522,30 @@ def _artifact_log_token(artifact_ref: str | None) -> str:
 #   which formats the exception and would thereby render whatever a provider
 #   error quoted back at us (see the module docstring, rule 3).
 #
+#   The correlation token is resolved here, INSIDE the try, and passed down: it
+#   has to be on the catch-all's log line too, and computing it in the `except`
+#   block would put a call that can raise where nothing is left to catch it.
+#
 #   Args:    request -- the inbound request.
 #   Returns: 200 with {"items": [...], "flags": [...]}, or an
 #            {"error": "<category>"} body with a 4xx/5xx status.
 async def extract_menu(request: Request) -> JSONResponse:
     """Serve the isolated menu-extraction route (contract in the module docstring)."""
+    correlation = "none"
     try:
-        return await _handle_extract(request)
+        correlation = _correlation_log_token(request)
+        return await _handle_extract(request, correlation)
     except Exception as exc:
         # Type name only — see the module docstring on __context__.
         _log.error(
-            "menu extraction request failed unexpectedly (%s)", type(exc).__name__
+            "menu extraction request failed unexpectedly (correlation=%s, %s)",
+            correlation,
+            type(exc).__name__,
         )
         return _error("internal_error", 500)
 
 
-async def _handle_extract(request: Request) -> JSONResponse:
+async def _handle_extract(request: Request, correlation: str) -> JSONResponse:
     """Authenticate, validate, extract, and shape the response.
 
     Ordered cheapest-and-most-hostile first, and the ORDER IS LOAD-BEARING: the
@@ -445,23 +553,43 @@ async def _handle_extract(request: Request) -> JSONResponse:
     rejected caller never gets this process to pull a single byte off the
     socket.  ``test_401_never_reads_the_request_body`` pins that.
 
+    EVERY outcome carries ``correlation=`` — success, rejection and failure
+    alike.  A failure line nobody can join to the .NET client's own line is a
+    mystery on a background lane with no operator watching, and ``artifact=`` does
+    not fill the gap: the client omits ``artifact_ref`` above 256 characters,
+    which is every real inline menu, so ``artifact=none`` is the normal case.
+
     Args:
         request: The inbound request.
+        correlation: The sanitized correlation token from
+            :func:`_correlation_log_token`.  Already bounded and filtered — it is
+            caller-supplied and must never reach a log line raw.
 
     Returns:
         The response described by :func:`extract_menu`.
     """
     if not _is_authorized(request):
-        _log.warning("menu extraction request rejected: bad or missing internal key")
+        _log.warning(
+            "menu extraction request rejected: bad or missing internal key "
+            "(correlation=%s)",
+            correlation,
+        )
         return _error("unauthorized", 401)
 
     if not _is_json_request(request):
-        _log.warning("menu extraction request rejected: non-JSON content type")
+        _log.warning(
+            "menu extraction request rejected: non-JSON content type (correlation=%s)",
+            correlation,
+        )
         return _error("unsupported_media_type", 415)
 
     body = await _read_bounded_body(request)
     if body is None:
-        _log.warning("menu extraction request rejected: body over the byte budget")
+        _log.warning(
+            "menu extraction request rejected: body over the byte budget "
+            "(correlation=%s)",
+            correlation,
+        )
         return _error("payload_too_large", 413)
 
     try:
@@ -469,22 +597,30 @@ async def _handle_extract(request: Request) -> JSONResponse:
     except ValidationError:
         # The ValidationError message quotes the offending input; it is neither
         # logged nor returned.  "Which field" is not worth leaking a document.
-        _log.warning("menu extraction request rejected: body failed validation")
+        _log.warning(
+            "menu extraction request rejected: body failed validation (correlation=%s)",
+            correlation,
+        )
         return _error("invalid_request", 422)
 
     artifact = _artifact_log_token(payload.artifact_ref)
 
     if not payload.menu_text.strip():
         _log.warning(
-            "menu extraction request rejected: empty menu_text (artifact=%s)", artifact
+            "menu extraction request rejected: empty menu_text "
+            "(artifact=%s, correlation=%s)",
+            artifact,
+            correlation,
         )
         return _error("invalid_request", 422)
 
     text_bytes = len(payload.menu_text.encode("utf-8"))
     if text_bytes > MAX_MENU_TEXT_BYTES:
         _log.warning(
-            "menu extraction request rejected: menu_text over the cap (artifact=%s)",
+            "menu extraction request rejected: menu_text over the cap "
+            "(artifact=%s, correlation=%s)",
             artifact,
+            correlation,
         )
         return _error("payload_too_large", 413)
 
@@ -498,19 +634,28 @@ async def _handle_extract(request: Request) -> JSONResponse:
         # An operator problem, not a model problem — distinguishable only
         # because model_azure deliberately does not wrap this one.
         _log.error(
-            "menu extraction unavailable: model not configured (artifact=%s)", artifact
+            "menu extraction unavailable: model not configured "
+            "(artifact=%s, correlation=%s)",
+            artifact,
+            correlation,
         )
         return _error("model_not_configured", 503)
     except MenuExtractionModelError:
-        _log.warning("menu extraction failed (artifact=%s)", artifact)
+        _log.warning(
+            "menu extraction failed (artifact=%s, correlation=%s)",
+            artifact,
+            correlation,
+        )
         return _error("extraction_failed", 502)
 
-    result = _with_dropped_row_flag(result)
+    result = _with_dropped_row_flag(result, correlation)
     envelope = _sanctioned_envelope(result)
 
     _log.info(
-        "menu extraction succeeded (artifact=%s, bytes=%d, items=%d, flags=%d)",
+        "menu extraction succeeded "
+        "(artifact=%s, correlation=%s, bytes=%d, items=%d, flags=%d)",
         artifact,
+        correlation,
         text_bytes,
         len(envelope["items"]),
         len(envelope["flags"]),
@@ -544,7 +689,9 @@ def _sanctioned_envelope(result: ExtractionResult) -> dict[str, Any]:
     return ExtractionResult.model_validate(result.model_dump()).model_dump(mode="json")
 
 
-def _with_dropped_row_flag(result: ExtractionResult) -> ExtractionResult:
+def _with_dropped_row_flag(
+    result: ExtractionResult, correlation: str
+) -> ExtractionResult:
     """Append a document-level ``rows_dropped`` flag when rows were lost.
 
     A new :class:`ExtractionResult` is built rather than the existing one
@@ -554,6 +701,8 @@ def _with_dropped_row_flag(result: ExtractionResult) -> ExtractionResult:
 
     Args:
         result: What the agent returned.
+        correlation: The sanitized correlation token, so the drop warning joins
+            the same request's other log lines.
 
     Returns:
         *result* unchanged, or a copy carrying one extra flag.
@@ -562,9 +711,11 @@ def _with_dropped_row_flag(result: ExtractionResult) -> ExtractionResult:
     if outcome is None or outcome.dropped_rows <= 0:
         return result
     _log.warning(
-        "menu extraction dropped %d of %d rows; flagging for owner review",
+        "menu extraction dropped %d of %d rows; flagging for owner review "
+        "(correlation=%s)",
         outcome.dropped_rows,
         outcome.total_rows,
+        correlation,
     )
     return ExtractionResult(
         items=result.items,

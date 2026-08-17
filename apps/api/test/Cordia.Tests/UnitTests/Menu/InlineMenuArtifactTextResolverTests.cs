@@ -99,16 +99,14 @@ public class InlineMenuArtifactTextResolverTests
     public void ResolverCap_FitsInsideTheRoutesRequestBodyBudget()
     {
         // The resolver's cap is not the whole story: the text still has to survive the trip as a
-        // JSON body. The route allows MAX_REQUEST_BODY_BYTES = 2 × MAX_MENU_TEXT_BYTES, sized to
-        // absorb JSON ESCAPING — every quote, newline and control character in a menu costs extra
-        // bytes once escaped. The client omits a long artifact_ref precisely so the document is
-        // not sent twice; this pins the remaining headroom so a future change that starts echoing
-        // the ref (or adds a field) goes red here rather than as a 413 in production.
-        const int routeBodyBudget = 2 * InlineMenuArtifactTextResolver.MaxMenuTextBytes;
+        // JSON body. The route allows MAX_REQUEST_BODY_BYTES = 4 × MAX_MENU_TEXT_BYTES, a transport
+        // guard sized to absorb JSON ESCAPING of ONE copy of the document — every quote, newline and
+        // control character in a menu costs extra bytes once escaped, and a pathological menu can
+        // cost six per character. The client omits a long artifact_ref precisely so the document is
+        // not sent twice; this pins the remaining headroom so a future change that starts echoing the
+        // ref (or adds a field) goes red here rather than as a 413 in production.
+        const int routeBodyBudget = 4 * InlineMenuArtifactTextResolver.MaxMenuTextBytes;
 
-        // Worst realistic case: a menu where every character needs a 2-byte JSON escape would not
-        // fit, but a normal one (~3% quotes/newlines) leaves ~249 KiB of usable text. Assert the
-        // envelope overhead for an at-cap document with no artifact_ref.
         var atCap = new string('a', InlineMenuArtifactTextResolver.MaxMenuTextBytes);
         var body = JsonSerializer.Serialize(new { menu_text = atCap, artifact_ref = (string?)null });
 
@@ -116,9 +114,15 @@ public class InlineMenuArtifactTextResolverTests
             Encoding.UTF8.GetByteCount(body) < routeBodyBudget,
             "an at-cap document must round-trip inside the route's body budget once artifact_ref is omitted");
 
-        // And the thing that used to be false: echoing the ref back doubles it and blows the budget.
+        // And the reason the ref is omitted rather than merely tolerated: echoing it back spends a
+        // SECOND full copy of the document out of a budget sized for the escaping of one, leaving an
+        // at-cap upload with no room for it. Asserted against the copy, not the budget, so it stays
+        // meaningful whichever multiple the route picks.
         var withRef = JsonSerializer.Serialize(new { menu_text = atCap, artifact_ref = "inline:" + atCap });
-        Assert.True(Encoding.UTF8.GetByteCount(withRef) > routeBodyBudget);
+        Assert.True(
+            Encoding.UTF8.GetByteCount(withRef) - Encoding.UTF8.GetByteCount(body)
+                >= InlineMenuArtifactTextResolver.MaxMenuTextBytes,
+            "echoing the ref must cost a whole extra copy of the document — that is why it is omitted");
     }
 
     [Theory]
@@ -198,6 +202,98 @@ public class InlineMenuArtifactTextResolverTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => _resolver.ResolveTextAsync("inline:menu", cts.Token));
+    }
+
+    // ---------------------------------------------------------------------
+    // Invalid UTF-8 is a failed read, not a silently altered one
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// A Latin-1/CP1252 menu base64-encoded without transcoding, and a truncated multi-byte
+    /// sequence — the two realistic ways an upload arrives as non-UTF-8 bytes.
+    ///
+    /// <para>The static <see cref="Encoding.UTF8"/> carries the REPLACEMENT fallback, so
+    /// <c>53-6F-75-70-20-FF-FE-20-24-39</c> came back as <c>"Soup �� $9"</c> with no exception. That
+    /// mangled text went to the model: item names carrying replacement characters, prices possibly
+    /// corrupted, and all of it landing in <c>vendor_catalog_items.name</c> for owner review with
+    /// nothing recording that the bytes were unreadable — which defeats the one distinction this
+    /// resolver exists to draw, between "we could not read your upload" and a successful read.</para>
+    /// </summary>
+    [Theory]
+    // "Soup " + FF FE + " $9" — the finding's exact trigger, `data:text/plain;base64,U291cCD//iAkOQ==`.
+    [InlineData(new byte[] { 0x53, 0x6F, 0x75, 0x70, 0x20, 0xFF, 0xFE, 0x20, 0x24, 0x39 })]
+    [InlineData(new byte[] { 0x43, 0x61, 0x66, 0xE9 })]              // "Café" in Latin-1
+    [InlineData(new byte[] { 0x43, 0x61, 0x66, 0xC3 })]              // truncated 2-byte sequence
+    [InlineData(new byte[] { 0xE2, 0x82 })]                          // truncated 3-byte sequence
+    [InlineData(new byte[] { 0xC0, 0xAF })]                          // overlong encoding of '/'
+    [InlineData(new byte[] { 0xED, 0xA0, 0x80 })]                    // UTF-16 surrogate, illegal in UTF-8
+    public async Task Resolve_Base64OfInvalidUtf8_Throws_RatherThanSubstitutingReplacementCharacters(byte[] bytes)
+    {
+        var artifactRef = $"data:text/plain;base64,{Convert.ToBase64String(bytes)}";
+
+        var ex = await Assert.ThrowsAsync<MenuArtifactUnresolvableException>(
+            () => _resolver.ResolveTextAsync(artifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains("UTF-8", ex.Message, StringComparison.Ordinal);
+        AssertRefIsNotLeaked(ex, artifactRef);
+        // Not chained: a DecoderFallbackException names the offending byte offset in content that IS
+        // the uploaded document.
+        Assert.Null(ex.InnerException);
+    }
+
+    /// <summary>
+    /// The percent-encoded half of the same defect. <b>Measured, because the mechanism is not the
+    /// obvious one:</b> <see cref="Uri.UnescapeDataString"/> does NOT substitute <c>U+FFFD</c> — it
+    /// leaves an undecodable escape run as LITERAL text (<c>"Soup%20%FF%FE%20%249"</c> came back as
+    /// <c>"Soup %FF%FE $9"</c>). Milder than mojibake, same defect: unreadable bytes reaching the
+    /// model as filler instead of being reported as an upload we could not read.
+    /// </summary>
+    [Theory]
+    [InlineData("data:text/plain,Soup%20%FF%FE%20%249")]
+    [InlineData("data:text/plain,Caf%E9%20Menu")]        // Latin-1 percent-encoding
+    [InlineData("data:text/plain,Caf%C3")]               // truncated 2-byte sequence
+    [InlineData("data:text/plain;charset=utf-8,%E2%82")] // truncated 3-byte sequence
+    public async Task Resolve_PercentEncodedInvalidUtf8_Throws(string artifactRef)
+    {
+        var ex = await Assert.ThrowsAsync<MenuArtifactUnresolvableException>(
+            () => _resolver.ResolveTextAsync(artifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains("UTF-8", ex.Message, StringComparison.Ordinal);
+        Assert.Null(ex.InnerException);
+    }
+
+    [Theory]
+    // Multi-byte characters are consecutive escapes and must be decoded as one run, not per byte.
+    [InlineData("data:text/plain,Caf%C3%A9%20%E2%80%94%20Cr%C3%A8me", "Café — Crème")]
+    // A malformed escape stays LITERAL, exactly as Uri.UnescapeDataString leaves it: refusing an
+    // upload over a stray percent sign in a price would be a failure no owner could act on.
+    [InlineData("data:text/plain,50%25 off", "50% off")]
+    [InlineData("data:text/plain,50% off", "50% off")]
+    [InlineData("data:text/plain,Soup 100%", "Soup 100%")]
+    // "% 1" must NOT be read as the byte 0x01 — NumberStyles.HexNumber would have, because it also
+    // allows leading/trailing whitespace.
+    [InlineData("data:text/plain,discount% 1 today", "discount% 1 today")]
+    [InlineData("data:text/plain,Soup%2zsalad", "Soup%2zsalad")]
+    // Escaped and literal text interleaved, so the run-flushing order is pinned too.
+    [InlineData("data:text/plain,a%C3%A9b%E2%80%94c", "aéb—c")]
+    public async Task Resolve_PercentEncoding_MatchesTheDocumentedSemantics(string artifactRef, string expected)
+    {
+        Assert.Equal(expected, await _resolver.ResolveTextAsync(artifactRef, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Resolve_ValidUtf8_NeverReturnsAReplacementCharacter()
+    {
+        // The positive half: a correctly-encoded multibyte document round-trips byte-exact through
+        // the strict decoder, so the throw above is about invalid bytes and not about multibyte text.
+        const string menu = "Café Menu — Crème Brûlée 🍰 ¥1,200";
+        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(menu));
+
+        var text = await _resolver.ResolveTextAsync(
+            $"data:text/plain;base64,{encoded}", TestContext.Current.CancellationToken);
+
+        Assert.Equal(menu, text);
+        Assert.DoesNotContain('�', text);
     }
 
     /// <summary>

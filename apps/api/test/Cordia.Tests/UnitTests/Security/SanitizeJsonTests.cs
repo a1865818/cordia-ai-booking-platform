@@ -155,4 +155,31 @@ public class SanitizeJsonTests
     {
         Assert.Equal(payload, SensitiveDataMask.SanitizeJson(payload));
     }
+
+    /// <summary>
+    /// The premise <c>AuditEventSanitizationInterceptor</c> depends on, pinned where the detector
+    /// lives: this lane does NOT see a PAN whose digits are separated by control characters.
+    ///
+    /// <para>The candidate-run regex tolerates only space and dash between digits, so a tab- or
+    /// NUL-separated card number is not a candidate at all and passes through untouched. That is why
+    /// the interceptor must drop control characters BEFORE it masks, on the metadata column and on
+    /// every free-text identity column — the reverse order reassembles the PAN out of fragments the
+    /// detector had just declined to look at, and persists it. Widening the regex here instead would
+    /// be a change to the shared Python-parity detector, so the ordering is the fix and this test is
+    /// the reason it cannot be flipped back.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("\t")]
+    [InlineData("\n")]
+    [InlineData("\r")]
+    [InlineData("\0")]
+    public void ControlCharacterSeparatedPan_IsNotDetected_SoStrippingMustComeFirst(string separator)
+    {
+        var split = $"4111{separator}1111{separator}1111{separator}1111";
+
+        Assert.Equal(split, SensitiveDataMask.Sanitize(split));
+
+        // ...and with the separators gone it masks, which is the whole point of the ordering.
+        Assert.Equal(SensitiveDataMask.MaskToken, SensitiveDataMask.Sanitize(Pan));
+    }
 }

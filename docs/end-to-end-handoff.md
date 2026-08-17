@@ -154,7 +154,7 @@ deployment and sane defaults:
 | `AZURE_OPENAI_DEPLOYMENT_MENU_EXTRACTOR` | deployment for the `menu_extractor` role; unset ⇒ shared `AZURE_OPENAI_DEPLOYMENT`, and extraction fails closed if neither is set |
 | `CORDIA_MENU_EXTRACTION_API_KEY` | shared secret for `POST /internal/menu/extract`; set ⇒ the route requires a matching `X-Cordia-Internal-Key` (constant-time compare) else `401`, unset ⇒ no check. **ASCII only** — headers decode as latin-1, the env as UTF-8 |
 | `CORDIA_MENU_EXTRACTION_DEFAULT_CURRENCY` | ISO-4217 code for a priced row the document never attributed a currency to (default `AUD`). **Deployment-level, not per-tenant** — one value for the whole process |
-| `CORDIA_LLM_BASE_TIMEOUT_SECONDS_MENU_EXTRACTOR` | first-attempt budget (default 40 s; +15 s, 2 attempts ⇒ 95 s worst case). Wins over the shared `CORDIA_LLM_BASE_TIMEOUT_SECONDS`, which extraction otherwise honours — a conversational 8 s set there breaks it. Values whose worst case exceeds the 120 s ceiling are rejected, not clamped |
+| `CORDIA_LLM_BASE_TIMEOUT_SECONDS_MENU_EXTRACTOR` | first-attempt budget (default 40 s; +15 s, 2 attempts ⇒ 95 s worst case). Wins over the shared `CORDIA_LLM_BASE_TIMEOUT_SECONDS`, which extraction otherwise honours — a conversational 8 s set there breaks it. Values whose worst case (`2 × base + 15`) exceeds the **105 s** ceiling are rejected, not clamped, so the highest accepted value is **45.0**. The ceiling is deliberately *below* the caller's 120 s: that budget is strictly wider in scope (DNS, connect, up to ~1 MiB of request transfer, body read, validation, response), so 105 s leaves 15 s of headroom instead of guaranteeing the caller gives up first |
 
 Any `AZURE_OPENAI_*` or `CORDIA_AUDIO_*` var takes a `_<ROLE>` suffix override,
 so one process can drive several deployments:
@@ -184,13 +184,26 @@ so it is also the first place the `AddHttpClient` conventions in
   `CORDIA_MENU_EXTRACTION_API_KEY` is set. Set both or neither. Fail-open in dev
   (`:2024` is unauthenticated on localhost), fail-closed once configured.
 - `X-Correlation-Id` rides along so the client's "HTTP 502" line can be joined
-  to the route's own log line. `artifact_ref` is sent for correlation only and
-  is **omitted when long**, because its canonical `inline:` form *is* the whole
-  menu document.
+  to the route's own log line — and the route now logs it, so that join is real
+  rather than aspirational. **Mind the charset**: it is logged verbatim only when
+  it is `[A-Za-z0-9-_]` and at most 64 characters, otherwise the route records
+  `correlation=opaque` and the join is lost. The .NET ids are `cat_{Guid:N}` and
+  `corr_…` shapes, which qualify — but only because `_` is on that list, so do
+  not switch the id format to one that uses `:`, `.` or `/`.
+  `artifact_ref` is sent for correlation only and is **omitted when long**,
+  because its canonical `inline:` form *is* the whole menu document.
 - `LangGraph:ExtractTimeoutSeconds` (default 120) is owned deliberately, not
-  inherited from `HttpClient`'s 100 s default. The call runs inside the
-  ingestion inbox transaction, so it is a **transaction-hold budget** too; the
-  agent's own 95 s worst case fits inside it.
+  inherited from `HttpClient`'s 100 s default. **It stays at 120** — the call runs
+  inside the ingestion inbox transaction, so it is a **transaction-hold budget**
+  too, and raising it is not a way to buy the agent more time. It is paired with
+  the agent's own 105 s ceiling (95 s worst case at the default), which leaves
+  15 s for DNS, connect, request transfer, body read and the response — all of
+  which the caller's budget covers and the agent's does not.
+- The route's `MAX_REQUEST_BODY_BYTES` is **4 ×** the 256 KiB text cap (1 MiB), a
+  transport guard sized to absorb JSON escaping of one copy of the document. It is
+  not a second budget for the text: `MAX_MENU_TEXT_BYTES` is still the contract,
+  and an at-cap document plus an echoed `inline:` ref would spend over half of it
+  on a field the route only reduces to a digest.
 
 ---
 

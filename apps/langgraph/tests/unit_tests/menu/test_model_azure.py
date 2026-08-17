@@ -668,7 +668,7 @@ async def test_batch_budget_is_passed_explicitly(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("configured", [None, "10", "52.5"])
+@pytest.mark.parametrize("configured", [None, "10", "45"])
 async def test_resolved_budget_fits_the_dotnet_caller(
     monkeypatch: pytest.MonkeyPatch, configured: str | None
 ) -> None:
@@ -692,11 +692,32 @@ async def test_resolved_budget_fits_the_dotnet_caller(
 def test_default_worst_case_is_95_seconds() -> None:
     """95 s leaves ~25 s of the .NET caller's 120 s for HTTP + ref resolution."""
     assert worst_case_seconds(MENU_EXTRACTION_BASE_TIMEOUT_SECONDS) == 95.0
-    assert MENU_EXTRACTION_MAX_TOTAL_SECONDS == 120.0
+    assert MENU_EXTRACTION_MAX_TOTAL_SECONDS == 105.0
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("oversized", ["200", "60", "52.6"])
+def test_the_ceiling_reserves_transport_headroom_under_the_dotnet_budget() -> None:
+    """The ceiling must be STRICTLY under the caller's 120 s, not equal to it.
+
+    ``LangGraph:ExtractTimeoutSeconds`` covers strictly more than this budget
+    does — it is armed before the artifact ref is resolved and also pays for
+    DNS, connect, the request transfer, the route's body read and validation,
+    and the response.  A ceiling equal to it means the maximum accepted override
+    consumes 100% of the caller's budget, so on the worst case the caller gives
+    up FIRST: both generations billed, ``ExtractFailed`` settled anyway, and a
+    120 s transaction hold to show for it.
+    """
+    dotnet_extract_timeout_seconds = 120.0
+
+    headroom = dotnet_extract_timeout_seconds - MENU_EXTRACTION_MAX_TOTAL_SECONDS
+
+    assert headroom >= 15.0
+    # And the ceiling is reachable: the largest accepted base lands exactly on it.
+    assert worst_case_seconds(45.0) == MENU_EXTRACTION_MAX_TOTAL_SECONDS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("oversized", ["200", "60", "45.1"])
 async def test_over_ceiling_override_is_rejected(
     monkeypatch: pytest.MonkeyPatch, oversized: str
 ) -> None:
@@ -748,15 +769,15 @@ async def test_role_specific_timeout_beats_the_shared_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(BASE_TIMEOUT_ENV_VAR, "5.0")
-    # 50 s ⇒ 50 + 65 = 115 s worst case, inside the 120 s ceiling.
-    monkeypatch.setenv(_ROLE_TIMEOUT_ENV_VAR, "50.0")
+    # 44 s ⇒ 44 + 59 = 103 s worst case, inside the 105 s ceiling.
+    monkeypatch.setenv(_ROLE_TIMEOUT_ENV_VAR, "44.0")
     seen: dict[str, Any] = {}
     _record_invocation(monkeypatch, seen)
     model, _ = _model(None)
 
     await model.extract(label_untrusted(_CLEAN_MENU))
 
-    assert seen["base_timeout"] == 50.0
+    assert seen["base_timeout"] == 44.0
 
 
 @pytest.mark.unit

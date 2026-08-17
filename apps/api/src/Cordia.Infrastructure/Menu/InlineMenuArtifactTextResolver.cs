@@ -46,6 +46,21 @@ public sealed class InlineMenuArtifactTextResolver : IMenuArtifactTextResolver
     private const string DataPrefix = "data:text/plain";
     private const string Base64Parameter = "base64";
 
+    /// <summary>
+    /// Decoder for every byte→text step here, and the reason it is not the static
+    /// <see cref="Encoding.UTF8"/>: that instance carries the REPLACEMENT fallback, so
+    /// <c>53-6F-75-70-20-FF-FE-20-24-39</c> comes back as <c>"Soup �� $9"</c> with no
+    /// exception. A Latin-1/CP1252 menu base64-encoded without transcoding, or a truncated
+    /// multi-byte sequence, would then reach the model as silently altered text: item names carrying
+    /// replacement characters, prices possibly corrupted, and all of it landing in
+    /// <c>vendor_catalog_items.name</c> for owner review with nothing recording that the bytes were
+    /// unreadable. That defeats this resolver's whole purpose — the distinction between "we could
+    /// not read your upload" and a successful read. Throwing on invalid bytes makes the first case
+    /// say so.
+    /// </summary>
+    private static readonly UTF8Encoding _strictUtf8 =
+        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     // NONE of these messages may name the reference. `source_artifact_ref` is a
     // SensitiveDataMask control-plane key (copied verbatim wherever it appears), and its inline
     // form today IS the whole menu document — an exception message carrying it would push the
@@ -61,6 +76,9 @@ public sealed class InlineMenuArtifactTextResolver : IMenuArtifactTextResolver
 
     private const string EmptyMessage =
         "Artifact reference resolved to no menu text.";
+
+    private const string NotUtf8Message =
+        "Artifact content is not valid UTF-8 text.";
 
     /// <inheritdoc />
     public Task<string> ResolveTextAsync(string artifactRef, CancellationToken ct = default)
@@ -139,18 +157,107 @@ public sealed class InlineMenuArtifactTextResolver : IMenuArtifactTextResolver
         if (bytes.Length > MaxMenuTextBytes)
             throw new MenuArtifactUnresolvableException(OverCapMessage);
 
-        return Encoding.UTF8.GetString(bytes);
+        return DecodeUtf8(bytes);
     }
 
+    /// <summary>
+    /// Percent-decodes the payload with the same <see cref="_strictUtf8"/> guarantee the base64 path
+    /// gets, rather than delegating to <see cref="Uri.UnescapeDataString"/>.
+    ///
+    /// <para><b>Measured, because the failure mode is not the obvious one.</b>
+    /// <c>Uri.UnescapeDataString</c> does not substitute <c>U+FFFD</c> for an undecodable escape run
+    /// — it leaves the escapes as LITERAL TEXT: <c>"Soup%20%FF%FE%20%249"</c> comes back as
+    /// <c>"Soup %FF%FE $9"</c>. Milder than mojibake but the same defect, and the one this resolver
+    /// exists to prevent: a Latin-1/CP1252 menu percent-encoded without transcoding is silently
+    /// handed to the model as unreadable filler instead of being reported as an upload we could not
+    /// read.</para>
+    ///
+    /// <para>Escapes are decoded to BYTES and each maximal run of them is UTF-8 decoded as a unit,
+    /// because a multi-byte character is percent-encoded as consecutive escapes. Literal characters
+    /// are copied straight through — no re-encode round trip that could itself alter them. A
+    /// malformed escape (a stray <c>%</c>, a non-hex pair) stays literal, matching
+    /// <c>Uri.UnescapeDataString</c>: refusing an upload over a percent sign in a price would be a
+    /// failure no owner could act on.</para>
+    /// </summary>
     private static string DecodePercentEncoded(string encoded)
+    {
+        if (!encoded.Contains('%', StringComparison.Ordinal))
+            return encoded;
+
+        var text = new StringBuilder(encoded.Length);
+        var escaped = new List<byte>();
+
+        for (var i = 0; i < encoded.Length;)
+        {
+            if (TryReadEscapedByte(encoded, i, out var value))
+            {
+                escaped.Add(value);
+                i += 3;
+                continue;
+            }
+
+            FlushEscapedRun(escaped, text);
+            text.Append(encoded[i]);
+            i++;
+        }
+
+        FlushEscapedRun(escaped, text);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Recognises exactly <c>%HH</c>. Hex digits are checked by hand rather than through
+    /// <c>byte.TryParse(…, NumberStyles.HexNumber)</c>, which also carries
+    /// <c>AllowLeadingWhite | AllowTrailingWhite</c> and would therefore read <c>"% 1"</c> as the
+    /// byte <c>0x01</c> — inventing a control character out of a stray percent sign that
+    /// <see cref="Uri.UnescapeDataString"/> leaves alone.
+    /// </summary>
+    private static bool TryReadEscapedByte(string encoded, int index, out byte value)
+    {
+        value = 0;
+        if (index + 2 >= encoded.Length || encoded[index] != '%')
+            return false;
+
+        var high = HexDigit(encoded[index + 1]);
+        var low = HexDigit(encoded[index + 2]);
+        if (high < 0 || low < 0)
+            return false;
+
+        value = (byte)((high << 4) | low);
+        return true;
+    }
+
+    private static int HexDigit(char c) => c switch
+    {
+        >= '0' and <= '9' => c - '0',
+        >= 'a' and <= 'f' => c - 'a' + 10,
+        >= 'A' and <= 'F' => c - 'A' + 10,
+        _ => -1,
+    };
+
+    private static void FlushEscapedRun(List<byte> escaped, StringBuilder text)
+    {
+        if (escaped.Count == 0)
+            return;
+
+        text.Append(DecodeUtf8(escaped.ToArray()));
+        escaped.Clear();
+    }
+
+    /// <summary>
+    /// The one byte→text step. <b>The exception is not chained</b> — the house rule in this file is
+    /// that nothing derived from the reference reaches a log, and a decoder fallback message names
+    /// the offending byte offset in content that IS the uploaded document.
+    /// </summary>
+    private static string DecodeUtf8(byte[] bytes)
     {
         try
         {
-            return Uri.UnescapeDataString(encoded);
+            return _strictUtf8.GetString(bytes);
         }
-        catch (UriFormatException)
+        catch (DecoderFallbackException)
         {
-            throw new MenuArtifactUnresolvableException(UnsupportedFormMessage);
+            throw new MenuArtifactUnresolvableException(NotUtf8Message);
         }
     }
 }

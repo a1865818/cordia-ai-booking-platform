@@ -202,6 +202,7 @@ public sealed class IngestVendorMenuCommandHandler(
                 ImageRef = d.ImageRef,
                 ExtractionConfidence = d.ExtractionConfidence,
                 SourceLocation = d.SourceLocation,
+                DurationMinutes = d.DurationMinutes,
             })
             .ToList();
         await repo.AddDraftItemsAsync(items, ct);

@@ -105,6 +105,28 @@ public class MenuExtractorRegistrationTests
     }
 
     [Theory]
+    [InlineData("http://evil.example/collect")]   // absolute ⇒ HttpClient ignores BaseAddress
+    [InlineData("https://evil.example/collect")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("//evil.example/collect")]        // "relative" to Uri, yet host-replacing on resolve
+    [InlineData(@"\\evil.example\collect")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ExtractPathValidation_RejectsAnythingThatCanChangeTheHost(string extractPath)
+    {
+        Assert.False(new LangGraphOptions { ExtractPath = extractPath }.HasRelativeExtractPath);
+    }
+
+    [Theory]
+    [InlineData("/internal/menu/extract")]
+    [InlineData("internal/menu/extract")]
+    [InlineData("/internal/menu/extract?trace=1")]
+    public void ExtractPathValidation_AcceptsARouteOnTheConfiguredHost(string extractPath)
+    {
+        Assert.True(new LangGraphOptions { ExtractPath = extractPath }.HasRelativeExtractPath);
+    }
+
+    [Theory]
     [InlineData(null)]                    // Host absent entirely
     [InlineData("localhost:2024")]        // no scheme
     [InlineData("ftp://localhost:2024")]  // not an HTTP scheme
@@ -132,6 +154,51 @@ public class MenuExtractorRegistrationTests
         Assert.Contains("ExtractTimeoutSeconds", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An ABSOLUTE <c>ExtractPath</c> silently defeats the <c>Host</c> validation above.
+    ///
+    /// <para><see cref="HttpClient"/> ignores <c>BaseAddress</c> whenever the request URI is
+    /// absolute, so <c>ExtractPath = http://evil.example/collect</c> dials that host with the resolved
+    /// menu text and the <c>X-Cordia-Internal-Key</c> in hand while <c>LangGraph:Host</c> — the value
+    /// that IS checked at startup — is never consulted. Triggering it needs config-write access, so
+    /// the severity is low; the defect is that a validated setting can be bypassed by an unvalidated
+    /// one.</para>
+    ///
+    /// <para><b>The protocol-relative cases are why the check resolves rather than merely parsing.</b>
+    /// <c>Uri.TryCreate("//evil.example/collect", UriKind.Relative, …)</c> returns TRUE — a
+    /// network-path reference is relative per RFC 3986 — yet resolving it against
+    /// <c>http://localhost:2024</c> yields <c>http://evil.example/collect</c> (measured). An
+    /// absolute-URI-only validator would have let both of them straight through.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("http://evil.example/collect")]
+    [InlineData("https://evil.example/collect")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("//evil.example/collect")]      // relative to Uri, host-REPLACING once resolved
+    [InlineData(@"\\evil.example\collect")]     // Uri normalises this to the same network-path form
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ValidateOnStart_RefusesToStart_OnAnExtractPathThatCanChangeTheHost(string extractPath)
+    {
+        using var host = BuildHost("http://localhost:2024", useStub: null, extractPath: extractPath);
+
+        var ex = await Assert.ThrowsAsync<OptionsValidationException>(
+            () => host.StartAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("ExtractPath", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/internal/menu/extract")]
+    [InlineData("internal/menu/extract")]
+    public async Task ValidateOnStart_AcceptsARelativeExtractPath(string extractPath)
+    {
+        using var host = BuildHost("http://localhost:2024", useStub: null, extractPath: extractPath);
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        await host.StopAsync(TestContext.Current.CancellationToken);
+    }
+
     [Fact]
     public async Task ValidateOnStart_AllowsAHostlessConfiguration_WhenTheStubIsSelected()
     {
@@ -142,7 +209,8 @@ public class MenuExtractorRegistrationTests
         await host.StopAsync(TestContext.Current.CancellationToken);
     }
 
-    private static IHost BuildHost(string? host, bool? useStub, string timeoutSeconds = "120")
+    private static IHost BuildHost(
+        string? host, bool? useStub, string timeoutSeconds = "120", string? extractPath = null)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -150,6 +218,8 @@ public class MenuExtractorRegistrationTests
         };
         if (host is not null)
             settings["LangGraph:Host"] = host;
+        if (extractPath is not null)
+            settings["LangGraph:ExtractPath"] = extractPath;
         if (useStub is not null)
             settings["LangGraph:UseStubExtractor"] = useStub.Value ? "true" : "false";
 

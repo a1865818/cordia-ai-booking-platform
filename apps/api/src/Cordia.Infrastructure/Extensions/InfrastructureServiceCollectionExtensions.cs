@@ -202,6 +202,13 @@ public static class InfrastructureServiceCollectionExtensions
                 "LangGraph:ExtractTimeoutSeconds must be greater than zero.")
             .Validate(o => !string.IsNullOrWhiteSpace(o.ExtractPath),
                 "LangGraph:ExtractPath must be set.")
+            // An ExtractPath that can name its own authority silently defeats the Host validation
+            // below — HttpClient ignores BaseAddress whenever the request URI is absolute, and a
+            // network-path reference ("//evil.example/x") replaces the host even though Uri calls it
+            // relative. Either way the menu text and the X-Cordia-Internal-Key go somewhere `Host`
+            // never authorised. See LangGraphOptions.HasRelativeExtractPath.
+            .Validate(o => o.HasRelativeExtractPath,
+                "LangGraph:ExtractPath must be a relative route path that cannot change the host.")
             // Only meaningful for the real client — the stub never dials out, so a Host-less
             // offline configuration must still start. Checked AT STARTUP rather than on the first
             // ingestion: a malformed host would otherwise surface hours later as an

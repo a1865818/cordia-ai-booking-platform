@@ -22,7 +22,11 @@ The properties under test are the security properties of the seam:
   developer happens to visit cannot reach the model;
 - the shared secret, when configured, is enforced with a constant-time compare;
 - the request still travels through the isolated agent, so the empty tool
-  surface and the untrusted-only channel assembly are not bypassed.
+  surface and the untrusted-only channel assembly are not bypassed;
+- every log line the route writes carries a correlation token — the only thing
+  that joins a failure here to the .NET caller's own line — and that token is
+  filtered, so a caller-supplied header can neither forge a log record nor
+  repaint an operator's terminal.
 """
 
 from __future__ import annotations
@@ -32,17 +36,21 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from cordia_agent.contracts.catalog import CatalogItem
 from cordia_agent.llm.config import ModelNotConfigured
 from cordia_agent.menu.extraction_agent import ExtractionResult, IsolatedExtractionAgent
 from cordia_agent.menu.http_app import (
     API_KEY_ENV_VAR,
+    CORRELATION_ID_HEADER,
     EXTRACT_PATH,
     INTERNAL_KEY_HEADER,
+    MAX_CORRELATION_ID_CHARS,
     MAX_MENU_TEXT_BYTES,
     MAX_REQUEST_BODY_BYTES,
     DropCountingModel,
+    _correlation_log_token,
     _extraction_outcome,
     app,
     get_extraction_agent,
@@ -386,6 +394,68 @@ async def test_menu_text_at_the_cap_is_accepted() -> None:
         )
 
     assert response.status_code == 200
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "glyph",
+    [
+        "é",  # 2 UTF-8 bytes -> 6 escaped: Vietnamese, Czech, Polish, French
+        "煎",  # 3 UTF-8 bytes -> 6 escaped
+        "🍜",  # 4 UTF-8 bytes (astral) -> 12 escaped, a surrogate PAIR
+    ],
+)
+async def test_non_ascii_menu_at_the_text_cap_is_accepted(glyph: str) -> None:
+    """A non-ASCII document at the cap must not 413 on the ENVELOPE's size.
+
+    The .NET caller serializes with ``System.Text.Json``'s default
+    ``JavaScriptEncoder``, which escapes every non-ASCII character to
+    ``\\uXXXX`` — which is exactly what ``json.dumps`` does with its default
+    ``ensure_ascii``, so this body is byte-for-byte the shape the client sends.
+    At a 2x body budget every one of these was rejected at roughly a THIRD of
+    the documented 256 KiB text cap, and the owner saw only ``ExtractFailed``.
+    """
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+    text = glyph * (MAX_MENU_TEXT_BYTES // len(glyph.encode("utf-8")))
+    body = json.dumps({"menu_text": text}).encode("ascii")
+
+    # The document itself is within contract; only the escaped envelope is big.
+    assert len(text.encode("utf-8")) <= MAX_MENU_TEXT_BYTES
+    assert len(body) > 2 * MAX_MENU_TEXT_BYTES  # i.e. this 413'd before
+    assert len(body) <= MAX_REQUEST_BODY_BYTES
+
+    async with client() as http:
+        response = await http.post(
+            EXTRACT_PATH, content=body, headers={"content-type": "application/json"}
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.unit
+async def test_escaped_body_over_the_raised_cap_is_still_rejected() -> None:
+    """Raising the envelope budget must not remove the envelope budget.
+
+    Escaping cannot push a within-contract document over 1 MiB (its worst ratio
+    is 3x), so the only way past this gate is a document that is itself far over
+    the text cap — and the BODY gate must still stop it before the process
+    buffers it, which is the whole point of bounding before buffering.
+    """
+    model = ScriptedModel(items=[GOLDEN_ITEM])
+    register(model)
+    # ~360 KiB decoded, but 12 escaped bytes per character -> over 1 MiB on the
+    # wire, so the body gate fires ahead of the decoded-text gate.
+    body = json.dumps({"menu_text": "🍜" * 90_000}).encode("ascii")
+    assert len(body) > MAX_REQUEST_BODY_BYTES
+
+    async with client() as http:
+        response = await http.post(
+            EXTRACT_PATH, content=body, headers={"content-type": "application/json"}
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {"error": "payload_too_large"}
+    assert model.last_content is None
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +830,203 @@ def test_default_agent_is_the_isolated_agent_with_an_empty_tool_surface() -> Non
     assert agent.allowlist.is_allowed("get_tenant_context") is False
     # Built lazily and memoised — the second request reuses the first's agent.
     assert get_extraction_agent() is agent
+
+
+# ---------------------------------------------------------------------------
+# Correlation — the only thing that joins this lane's log lines to the caller's
+# ---------------------------------------------------------------------------
+#
+# `artifact_ref` does not do this job: the .NET client drops it above 256
+# characters, which is every real inline menu, so `artifact=none` is the norm and
+# without a correlation token every line here is unjoinable.  The value is
+# caller-supplied, so the second property under test is that it can never forge
+# or repaint a log record.
+
+#: The shape the .NET lane actually sends: the correlation id falls back to the
+#: catalog id, `cat_<guid:N>` — note the UNDERSCORE, which the log-safe character
+#: set must therefore admit or every real request degrades to "opaque".
+_CORRELATION_ID = "cat_9f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d"
+
+
+def _logged(caplog: pytest.LogCaptureFixture) -> str:
+    """Return every captured log record, fully formatted, as one string."""
+    return "\n".join(record.getMessage() for record in caplog.records)
+
+
+def _correlation_request(raw: bytes | None) -> Request:
+    """Build a request carrying *raw* as its correlation header, if any.
+
+    Driven at the scope level rather than through ``httpx`` on purpose: values
+    an HTTP client would refuse to transmit (a newline, a bare ``\\r``) are
+    exactly the ones the sanitizer exists for, and a raw socket — or a proxy that
+    reassembles headers — can still present them.
+
+    Args:
+        raw: The header's raw bytes, or ``None`` for no header at all.
+
+    Returns:
+        A minimal ``http`` scope request.
+    """
+    headers = [] if raw is None else [(CORRELATION_ID_HEADER.lower().encode(), raw)]
+    return Request({"type": "http", "method": "POST", "headers": headers})
+
+
+@pytest.mark.unit
+async def test_correlation_id_is_logged_on_the_success_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+
+    with caplog.at_level("INFO", logger="cordia_agent.menu.http_app"):
+        async with client() as http:
+            response = await http.post(
+                EXTRACT_PATH,
+                json={"menu_text": "Soup $12.00"},
+                headers={CORRELATION_ID_HEADER: _CORRELATION_ID},
+            )
+
+    assert response.status_code == 200
+    assert f"correlation={_CORRELATION_ID}" in _logged(caplog)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "unauthorized",
+        "unsupported_media_type",
+        "body_over_budget",
+        "malformed_json",
+        "blank_menu_text",
+        "menu_text_over_cap",
+        "extraction_failed",
+        "model_not_configured",
+        "internal_error",
+    ],
+)
+async def test_correlation_id_is_logged_on_every_failure_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
+) -> None:
+    """A failure nobody can join to the caller's own line is a mystery.
+
+    This lane runs in the background with no operator watching, so the token has
+    to be on EVERY exit — the cheap early rejections included, since those are
+    the ones with no other evidence at all.
+    """
+    headers = {
+        "content-type": "application/json",
+        CORRELATION_ID_HEADER: _CORRELATION_ID,
+    }
+    content = json.dumps({"menu_text": "Soup $12.00"}).encode()
+    error: Exception | None = None
+
+    if scenario == "unauthorized":
+        monkeypatch.setenv(API_KEY_ENV_VAR, "correct-horse-battery-staple")
+    elif scenario == "unsupported_media_type":
+        headers["content-type"] = "text/plain"
+    elif scenario == "body_over_budget":
+        content = json.dumps({"menu_text": "x" * (MAX_REQUEST_BODY_BYTES + 1)}).encode()
+    elif scenario == "malformed_json":
+        content = b'{"menu_text": "Soup $12.00"'
+    elif scenario == "blank_menu_text":
+        content = json.dumps({"menu_text": "   "}).encode()
+    elif scenario == "menu_text_over_cap":
+        content = json.dumps({"menu_text": "x" * (MAX_MENU_TEXT_BYTES + 1)}).encode()
+    elif scenario == "extraction_failed":
+        error = MenuExtractionModelError("menu extraction model call failed")
+    elif scenario == "model_not_configured":
+        error = ModelNotConfigured("AZURE_OPENAI_ENDPOINT is unset")
+
+    if scenario == "internal_error":
+        # An unsanctioned envelope: caught by the route's catch-all, which owns
+        # the one log line the other scenarios never reach.
+        set_extraction_agent(RogueAgent())  # type: ignore[arg-type]
+    else:
+        register(ScriptedModel(items=[GOLDEN_ITEM], error=error))
+
+    with caplog.at_level("WARNING", logger="cordia_agent.menu.http_app"):
+        async with client() as http:
+            response = await http.post(EXTRACT_PATH, content=content, headers=headers)
+
+    assert response.status_code >= 400
+    assert f"correlation={_CORRELATION_ID}" in _logged(caplog)
+
+
+@pytest.mark.unit
+async def test_a_missing_correlation_header_logs_none_not_a_blank_field(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``correlation=`` with nothing after it reads as a truncated log line."""
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+
+    with caplog.at_level("INFO", logger="cordia_agent.menu.http_app"):
+        async with client() as http:
+            await http.post(EXTRACT_PATH, json={"menu_text": "Soup $12.00"})
+
+    assert "correlation=none" in _logged(caplog)
+
+
+@pytest.mark.unit
+async def test_an_over_long_correlation_header_never_reaches_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bounded, not merely sanitized: a log line is not a caller-sized buffer."""
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+    hostile = "a" * (MAX_CORRELATION_ID_CHARS + 1)
+
+    with caplog.at_level("INFO", logger="cordia_agent.menu.http_app"):
+        async with client() as http:
+            response = await http.post(
+                EXTRACT_PATH,
+                json={"menu_text": "Soup $12.00"},
+                headers={CORRELATION_ID_HEADER: hostile},
+            )
+
+    assert response.status_code == 200
+    logged = _logged(caplog)
+    assert "correlation=opaque" in logged
+    assert hostile not in logged
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        b"abc\nWARNING:root:catalog approved by owner",  # a forged log RECORD
+        b"abc\r\nWARNING:root:approved",
+        b"\x1b[2J\x1b[1;1Hwiped the operator's terminal",  # ANSI
+        b"a" * (MAX_CORRELATION_ID_CHARS + 1),  # over the bound
+        "menu-café".encode(),  # non-ASCII (arrives latin-1 decoded)
+        b"cat_1 OR 1=1",  # whitespace and punctuation
+        b"../../etc/passwd",
+        b"\x00truncated",
+    ],
+)
+def test_hostile_correlation_values_become_opaque(hostile: bytes) -> None:
+    """Log injection is the risk: the token is filtered, never trusted."""
+    assert _correlation_log_token(_correlation_request(hostile)) == "opaque"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "safe",
+    [
+        _CORRELATION_ID,  # cat_<guid:N> — the real fallback on this lane
+        "550e8400-e29b-41d4-a716-446655440000",  # a dashed GUID
+        "01JAV8Q9ZK7M4X",  # a ULID-ish token
+        "a" * MAX_CORRELATION_ID_CHARS,  # exactly on the bound
+    ],
+)
+def test_log_safe_correlation_values_survive_verbatim(safe: str) -> None:
+    """Sanitizing must not defeat the purpose: real ids have to match the caller's."""
+    assert _correlation_log_token(_correlation_request(safe.encode())) == safe
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw", [None, b"", b"   "])
+def test_absent_or_blank_correlation_reads_as_none(raw: bytes | None) -> None:
+    """No id sent is itself a diagnosis, and a distinct one from "unsafe"."""
+    assert _correlation_log_token(_correlation_request(raw)) == "none"
 
 
 @pytest.mark.unit
