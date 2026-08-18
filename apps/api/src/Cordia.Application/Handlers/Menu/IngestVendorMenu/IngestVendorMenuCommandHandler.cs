@@ -185,7 +185,8 @@ public sealed class IngestVendorMenuCommandHandler(
             return Unit.Value;
         }
 
-        // Persist draft items (item ids namespaced by catalog to stay unique per tenant).
+        // Draft items, projected here and persisted below (item ids namespaced by catalog to stay
+        // unique per tenant). Pure mapping, no I/O — the persist is gated on the CAS.
         var items = extraction.Items
             .Select(d => new VendorCatalogItem
             {
@@ -205,7 +206,6 @@ public sealed class IngestVendorMenuCommandHandler(
                 DurationMinutes = d.DurationMinutes,
             })
             .ToList();
-        await repo.AddDraftItemsAsync(items, ct);
 
         // Extracting → DraftReady
         CatalogStateMachine.EnsureAllowed(CatalogStatus.Extracting, CatalogStatus.DraftReady);
@@ -215,6 +215,16 @@ public sealed class IngestVendorMenuCommandHandler(
 
         if (draftReady > 0)
         {
+            // Gated on the CAS for the same reason the audits below are: an unwon transition must
+            // not leave rows behind. `AddDraftItemsAsync` is an AddRange + SaveChangesAsync on the
+            // ambient DbContext, so persisting before the CAS committed the drafts even when the CAS
+            // then LOST — typically to `MenuIngestionMonitor` having already settled a stalled row to
+            // `ExtractFailed` — leaving draft items hanging off a terminally-failed catalog no owner
+            // will ever review (Inv-16). A TIGHTENING of pre-existing ordering rather than a new
+            // rule: the behaviour predates the real extractor, which only raised the stakes (the stub
+            // wrote one fabricated row, the agent writes every row it read).
+            await repo.AddDraftItemsAsync(items, ct);
+
             // Gated on the SAME CAS as draft_ready, and for the same reason the extract_failed catch
             // above is gated: an audit event speaks for a transition, and this call only made the
             // Extracting→DraftReady one if it won. Losing the race means another writer (typically

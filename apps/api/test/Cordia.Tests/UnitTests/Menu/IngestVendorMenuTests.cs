@@ -359,6 +359,37 @@ public class IngestVendorMenuTests
         Assert.DoesNotContain(_writtenAudits, e => e.EventType == "catalog.draft_ready");
     }
 
+    /// <summary>
+    /// The DRAFT ROWS are gated on the same CAS as the audits, not just the audit rows.
+    ///
+    /// <para><c>AddDraftItemsAsync</c> is an <c>AddRange</c> + <c>SaveChangesAsync</c> on the ambient
+    /// DbContext, so staging the items before the <c>Extracting→DraftReady</c> CAS committed them with
+    /// the inbox transaction even when the CAS then lost — typically to <c>MenuIngestionMonitor</c>
+    /// having already settled a stalled row to <c>ExtractFailed</c> — leaving draft items hanging off a
+    /// terminally-failed catalog nobody will ever review (Inv-16). Persisting only on the won path is a
+    /// tightening of ordering that predates the real extractor, which merely raised the stakes: the
+    /// stub wrote one fabricated row, the agent writes every row it read.</para>
+    /// </summary>
+    [Fact]
+    public async Task LostDraftReadyRace_PersistsNoDraftItems()
+    {
+        SetupCleanExtraction(new MenuExtractionResult(
+            [
+                new DraftCatalogItem("d1", "Soup", "Hot soup", 1200, "AUD", 0.9, "page_1"),
+                new DraftCatalogItem("d2", "Salad", "Cold salad", 900, "AUD", 0.9, "page_1"),
+            ],
+            []));
+        _repo.Setup(r => r.TryTransitionStatusAsync(Tenant, CatalogId, It.IsAny<long>(),
+                CatalogStatus.Extracting, CatalogStatus.DraftReady, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        _repo.Verify(r => r.AddDraftItemsAsync(
+            It.IsAny<IEnumerable<VendorCatalogItem>>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.DoesNotContain(_writtenAudits, e => e.EventType == "catalog.draft_ready");
+    }
+
     [Fact]
     public void Command_IsInboxConsumerRequest_ForMenuProcessor()
     {

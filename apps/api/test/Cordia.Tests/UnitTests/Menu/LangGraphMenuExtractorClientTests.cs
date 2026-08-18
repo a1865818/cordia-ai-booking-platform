@@ -232,6 +232,43 @@ public class LangGraphMenuExtractorClientTests : IDisposable
     }
 
     [Theory]
+    [InlineData(-1)]
+    [InlineData(-2200)]
+    [InlineData(long.MinValue)]
+    public async Task Extract_NegativeAmountMinor_Throws_WithoutEchoingTheValue(long amountMinor)
+    {
+        // The Python side already refuses one (`_to_money` drops the row when `amount_minor < 0`),
+        // but this class must not depend on the responder being that route — a drifted route, a dev
+        // server or a proxy answers whatever it likes, which is the threat model the class documents.
+        // Unchecked, the value lands in vendor_catalog_items.price_minor as a negative price on a
+        // draft the owner is about to approve (Inv-16).
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            $$$"""{"items":[{"item_id":"i","name":"n","description":"d","price":{"amount_minor":{{{amountMinor}}},"currency":"AUD"}}],"flags":[]}""");
+
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        // Response-derived, so it never reaches the message — same rule as every other body-shaped
+        // value in this class (Inv-12/16). Not chained either: an inner exception is a leak with
+        // extra steps.
+        Assert.DoesNotContain(amountMinor.ToString(), ex.Message, StringComparison.Ordinal);
+        Assert.Null(ex.InnerException);
+    }
+
+    [Fact]
+    public async Task Extract_ZeroAmountMinor_IsAccepted()
+    {
+        // A free menu row is a real menu row, and the Python guard draws its line in exactly the
+        // same place (`amount_minor < 0`). Rejecting zero would refuse a legitimate document.
+        var handler = FakeHttpMessageHandler.RespondingJson(
+            """{"items":[{"item_id":"i","name":"Complimentary bread","description":"On the house.","price":{"amount_minor":0,"currency":"AUD"}}],"flags":[]}""");
+
+        var result = await CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, Assert.Single(result.Items).PriceMinor);
+    }
+
+    [Theory]
     [InlineData("""{"items":null,"flags":null}""")]
     [InlineData("""{"items":null,"flags":[]}""")]
     [InlineData("""{"items":[],"flags":null}""")]

@@ -363,6 +363,30 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
                 "Menu extraction agent returned an item missing a required field.");
         }
 
+        // A NEGATIVE price is a contract violation, not a cheap lunch. The Python side already
+        // refuses one (`_to_money` in model_azure.py drops the row when `amount_minor < 0`) — but
+        // this class's whole premise is that it must not depend on the responder being that route:
+        // a drifted route, a dev server or a proxy answers whatever it likes. Left unchecked the
+        // value lands in `vendor_catalog_items.price_minor` as a negative price on a draft an owner
+        // is about to approve, and after publication in front of a customer (Inv-16). Fail closed
+        // like every other malformed-response path here: the catalog settles ExtractFailed, the
+        // owner is alerted, and recovery is a fresh upload.
+        //
+        // ZERO IS LEGAL and deliberately not caught: a genuinely free menu row exists, and the
+        // Python guard draws the line in the same place. Nothing wider is checked (currency codes,
+        // confidence range) — the range checks with no plausible downstream surprise are not worth
+        // the speculative validation.
+        //
+        // The offending value is NOT in the message or the log line: it is response-derived, like
+        // everything else this class refuses to echo (Inv-12/16).
+        if (item.Price.AmountMinor.Value < 0)
+        {
+            _logger.LogWarning(
+                "Menu extraction returned an item with a negative price; settling the ingestion as failed.");
+            throw new MenuExtractionFailedException(
+                "Menu extraction agent returned an item with a negative price.");
+        }
+
         return new DraftCatalogItem(
             ItemId: Sanitize(item.ItemId, MaxItemIdChars)!,
             Name: Sanitize(item.Name, MaxNameChars)!,
