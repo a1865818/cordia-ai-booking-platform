@@ -134,6 +134,26 @@ MENU_EXTRACTION_MAX_TOTAL_SECONDS = 105.0
 #: shared one — see ``.env.example``.
 BASE_TIMEOUT_ENV_VAR = "CORDIA_LLM_BASE_TIMEOUT_SECONDS"
 
+#: Largest ``duration_minutes`` accepted off a model-reported row: 30 days.
+#:
+#: There are two reasons for a bound, and the hard one is storage.  This value
+#: is persisted by the .NET side into a Postgres ``integer`` column — int32,
+#: max 2_147_483_647 — and anything larger throws at ``SaveChanges``, which
+#: happens OUTSIDE the ingestion handler's fail-secure catch and would therefore
+#: poison-loop the inbox instead of settling the message.  The value is model
+#: output derived from an attacker-supplied document, so the bound has to be
+#: enforced here, at the origin, not hoped for downstream.
+#:
+#: 30 days rather than ``int32`` max because plausibility is the tighter and
+#: more useful constraint: it clears the longest thing a booking menu
+#: realistically prints (a multi-day retreat or tour) by a wide margin, while
+#: still rejecting the actual failure mode — a misread year, phone number, or
+#: price digit-string landing in this field.  Past this point the value is a
+#: garbled read, and a garbled duration is worth strictly less than no duration
+#: at all: a human reviewer can fill a null in, but cannot tell that "525600"
+#: was never on the menu.
+MAX_DURATION_MINUTES = 30 * 24 * 60
+
 
 class MenuExtractionModelError(RuntimeError):
     """Raised when the extraction model cannot produce a usable payload.
@@ -234,6 +254,15 @@ class ExtractedMenuItem(BaseModel):
             "the document itself shows (symbol, code, locale). Null if the "
             "document gives no signal — the tenant's configured default is "
             "applied then, so never guess a code."
+        ),
+    )
+    duration_minutes: int | None = Field(
+        default=None,
+        description=(
+            "How long this item takes, in MINUTES, ONLY when the document "
+            "states a duration for it: '45 min' is 45, '1 hr 30' is 90. Null "
+            "for any item the document does not put a time on — most food "
+            "menus state no durations at all. Never estimate one."
         ),
     )
     category: str | None = Field(
@@ -699,6 +728,7 @@ def _to_catalog_item(
         name=name,
         description=(row.description or "").strip(),
         price=price,
+        duration_minutes=_to_duration_minutes(row.duration_minutes),
         category=_clean(row.category),
         allergens=_clean_list(row.allergens),
         dietary_labels=_clean_list(row.dietary_labels),
@@ -780,6 +810,32 @@ def _to_money(
     if code is None:
         return None
     return Money(amount_minor=amount_minor, currency=code)
+
+
+def _to_duration_minutes(value: int | None) -> int | None:
+    """Return a usable service duration in minutes, or ``None``.
+
+    An unusable value drops the FIELD, never the row — unlike the name and the
+    price, which are what make a row an item at all.  A duration is
+    supplementary metadata a human reviewer can supply later, so trading the
+    item's name and price away to reject one garbled number is a bad trade.
+
+    Args:
+        value: The duration the model reported for this row, if any.
+
+    Returns:
+        *value* when it is positive and at most :data:`MAX_DURATION_MINUTES`,
+        else ``None``.  Zero and negatives are rejected because they are not a
+        shorter service but a misread — and ``0`` would read downstream as a
+        genuine zero-length service rather than as an absent one.  Values above
+        the bound are rejected because they are implausible AND because the
+        ``integer`` (int32) column this lands in cannot hold an arbitrary
+        integer: Python's ``int`` is unbounded, so an unchecked value would
+        raise at ``SaveChanges`` on the .NET side.
+    """
+    if value is None or value <= 0 or value > MAX_DURATION_MINUTES:
+        return None
+    return value
 
 
 def worst_case_seconds(base_timeout: float) -> float:

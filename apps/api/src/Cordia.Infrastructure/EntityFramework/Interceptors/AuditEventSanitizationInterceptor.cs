@@ -137,7 +137,7 @@ public sealed class AuditEventSanitizationInterceptor : SaveChangesInterceptor
         // ANY backslash is the trigger, not the \u00XX form specifically. System.Text.Json escapes
         // every control character, but five of them in SHORT form — measured:
         // Serialize(new { v = "a\tb" }) is {"v":"a\tb"} while Serialize(new { v = "a\0b" }) is
-        // {"v":"a b"}. A \u00-only probe therefore walked straight past \t \n \r \b \f, so a
+        // {"v":"a\u0000b"}. A \u00-only probe therefore walked straight past \t \n \r \b \f, so a
         // tab-separated PAN in metadata escaped masking entirely (the parse below un-escapes to a
         // real control char, which StripNode then removes, letting SanitizeJson see the digits
         // contiguously). Testing for a backslash covers every escape form there is, present and

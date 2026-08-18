@@ -37,6 +37,7 @@ from cordia_agent.menu.model_azure import (
     BASE_TIMEOUT_ENV_VAR,
     DEFAULT_CURRENCY,
     DEFAULT_CURRENCY_ENV_VAR,
+    MAX_DURATION_MINUTES,
     MENU_EXTRACTION_BASE_TIMEOUT_SECONDS,
     MENU_EXTRACTION_MAX_TOTAL_SECONDS,
     MENU_EXTRACTION_RETRIES,
@@ -466,6 +467,110 @@ async def test_all_null_availability_is_dropped() -> None:
     items = await model.extract(label_untrusted(_CLEAN_MENU))
 
     assert items[0].availability_window is None
+
+
+# ---------------------------------------------------------------------------
+# 5b — duration_minutes: carried when stated, dropped when unusable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stated", [1, 45, 90, MAX_DURATION_MINUTES])
+async def test_stated_duration_reaches_the_catalog_item(stated: int) -> None:
+    """A menu that times its services must not lose the time on the way through.
+
+    The .NET side carries ``duration_minutes`` end to end onto the
+    ``vendor_catalog_items`` row, so a mapping that never populates it makes
+    that whole path store ``null`` for every real extraction.
+    """
+    model, _ = _model(_payload(_row(duration_minutes=stated)))
+
+    items = await model.extract(label_untrusted(_CLEAN_MENU))
+
+    assert items[0].duration_minutes == stated
+
+
+@pytest.mark.unit
+async def test_absent_duration_is_none_not_zero() -> None:
+    """Most food menus time nothing; ``0`` would read as a zero-length service."""
+    model, _ = _model(_payload(_row()))
+
+    items = await model.extract(label_untrusted(_CLEAN_MENU))
+
+    assert items[0].duration_minutes is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reported",
+    [
+        0,
+        -1,
+        -90,
+        MAX_DURATION_MINUTES + 1,
+        525_600,
+        2**31,
+        2**31 - 1,
+        2**63,
+        10**30,
+    ],
+    ids=[
+        "zero",
+        "negative-one",
+        "negative",
+        "just-over-bound",
+        "a-year",
+        "int32-overflow",
+        "int32-max",
+        "int64-overflow",
+        "absurd",
+    ],
+)
+async def test_unusable_duration_drops_the_field_not_the_row(reported: int) -> None:
+    """Untrusted model output lands in a Postgres ``integer`` (int32) column.
+
+    A value past ``int.MaxValue`` would throw at ``SaveChanges`` on the .NET
+    side — outside the ingestion handler's fail-secure catch, so it would
+    poison-loop the inbox rather than settle the message.  It has to be rejected
+    HERE, at the origin.
+
+    But rejecting the *field* only: the name and the price are what the document
+    actually stated, and losing them to one garbled number is a far worse
+    outcome than losing the duration.
+    """
+    model, _ = _model(_payload(_row(duration_minutes=reported)))
+
+    items = await model.extract(label_untrusted(_CLEAN_MENU))
+
+    # The item survives, intact apart from the duration.
+    assert len(items) == 1
+    assert items[0].name == "Grilled Salmon"
+    assert items[0].price.amount_minor == 3200
+    assert items[0].price.currency == "AUD"
+    assert items[0].duration_minutes is None
+
+
+@pytest.mark.unit
+async def test_an_unusable_duration_is_not_counted_as_a_dropped_row(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A dropped field is not a dropped row, and must not raise "no usable rows".
+
+    A document whose every row states an absurd duration is still a document
+    full of perfectly good items — treating it as total row loss would hand the
+    owner an ``ExtractFailed`` for a menu that read fine.
+    """
+    rows = [_row(name=f"Item {n}", duration_minutes=10**30) for n in range(40)]
+    model, _ = _model(_payload(*rows))
+
+    with caplog.at_level("WARNING", logger="cordia_agent.menu.model_azure"):
+        outcome = await model.extract_detailed(label_untrusted(_CLEAN_MENU))
+
+    assert len(outcome.items) == 40
+    assert outcome.dropped_rows == 0
+    assert outcome.total_rows == 40
+    assert {i.duration_minutes for i in outcome.items} == {None}
+    assert not [r for r in caplog.records if "dropped" in r.getMessage()]
 
 
 # ---------------------------------------------------------------------------
