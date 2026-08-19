@@ -59,6 +59,10 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
         DateTimeOffset now,
         CancellationToken ct = default)
     {
+        // NOTE: the integration suite mirrors this method (production claim + a tenant_id predicate)
+        // in Cordia.Tests' TenantScopedOutboxRepository. Change this and change that; the mirror is
+        // pinned by OutboxTenantScopeParityTests, which fails if the two stop agreeing.
+        //
         // Cross-tenant worker claim (§5.1). Open an explicit short transaction: SELECT FOR UPDATE
         // SKIP LOCKED acquires row locks; committing the transaction releases them so the lease
         // fields (written by SaveChangesAsync) become visible to other workers — the committed

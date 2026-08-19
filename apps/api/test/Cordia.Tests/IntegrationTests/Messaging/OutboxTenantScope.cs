@@ -83,6 +83,19 @@ internal sealed class TenantScopedOutboxRepository(
     /// The production claim (<c>OutboxRepository.ClaimBatchAsync</c>) with one extra predicate:
     /// <c>tenant_id = {0}</c>. Same short transaction, same lease/attempt bookkeeping, same
     /// <c>FOR UPDATE SKIP LOCKED</c> — so a foreign row is neither dispatched nor even leased.
+    ///
+    /// <para><b>KEEP IN SYNC WITH</b>
+    /// <c>apps/api/src/Cordia.Infrastructure/Repositories/OutboxRepository.cs</c>:55
+    /// (<see cref="OutboxRepository.ClaimBatchAsync"/>). This body is that method's body; the
+    /// <b>only</b> intended divergence is the added <c>tenant_id</c> predicate. Any other difference
+    /// — a new <c>WHERE</c> clause, a different <c>ORDER BY</c>, another column written in the
+    /// bookkeeping loop, a change to the lease/attempt arithmetic — is drift, and it makes the five
+    /// publisher-driving test classes exercise a path production does not have.</para>
+    ///
+    /// <para>That is enforced, not merely requested: <c>OutboxTenantScopeParityTests</c> runs both
+    /// implementations over the same rows in real Postgres and fails unless they select the same
+    /// <c>message_id</c>s and leave every column identical. If you change the production claim, run
+    /// it — and change this with it.</para>
     /// </summary>
     public async Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(
         int limit,
