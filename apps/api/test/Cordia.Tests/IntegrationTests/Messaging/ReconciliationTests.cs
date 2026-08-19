@@ -101,7 +101,12 @@ public class ReconciliationTests(PostgresFixture fixture)
 {
     // ── Container builder ─────────────────────────────────────────────────────────────────────
 
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter)
+    /// <param name="tenantId">
+    /// The test's tenant. Bounds the publisher's claim phase to this tenant so a tick cannot
+    /// dispatch outbox rows written by a test in the parallel AcceptanceApi collection through this
+    /// container's fake adapter (issue #90 — see <see cref="OutboxTenantScope"/>).
+    /// </param>
+    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter, string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -124,6 +129,7 @@ public class ReconciliationTests(PostgresFixture fixture)
         // Override the StubBookingProviderAdapter with the test-controllable fake.
         // Last AddSingleton registration wins for GetRequiredService<IBookingProviderAdapter>.
         services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -136,25 +142,20 @@ public class ReconciliationTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t5-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── FM#2 headline: crash-after-provider — reconcile finds effect, no duplicate create ─────
 
     [Fact]
     public async Task FM2_CrashAfterProvider_ReconcileFindsEffect_NoDuplicateCreate()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t5-fm2-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -224,7 +225,7 @@ public class ReconciliationTests(PostgresFixture fixture)
             SeedRef = knownRef,
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -282,8 +283,6 @@ public class ReconciliationTests(PostgresFixture fixture)
     [Fact]
     public async Task FM3_NoEffectProven_RecreatesUnderSameKey_ReachesBooked()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t5-fm3-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -346,7 +345,7 @@ public class ReconciliationTests(PostgresFixture fixture)
         // (SeedKey/SeedRef are null → LookupByIdempotencyKey returns NotFound).
         var fakeAdapter = new FakeBookingProviderAdapter { CreateRef = createdRef };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -370,8 +369,6 @@ public class ReconciliationTests(PostgresFixture fixture)
     [Fact]
     public async Task AmbiguousClassification_ReconcileFindEffect_NeverCreatesSecondTime()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t5-amb-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -411,7 +408,7 @@ public class ReconciliationTests(PostgresFixture fixture)
             CreateRef = "ext_would_be_duplicate", // should never be returned
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
 
         // First tick: Accepted → … → Finalizing → Ambiguous → Reconciling (driver loop stops).
