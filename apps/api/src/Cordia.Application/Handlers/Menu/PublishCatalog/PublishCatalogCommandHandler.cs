@@ -12,7 +12,8 @@ namespace Cordia.Application.Handlers.Menu.PublishCatalog;
 /// tenant's prior live published version (if any) — <c>published → superseded</c> — then publishes
 /// this catalog, so exactly one version is ever live. Unknown catalog →
 /// <see cref="CatalogNotFoundException"/> (404); not in <c>approved</c> (or a lost race) →
-/// <see cref="InvalidCatalogStateTransitionException"/> (409).
+/// <see cref="InvalidCatalogStateTransitionException"/> (409); no items →
+/// <see cref="CatalogHasNoItemsException"/> (409).
 /// </summary>
 public sealed class PublishCatalogCommandHandler(
     IVendorCatalogRepository repo,
@@ -26,6 +27,17 @@ public sealed class PublishCatalogCommandHandler(
             ?? throw new CatalogNotFoundException(command.CatalogId);
 
         CatalogStateMachine.EnsureAllowed(catalog.Status, CatalogStatus.Published);
+
+        // Refuse to publish an itemless catalog. An empty extraction (`items: []`) is a legitimate
+        // outcome, but publishing it supersedes the tenant's live menu and leaves the foreground
+        // agent with nothing to offer — and no in-product way back, since edits can change items
+        // but never add one. Checked BEFORE the transaction opens, so the prior published version
+        // is never retired by a publish that then refuses: there is no partial-effect window.
+        // Safe to read outside the transaction — an approved catalog's items are frozen, and the
+        // only writer of items is ingestion (extracting → draft_ready), which cannot run here.
+        var items = await repo.GetDraftItemsAsync(command.CatalogId, ct);
+        if (items.Count == 0)
+            throw new CatalogHasNoItemsException(command.CatalogId);
 
         var now = DateTimeOffset.UtcNow;
         await uow.ExecuteInTransactionAsync(async ct2 =>

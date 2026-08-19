@@ -10,7 +10,7 @@ namespace Cordia.Tests.UnitTests.Menu;
 
 /// <summary>
 /// Unit tests for <see cref="PublishCatalogCommandHandler"/> (spec 11 §5.2): <c>approved → published</c>,
-/// supersedes the prior live version, 404 on unknown, 409 on illegal state / lost race.
+/// supersedes the prior live version, 404 on unknown, 409 on illegal state / lost race / empty catalog.
 /// </summary>
 [Trait("Category", "Unit")]
 public class PublishCatalogTests
@@ -30,6 +30,16 @@ public class PublishCatalogTests
             It.IsAny<CatalogStatus>(), It.IsAny<CatalogStatus>(), It.IsAny<CancellationToken>())).ReturnsAsync(1);
         // No prior published by default.
         _repo.Setup(r => r.GetCurrentPublishedAsync(CatalogId, It.IsAny<CancellationToken>())).ReturnsAsync((VendorCatalog?)null);
+        // A publishable catalog has at least one item by default (the empty case is its own test).
+        SetupDraftItems(new VendorCatalogItem
+        {
+            TenantId = Tenant,
+            CatalogId = CatalogId,
+            ItemId = $"{CatalogId}:d1",
+            Name = "Dish",
+            PriceMinor = 1000,
+            Currency = "AUD",
+        });
         _uow.Setup(u => u.ExecuteInTransactionAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
@@ -39,6 +49,10 @@ public class PublishCatalogTests
     private void SetupCatalog(CatalogStatus status, long version = 0)
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version, VersionLabel = "menu_v2" });
+
+    private void SetupDraftItems(params VendorCatalogItem[] items)
+        => _repo.Setup(r => r.GetDraftItemsAsync(CatalogId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(items);
 
     private static PublishCatalogCommand Command() => new(Tenant, CatalogId, "owner", "rc_test", "owner");
 
@@ -89,6 +103,27 @@ public class PublishCatalogTests
 
         await Assert.ThrowsAsync<InvalidCatalogStateTransitionException>(
             () => BuildHandler().Handle(Command(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task EmptyCatalog_ThrowsCatalogHasNoItems_AndLeavesPriorPublished()
+    {
+        // Issue #89: an approved catalog with zero items must not publish. The assertion that
+        // matters is the SECOND one — the prior live version is never touched, so the tenant's
+        // menu survives a refused publish (no partial-effect window).
+        SetupCatalog(CatalogStatus.Approved, version: 5);
+        SetupDraftItems(); // extraction legitimately produced nothing
+        _repo.Setup(r => r.GetCurrentPublishedAsync(CatalogId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = PriorId, Status = CatalogStatus.Published, Version = 9 });
+
+        var ex = await Assert.ThrowsAsync<CatalogHasNoItemsException>(
+            () => BuildHandler().Handle(Command(), CancellationToken.None));
+        Assert.Equal(CatalogId, ex.CatalogId);
+
+        // Nothing transitioned: the prior version was NOT superseded and this one was NOT published.
+        _repo.Verify(r => r.TryTransitionStatusAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<CatalogStatus>(), It.IsAny<CatalogStatus>(), It.IsAny<CancellationToken>()), Times.Never);
+        _audit.Verify(a => a.AddAsync(It.IsAny<AuditEvent>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

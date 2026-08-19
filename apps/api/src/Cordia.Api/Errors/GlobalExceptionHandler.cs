@@ -241,6 +241,12 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     "Vendor catalog not editable", ex.Message, cancellationToken);
                 return true;
 
+            case CatalogHasNoItemsException ex:
+                logger.LogWarning(ex, "Vendor catalog has no items: {CatalogId}", ex.CatalogId);
+                await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,
+                    "Vendor catalog has no items", ex.Message, cancellationToken);
+                return true;
+
             case OperationConflictException ex:
                 logger.LogWarning(ex, "Operation conflict: operationId={OperationId}", ex.OperationId);
                 await WriteProblemAsync(httpContext, StatusCodes.Status409Conflict,

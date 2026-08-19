@@ -3,6 +3,7 @@ using Cordia.Application.Common.Audit;
 using Cordia.Application.Handlers.Menu.PublishCatalog;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;
 using Cordia.Tests.IntegrationTests.Persistence;
@@ -92,5 +93,46 @@ public class PublishImmutabilityTests(PostgresFixture fixture)
         var supersedeAudit = await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EventType == "catalog.superseded" && e.SubjectRef == v1);
         Assert.NotNull(supersedeAudit);
+    }
+
+    [Fact]
+    public async Task PublishingEmptyV2_IsRefused_AndLiveV1Survives()
+    {
+        // Issue #89: an approved catalog with zero items must not be publishable. The guard sits
+        // before the transaction, so the live v1 is never retired — proven here against real
+        // PostgreSQL, where a partial-effect window would leave v1 superseded on disk.
+        var tenantId = TestIds.New("t-pub0");
+        var v1 = TestIds.New("cat-v1");
+        var v2 = TestIds.New("cat-v2");
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            ctx.VendorCatalogs.Add(Approved(tenantId, v1, "menu_v1"));
+            ctx.VendorCatalogItems.Add(Item(tenantId, v1, $"{v1}:old", "Old Dish"));
+            ctx.VendorCatalogs.Add(Approved(tenantId, v2, "menu_v2")); // no items — empty extraction
+            await ctx.SaveChangesAsync();
+        }
+
+        await PublishAsync(tenantId, v1);
+
+        await Assert.ThrowsAsync<CatalogHasNoItemsException>(() => PublishAsync(tenantId, v2));
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var v1Row = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == v1);
+        var v2Row = await assertCtx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == v2);
+        Assert.Equal(CatalogStatus.Published, v1Row.Status); // NOT superseded
+        Assert.Equal(CatalogStatus.Approved, v2Row.Status);  // NOT published
+
+        // The foreground read path still sees the live menu.
+        var items = await new VendorCatalogRepository(assertCtx).SearchPublishedItemsAsync(null, null, 0, 50, CancellationToken.None);
+        Assert.Equal(["Old Dish"], items.Select(i => i.Name).ToList());
+
+        // No supersede was recorded against v1.
+        var supersedeAudit = await assertCtx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EventType == "catalog.superseded" && e.SubjectRef == v1);
+        Assert.Null(supersedeAudit);
     }
 }
