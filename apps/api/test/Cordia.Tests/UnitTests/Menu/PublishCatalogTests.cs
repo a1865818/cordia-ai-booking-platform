@@ -31,15 +31,7 @@ public class PublishCatalogTests
         // No prior published by default.
         _repo.Setup(r => r.GetCurrentPublishedAsync(CatalogId, It.IsAny<CancellationToken>())).ReturnsAsync((VendorCatalog?)null);
         // A publishable catalog has at least one item by default (the empty case is its own test).
-        SetupDraftItems(new VendorCatalogItem
-        {
-            TenantId = Tenant,
-            CatalogId = CatalogId,
-            ItemId = $"{CatalogId}:d1",
-            Name = "Dish",
-            PriceMinor = 1000,
-            Currency = "AUD",
-        });
+        SetupHasItems(true);
         _uow.Setup(u => u.ExecuteInTransactionAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
     }
@@ -50,9 +42,9 @@ public class PublishCatalogTests
         => _repo.Setup(r => r.GetAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = CatalogId, Status = status, Version = version, VersionLabel = "menu_v2" });
 
-    private void SetupDraftItems(params VendorCatalogItem[] items)
-        => _repo.Setup(r => r.GetDraftItemsAsync(CatalogId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(items);
+    private void SetupHasItems(bool hasItems)
+        => _repo.Setup(r => r.HasAnyItemsAsync(CatalogId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(hasItems);
 
     private static PublishCatalogCommand Command() => new(Tenant, CatalogId, "owner", "rc_test", "owner");
 
@@ -112,7 +104,7 @@ public class PublishCatalogTests
         // matters is the SECOND one — the prior live version is never touched, so the tenant's
         // menu survives a refused publish (no partial-effect window).
         SetupCatalog(CatalogStatus.Approved, version: 5);
-        SetupDraftItems(); // extraction legitimately produced nothing
+        SetupHasItems(false); // extraction legitimately produced nothing
         _repo.Setup(r => r.GetCurrentPublishedAsync(CatalogId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VendorCatalog { TenantId = Tenant, CatalogId = PriorId, Status = CatalogStatus.Published, Version = 9 });
 

@@ -47,6 +47,15 @@ public interface IVendorCatalogRepository
         string catalogId, CancellationToken ct = default);
 
     /// <summary>
+    /// Does <paramref name="catalogId"/> have at least one item, at ANY status? An EXISTENCE
+    /// question, so callers that only need the yes/no — publish's itemless-catalog guard (§5.2)
+    /// — never materialise a whole menu (rows, descriptions and jsonb blobs) to read a count.
+    /// Any status, like <see cref="GetDraftItemsAsync"/>, which is what publish wants: an
+    /// approved catalog's items are frozen. Tenant-scoped via the global query filter (Inv-13).
+    /// </summary>
+    Task<bool> HasAnyItemsAsync(string catalogId, CancellationToken ct = default);
+
+    /// <summary>
     /// The tenant's catalogs, newest first, at any status.
     ///
     /// This is the DISCOVERY read: without it the console could only ever show catalogs started

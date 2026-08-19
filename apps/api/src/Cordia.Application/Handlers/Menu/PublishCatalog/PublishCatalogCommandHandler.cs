@@ -35,8 +35,9 @@ public sealed class PublishCatalogCommandHandler(
         // is never retired by a publish that then refuses: there is no partial-effect window.
         // Safe to read outside the transaction — an approved catalog's items are frozen, and the
         // only writer of items is ingestion (extracting → draft_ready), which cannot run here.
-        var items = await repo.GetDraftItemsAsync(command.CatalogId, ct);
-        if (items.Count == 0)
+        // An EXISTS probe, not a listing: the guard needs one bit, and publish is exactly when a
+        // menu is at its largest.
+        if (!await repo.HasAnyItemsAsync(command.CatalogId, ct))
             throw new CatalogHasNoItemsException(command.CatalogId);
 
         var now = DateTimeOffset.UtcNow;
