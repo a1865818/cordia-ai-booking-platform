@@ -1,4 +1,7 @@
-﻿namespace Cordia.Infrastructure.Menu;
+﻿using System.Diagnostics.CodeAnalysis;
+using System.Net;
+
+namespace Cordia.Infrastructure.Menu;
 
 /// <summary>
 /// Options for the API → LangGraph menu-extraction RPC (spec 11 §3, issue #87 D-E). Bound from
@@ -13,10 +16,21 @@ public sealed class LangGraphOptions
     public const string SectionName = "LangGraph";
 
     /// <summary>
-    /// Scheme + authority of the LangGraph process, e.g. <c>http://localhost:2024</c>. Must be an
-    /// absolute <c>http</c>/<c>https</c> URI whenever the real client is selected — validated at
-    /// startup rather than on the first ingestion, because a malformed host would otherwise
-    /// surface as an <c>ExtractFailed</c> catalog hours after the deploy.
+    /// Scheme + authority of the LangGraph process, e.g. <c>http://langgraph.internal:8000</c>.
+    /// Must be an absolute <c>http</c>/<c>https</c> URI whenever the real client is selected —
+    /// validated at startup rather than on the first ingestion, because a malformed host would
+    /// otherwise surface as an <c>ExtractFailed</c> catalog hours after the deploy.
+    ///
+    /// <para><b>No default, deliberately.</b> The committed default used to be
+    /// <c>http://localhost:2024</c>, which is only ever correct on a developer machine — and
+    /// because it is a perfectly well-formed absolute http URI, <see cref="HasUsableHost"/> passed
+    /// and a deployment that never set the key booted green and then had every menu ingestion fail
+    /// against its own loopback interface. The dev value now lives in
+    /// <c>appsettings.Development.json</c> next to <c>UseStubExtractor</c>, and a deployment that
+    /// forgets this key fails to start (issue #94).</para>
+    ///
+    /// <para><b>Scheme and authority ONLY</b> — see <see cref="HostIsAuthorityOnly"/>. A path here
+    /// is silently discarded, not silently prefixed.</para>
     /// </summary>
     public string Host { get; set; } = string.Empty;
 
@@ -52,8 +66,79 @@ public sealed class LangGraphOptions
     /// address. Only meaningful when the real client is selected; the stub never dials out.
     /// </summary>
     internal bool HasUsableHost
-        => Uri.TryCreate(Host, UriKind.Absolute, out var uri)
+        => TryParseHost(out var uri)
             && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    /// <summary>
+    /// Whether <see cref="Host"/> names a loopback or "unspecified" address — i.e. a host that can
+    /// only ever mean "this same machine". <c>localhost</c>, anything in <c>127.0.0.0/8</c>,
+    /// <c>::1</c>, <c>0.0.0.0</c> and <c>[::]</c> all qualify.
+    ///
+    /// <para><b>Why this is a startup gate and not a warning.</b> The committed default was
+    /// <c>http://localhost:2024</c> and no deploy config overrode it, so a deployed API POSTed the
+    /// menu document <i>to itself</i>, got a connection refusal, and settled every ingestion as
+    /// <c>ExtractFailed</c> with a generic reason. <see cref="HasUsableHost"/> cannot catch it —
+    /// <c>http://localhost:2024</c> IS an absolute http URI — and nothing else in startup even
+    /// prints the resolved host, so there was no signal anywhere. Outside Development a loopback
+    /// host is never a real deployment topology: the agent is a separate container.</para>
+    ///
+    /// <para>Decided with <see cref="Uri.IsLoopback"/> / <see cref="IPAddress.IsLoopback(IPAddress)"/>
+    /// rather than by matching strings, so <c>127.0.0.2</c>, <c>127.1</c> and an IPv6 literal are all
+    /// covered without a list of spellings to keep current. The unspecified addresses are added by
+    /// hand because neither API calls them loopback, yet <c>http://0.0.0.0:8000</c> as an outbound
+    /// TARGET means the local host on every platform this runs on.</para>
+    ///
+    /// <para>False when <see cref="Host"/> does not parse at all: that is
+    /// <see cref="HasUsableHost"/>'s failure to report, and two validators firing on one typo tells
+    /// the operator less, not more.</para>
+    /// </summary>
+    internal bool HostIsLoopbackOrUnspecified
+    {
+        get
+        {
+            if (!TryParseHost(out var uri))
+                return false;
+
+            if (uri.IsLoopback)
+                return true;
+
+            // DnsSafeHost, not Host: an IPv6 literal arrives bracketed ("[::1]"), which
+            // IPAddress.TryParse rejects.
+            return IPAddress.TryParse(uri.DnsSafeHost, out var address)
+                && (IPAddress.IsLoopback(address)
+                    || address.Equals(IPAddress.Any)
+                    || address.Equals(IPAddress.IPv6Any));
+        }
+    }
+
+    /// <summary>
+    /// Whether <see cref="Host"/> carries nothing beyond scheme + authority.
+    ///
+    /// <para><b>A path on the host is silently DISCARDED, not prefixed.</b> The client POSTs the
+    /// root-relative <see cref="ExtractPath"/> against <c>HttpClient.BaseAddress</c>, and RFC 3986
+    /// resolution replaces the base path wholesale: <c>LangGraph__Host=https://gw.internal/langgraph</c>
+    /// validates as an absolute http URI, then POSTs to
+    /// <c>https://gw.internal/internal/menu/extract</c> — a 404 the operator reads as "the agent
+    /// returned HTTP 404". Addressing the service through a reverse-proxy or Front Door route is
+    /// exactly how a deployment would do it, so this is the likely misconfiguration, not an exotic
+    /// one. Refusing it at startup is the only honest answer available: silently honouring the path
+    /// would require the client to stop using <c>BaseAddress</c>, and silently dropping it is what
+    /// already happens.</para>
+    ///
+    /// <para>A query or fragment is refused for the same reason and by the same mechanism — both are
+    /// discarded during resolution too — even though a path is the realistic case.</para>
+    ///
+    /// <para>True when <see cref="Host"/> does not parse, for the same reason
+    /// <see cref="HostIsLoopbackOrUnspecified"/> is false then.</para>
+    /// </summary>
+    internal bool HostIsAuthorityOnly
+        => !TryParseHost(out var uri)
+            || (uri.AbsolutePath is "" or "/"
+                && uri.Query.Length == 0
+                && uri.Fragment.Length == 0);
+
+    private bool TryParseHost([NotNullWhen(true)] out Uri? uri)
+        => Uri.TryCreate(Host, UriKind.Absolute, out uri);
 
     /// <summary>
     /// Whether <see cref="ExtractPath"/> can only ever address <see cref="Host"/>. Validated at

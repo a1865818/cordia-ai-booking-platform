@@ -43,7 +43,23 @@ public sealed class UploadMenuCommandHandler(
                 MessageId = messageId,
                 MessageType = "menu.commands.ingest.v1",
                 CorrelationId = catalogId,
-                // Payload carries only the catalog id + opaque artifact ref (no secrets/bytes — Inv-12).
+                // Payload carries the catalog id + the artifact ref.
+                //
+                // The ref is NOT opaque and this is NOT bytes-free (#95). For today's canonical
+                // `inline:` form the ref *is* the uploaded document, and `source_artifact_ref` is on
+                // SensitiveDataMask's control-plane EXEMPTION list (SensitiveDataMask.cs:94-99,
+                // 173-174), so it is written to `outbox_messages.payload` — jsonb, no length cap —
+                // verbatim and unscreened for PAN/CVV/SSN, as it is to any DLQ copy. The old comment
+                // here asserted "no secrets/bytes — Inv-12", which is true of a storage key and
+                // false of `inline:`.
+                //
+                // The exemption is DELIBERATE and pinned by cross-language vectors
+                // (cordia_agent/security/redaction.py, tools/config/redaction-test-vectors.json with
+                // "expect_exempt": true) — do not flip it here. The real fix is #84 putting artifacts
+                // in object storage, after which the ref is genuinely an opaque key again and this
+                // comment becomes true. Until then UploadMenuValidator bounds the damage
+                // (MaxSourceArtifactRefChars) rather than removing it, and the mask still holds on
+                // every LOG path: this is data at rest in two Postgres columns, not log leakage.
                 Payload = JsonSerializer.Serialize(new
                 {
                     catalog_id = catalogId,

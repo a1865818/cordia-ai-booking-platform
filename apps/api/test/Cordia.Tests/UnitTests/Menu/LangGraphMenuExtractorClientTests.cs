@@ -2,8 +2,9 @@
 using System.Text.Json;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Menu;
 using Cordia.Infrastructure.Menu;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -317,6 +318,134 @@ public class LangGraphMenuExtractorClientTests : IDisposable
     // ---------------------------------------------------------------------
     // Transport failures
     // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Severity is a contract on this client, not a detail.
+    ///
+    /// <para>Every failure path here logged at <b>Warning</b>, so an outage that failed every single
+    /// ingestion — unreachable agent, timeout on every call, a 401 from a missing shared secret —
+    /// looked, to anything alerting on Error, exactly like a healthy API (issue #94).</para>
+    ///
+    /// <para>The line drawn is "the remote said no, or could not be reached" ⇒ <b>Error</b>; "the
+    /// remote said yes and this client refused the content" ⇒ <b>Warning</b>. The second kind is a
+    /// judgement about ONE document and is expected at some rate; the first kind is not.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.NotFound)]             // a path on LangGraph:Host
+    public async Task Extract_NonSuccessStatus_LogsAtError(HttpStatusCode status)
+    {
+        var handler = FakeHttpMessageHandler.Responding(status, $$"""{"error":"{{Canary}}"}""");
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains(LogLevel.Error, _harness.LoggedLevels);
+    }
+
+    [Fact]
+    public async Task Extract_TransportFailure_LogsAtError()
+    {
+        var handler = new FakeHttpMessageHandler(
+            (_, _) => throw new HttpRequestException("Connection refused (localhost:2024)"));
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains(LogLevel.Error, _harness.LoggedLevels);
+    }
+
+    [Fact]
+    public async Task Extract_Timeout_LogsAtError()
+    {
+        var handler = FakeHttpMessageHandler.Hanging();
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler, timeoutSeconds: 1).ExtractAsync(
+                ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains(LogLevel.Error, _harness.LoggedLevels);
+    }
+
+    /// <summary>
+    /// The other half of the line, and the reason it is drawn where it is: a per-document outcome
+    /// must NOT page anyone. A malformed response for one artifact stays Warning, so raising the
+    /// transport failures above did not simply move the whole class up a level.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"items":null,"flags":[]}""")]
+    [InlineData("""{"items":[],"flags":[],"tool_calls":[]}""")]
+    public async Task Extract_MalformedSuccessResponse_LogsAtWarningNotError(string body)
+    {
+        var handler = FakeHttpMessageHandler.RespondingJson(body);
+
+        await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Contains(LogLevel.Warning, _harness.LoggedLevels);
+        Assert.DoesNotContain(LogLevel.Error, _harness.LoggedLevels);
+    }
+
+    /// <summary>
+    /// The categories the audit row records. Mapped from the STATUS CODE only — never the body,
+    /// which is untrusted — and <c>502</c> is the one status that means "the model failed on this
+    /// document" rather than "somebody misconfigured this", because that is the route's own
+    /// documented answer for <c>MenuExtractionModelError</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway, MenuExtractionFailureCategory.ModelError)]
+    [InlineData(HttpStatusCode.Unauthorized, MenuExtractionFailureCategory.HttpError)]
+    [InlineData(HttpStatusCode.NotFound, MenuExtractionFailureCategory.HttpError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, MenuExtractionFailureCategory.HttpError)]
+    [InlineData(HttpStatusCode.InternalServerError, MenuExtractionFailureCategory.HttpError)]
+    public async Task Extract_NonSuccessStatus_CarriesTheFailureCategory(
+        HttpStatusCode status, string expected)
+    {
+        var handler = FakeHttpMessageHandler.Responding(status, """{"error":"x"}""");
+
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Equal(expected, ex.Category);
+    }
+
+    [Fact]
+    public async Task Extract_TransportFailure_CarriesUnreachable()
+    {
+        var handler = new FakeHttpMessageHandler(
+            (_, _) => throw new HttpRequestException("Connection refused (localhost:2024)"));
+
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(handler).ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Equal(MenuExtractionFailureCategory.Unreachable, ex.Category);
+    }
+
+    [Fact]
+    public async Task Extract_Timeout_CarriesTimeout()
+    {
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(FakeHttpMessageHandler.Hanging(), timeoutSeconds: 1)
+                .ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Equal(MenuExtractionFailureCategory.Timeout, ex.Category);
+    }
+
+    [Theory]
+    [InlineData("""{"items":null,"flags":[]}""")]
+    [InlineData("""{"items":[],"flags":[],"tool_calls":[]}""")]
+    [InlineData("not json at all")]
+    public async Task Extract_MalformedSuccessResponse_CarriesMalformedResponse(string body)
+    {
+        var ex = await Assert.ThrowsAsync<MenuExtractionFailedException>(
+            () => CreateClient(FakeHttpMessageHandler.RespondingJson(body))
+                .ExtractAsync(ArtifactRef, TestContext.Current.CancellationToken));
+
+        Assert.Equal(MenuExtractionFailureCategory.MalformedResponse, ex.Category);
+    }
 
     [Theory]
     [InlineData(HttpStatusCode.InternalServerError)]

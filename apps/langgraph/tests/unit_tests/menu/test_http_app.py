@@ -42,6 +42,7 @@ from cordia_agent.contracts.catalog import CatalogItem
 from cordia_agent.llm.config import ModelNotConfigured
 from cordia_agent.menu.extraction_agent import ExtractionResult, IsolatedExtractionAgent
 from cordia_agent.menu.http_app import (
+    ALLOW_ANONYMOUS_ENV_VAR,
     API_KEY_ENV_VAR,
     CORRELATION_ID_HEADER,
     EXTRACT_PATH,
@@ -205,8 +206,17 @@ def _isolated_registry(monkeypatch: pytest.MonkeyPatch) -> Any:
     The suite runs under ``-n auto``, so module-level state left behind by one
     test would surface as a flake in whichever test the scheduler happened to
     put next in the same worker.
+
+    It also opts into anonymous service, because the route now REFUSES to serve
+    with no key configured unless something says so explicitly (issue #94).
+    Every test below exercises the route's own contract — shapes, bounds,
+    failure mapping — not the deployment gate, and the posture they run under is
+    the local one: ``bun nx serve langgraph`` sets this same variable on the
+    ``serve`` target.  The gate itself is pinned in section 8, which unsets it
+    deliberately.
     """
     monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
+    monkeypatch.setenv(ALLOW_ANONYMOUS_ENV_VAR, "1")
     reset_extraction_agent()
     _extraction_outcome.set(None)
     yield
@@ -518,13 +528,90 @@ async def test_model_not_configured_is_a_503_not_a_502() -> None:
 
 
 @pytest.mark.unit
-async def test_no_key_configured_means_no_check() -> None:
+async def test_no_key_configured_means_no_check_when_anonymous_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local loop still works: no key, explicit opt-out, request served.
+
+    Same property this test always asserted — an unauthenticated request
+    succeeds when no secret is configured — but the opt-out is now named rather
+    than inferred from the absence of a key.  ``bun nx serve langgraph`` sets it
+    on the serve target, so this is the posture a developer actually runs in.
+    """
+    monkeypatch.setenv(ALLOW_ANONYMOUS_ENV_VAR, "1")
     register(ScriptedModel(items=[GOLDEN_ITEM]))
 
     async with client() as http:
         response = await http.post(EXTRACT_PATH, json={"menu_text": "Soup $12.00"})
 
     assert response.status_code == 200
+
+
+@pytest.mark.unit
+async def test_no_key_and_no_opt_out_refuses_to_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fail-open that shipped: no key configured used to mean no check.
+
+    That is the state the deployed image ran in — key set nowhere, LangGraph
+    Platform auth not covering custom routes, the route published in
+    ``/openapi.json`` (issue #94).  "Nobody configured a key" must not be read
+    as "this route is public", so it is a 503 and the model is never reached.
+    """
+    monkeypatch.delenv(ALLOW_ANONYMOUS_ENV_VAR, raising=False)
+    model = ScriptedModel(items=[GOLDEN_ITEM])
+    register(model)
+
+    async with client() as http:
+        response = await http.post(
+            EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT}
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "auth_not_configured"}
+    # Fail CLOSED, not "fail after doing the expensive thing".
+    assert model.last_content is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_a_blank_key_is_no_key(
+    monkeypatch: pytest.MonkeyPatch, blank: str
+) -> None:
+    """A key configured to whitespace is absent, not a secret equal to spaces.
+
+    Both sides already agree on this — the route strips its expected value and
+    the .NET client treats a blank secret as "send no header" — so a blank key
+    must land on the unconfigured branch rather than silently authenticating
+    everyone.
+    """
+    monkeypatch.setenv(API_KEY_ENV_VAR, blank)
+    monkeypatch.delenv(ALLOW_ANONYMOUS_ENV_VAR, raising=False)
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+
+    async with client() as http:
+        response = await http.post(EXTRACT_PATH, json={"menu_text": "Soup $12.00"})
+
+    assert response.status_code == 503
+
+
+@pytest.mark.unit
+async def test_a_configured_key_ignores_the_anonymous_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale opt-out in a deployment's environment cannot disarm a real key."""
+    monkeypatch.setenv(API_KEY_ENV_VAR, "correct-horse-battery-staple")
+    monkeypatch.setenv(ALLOW_ANONYMOUS_ENV_VAR, "1")
+    model = ScriptedModel(items=[GOLDEN_ITEM])
+    register(model)
+
+    async with client() as http:
+        response = await http.post(
+            EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT}
+        )
+
+    assert response.status_code == 401
+    assert model.last_content is None
 
 
 @pytest.mark.unit
@@ -608,6 +695,61 @@ async def test_401_never_reads_the_request_body(
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 401
     # The load-bearing assertion: not one byte was pulled off the socket.
+    assert receive_calls == []
+
+
+@pytest.mark.unit
+async def test_503_never_reads_the_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unconfigured-route refusal sits ahead of the body read too.
+
+    The same property as ``test_401_never_reads_the_request_body`` and it
+    matters more: a 401 needs a caller who already knows the header exists,
+    whereas the 503 is what an ARBITRARY caller reaching an unconfigured
+    deployment gets.  If that branch buffered first, anyone who can reach the
+    port could make this process hold half a megabyte per request.
+    """
+    monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
+    monkeypatch.delenv(ALLOW_ANONYMOUS_ENV_VAR, raising=False)
+    register(ScriptedModel(items=[GOLDEN_ITEM]))
+
+    body = json.dumps({"menu_text": SECRET_MENU_TEXT}).encode()
+    receive_calls: list[int] = []
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        receive_calls.append(1)
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.1"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": EXTRACT_PATH,
+            "raw_path": EXTRACT_PATH.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"host", b"agent.internal"),
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+            "client": ("127.0.0.1", 51000),
+            "server": ("127.0.0.1", 2024),
+        },
+        receive,
+        send,
+    )
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 503
     assert receive_calls == []
 
 
@@ -894,6 +1036,7 @@ async def test_correlation_id_is_logged_on_the_success_line(
     "scenario",
     [
         "unauthorized",
+        "auth_not_configured",
         "unsupported_media_type",
         "body_over_budget",
         "malformed_json",
@@ -922,6 +1065,8 @@ async def test_correlation_id_is_logged_on_every_failure_line(
 
     if scenario == "unauthorized":
         monkeypatch.setenv(API_KEY_ENV_VAR, "correct-horse-battery-staple")
+    elif scenario == "auth_not_configured":
+        monkeypatch.delenv(ALLOW_ANONYMOUS_ENV_VAR, raising=False)
     elif scenario == "unsupported_media_type":
         headers["content-type"] = "text/plain"
     elif scenario == "body_over_budget":

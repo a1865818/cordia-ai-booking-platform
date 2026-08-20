@@ -5,8 +5,10 @@ Everything marked ✅ below was verified against live Azure and a live Postgres,
 not against mocks. Everything marked ❌ has never run outside a test.
 
 Companion docs: [`text-booking-e2e.md`](text-booking-e2e.md) has the step-by-step
-text repro; this document is the umbrella — both channels, what is wired, what is
-missing, and the order to build it in.
+text repro; [`deployment.md`](deployment.md) owns **deployed** configuration — every
+setting each service needs, what breaks without it, which values are secrets, and
+the traps. This document is the umbrella for running Cordia *locally*: both
+channels, what is wired, what is missing, and the order to build it in.
 
 ---
 
@@ -146,15 +148,17 @@ is already in `.env.example` and `appsettings.Development.json`.
 **Optional:** everything under `CORDIA_AUDIO_*` (see `.env.example`, which
 documents each knob inline), `LANGSMITH_*`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-**Menu extraction** — all optional; the agent falls back to the shared Azure
-deployment and sane defaults:
+**Menu extraction** — all optional *locally*, and each one is a deployment-level
+trap. [`deployment.md`](deployment.md) §2 and §4 own them:
+`AZURE_OPENAI_DEPLOYMENT_MENU_EXTRACTOR`, `CORDIA_MENU_EXTRACTION_API_KEY`,
+`CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS`,
+`CORDIA_MENU_EXTRACTION_DEFAULT_CURRENCY` and
+`CORDIA_LLM_BASE_TIMEOUT_SECONDS_MENU_EXTRACTOR`. `.env.example` documents each one
+inline as well.
 
-| Var | Why |
-|---|---|
-| `AZURE_OPENAI_DEPLOYMENT_MENU_EXTRACTOR` | deployment for the `menu_extractor` role; unset ⇒ shared `AZURE_OPENAI_DEPLOYMENT`, and extraction fails closed if neither is set |
-| `CORDIA_MENU_EXTRACTION_API_KEY` | shared secret for `POST /internal/menu/extract`; set ⇒ the route requires a matching `X-Cordia-Internal-Key` (constant-time compare) else `401`, unset ⇒ no check. **ASCII only** — headers decode as latin-1, the env as UTF-8 |
-| `CORDIA_MENU_EXTRACTION_DEFAULT_CURRENCY` | ISO-4217 code for a priced row the document never attributed a currency to (default `AUD`). **Deployment-level, not per-tenant** — one value for the whole process |
-| `CORDIA_LLM_BASE_TIMEOUT_SECONDS_MENU_EXTRACTOR` | first-attempt budget (default 40 s; +15 s, 2 attempts ⇒ 95 s worst case). Wins over the shared `CORDIA_LLM_BASE_TIMEOUT_SECONDS`, which extraction otherwise honours — a conversational 8 s set there breaks it. Values whose worst case (`2 × base + 15`) exceeds the **105 s** ceiling are rejected, not clamped, so the highest accepted value is **45.0**. The ceiling is deliberately *below* the caller's 120 s: that budget is strictly wider in scope (DNS, connect, up to ~1 MiB of request transfer, body read, validation, response), so 105 s leaves 15 s of headroom instead of guaranteeing the caller gives up first |
+Locally you need none of them: `bun nx serve langgraph` sets
+`CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS=1` so the extraction route serves on an
+unauthenticated `:2024`, and the API opts into the stub extractor in Development.
 
 Any `AZURE_OPENAI_*` or `CORDIA_AUDIO_*` var takes a `_<ROLE>` suffix override,
 so one process can drive several deployments:
@@ -171,18 +175,24 @@ nothing — different auth, different failure semantics, different owners.
 checks. Unset ⇒ no `ToolClient` is registered and the graph dies at
 `consent_gate`.
 
-**API → agent** (the menu-ingestion lane, issue #87): `LangGraph:Host` (default
-`http://localhost:2024`, plain HTTP — `langgraph dev` does not serve TLS) +
-`LangGraph:ExtractPath` → `POST /internal/menu/extract`, called by
-`LangGraphMenuExtractorClient`. **This is the API's first outbound HTTP client**,
-so it is also the first place the `AddHttpClient` conventions in
-[`dotnet-api-patterns.md`](dotnet-api-patterns.md) apply.
+**API → agent** (the menu-ingestion lane, issue #87): `LangGraph:Host`
+(`http://localhost:2024` in `appsettings.Development.json` — plain HTTP, because
+`langgraph dev` does not serve TLS; **absent from base `appsettings.json`, so a
+deployment that forgets it fails to start**) + `LangGraph:ExtractPath` →
+`POST /internal/menu/extract`, called by `LangGraphMenuExtractorClient`. **This is
+the API's first outbound HTTP client**, so it is also the first place the
+`AddHttpClient` conventions in [`dotnet-api-patterns.md`](dotnet-api-patterns.md)
+apply. The deployed shape, and everything that can go wrong with it, is
+[`deployment.md`](deployment.md) §3-§4.
 
-- Auth is an **optional shared secret**, not a signed context: the client sends
+- Auth is a **shared secret**, not a signed context: the client sends
   `X-Cordia-Internal-Key` when `Secrets:LangGraphMenuExtractionKey` is
-  configured and omits it otherwise; the route requires it only when
-  `CORDIA_MENU_EXTRACTION_API_KEY` is set. Set both or neither. Fail-open in dev
-  (`:2024` is unauthenticated on localhost), fail-closed once configured.
+  configured; the route requires it when `CORDIA_MENU_EXTRACTION_API_KEY` is set.
+  Set both or neither. **Neither side fails open any more**: the API refuses to
+  start without the secret outside Development, and the route answers
+  `503 auth_not_configured` rather than serving anonymously unless
+  `CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS` says so — which is how the
+  unauthenticated local `:2024` keeps working.
 - `X-Correlation-Id` rides along so the client's "HTTP 502" line can be joined
   to the route's own log line — and the route now logs it, so that join is real
   rather than aspirational. **Mind the charset**: it is logged verbatim only when
@@ -508,15 +518,15 @@ Never run two `nx` commands at once (daemon lock).
 ```bash
 bun nx run langgraph:format
 bun nx lint langgraph
-bun nx test langgraph              # 1375
+bun nx test langgraph              # 1428
 bun nx test-integration langgraph  # 51
-bun nx test api                    # 1679
-bun nx test-integration api        # 653 passed, 1 skipped
+bun nx test api                    # 1799
+bun nx test-integration api        # 662 passed, 1 skipped
 bun nx lint api
 cd apps/langgraph && uv run ruff check tests/ scripts/   # 4 pre-existing findings in observability/
 ```
 
-Counts measured 2026-08-17 on `feature/extractor`.
+Counts measured 2026-08-20 on `feature/extractor`.
 
 > **Known flake in `test-integration api`.** The booking lane has a
 > pre-existing, order-dependent failure: `ManualRecoveryTests.Resume_ManualReview_

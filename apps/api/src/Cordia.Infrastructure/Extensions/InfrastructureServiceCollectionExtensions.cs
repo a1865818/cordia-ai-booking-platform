@@ -20,6 +20,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace Cordia.Infrastructure.Extensions;
@@ -27,11 +28,27 @@ namespace Cordia.Infrastructure.Extensions;
 /// <summary>Registers the Infrastructure layer (EF Core, repositories).</summary>
 public static class InfrastructureServiceCollectionExtensions
 {
+    /// <param name="services">The container being built.</param>
+    /// <param name="configuration">Application configuration.</param>
+    /// <param name="environment">
+    /// The host environment, when there is one. Only the menu-extraction startup gates read it
+    /// (issue #94): a loopback <c>LangGraph:Host</c> and a missing shared secret are normal on a
+    /// developer machine and are refused everywhere else.
+    ///
+    /// <para><b><c>null</c> reads as a deployment, not as dev.</b> A container assembled by hand —
+    /// a unit test, a tool — has no <see cref="IHostEnvironment"/>, and defaulting that to
+    /// "Development" would make every gate below vanish for anyone who simply did not pass this
+    /// argument. A gate that disappears when nobody opts in is the silent misconfiguration these
+    /// gates exist to prevent, so the fail-closed direction is the default and an offline caller
+    /// says so explicitly.</para>
+    /// </param>
     public static IServiceCollection AddInfrastructure(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IHostEnvironment? environment = null)
     {
         var connectionString = configuration.GetConnectionString("CordiaDBConnection");
+        var isDevelopment = environment?.IsDevelopment() ?? false;
 
         // Spec 13 T4 — correlation stamping interceptor (singleton: only depends on singleton ICorrelationContext).
         services.AddSingleton<CorrelationStampingInterceptor>();
@@ -196,6 +213,16 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IArtifactScanner, StubArtifactScanner>();
 
         // Spec 11 / issue #87 — the menu-extraction seam.
+        //
+        // The shared secret is read through the SAME ISecretStore seam the client uses, not through
+        // a second copy of the "Secrets:<name>" configuration path. It is constructed here rather
+        // than resolved from the container because these are REGISTRATION-time closures: the
+        // container does not exist yet. ConfigurationSecretStore is stateless over the same
+        // IConfiguration the registered singleton gets, so this instance answers identically.
+        // Nothing about the VALUE is ever put in a validation message (Inv-12) — only whether it is
+        // present and whether it is representable on the wire.
+        var extractionSecrets = new ConfigurationSecretStore(configuration);
+
         services.AddOptions<LangGraphOptions>()
             .BindConfiguration(LangGraphOptions.SectionName)
             .Validate(o => o.ExtractTimeoutSeconds > 0,
@@ -215,6 +242,42 @@ public static class InfrastructureServiceCollectionExtensions
             // ExtractFailed catalog with nothing pointing at the config as the cause.
             .Validate(o => o.UseStubExtractor || o.HasUsableHost,
                 "LangGraph:Host must be an absolute http/https URI when the real menu extractor is used.")
+            // A path (or query/fragment) on the host is DISCARDED by RFC 3986 resolution against
+            // BaseAddress, so `https://gw.internal/langgraph` POSTs to
+            // `https://gw.internal/internal/menu/extract` and returns a 404 the operator reads as
+            // "the agent returned HTTP 404". Addressing the agent through a reverse-proxy route is
+            // the obvious thing for a deployment to do, so this is refused rather than dropped.
+            // Environment-independent: a path is wrong on a developer machine too.
+            .Validate(o => o.UseStubExtractor || o.HostIsAuthorityOnly,
+                "LangGraph:Host must carry scheme and authority only — a path on the host is "
+                + "silently discarded when ExtractPath is resolved against it.")
+            // A DEPLOYED API that dials a loopback address is calling itself. The old committed
+            // default (`http://localhost:2024`) is an absolute http URI, so the rule above passed
+            // it, nothing printed the resolved host at startup, and the first symptom was every
+            // ingestion settling ExtractFailed. Dev is where a loopback host is CORRECT, so it is
+            // the one environment exempted.
+            .Validate(o => o.UseStubExtractor || isDevelopment || !o.HostIsLoopbackOrUnspecified,
+                "LangGraph:Host must not be a loopback or unspecified address outside Development — "
+                + "a deployed API pointed at localhost/127.0.0.1/::1/0.0.0.0 is calling itself.")
+            // D-G, fail closed. The route is only protected when BOTH sides are configured, and
+            // outside Development neither side may be left open: the Python route now refuses to
+            // serve anonymously without an explicit opt-out, so an API with no key would 401 on
+            // every ingestion. Checked here so a deploy that forgot the secret never starts.
+            .Validate(
+                o => o.UseStubExtractor || isDevelopment || HasExtractionKey(extractionSecrets),
+                $"Secrets:{LangGraphMenuExtractorClient.InternalKeySecretName} must be configured "
+                + "outside Development when the real menu extractor is used — the extraction route "
+                + "requires the X-Cordia-Internal-Key header.")
+            // A non-ASCII secret is a PERMANENT 401 with no diagnosis available from either side:
+            // Starlette decodes header values as latin-1 while the agent reads its environment as
+            // UTF-8, and the two encodings agree only on ASCII. Control characters are refused with
+            // them because the client adds the header with TryAddWithoutValidation, so a CR/LF in
+            // the secret would be request-header injection rather than a failed comparison.
+            .Validate(
+                o => o.UseStubExtractor || ExtractionKeyIsWireSafe(extractionSecrets),
+                $"Secrets:{LangGraphMenuExtractorClient.InternalKeySecretName} must be printable "
+                + "ASCII — the extraction route decodes the header as latin-1 and compares UTF-8, "
+                + "so the two sides agree only on ASCII.")
             .ValidateOnStart();
 
         // #84 replaces the implementation, not the port: object-storage refs land behind this
@@ -268,5 +331,25 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddObservability(configuration);
 
         return services;
+    }
+
+    /// <summary>
+    /// Whether the menu-extraction shared secret is configured at all. Whitespace-only counts as
+    /// absent, matching both the client (which treats a blank secret as "send no header") and the
+    /// route (which reads its expected value as <c>os.environ.get(...).strip()</c>).
+    /// </summary>
+    private static bool HasExtractionKey(ISecretStore secrets)
+        => !string.IsNullOrWhiteSpace(
+            secrets.GetSecret(LangGraphMenuExtractorClient.InternalKeySecretName));
+
+    /// <summary>
+    /// Whether the configured secret can survive the wire. Trimmed first, because that is what the
+    /// client actually sends; an absent secret is vacuously safe, so this rule reports only the
+    /// charset problem and the rule above reports absence.
+    /// </summary>
+    private static bool ExtractionKeyIsWireSafe(ISecretStore secrets)
+    {
+        var key = secrets.GetSecret(LangGraphMenuExtractorClient.InternalKeySecretName)?.Trim();
+        return string.IsNullOrEmpty(key) || key.All(c => char.IsAscii(c) && !char.IsControl(c));
     }
 }

@@ -3,7 +3,7 @@ using System.Text;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Observability;
 using Cordia.Infrastructure.Menu;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -91,6 +91,17 @@ internal sealed class MenuExtractorHarness : IDisposable
 {
     private readonly List<IDisposable> _disposables = [];
 
+    /// <summary>
+    /// Every level the client logged at, in order, across all clients this harness built.
+    ///
+    /// <para>Exists because the SEVERITY is a contract here, not a detail. Every failure path in
+    /// this client used to log at Warning, so a total outage — an unreachable agent, a timeout on
+    /// every call — was invisible to a pipeline alerting on Error while every ingestion failed
+    /// (issue #94). A regression that quietly lowered a transport failure back to Warning would
+    /// otherwise pass every other test in the file.</para>
+    /// </summary>
+    public List<LogLevel> LoggedLevels { get; } = [];
+
     public LangGraphMenuExtractorClient Create(
         FakeHttpMessageHandler handler,
         string? secret = null,
@@ -123,7 +134,7 @@ internal sealed class MenuExtractorHarness : IDisposable
             secrets.Object,
             new StubCorrelationContext(correlationId),
             Options.Create(options),
-            NullLogger<LangGraphMenuExtractorClient>.Instance);
+            new LevelRecordingLogger(LoggedLevels));
     }
 
     public void Dispose()
@@ -131,6 +142,28 @@ internal sealed class MenuExtractorHarness : IDisposable
         foreach (var d in _disposables)
             d.Dispose();
         _disposables.Clear();
+    }
+
+    /// <summary>
+    /// Records the LEVEL of each log call and nothing else — not the message, not the arguments.
+    /// Deliberately: the properties this class must not leak (menu text, response bodies, item ids)
+    /// are already pinned by the exception-message assertions, and a logger that retained rendered
+    /// messages would itself become a place a leak could hide.
+    /// </summary>
+    private sealed class LevelRecordingLogger(List<LogLevel> levels)
+        : ILogger<LangGraphMenuExtractorClient>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => levels.Add(logLevel);
     }
 
     /// <summary>

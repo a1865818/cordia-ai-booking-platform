@@ -20,6 +20,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -95,6 +97,22 @@ public class MenuIngestionTests(PostgresFixture fixture)
     }
 
     /// <summary>
+    /// Declares the dev posture to <c>AddInfrastructure</c>. A hand-built container has no host and
+    /// therefore no <see cref="IHostEnvironment"/>; the menu-extraction gates read
+    /// <c>IsDevelopment()</c> off one and treat its absence as a deployment.
+    /// </summary>
+    private sealed class DevelopmentHostEnvironment : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = Environments.Development;
+
+        public string ApplicationName { get; set; } = "Cordia.Tests";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    /// <summary>
     /// Container wired to the <b>real</b> <see cref="LangGraphMenuExtractorClient"/> — options
     /// bound, resolver bound, typed <see cref="HttpClient"/> bound — with
     /// <paramref name="handler"/> substituted for the socket (issue #87 Phase 5).
@@ -135,7 +153,13 @@ public class MenuIngestionTests(PostgresFixture fixture)
         services.AddApplication();
         // Also brings the real client's other dependencies: the resolver, the ISecretStore, and
         // (via AddObservability) the ICorrelationContext it reads X-Correlation-Id from.
-        services.AddInfrastructure(config);
+        //
+        // Development is declared explicitly. The deployment gates on LangGraphOptions (issue #94)
+        // refuse a loopback host and an absent shared secret outside Development, and a container
+        // with no IHostEnvironment reads as a deployment on purpose — a gate nobody opts into is no
+        // gate. This suite is the offline dev posture: `.invalid` host, no secret, fake transport.
+        // MenuExtractorRegistrationTests owns the proof that those gates fire.
+        services.AddInfrastructure(config, new DevelopmentHostEnvironment());
 
         // Re-entering AddHttpClient with the SAME typed-client pair resolves to the same named
         // options entry AddInfrastructure created, so its BaseAddress/Timeout configuration is

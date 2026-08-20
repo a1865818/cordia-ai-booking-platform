@@ -2,6 +2,7 @@
 using Cordia.Application.Handlers.Menu.IngestVendorMenu;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Menu;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -200,6 +201,79 @@ public class IngestVendorMenuTests
         _outbox.Verify(o => o.AddAsync(
             It.Is<OutboxMessage>(m => m.MessageType == IngestVendorMenuCommandHandler.ExtractionFailedEventType),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// The <c>catalog.extraction_failed</c> audit row must say WHICH KIND of failure it settled.
+    ///
+    /// <para>Before this, "LangGraph is unreachable because <c>LangGraph__Host</c> still points at
+    /// localhost" and "the model returned a response the wire contract refuses" persisted
+    /// byte-identical evidence — <c>{ catalog_id }</c> and a fixed
+    /// <c>reason = "extraction_failed"</c> — and on a background lane the durable record is the only
+    /// evidence there is. The two failures whose remedies are furthest apart were the two an
+    /// operator could not tell apart (issue #94).</para>
+    ///
+    /// <para>The category comes off the exception TYPE, never its message: a closed set of literals
+    /// that a reworded string cannot silently reclassify.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(MenuExtractionFailureCategory.Unreachable)]
+    [InlineData(MenuExtractionFailureCategory.Timeout)]
+    [InlineData(MenuExtractionFailureCategory.HttpError)]
+    [InlineData(MenuExtractionFailureCategory.ModelError)]
+    [InlineData(MenuExtractionFailureCategory.MalformedResponse)]
+    public async Task ExtractionThrows_AuditRecordsTheAdapterSuppliedFailureCategory(string category)
+    {
+        SetupCatalog(CatalogStatus.Uploaded);
+        _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
+        _extractor.Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new MenuExtractionFailedException("failed", category));
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        var metadata = AuditMetadata("catalog.extraction_failed");
+        Assert.Equal(category, metadata.GetProperty("failure_category").GetString());
+        Assert.Equal(CatalogId, metadata.GetProperty("catalog_id").GetString());
+    }
+
+    /// <summary>
+    /// "We could not read your upload" is a different diagnosis from "the agent failed", and the
+    /// agent was never called at all on this path — so it gets its own category rather than being
+    /// folded into the adapter's.
+    /// </summary>
+    [Fact]
+    public async Task ArtifactUnresolvable_AuditRecordsArtifactUnresolvable()
+    {
+        SetupCatalog(CatalogStatus.Uploaded);
+        _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
+        _extractor.Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new MenuArtifactUnresolvableException("unreadable"));
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        Assert.Equal(
+            MenuExtractionFailureCategory.ArtifactUnresolvable,
+            AuditMetadata("catalog.extraction_failed").GetProperty("failure_category").GetString());
+    }
+
+    /// <summary>
+    /// An exception carrying no category is a BUG in a port, not a configuration problem, and must
+    /// still be labelled: an audit row with the key missing reads as "nothing recorded this", which
+    /// is the ambiguity the category exists to remove.
+    /// </summary>
+    [Fact]
+    public async Task ExtractionThrowsAnUntypedException_AuditRecordsUnknown()
+    {
+        SetupCatalog(CatalogStatus.Uploaded);
+        _scanner.Setup(s => s.ScanAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(ArtifactScanResult.Clean);
+        _extractor.Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("artifact unreadable"));
+
+        await BuildHandler().Handle(Command(), CancellationToken.None);
+
+        Assert.Equal(
+            MenuExtractionFailureCategory.Unknown,
+            AuditMetadata("catalog.extraction_failed").GetProperty("failure_category").GetString());
     }
 
     /// <summary>

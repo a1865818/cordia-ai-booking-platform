@@ -1,4 +1,5 @@
-﻿using System.Net.Http.Json;
+﻿using System.Net;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Cordia.Domain.Exceptions;
@@ -143,22 +144,34 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
 
             if (!response.IsSuccessStatusCode)
             {
+                // ERROR, not Warning. A remote that answers non-2xx has refused the request, and
+                // when the cause is configuration — a loopback host, a path on the host, a missing
+                // shared secret — it refuses EVERY request. A pipeline alerting on Error saw a
+                // perfectly healthy API while every single ingestion failed (#94).
+                //
                 // The STATUS CODE only. The route's own error bodies are a static
                 // {"error": "<category>"} by design, but this client must not depend on that being
                 // true of whatever actually answered — a proxy, a dev server, or a drifted route
                 // can put anything here, including a reflection of the menu text.
-                _logger.LogWarning(
+                _logger.LogError(
                     "Menu extraction agent answered {StatusCode}; settling the ingestion as failed.",
                     (int)response.StatusCode);
                 throw new MenuExtractionFailedException(
-                    $"Menu extraction agent returned HTTP {(int)response.StatusCode}.");
+                    $"Menu extraction agent returned HTTP {(int)response.StatusCode}.",
+                    CategoryForStatus(response.StatusCode));
             }
 
             var payload = await response.Content.ReadFromJsonAsync<WireExtractionResponse>(
                 MenuExtractionWire.Options, timeoutCts.Token);
 
             if (payload is null)
-                throw new MenuExtractionFailedException("Menu extraction agent returned an empty response body.");
+            {
+                _logger.LogWarning(
+                    "Menu extraction response body was empty; settling the ingestion as failed.");
+                throw new MenuExtractionFailedException(
+                    "Menu extraction agent returned an empty response body.",
+                    MenuExtractionFailureCategory.MalformedResponse);
+            }
 
             return Map(payload);
         }
@@ -185,21 +198,32 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             // The `when (!ct.IsCancellationRequested)` filter is what keeps genuine caller
             // cancellation intact: if the caller's token IS cancelled, this does not match and the
             // OperationCanceledException propagates untouched.
-            _logger.LogWarning(
+            // ERROR: a timeout is a transport outcome, and the shapes it takes here are systemic —
+            // an agent that is down, a network that black-holes, a model deployment that is
+            // unavailable. It also holds the ingestion inbox transaction open for the full budget,
+            // which is a second reason an operator should hear about it.
+            _logger.LogError(
                 "Menu extraction timed out after {TimeoutSeconds}s; settling the ingestion as failed.",
                 _options.ExtractTimeoutSeconds);
             throw new MenuExtractionFailedException(
-                $"Menu extraction timed out after {_options.ExtractTimeoutSeconds}s.");
+                $"Menu extraction timed out after {_options.ExtractTimeoutSeconds}s.",
+                MenuExtractionFailureCategory.Timeout);
         }
         catch (JsonException)
         {
             // The exception is NOT chained and its message is NOT logged. An unmapped-member
             // JsonException names the offending property — attacker-influenced text — and a
             // conversion failure can quote the value. The type name is all diagnostics get.
+            // WARNING, deliberately: the remote answered 200 and this client refused what was in it.
+            // That is a per-response judgement — one document's extraction produced something
+            // unpersistable — not evidence that the seam is down. The Error/Warning line through
+            // this class is exactly that: "the remote said no, or could not be reached" is Error,
+            // "the remote said yes and we refused the content" is Warning.
             _logger.LogWarning(
                 "Menu extraction response was refused by the wire contract (unexpected shape or field).");
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned a response the wire contract refuses.");
+                "Menu extraction agent returned a response the wire contract refuses.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
         catch (NotSupportedException)
         {
@@ -207,16 +231,43 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             // contract violation as a 200 whose JSON has an extra field.
             _logger.LogWarning("Menu extraction response was not JSON; settling the ingestion as failed.");
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned a response the wire contract refuses.");
+                "Menu extraction agent returned a response the wire contract refuses.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(
+            // ERROR, and the most important one of the three. This is the shape a wrong
+            // `LangGraph__Host` takes: DNS failure, connection refused, TLS refusal. It is total —
+            // if it happens once it happens to every ingestion — and it was previously invisible to
+            // anything alerting above Warning (#94).
+            _logger.LogError(
                 "Menu extraction transport failed ({ExceptionType}); settling the ingestion as failed.",
                 ex.GetType().Name);
-            throw new MenuExtractionFailedException("Menu extraction agent was unreachable.");
+            throw new MenuExtractionFailedException(
+                "Menu extraction agent was unreachable.",
+                MenuExtractionFailureCategory.Unreachable);
         }
     }
+
+    /// <summary>
+    /// Maps a non-2xx status onto a failure category, from the STATUS CODE alone.
+    ///
+    /// <para><c>502</c> is the route's documented answer for
+    /// <c>MenuExtractionModelError</c> — it reached the model and the model failed on this document
+    /// — so it is the one non-2xx that means "model problem" rather than "misconfiguration". That is
+    /// precisely the distinction the audit category exists to record. Everything else (401 from a
+    /// missing or mismatched shared secret, 404 from a path on the host, 413/415/422 from a request
+    /// this client built wrongly, 503 from an agent whose model deployment is unset) is an operator
+    /// problem and reads as <c>http_error</c>.</para>
+    ///
+    /// <para>Uses only the status line — never the body, which is untrusted (Inv-12/16) — so a
+    /// responder that is NOT this route can at worst mislabel its own failure category. The log line
+    /// carries the exact status either way.</para>
+    /// </summary>
+    private static string CategoryForStatus(HttpStatusCode status)
+        => status == HttpStatusCode.BadGateway
+            ? MenuExtractionFailureCategory.ModelError
+            : MenuExtractionFailureCategory.HttpError;
 
     private async Task<HttpResponseMessage> SendAsync(string menuText, string artifactRef, CancellationToken ct)
     {
@@ -294,7 +345,8 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             _logger.LogWarning(
                 "Menu extraction response omitted items or flags; settling the ingestion as failed.");
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned a response with no items or flags member.");
+                "Menu extraction agent returned a response with no items or flags member.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
 
         var items = payload.Items.Select(MapItem).ToList();
@@ -350,7 +402,8 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
                 + "settling the ingestion as failed rather than letting the draft insert throw.",
                 items.Count);
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned two items whose ids are identical after sanitization.");
+                "Menu extraction agent returned two items whose ids are identical after sanitization.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
     }
 
@@ -360,7 +413,8 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             || item.Price?.AmountMinor is null || item.Price.Currency is null)
         {
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned an item missing a required field.");
+                "Menu extraction agent returned an item missing a required field.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
 
         // A NEGATIVE price is a contract violation, not a cheap lunch. The Python side already
@@ -384,7 +438,8 @@ public sealed class LangGraphMenuExtractorClient : IIsolatedMenuExtractor
             _logger.LogWarning(
                 "Menu extraction returned an item with a negative price; settling the ingestion as failed.");
             throw new MenuExtractionFailedException(
-                "Menu extraction agent returned an item with a negative price.");
+                "Menu extraction agent returned an item with a negative price.",
+                MenuExtractionFailureCategory.MalformedResponse);
         }
 
         return new DraftCatalogItem(

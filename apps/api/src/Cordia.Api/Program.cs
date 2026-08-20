@@ -4,6 +4,7 @@ using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Observability;
 using Cordia.Api.Logging;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -52,7 +53,10 @@ var allowAssertedStaffRole = builder.Configuration.GetValue(
     builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
     o.AllowAssertedStaffRole = allowAssertedStaffRole);
-builder.Services.AddInfrastructure(builder.Configuration);
+// The environment is passed explicitly (never sniffed inside Infrastructure) because the
+// menu-extraction startup gates are environment-dependent: a loopback `LangGraph:Host` and an
+// absent shared secret are correct on a developer machine and refused everywhere else (#94).
+builder.Services.AddInfrastructure(builder.Configuration, builder.Environment);
 
 // --- Web ---
 // Suppress ASP.NET's implicit [Required] on non-nullable reference-type properties.
@@ -280,8 +284,14 @@ else
 // fabricated sample item: the owner sees a DraftReady catalog that looks like a successful
 // extraction and is entirely made up, and no uploaded document is ever read. That is exactly what
 // a developer machine and the test host want, and a confident falsehood anywhere else (Inv-16) —
-// so it must be findable by grepping startup. Only the enabled branch is announced; the real
-// client is the expected state and needs no line.
+// so it must be findable by grepping startup.
+//
+// BOTH branches are announced now. "The real client is the expected state and needs no line" was
+// wrong in the one way that mattered: the resolved `LangGraph:Host` appeared nowhere in the startup
+// log, so an API that had silently kept the old `http://localhost:2024` default and was POSTing
+// menus at itself looked identical, in every log this process writes, to a correctly configured one
+// (#94). The first symptom was every ingestion settling ExtractFailed hours later. An operator must
+// be able to read the resolved target out of startup without a debugger.
 if (app.Configuration.GetValue($"{Cordia.Infrastructure.Menu.LangGraphOptions.SectionName}:UseStubExtractor", false))
 {
     if (app.Environment.IsDevelopment())
@@ -302,6 +312,24 @@ if (app.Configuration.GetValue($"{Cordia.Infrastructure.Menu.LangGraphOptions.Se
             + "LangGraph extraction agent is genuinely unavailable.",
             app.Environment.EnvironmentName);
     }
+}
+else
+{
+    // Resolved through IOptions rather than read back off IConfiguration, so this line reports what
+    // the client will actually dial — bound defaults for ExtractPath and the timeout included —
+    // rather than the subset of it that happened to be written in a config file. Nothing about the
+    // shared secret is logged, not even its presence: the startup gate already refuses to boot
+    // without it outside Development, so the line would carry no information it does not (Inv-12).
+    var langGraph = app.Services
+        .GetRequiredService<IOptions<Cordia.Infrastructure.Menu.LangGraphOptions>>().Value;
+
+    app.Logger.LogInformation(
+        "Menu extraction is served by the REAL LangGraph agent ({Environment}): "
+        + "host {LangGraphHost}, route {ExtractPath}, timeout {TimeoutSeconds}s.",
+        app.Environment.EnvironmentName,
+        langGraph.Host,
+        langGraph.ExtractPath,
+        langGraph.ExtractTimeoutSeconds);
 }
 
 // --- Pipeline ---

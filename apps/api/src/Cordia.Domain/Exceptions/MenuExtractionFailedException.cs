@@ -1,4 +1,6 @@
-﻿namespace Cordia.Domain.Exceptions;
+﻿using Cordia.Domain.Menu;
+
+namespace Cordia.Domain.Exceptions;
 
 /// <summary>
 /// Thrown when a menu extraction reaches a definite failure — transport, model, or a response
@@ -12,10 +14,23 @@
 /// <para><b>The message must stay free of extracted content.</b> A response body from the
 /// extraction agent is derived from the uploaded document and is untrusted; only a coarse
 /// category or status code belongs here (Inv-12/Inv-16).</para>
+///
+/// <para><b>The failure CATEGORY rides on the exception</b> (<see cref="Category"/>), so the
+/// ingestion handler can record which kind of failure it settled without matching on the message
+/// text — the one place a reworded string could silently reclassify a misconfiguration as a model
+/// problem. Values come from <see cref="MenuExtractionFailureCategory"/> and nowhere else.</para>
 /// </summary>
 public sealed class MenuExtractionFailedException : DomainException
 {
-    public MenuExtractionFailedException(string message) : base(message) { }
+    public MenuExtractionFailedException(string message, string category) : base(message)
+        => Category = category;
 
-    public MenuExtractionFailedException(string message, Exception inner) : base(message, inner) { }
+    public MenuExtractionFailedException(string message, string category, Exception inner)
+        : base(message, inner) => Category = category;
+
+    /// <summary>
+    /// One of the <see cref="MenuExtractionFailureCategory"/> tokens. A fixed literal chosen by the
+    /// throw site — never a captured exception message, status text or response body.
+    /// </summary>
+    public string Category { get; }
 }

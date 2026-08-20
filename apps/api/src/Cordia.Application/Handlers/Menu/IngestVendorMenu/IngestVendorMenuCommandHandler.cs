@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Menu;
 using MediatR;
@@ -169,7 +170,21 @@ public sealed class IngestVendorMenuCommandHandler(
                 // monitor settles it, then this catch finally runs — wrote the audit twice and sent
                 // the owner a second alert for one failure. Losing the race means another writer
                 // owns the outcome and has already said so.
-                await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
+                // The CATEGORY is the difference between an operator reading this row as "the model
+                // returned garbage" and reading it as "LangGraph__Host is wrong". Before it, both
+                // failures persisted byte-identical evidence — `{ catalog_id }` and a fixed
+                // `reason = "extraction_failed"` — and the durable record is all a background lane
+                // leaves behind (#94).
+                //
+                // Taken from the exception TYPE, never from its message: a closed set of literals
+                // (MenuExtractionFailureCategory) that no reworded string and nothing derived from
+                // the untrusted document can influence (Inv-12/16).
+                await WriteAuditAsync(
+                    command,
+                    "catalog.extraction_failed",
+                    new { catalog_id = command.CatalogId, failure_category = CategoryOf(ex) },
+                    now,
+                    ct);
                 // Still alerted (Inv-14): a terminal status the owner never looks at is not a notification.
                 await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             }
@@ -284,6 +299,24 @@ public sealed class IngestVendorMenuCommandHandler(
 
         return Unit.Value;
     }
+
+    /// <summary>
+    /// Coarse failure category for the <c>catalog.extraction_failed</c> audit row.
+    ///
+    /// <para>Switches on the exception TYPE, not on its message. The extraction seam's two typed
+    /// exceptions already say which side failed —
+    /// <see cref="MenuExtractionFailedException.Category"/> carries the finer split the adapter is
+    /// the only layer that can make (unreachable vs timeout vs http_error vs model_error vs
+    /// malformed_response), and <see cref="MenuArtifactUnresolvableException"/> means the agent was
+    /// never called at all. Anything else reaching the fail-secure catch is a bug rather than a
+    /// configuration problem, and says so.</para>
+    /// </summary>
+    private static string CategoryOf(Exception ex) => ex switch
+    {
+        MenuExtractionFailedException failed => failed.Category,
+        MenuArtifactUnresolvableException => MenuExtractionFailureCategory.ArtifactUnresolvable,
+        _ => MenuExtractionFailureCategory.Unknown,
+    };
 
     /// <summary>
     /// Bounds one agent-minted label before it is copied into an audit row: control characters

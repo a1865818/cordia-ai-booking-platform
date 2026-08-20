@@ -27,6 +27,13 @@ Fail closed, never fail open
     :exc:`~cordia_agent.menu.model_azure.MenuExtractionModelError` (a model
     problem), ``500`` for anything unforeseen.
 
+    The same rule now covers AUTHENTICATION, which used to be the one place this
+    module failed open: an unset ``CORDIA_MENU_EXTRACTION_API_KEY`` meant "no
+    check at all", and that is exactly the state the deployed image shipped in
+    (issue #94).  No key configured is a ``503``, not a green light, unless
+    ``CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS`` says so in as many words — see
+    :func:`_auth_rejection`.
+
 Untrusted content never leaves through an error path
     The menu document is untrusted input (§8.11 / Inv-12) and provider errors
     routinely quote the request back.  Three rules follow, and all three are
@@ -118,11 +125,33 @@ _log = logging.getLogger(__name__)
 EXTRACT_PATH = "/internal/menu/extract"
 
 #: Shared secret guarding the route (D-G).  Set ⇒ every request must carry a
-#: matching :data:`INTERNAL_KEY_HEADER`; unset or blank ⇒ no check at all, which
-#: is the dev default because ``langgraph dev`` binds an unauthenticated port on
-#: localhost.  Read per request, never at import time, so a redeploy that adds
+#: matching :data:`INTERNAL_KEY_HEADER`.  Unset or blank ⇒ the route refuses to
+#: serve at all (``503``) unless :data:`ALLOW_ANONYMOUS_ENV_VAR` is explicitly
+#: opted into.  Read per request, never at import time, so a redeploy that adds
 #: the secret does not need the module reloaded.
 API_KEY_ENV_VAR = "CORDIA_MENU_EXTRACTION_API_KEY"
+
+#: Explicit opt-out from authentication, for the local loop only.
+#:
+#: The route used to FAIL OPEN when :data:`API_KEY_ENV_VAR` was unset, and that
+#: is exactly the state the deployed image shipped in: the key was set nowhere,
+#: LangGraph Platform auth does not cover custom routes unless
+#: ``enable_custom_route_auth`` is on (it is not), and the route is published in
+#: the deployed ``/openapi.json`` and ``/docs`` (issue #94).  "No key configured"
+#: and "no authentication wanted" are different statements, and only the second
+#: one is safe to infer from a missing environment variable if it was TYPED.
+#:
+#: So the default is now closed and dev opts out by name.  ``langgraph dev``
+#: binds an unauthenticated port on localhost, where a shared secret buys
+#: nothing, and requiring one would have made the local loop harder than the
+#: deployment.
+#:
+#: Any value other than the empty string counts as opted out — this is a
+#: developer's own switch, not a tuning knob, and a deployment that types it at
+#: all has said something unambiguous.  It is IGNORED when a key is configured:
+#: a key present means the check runs, full stop, so a stale opt-out in a
+#: deployment's environment cannot silently disarm it.
+ALLOW_ANONYMOUS_ENV_VAR = "CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS"
 
 #: Header the .NET caller puts the shared secret in.  Never logged.
 INTERNAL_KEY_HEADER = "X-Cordia-Internal-Key"
@@ -357,30 +386,66 @@ def _error(category: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": category}, status_code=status_code)
 
 
-def _is_authorized(request: Request) -> bool:
-    """Return whether *request* carries the configured shared secret (D-G).
+def _auth_rejection(request: Request, correlation: str) -> JSONResponse | None:
+    """Return the response that ends this request, or ``None`` to proceed (D-G).
 
-    Unset (or blank) :data:`API_KEY_ENV_VAR` means the check is disabled — the
-    dev default.  Configured means fail closed: a missing, empty or wrong header
-    is a ``401``, compared with :func:`hmac.compare_digest` so the comparison
-    cannot be timed to recover the secret byte by byte.
+    Three outcomes, and the middle one is the point of this function:
+
+    * a secret is configured and the request carries it — proceed;
+    * a secret is configured and the request does not match — ``401``, compared
+      with :func:`hmac.compare_digest` so the comparison cannot be timed to
+      recover the secret byte by byte;
+    * NO secret is configured — ``503`` unless
+      :data:`ALLOW_ANONYMOUS_ENV_VAR` is set, because "nobody configured a key"
+      must not silently mean "this route is public".  See that constant for why
+      the default flipped.
+
+    **Per request, not at import time.**  Raising at import would break the
+    offline test suite and every local ``langgraph dev`` loop, and it would take
+    the *graph* down with it — ``langgraph.json`` mounts this module into the
+    same process, so an import-time failure over a route nobody has called yet
+    would stop the booking lane too.  A per-request status keeps the failure
+    scoped to the thing that is actually misconfigured, and ``503`` is the honest
+    code: the route exists and is refusing to serve, which is also what the
+    module already answers for an unconfigured model.
 
     Args:
         request: The inbound request.
+        correlation: The sanitized correlation token, so a refusal here joins the
+            .NET client's own line for the same ingestion.
 
     Returns:
-        ``True`` when the request may proceed.
+        ``None`` when the request may proceed, else the response to return.
     """
     expected = os.environ.get(API_KEY_ENV_VAR, "").strip()
     if not expected:
-        return True
+        if os.environ.get(ALLOW_ANONYMOUS_ENV_VAR, ""):
+            return None
+        _log.error(
+            "menu extraction is refusing every request: no %s is configured and "
+            "%s was not set (correlation=%s)",
+            API_KEY_ENV_VAR,
+            ALLOW_ANONYMOUS_ENV_VAR,
+            correlation,
+        )
+        return _error("auth_not_configured", 503)
+
     supplied = request.headers.get(INTERNAL_KEY_HEADER, "")
     # ASCII-only secrets, by contract (see .env.example).  Starlette decodes
     # header values as latin-1 while the environment arrives as UTF-8, so a
     # non-ASCII secret would compare unequal for a UTF-8 client and equal for a
     # latin-1 one — a silent interop split.  The two encodings agree exactly on
-    # ASCII, which is all a shared secret needs to be.
-    return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+    # ASCII, which is all a shared secret needs to be.  The .NET side refuses to
+    # START on a non-ASCII secret for the same reason.
+    if hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+        return None
+
+    _log.warning(
+        "menu extraction request rejected: bad or missing internal key "
+        "(correlation=%s)",
+        correlation,
+    )
+    return _error("unauthorized", 401)
 
 
 def _is_json_request(request: Request) -> bool:
@@ -551,7 +616,10 @@ async def _handle_extract(request: Request, correlation: str) -> JSONResponse:
     Ordered cheapest-and-most-hostile first, and the ORDER IS LOAD-BEARING: the
     auth and media-type gates both sit ahead of :func:`_read_bounded_body`, so a
     rejected caller never gets this process to pull a single byte off the
-    socket.  ``test_401_never_reads_the_request_body`` pins that.
+    socket.  ``test_401_never_reads_the_request_body`` pins that, and
+    ``test_503_never_reads_the_request_body`` pins it for the unconfigured-route
+    refusal too — that one matters more, because it is the state an unauthorized
+    caller can actually reach.
 
     EVERY outcome carries ``correlation=`` — success, rejection and failure
     alike.  A failure line nobody can join to the .NET client's own line is a
@@ -568,13 +636,12 @@ async def _handle_extract(request: Request, correlation: str) -> JSONResponse:
     Returns:
         The response described by :func:`extract_menu`.
     """
-    if not _is_authorized(request):
-        _log.warning(
-            "menu extraction request rejected: bad or missing internal key "
-            "(correlation=%s)",
-            correlation,
-        )
-        return _error("unauthorized", 401)
+    # Both refusals this can produce — 401 and the 503 for an unconfigured route —
+    # are raised INSIDE this helper, so the ordering property below still holds
+    # for both: neither has read a byte of the body.
+    rejection = _auth_rejection(request, correlation)
+    if rejection is not None:
+        return rejection
 
     if not _is_json_request(request):
         _log.warning(

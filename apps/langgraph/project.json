@@ -63,14 +63,20 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/langgraph",
-        "command": "uv run langgraph dev --no-browser --port 2024 --debug-port 5678"
+        "command": "uv run langgraph dev --no-browser --port 2024 --debug-port 5678",
+        "env": {
+          "CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS": "1"
+        }
       }
     },
     "serve-log": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/langgraph",
-        "command": "node ../../tools/scripts/serve-log.mjs langgraph uv run langgraph dev --no-browser --port 2024 --debug-port 5678"
+        "command": "node ../../tools/scripts/serve-log.mjs langgraph uv run langgraph dev --no-browser --port 2024 --debug-port 5678",
+        "env": {
+          "CORDIA_MENU_EXTRACTION_ALLOW_ANONYMOUS": "1"
+        }
       }
     },
     "serve-docker": {
