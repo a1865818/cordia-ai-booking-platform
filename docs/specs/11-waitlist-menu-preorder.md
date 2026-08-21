@@ -24,10 +24,20 @@
 > saga steps and the saga-level `Reconciling` state sketched in the §5.3 diagram below (those enum
 > members are retained but unwired — message-driven reconcile + the 06 engine's own reconciliation
 > replace them).
-> The malware scanner and isolated extractor remain **deterministic stub ports** with the real
-> isolation boundary enforced + tested (real ClamAV/LLM swap in behind the same ports); the LangGraph
-> extraction agent (empty tool surface, untrusted-text handling) exists in `apps/langgraph` but is
-> **not yet wired** to the .NET consumer. Remaining open items are the §12 decisions (auto-book consent
+> The **isolated extractor is wired** (2026-08-17, issue #87): the LangGraph extraction agent (empty
+> tool surface, untrusted-text handling) is reachable over a dedicated in-process HTTP route,
+> `POST /internal/menu/extract` (`apps/langgraph/cordia_agent/menu/http_app.py`, mounted via
+> `langgraph.json`'s `http.app`), backed by a real Azure model
+> (`cordia_agent/menu/model_azure.py`); the .NET consumer is
+> `Cordia.Infrastructure/Menu/LangGraphMenuExtractorClient.cs`, which resolves the artifact reference
+> to text and POSTs it. The deterministic `StubIsolatedMenuExtractor` survives as an **explicit
+> `LangGraph:UseStubExtractor` opt-in** for offline dev and the test host — default `false`, so a
+> deployment that says nothing gets the real agent, and `Program.cs` warns loudly if the stub is on
+> outside Development. Only `inline:`/`data:text/plain` artifact references resolve today; object
+> storage arrives with #84 behind the same `IMenuArtifactTextResolver` port, and anything else settles
+> `ExtractFailed`. **The malware scanner is still a deterministic stub port** (`StubArtifactScanner`)
+> with the real isolation boundary enforced + tested — real ClamAV swaps in behind the same port.
+> Remaining open items are the §12 decisions (auto-book consent
 > UX/evidence format, payment auth-vs-capture sequence, retention windows, SLO ratification), deferred
 > by design and coordinated with siblings 04/07/09/13/14.
 
@@ -43,7 +53,7 @@ Both lanes participate, and the boundary between them is the whole point (the ag
 
 - **FOREGROUND (`apps/langgraph`)** — read-only catalog tools (`search_vendor_catalog`, `get_catalog_item`), builds a **pre-order draft** inside the in-dialog `BookingDraft`, and may capture waitlist enrollment as part of a confirmed intent. It never commits a pre-order, never publishes a catalog, never matches a waitlist offer, and never charges.
 - **BACKGROUND (`apps/api`)** — `match_waitlist_offer`, `ingest_vendor_menu`, `publish_vendor_catalog`, `commit_preorder`, and the pre-order saga handlers. All capacity/payment/notification side effects are delegated to the sibling components, never performed here directly.
-- **ISOLATED (`apps/api`, sandboxed)** — the menu **extraction agent** runs as a `menu.commands` consumer with a deliberately empty tool surface; its only job is to turn an uploaded artifact into *draft* catalog items.
+- **ISOLATED (`apps/langgraph`, sandboxed)** — the menu **extraction agent** (`cordia_agent/menu/extraction_agent.py`) runs inside the LangGraph process with a deliberately empty tool surface, served as a stateless HTTP request handler on `POST /internal/menu/extract` (issue #87 D-A). It is **not** a queue consumer: the `menu.commands` consumer lives in `apps/api` and *calls* this route through `LangGraphMenuExtractorClient`. Its only job is to turn an uploaded artifact's text into *draft* catalog items.
 
 ```
 upstream                              THIS COMPONENT                          downstream
@@ -76,7 +86,8 @@ owner upload (apps/web / Api)      ─> malware scan → isolated extract ──
 | `MatchWaitlistOfferHandler` | `Cordia.Application/Waitlist` | `waitlist.commands` consumer: match an opening, create a **temporary hold** (via 07), create a `WaitlistOffer` (`Matched` on hold acquired → `Offered` once the notification is enqueued), schedule its expiry, enqueue the offer notification (via 10). |
 | `AcceptWaitlistOfferHandler` / `DeclineWaitlistOfferHandler` / `ExpireWaitlistOfferHandler` | `Cordia.Application/Waitlist` | Move offer → accepted (mint a confirmation-bearing intent via 04) / declined / expired; release the hold on decline/expire (via 07). |
 | `MalwareScanService` (`IArtifactScanner`) | `Cordia.Infrastructure/Menu` | Scans the uploaded artifact in object storage before any extraction; quarantines on detection. |
-| **Isolated extraction agent** (`menu.commands` consumer) | `apps/api` worker wrapping a sandboxed LangGraph/LLM call, **no tools** | Treats artifact text as untrusted data; emits draft `vendor_catalog_items` with `extraction_confidence` + `source_location`; flags uncertain allergens/prices/modifiers/availability; cannot publish. |
+| **Isolated extraction agent** (`IsolatedExtractionAgent`) | `apps/langgraph/cordia_agent/menu` — the agent + its Azure model, **no tools**; served over `POST /internal/menu/extract` | Treats artifact text as untrusted data; emits draft `vendor_catalog_items` with `extraction_confidence` + `source_location`; flags uncertain allergens/prices/modifiers/availability; cannot publish. |
+| `LangGraphMenuExtractorClient` (`IIsolatedMenuExtractor`) + `InlineMenuArtifactTextResolver` (`IMenuArtifactTextResolver`) | `Cordia.Infrastructure/Menu` | The `menu.commands` consumer's outbound seam: resolves the artifact ref to text (`inline:`/`data:text/plain` only — #84 adds object storage behind the same port), POSTs it to the agent, and translates every failure — non-2xx, unexpected wire field, timeout, a null/absent `items` or `flags` member, two item ids that collide once sanitized — into `MenuExtractionFailedException` so the catalog settles `ExtractFailed`. An empty-but-present `items: []` is **not** a failure: a readable document with no priced rows is a legitimate outcome on both sides of the wire. `LangGraph:UseStubExtractor=true` swaps in `StubIsolatedMenuExtractor` for offline dev/test. **Two wire fields are dropped at mapping** — `allergens` and `dietary_labels` have no `DraftCatalogItem` member, so nothing carries them from the wire to the entity. Note this is a *mapping* gap, not an absent column: `vendor_catalog_items.allergen_info jsonb` exists in the live table (`dietary_labels` has no column). `duration_minutes` was a third, undocumented drop until it was wired through — it now maps to `vendor_catalog_items.duration_minutes`, the column both customer-facing reads already select. **Flags are audited, not persisted**: a non-empty `flags` list writes one `catalog.extraction_flagged` audit event, not a row in a table of its own. |
 | `ReviewCatalogHandler` / `ApproveCatalogHandler` / `PublishCatalogHandler` | `Cordia.Application/Menu` | Owner review edits, approval gate, and `publish_vendor_catalog` → mints an **immutable** `catalog_version`. |
 | `SearchVendorCatalogHandler` / `GetCatalogItemHandler` | `Cordia.Application/Menu` (queries) | Token-bounded search / single-item lookup over the **approved** catalog only; backs the foreground tools. |
 | `PreorderSaga` (`PreorderSagaState` + step handlers) | `Cordia.Application/Preorder` | Orchestrates hold → reserve/validate items → payment auth → commit booking → commit pre-order; owns compensation for each partial state. |
@@ -379,8 +390,11 @@ apps/api/src/Cordia.Infrastructure/
   Persistence/Configurations/VendorCatalogConfiguration.cs       # immutable version, unique(tenant_id, catalog_version)
   Persistence/Configurations/VendorCatalogItemConfiguration.cs   # FK → catalog_version, price columns
   Persistence/Configurations/WaitlistOfferConfiguration.cs       # version concurrency token
-  Menu/ClamAvArtifactScanner.cs (or provider)                    # IArtifactScanner impl
-  Menu/IsolatedExtractionAgent.cs                                # NO tools; treats doc text as data
+  Menu/ClamAvArtifactScanner.cs (or provider)                    # IArtifactScanner impl (still StubArtifactScanner)
+  Menu/LangGraphMenuExtractorClient.cs                           # IIsolatedMenuExtractor — HTTP client for the agent
+  Menu/MenuExtractionWireContract.cs                             # strict DTOs, JsonUnmappedMemberHandling.Disallow
+  Menu/InlineMenuArtifactTextResolver.cs                         # IMenuArtifactTextResolver — inline:/data: only (#84)
+  Menu/LangGraphOptions.cs                                       # Host, ExtractPath, ExtractTimeoutSeconds, UseStubExtractor
   Preorder/LiveItemRevalidationService.cs
 
 apps/api/src/Cordia.Api/Controllers/
@@ -394,6 +408,9 @@ apps/api/src/Cordia.Api/Controllers/
 contracts/catalog.py        # Money, CatalogItem, PublishedCatalog (source of truth → C#/TS/Zod)
 contracts/preorder.py       # PreorderDraft, PreorderDraftLine, PreorderReference (cross-service)
 tools/search_vendor_catalog.py + tools/get_catalog_item.py   # read-only, published-only
+menu/extraction_agent.py    # IsolatedExtractionAgent — empty ToolAllowlist, untrusted-only channels
+menu/model_azure.py         # AzureExtractionModel — role `menu_extractor`, fails closed (never [])
+menu/http_app.py            # POST /internal/menu/extract, mounted by langgraph.json's http.app
 ```
 
 `libs/shared-schemas/schemas/job-events/` — hand-authored, versioned `waitlist.commands.*.v1` / `menu.commands.*.v1` envelopes (no secrets/PAN/transcript text). Generated `vendor_catalog_items` enum mappings (if any pg-enum `CatalogStatus`) go through `tools/config/ef-enum-mappings.json`; never hand-edit generated `SharedTypes.cs`.

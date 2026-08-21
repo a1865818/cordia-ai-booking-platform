@@ -26,6 +26,9 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# LangGraph dev server state (`langgraph dev` writes store.pckl here)
+.langgraph_api/
+
 # .NET
 bin/
 obj/

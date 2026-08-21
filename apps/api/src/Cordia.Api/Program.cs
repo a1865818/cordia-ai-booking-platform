@@ -4,6 +4,7 @@ using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Observability;
 using Cordia.Api.Logging;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -52,7 +53,10 @@ var allowAssertedStaffRole = builder.Configuration.GetValue(
     builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
     o.AllowAssertedStaffRole = allowAssertedStaffRole);
-builder.Services.AddInfrastructure(builder.Configuration);
+// The environment is passed explicitly (never sniffed inside Infrastructure) because the
+// menu-extraction startup gates are environment-dependent: a loopback `LangGraph:Host` and an
+// absent shared secret are correct on a developer machine and refused everywhere else (#94).
+builder.Services.AddInfrastructure(builder.Configuration, builder.Environment);
 
 // --- Web ---
 // Suppress ASP.NET's implicit [Required] on non-nullable reference-type properties.
@@ -270,6 +274,62 @@ else
     app.Logger.LogInformation(
         "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
         app.Environment.EnvironmentName);
+}
+
+// Spec 11 / issue #87 (D-E) — the deterministic stub menu extractor, announced the same way and
+// for the same reason as the two gates above.
+//
+// `LangGraph:UseStubExtractor` defaults to false, so the real isolated agent runs unless a
+// deployment opts out explicitly. Where it IS opted out, every menu upload settles to the same
+// fabricated sample item: the owner sees a DraftReady catalog that looks like a successful
+// extraction and is entirely made up, and no uploaded document is ever read. That is exactly what
+// a developer machine and the test host want, and a confident falsehood anywhere else (Inv-16) —
+// so it must be findable by grepping startup.
+//
+// BOTH branches are announced now. "The real client is the expected state and needs no line" was
+// wrong in the one way that mattered: the resolved `LangGraph:Host` appeared nowhere in the startup
+// log, so an API that had silently kept the old `http://localhost:2024` default and was POSTing
+// menus at itself looked identical, in every log this process writes, to a correctly configured one
+// (#94). The first symptom was every ingestion settling ExtractFailed hours later. An operator must
+// be able to read the resolved target out of startup without a debugger.
+if (app.Configuration.GetValue($"{Cordia.Infrastructure.Menu.LangGraphOptions.SectionName}:UseStubExtractor", false))
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "Menu extraction is served by the STUB extractor ({Environment}); uploaded documents are "
+            + "never read and every ingestion yields the same sample item. Expected on a developer "
+            + "machine and in the test host.",
+            app.Environment.EnvironmentName);
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "Menu extraction is served by the STUB extractor OUTSIDE DEVELOPMENT ({Environment}) "
+            + "because LangGraph:UseStubExtractor was set explicitly. Uploaded menus are NEVER read: "
+            + "every ingestion settles to DraftReady carrying the same fabricated sample item, which "
+            + "an owner cannot tell apart from a real extraction (Inv-16). Turn it off unless the "
+            + "LangGraph extraction agent is genuinely unavailable.",
+            app.Environment.EnvironmentName);
+    }
+}
+else
+{
+    // Resolved through IOptions rather than read back off IConfiguration, so this line reports what
+    // the client will actually dial — bound defaults for ExtractPath and the timeout included —
+    // rather than the subset of it that happened to be written in a config file. Nothing about the
+    // shared secret is logged, not even its presence: the startup gate already refuses to boot
+    // without it outside Development, so the line would carry no information it does not (Inv-12).
+    var langGraph = app.Services
+        .GetRequiredService<IOptions<Cordia.Infrastructure.Menu.LangGraphOptions>>().Value;
+
+    app.Logger.LogInformation(
+        "Menu extraction is served by the REAL LangGraph agent ({Environment}): "
+        + "host {LangGraphHost}, route {ExtractPath}, timeout {TimeoutSeconds}s.",
+        app.Environment.EnvironmentName,
+        langGraph.Host,
+        langGraph.ExtractPath,
+        langGraph.ExtractTimeoutSeconds);
 }
 
 // --- Pipeline ---

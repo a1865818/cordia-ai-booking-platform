@@ -16,4 +16,8 @@ public sealed record DraftCatalogItem(
     string? Category = null,
     string? Modifiers = null,
     string? AvailabilityWindow = null,
-    string? ImageRef = null);
+    string? ImageRef = null,
+    // APPENDED, not slotted in beside PriceMinor: every construction site in the codebase and the
+    // suites passes the leading members POSITIONALLY, so inserting anywhere earlier would silently
+    // re-bind those arguments to the wrong parameters instead of failing to compile.
+    int? DurationMinutes = null);

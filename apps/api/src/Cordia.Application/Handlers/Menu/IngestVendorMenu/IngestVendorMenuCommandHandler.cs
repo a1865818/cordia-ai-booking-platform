@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Menu;
 using MediatR;
@@ -43,6 +44,21 @@ public sealed class IngestVendorMenuCommandHandler(
     /// reference Application, so the two had separate copies that only a comment held together.</para>
     /// </summary>
     public const string ExtractionFailedEventType = Cordia.Domain.Menu.MenuMessageTypes.ExtractionFailed;
+
+    /// <summary>
+    /// Most flags serialized into the <c>catalog.extraction_flagged</c> audit row. The flag list
+    /// comes back from the extraction agent, whose input is an untrusted document, so its length is
+    /// attacker-influenced: a response carrying one flag per line of a large menu would otherwise
+    /// write an unbounded audit row. The true total is always recorded as <c>flag_count</c>, so the
+    /// cap truncates the sample, never the signal.
+    /// </summary>
+    private const int MaxAuditedFlags = 50;
+
+    /// <summary>
+    /// Character bound on each agent-minted string (item id, reason) copied into that audit row —
+    /// the count cap alone does not bound the row if one reason can be a megabyte.
+    /// </summary>
+    private const int MaxAuditedFlagFieldChars = 200;
 
 
     public async Task<Unit> Handle(IngestVendorMenuCommand command, CancellationToken ct)
@@ -113,10 +129,10 @@ public sealed class IngestVendorMenuCommandHandler(
         version++;
 
         // Isolated extraction (fail-secure: never throw inside the inbox txn → no poison redelivery).
-        IReadOnlyList<DraftCatalogItem> drafts;
+        MenuExtractionResult extraction;
         try
         {
-            drafts = await extractor.ExtractAsync(command.SourceArtifactRef, ct);
+            extraction = await extractor.ExtractAsync(command.SourceArtifactRef, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -154,7 +170,21 @@ public sealed class IngestVendorMenuCommandHandler(
                 // monitor settles it, then this catch finally runs — wrote the audit twice and sent
                 // the owner a second alert for one failure. Losing the race means another writer
                 // owns the outcome and has already said so.
-                await WriteAuditAsync(command, "catalog.extraction_failed", new { catalog_id = command.CatalogId }, now, ct);
+                // The CATEGORY is the difference between an operator reading this row as "the model
+                // returned garbage" and reading it as "LangGraph__Host is wrong". Before it, both
+                // failures persisted byte-identical evidence — `{ catalog_id }` and a fixed
+                // `reason = "extraction_failed"` — and the durable record is all a background lane
+                // leaves behind (#94).
+                //
+                // Taken from the exception TYPE, never from its message: a closed set of literals
+                // (MenuExtractionFailureCategory) that no reworded string and nothing derived from
+                // the untrusted document can influence (Inv-12/16).
+                await WriteAuditAsync(
+                    command,
+                    "catalog.extraction_failed",
+                    new { catalog_id = command.CatalogId, failure_category = CategoryOf(ex) },
+                    now,
+                    ct);
                 // Still alerted (Inv-14): a terminal status the owner never looks at is not a notification.
                 await EnqueueOwnerAlertAsync(command, ExtractionFailedEventType, "extraction_failed", now, ct);
             }
@@ -170,8 +200,9 @@ public sealed class IngestVendorMenuCommandHandler(
             return Unit.Value;
         }
 
-        // Persist draft items (item ids namespaced by catalog to stay unique per tenant).
-        var items = drafts
+        // Draft items, projected here and persisted below (item ids namespaced by catalog to stay
+        // unique per tenant). Pure mapping, no I/O — the persist is gated on the CAS.
+        var items = extraction.Items
             .Select(d => new VendorCatalogItem
             {
                 TenantId = command.TenantId,
@@ -187,9 +218,9 @@ public sealed class IngestVendorMenuCommandHandler(
                 ImageRef = d.ImageRef,
                 ExtractionConfidence = d.ExtractionConfidence,
                 SourceLocation = d.SourceLocation,
+                DurationMinutes = d.DurationMinutes,
             })
             .ToList();
-        await repo.AddDraftItemsAsync(items, ct);
 
         // Extracting → DraftReady
         CatalogStateMachine.EnsureAllowed(CatalogStatus.Extracting, CatalogStatus.DraftReady);
@@ -198,11 +229,121 @@ public sealed class IngestVendorMenuCommandHandler(
             CatalogStatus.Extracting, CatalogStatus.DraftReady, ct);
 
         if (draftReady > 0)
+        {
+            // Gated on the CAS for the same reason the audits below are: an unwon transition must
+            // not leave rows behind. `AddDraftItemsAsync` is an AddRange + SaveChangesAsync on the
+            // ambient DbContext, so persisting before the CAS committed the drafts even when the CAS
+            // then LOST — typically to `MenuIngestionMonitor` having already settled a stalled row to
+            // `ExtractFailed` — leaving draft items hanging off a terminally-failed catalog no owner
+            // will ever review (Inv-16). A TIGHTENING of pre-existing ordering rather than a new
+            // rule: the behaviour predates the real extractor, which only raised the stakes (the stub
+            // wrote one fabricated row, the agent writes every row it read).
+            await repo.AddDraftItemsAsync(items, ct);
+
+            // Gated on the SAME CAS as draft_ready, and for the same reason the extract_failed catch
+            // above is gated: an audit event speaks for a transition, and this call only made the
+            // Extracting→DraftReady one if it won. Losing the race means another writer (typically
+            // MenuIngestionMonitor settling a stalled row to ExtractFailed) owns the outcome, and a
+            // "these items need your review" record against a catalog that will never be reviewed is
+            // a confident falsehood (Inv-16), not a warning.
+            //
+            // Advisory only ("flag, never act"): the flags change nothing about the transition, the
+            // items still land as drafts, and DraftReady is the only success edge out of Extracting —
+            // nothing here can approve or publish.
+            if (extraction.Flags.Count > 0)
+            {
+                logger.LogWarning(
+                    "IngestVendorMenu: extraction raised {FlagCount} review flag(s) for {CatalogId}; "
+                    + "items are drafts awaiting owner review. Reasons are in the catalog.extraction_flagged audit.",
+                    extraction.Flags.Count, command.CatalogId);
+
+                // Metadata carries ONLY the catalog id, the true flag count, and a bounded sample of
+                // {item_id, reason} — the two agent-minted labels. Never the menu text, never the
+                // artifact ref (SensitiveDataMask treats source_artifact_ref as a control-plane key and
+                // copies it verbatim, and its inline form IS the document), never anything else derived
+                // from the untrusted upload.
+                //
+                // UNTRUSTED VALUES. The keys are fixed, but `reason` and `item_id` are free text the
+                // model produced while reading an attacker-supplied document — a document can steer it
+                // into echoing itself back through them. They are bounded and stripped here
+                // (SanitizeAuditLabel) and PAN-masked at the AuditEventSanitizationInterceptor choke
+                // point, but a console rendering this row must still ESCAPE them, not trust them.
+                await WriteAuditAsync(command, "catalog.extraction_flagged", new
+                {
+                    catalog_id = command.CatalogId,
+                    flag_count = extraction.Flags.Count,
+                    flags = extraction.Flags
+                        .Take(MaxAuditedFlags)
+                        .Select(f => new { item_id = SanitizeAuditLabel(f.ItemId), reason = SanitizeAuditLabel(f.Reason) })
+                        .ToArray(),
+                }, now, ct);
+            }
+
             await WriteAuditAsync(command, "catalog.draft_ready", new { catalog_id = command.CatalogId, item_count = items.Count }, now, ct);
+        }
         else
-            logger.LogWarning("IngestVendorMenu: lost race Extracting→DraftReady for {CatalogId}.", command.CatalogId);
+        {
+            // The audit row is gated on the CAS (above), but the SIGNAL is not lost with the race.
+            // `suspicious_content` — "this upload carried prompt-injection markers" — is worth knowing
+            // whether or not the catalog is still reviewable, and the incentive gradient runs the wrong
+            // way: extraction is slowest on large hostile documents, which are exactly the ones the
+            // monitor is most likely to settle first. So the reasons are logged here even though no
+            // audit row is written.
+            logger.LogWarning(
+                "IngestVendorMenu: lost race Extracting→DraftReady for {CatalogId}; "
+                + "{FlagCount} extraction flag(s) go unaudited: {FlagReasons}.",
+                command.CatalogId,
+                extraction.Flags.Count,
+                extraction.Flags.Take(MaxAuditedFlags).Select(f => SanitizeAuditLabel(f.Reason)).ToArray());
+        }
 
         return Unit.Value;
+    }
+
+    /// <summary>
+    /// Coarse failure category for the <c>catalog.extraction_failed</c> audit row.
+    ///
+    /// <para>Switches on the exception TYPE, not on its message. The extraction seam's two typed
+    /// exceptions already say which side failed —
+    /// <see cref="MenuExtractionFailedException.Category"/> carries the finer split the adapter is
+    /// the only layer that can make (unreachable vs timeout vs http_error vs model_error vs
+    /// malformed_response), and <see cref="MenuArtifactUnresolvableException"/> means the agent was
+    /// never called at all. Anything else reaching the fail-secure catch is a bug rather than a
+    /// configuration problem, and says so.</para>
+    /// </summary>
+    private static string CategoryOf(Exception ex) => ex switch
+    {
+        MenuExtractionFailedException failed => failed.Category,
+        MenuArtifactUnresolvableException => MenuExtractionFailureCategory.ArtifactUnresolvable,
+        _ => MenuExtractionFailureCategory.Unknown,
+    };
+
+    /// <summary>
+    /// Bounds one agent-minted label before it is copied into an audit row: control characters
+    /// dropped, then truncated to <see cref="MaxAuditedFlagFieldChars"/>.
+    ///
+    /// <para><b>The control-character strip is a poison-loop guard, not cosmetics.</b> This is the
+    /// first site in the codebase that copies model-generated free text into <c>AuditEvent.Metadata</c>
+    /// (every other write site serializes fixed literals). <c>JsonSerializer</c> happily encodes an
+    /// embedded NUL (<c>U+0000</c>) as a six-character \u0000 escape, which PostgreSQL
+    /// rejects for a <c>jsonb</c> column (<c>22P05 unsupported Unicode escape sequence</c>).
+    /// That throw would happen at
+    /// <c>SaveChanges</c> — OUTSIDE this handler and outside its fail-secure catch — so the inbox
+    /// transaction would roll back, the admission would be undone, and the message would redeliver
+    /// forever, re-extracting the same hostile document each time (Inv-5). Wrapping the audit write in
+    /// a try/catch would not help; <c>AddAsync</c> only stages the entity. A control character in an
+    /// operator-facing label has no legitimate meaning, so all of them are dropped, not just NUL.</para>
+    /// </summary>
+    private static string? SanitizeAuditLabel(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        var cleaned = value.Any(char.IsControl)
+            ? new string(value.Where(c => !char.IsControl(c)).ToArray())
+            : value;
+
+        return cleaned.Length > MaxAuditedFlagFieldChars ? cleaned[..MaxAuditedFlagFieldChars] : cleaned;
     }
 
     /// <summary>
