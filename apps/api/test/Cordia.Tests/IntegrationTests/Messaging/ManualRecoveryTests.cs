@@ -105,7 +105,12 @@ public class ManualRecoveryTests(PostgresFixture fixture)
 {
     // ── Container builder ─────────────────────────────────────────────────────────────────────
 
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter)
+    /// <param name="tenantId">
+    /// The test's tenant. Bounds the publisher's claim phase to this tenant so a tick cannot
+    /// dispatch outbox rows written by a test in the parallel AcceptanceApi collection through this
+    /// container's fake adapter (issue #90 — see <see cref="OutboxTenantScope"/>).
+    /// </param>
+    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter, string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -125,6 +130,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         services.AddApplication();
         services.AddInfrastructure(config);
         services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -137,17 +143,14 @@ public class ManualRecoveryTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t10-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── Scenario 1: Resume controlled retry (Inv-15) ─────────────────────────────────────────
 
@@ -164,8 +167,6 @@ public class ManualRecoveryTests(PostgresFixture fixture)
     [Fact]
     public async Task Resume_ManualReview_ReconcileFindEffect_Booked_Inv15()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t10-resume-{Guid.NewGuid():N}";
         var replayCommandId = $"rpl_{Guid.NewGuid():N}";
         const string knownRef = "ext_reconciled_ref";
@@ -221,7 +222,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
             SeedRef = knownRef,
         };
 
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         // Must set TenantContext before direct mediator.Send calls so the global EF query
@@ -324,7 +325,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T10FakeBookingProviderAdapter();
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -409,7 +410,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T10FakeBookingProviderAdapter();
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         var tenantCtx2 = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -476,7 +477,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T10FakeBookingProviderAdapter();
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         var tenantCtx3 = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -502,7 +503,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T10FakeBookingProviderAdapter();
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         var tenantCtx4 = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -551,7 +552,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T10FakeBookingProviderAdapter();
-        using var sp = BuildContainer(fakeAdapter);
+        using var sp = BuildContainer(fakeAdapter, tenantId);
         using var scope = sp.CreateScope();
 
         var tenantCtx5 = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -587,8 +588,6 @@ public class ManualRecoveryTests(PostgresFixture fixture)
     [Fact]
     public async Task ManualReviewEscalator_DoubleEscalate_YieldsOneOpenWorkItem()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t10-esc-idem-{Guid.NewGuid():N}";
         string operationId;
 
@@ -602,7 +601,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         // First escalation via ManualReviewEscalator (inside its own uow from the container).
         async Task EscalateAsync()
         {
-            using var sp = BuildContainer(fakeAdapter);
+            using var sp = BuildContainer(fakeAdapter, tenantId);
             using var scope = sp.CreateScope();
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
             tenantCtx.TenantId = tenantId;

@@ -65,7 +65,12 @@ file sealed class CancelFakeAdapter : IBookingProviderAdapter
 [Collection("Postgres")]
 public class CancelFulfilmentTests(PostgresFixture fixture)
 {
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter)
+    /// <param name="tenantId">
+    /// The test's tenant. Bounds the publisher's claim phase to this tenant so a tick cannot
+    /// dispatch outbox rows written by a test in the parallel AcceptanceApi collection through this
+    /// container's fake adapter (issue #90 — see <see cref="OutboxTenantScope"/>).
+    /// </param>
+    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter, string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -85,6 +90,7 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
         services.AddApplication();
         services.AddInfrastructure(config);
         services.AddSingleton(fakeAdapter);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -95,17 +101,14 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
             sp.GetRequiredService<IOptions<MessagingOptions>>(),
             NullLogger<OutboxPublisherHostedService>.Instance);
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("cancel-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>
     /// Seeds a confirmed booking, the create operation that produced it (with a Finalized hold
@@ -194,13 +197,11 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
     [Fact]
     public async Task CancelOperation_CancelsTheBooking_FreesCapacity_AndCreatesNoSecondBooking()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"cancel-ok-{Guid.NewGuid():N}";
         var (cancelOperationId, bookingId, slotId, _) = await SeedCancellableBookingAsync(tenantId);
 
         var adapter = new CancelFakeAdapter { CancelResult = ProviderResultKind.Created };
-        await using var sp = BuildContainer(adapter);
+        await using var sp = BuildContainer(adapter, tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         // The whole point: cancel, never create.
@@ -255,12 +256,10 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
     [Fact]
     public async Task CancelOperation_NeverReservesCapacityOfItsOwn()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"cancel-nores-{Guid.NewGuid():N}";
         var (cancelOperationId, _, _, _) = await SeedCancellableBookingAsync(tenantId);
 
-        await using var sp = BuildContainer(new CancelFakeAdapter());
+        await using var sp = BuildContainer(new CancelFakeAdapter(), tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         await using var ctx = fixture.CreateContext(tenantId);
@@ -285,13 +284,11 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
     [Fact]
     public async Task AmbiguousCancel_ReconcilesWithoutTouchingBookingOrCapacity()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"cancel-amb-{Guid.NewGuid():N}";
         var (cancelOperationId, bookingId, slotId, _) = await SeedCancellableBookingAsync(tenantId);
 
         var adapter = new CancelFakeAdapter { CancelResult = ProviderResultKind.Ambiguous };
-        await using var sp = BuildContainer(adapter);
+        await using var sp = BuildContainer(adapter, tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         Assert.Equal(1, adapter.CancelCallCount);
@@ -325,13 +322,11 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
     [Fact]
     public async Task RedeliveredCancel_DoesNotGiveTheSameSeatBackTwice()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"cancel-dup-{Guid.NewGuid():N}";
         var (cancelOperationId, bookingId, slotId, _) = await SeedCancellableBookingAsync(tenantId);
 
         var adapter = new CancelFakeAdapter();
-        await using var sp = BuildContainer(adapter);
+        await using var sp = BuildContainer(adapter, tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         // Re-enqueue the same command, as a broker redelivery would.
@@ -377,8 +372,6 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
     [Fact]
     public async Task CreateOperation_StillRunsThroughTheCapacityPath()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"cancel-regress-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -400,7 +393,7 @@ public class CancelFulfilmentTests(PostgresFixture fixture)
         }
 
         var adapter = new CancelFakeAdapter();
-        await using var sp = BuildContainer(adapter);
+        await using var sp = BuildContainer(adapter, tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         // A create books; it must never take the cancel branch.

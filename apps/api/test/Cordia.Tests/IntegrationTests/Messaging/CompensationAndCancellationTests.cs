@@ -97,7 +97,12 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
 {
     // ── Container builder ─────────────────────────────────────────────────────────────────────
 
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter)
+    /// <param name="tenantId">
+    /// The test's tenant. Bounds the publisher's claim phase to this tenant so a tick cannot
+    /// dispatch outbox rows written by a test in the parallel AcceptanceApi collection through this
+    /// container's fake adapter (issue #90 — see <see cref="OutboxTenantScope"/>).
+    /// </param>
+    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter, string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -119,6 +124,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
 
         // Override the provider adapter (last AddSingleton wins).
         services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -131,17 +137,14 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t8-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── Scenario 1: Permanent finalize error → CompensationRequired → FailedFinal ──────────
 
@@ -154,8 +157,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task PermanentFinalizeError_CompensationRequired_ReachesFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-perm-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -182,7 +183,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CreateResult = ProviderResultKind.PermanentError,
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -248,8 +249,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task CancelAfterCreate_CompensationRequired_CancelsCbooking_ReachesFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-cac-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         const string providerRef = "fake_ref_t8_cac";
@@ -311,7 +310,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CancelResult = ProviderResultKind.Created, // cancel acknowledged
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -371,8 +370,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task FinalizeDetectsCancelAfterCreate_CompensatesBooking_ReachesFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-detect-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         const string createdRef = "fake_ref_t8_detect";
@@ -451,7 +448,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CancelResult = ProviderResultKind.Created, // cancel acknowledged
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -514,8 +511,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task CancelBeforeCreate_CompensationRequired_NothingToCancel_ReachesFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-cbc-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -551,7 +546,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CancelResult = ProviderResultKind.Created,
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -596,8 +591,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task CancelBeforeCreate_AlreadyFinalizing_NoAttempt_StillReachesFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-cbc-fin-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -634,7 +627,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CancelResult = ProviderResultKind.Created,
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -664,8 +657,6 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
     [Fact]
     public async Task CompensationAmbiguous_EscalatesToManualReview()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-camb-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         const string providerRef = "fake_ref_t8_amb";
@@ -717,7 +708,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
             CancelResult = ProviderResultKind.Ambiguous,
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -779,7 +770,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
         }
 
         var fakeAdapter = new T8FakeBookingProviderAdapter();
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(fakeAdapter, tenantId);
 
         // Must set TenantContext before direct mediator.Send calls so the global EF query filter
         // matches (GetAsync uses it without IgnoreQueryFilters).

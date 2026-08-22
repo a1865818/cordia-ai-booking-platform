@@ -137,7 +137,13 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 {
     // ── Container builder ─────────────────────────────────────────────────────────────────────
 
+    /// <param name="tenantId">
+    /// The test's tenant. Bounds the publisher's claim phase to this tenant so a tick cannot
+    /// dispatch outbox rows written by a test in the parallel AcceptanceApi collection through this
+    /// container's fake adapter (issue #90 — see <see cref="OutboxTenantScope"/>).
+    /// </param>
     private static ServiceProvider BuildContainer(
+        string tenantId,
         IBookingProviderAdapter? fakeAdapter = null,
         ICapacityReservation? fakeCapacity = null)
     {
@@ -165,6 +171,8 @@ public class RetryAndFailureTests(PostgresFixture fixture)
         if (fakeCapacity is not null)
             services.AddScoped<ICapacityReservation>(_ => fakeCapacity);
 
+        services.ScopeOutboxClaimToTenant(tenantId);
+
         return services.BuildServiceProvider();
     }
 
@@ -184,18 +192,19 @@ public class RetryAndFailureTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<ScheduledJobPollerHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "t6-cleanup")
-    {
-        await using var ctx = fixture.CreateContext(cleanupTenant);
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
+    // NOT the outbox twin above: scheduled_jobs has its OWN cross-tenant claim
+    // (ScheduledJobRepository.ClaimDueAsync, same shape, no tenant predicate), which
+    // OutboxTenantScope does not cover. This sweep is still the only thing keeping a foreign
+    // due job out of BuildPoller's tick, so it stays until that claim is scoped too.
     private async Task NeutralizeExistingScheduledJobsAsync()
     {
         await using var ctx = fixture.CreateContext("t6-sched-cleanup");
@@ -218,8 +227,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task NoCapacity_FromAccepted_RoutesToAlternativesRequired()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t6-nocap-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         var resourceId = $"res-{Guid.NewGuid():N}";
@@ -299,7 +306,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
         }
 
         // Use the real container (real ICapacityReservation) — slot is full so NoCapacity fires.
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -349,7 +356,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task Transient_FirstCreate_DurableRetry_ThenSuccess()
     {
-        await NeutralizeExistingUnpublishedAsync();
         await NeutralizeExistingScheduledJobsAsync();
 
         var tenantId = $"t6-transient-{Guid.NewGuid():N}";
@@ -375,7 +381,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         var fakeAdapter = new T6FakeAdapter { TransientOnFirstN = 1, SuccessRef = "ext_retry_success" };
 
-        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter: fakeAdapter);
         var publisher = BuildPublisher(sp);
 
         // First tick: Accepted → Finalizing → Transient → attempt=TransientFailure + retry scheduled.
@@ -465,8 +471,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task BudgetExhausted_Transient_RoutesToManualReview()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t6-exhausted-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -511,7 +515,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
         // Adapter always returns Transient.
         var fakeAdapter = new T6FakeAdapter { TransientOnFirstN = int.MaxValue };
 
-        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter: fakeAdapter);
         var publisher = BuildPublisher(sp);
 
         // One publisher tick:
@@ -573,7 +577,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task CircuitOpen_NoProviderFlood_DurableRetryScheduled()
     {
-        await NeutralizeExistingUnpublishedAsync();
         await NeutralizeExistingScheduledJobsAsync();
 
         var tenantId = $"t6-circuit-{Guid.NewGuid():N}";
@@ -600,7 +603,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         var fakeAdapter = new T6FakeAdapter();  // call counter; no create call expected
 
-        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter: fakeAdapter);
 
         // Open the circuit for ("fake", "default") by recording 5 failures.
         var circuitBreaker = sp.GetRequiredService<IProviderCircuitBreaker>();
@@ -647,8 +650,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task AuthError_FromFinalizing_RoutesToReconciling_NotCompensationRequired()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t6-autherr-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -672,7 +673,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         var fakeAdapter = new T6FixedResultAdapter { ResultKind = ProviderResultKind.AuthError };
 
-        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter: fakeAdapter);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -710,8 +711,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task PaymentActionRequired_FromFinalizing_DoesNotRouteToCompensationRequired()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t6-payact-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -735,7 +734,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
 
         var fakeAdapter = new T6FixedResultAdapter { ResultKind = ProviderResultKind.PaymentActionRequired };
 
-        await using var sp = BuildContainer(fakeAdapter: fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter: fakeAdapter);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
