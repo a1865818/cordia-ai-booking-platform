@@ -10,9 +10,14 @@ function jsonResponse(status: number, body: unknown, contentType = "application/
   });
 }
 
+// Not `typeof fetch`: bun's real global `fetch` also carries a `preconnect` static method,
+// which a plain implementation function doesn't have. This is just the call signature the
+// client actually uses `fetch` with.
+type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Captures the RequestInit the client passed to `fetch`. */
 function captureFetch(response: Response) {
-  const spy = vi.fn<typeof fetch>(async () => response.clone());
+  const spy = vi.fn<FetchLike>(async () => response.clone());
   vi.stubGlobal("fetch", spy);
   return spy;
 }

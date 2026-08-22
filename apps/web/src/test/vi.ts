@@ -20,7 +20,7 @@ function mocked<T>(item: T): Mocked<T> {
   return item as unknown as Mocked<T>;
 }
 
-const stubbedGlobals = new Map<PropertyKey, unknown>();
+const stubbedGlobals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
 // happy-dom (unlike jsdom) defines some globals — `navigator` among them — as
 // non-writable, so a plain assignment throws. `defineProperty` overrides them the same

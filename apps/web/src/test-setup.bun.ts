@@ -15,7 +15,12 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 GlobalRegistrator.register();
 
-await import("@testing-library/jest-dom");
+// `require`, not `await import(...)`: jest-dom's own types (types/index.d.ts) are a pure
+// ambient side-effect file with no real exports — see src/test/jest-dom-bun.d.ts, which is
+// how its `bun:test` matcher augmentation actually gets wired in — and `import()`'s type
+// needs an actual module shape to resolve, which `require()`'s `any` return sidesteps.
+// Still runs synchronously exactly here, after `register()`, same as the awaited imports.
+require("@testing-library/jest-dom");
 const { afterEach } = await import("bun:test");
 const { cleanup } = await import("@testing-library/react");
 
