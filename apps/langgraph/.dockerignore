@@ -1,0 +1,42 @@
+# Build context exclusions for `langgraph build` (see scripts/build_image.sh).
+#
+# The Dockerfile that `langgraph build` generates does `ADD . /deps/langgraph`, so
+# anything left here lands in an image layer and is readable by anyone who can pull
+# the image. Without this file the image shipped `.env` — Azure keys, the LangSmith
+# key, and CORDIA_TENANT_CONTEXT_SIGNING_KEYS, which is the JWS key the agent
+# authenticates to the .NET API with — plus a 300 MB `.venv`.
+#
+# Secrets belong in the runtime environment, never in the image.
+
+# Local credentials. `.env` is gitignored, so CI never had it — but anyone building
+# from a working tree does, and `bun nx run langgraph:docker-build` is documented.
+.env
+.env.*
+!.env.example
+
+# The virtualenv is rebuilt inside the image. Leaving it in is both the bulk of the
+# build context and a way to ship host-platform binaries into a Linux image.
+.venv
+
+# `langgraph dev` scratch state (checkpoint store pickles).
+.langgraph_api/
+
+# Python build/test detritus. These need `**/` — .dockerignore matches with Go's
+# filepath.Match, so a bare `__pycache__/` matches only at the context root and
+# leaves every nested one behind. Verified: without the `**/`, the built image
+# still carried cordia_agent/**/__pycache__/*.pyc.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+**/dist
+**/build
+**/*.egg-info
+
+# Not needed at runtime.
+tests/
+.git/
+.gitignore
