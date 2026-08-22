@@ -1,6 +1,6 @@
 # apps/web — Cordia Web
 
-React 19 + Vite 6 + Vitest SPA.
+React 19 + Vite 6 SPA. Tests run on Bun's native test runner, not Vitest (see Testing below).
 
 ## Shared types (read this before fetching from the API)
 
@@ -61,7 +61,7 @@ src/
 ```bash
 bun nx serve web        # vite dev server, http://localhost:4200 (/api proxied to the API)
 bun nx build web        # tsc -b && vite build -> dist/apps/web
-bun nx test web         # vitest
+bun nx test web         # bun test --parallel
 bun nx lint web         # oxlint (deny warnings)
 bun nx typecheck web    # tsc --noEmit
 ```
@@ -69,3 +69,37 @@ bun nx typecheck web    # tsc --noEmit
 The dev server proxies `/api` to `VITE_API_PROXY_TARGET` (default
 `https://localhost:8001`). In hosted envs the API base comes from
 `window.APP_CONFIG.API_URL` (see `src/api/client.ts`).
+
+## Testing
+
+Tests run on Bun's native test runner (`bun test --parallel`), migrated off Vitest for
+speed. `--parallel` is mandatory, not a preference: Bun's bare default shares one module
+registry across every file in the run, so one file's `mock.module()` silently leaks into
+another's and produces false failures. `vitest run` still works if you need it (`bun run
+test:vitest`) — the deps and `vite.config.ts`'s `test` block are untouched.
+
+Every test file imports `describe`/`it`/`expect`/`vi`/etc. from `src/test/vitest-compat`
+instead of `"vitest"` — a thin shim (`src/test/vi.ts`) that re-exports `bun:test`'s
+equivalents plus a `vi` shaped like vitest's, so most files needed no other changes.
+`bunfig.toml` preloads `src/test-setup.bun.ts`, which registers happy-dom (Bun has no DOM
+by default) and `@testing-library/react`'s cleanup as a real per-test hook — the latter
+normally self-registers on import, but Bun's shared module cache means that only fires
+for whichever file happens to import RTL first.
+
+**A real, still-open Bun bug**: a `mock.module()` factory that itself calls `import()`
+deadlocks Bun's resolver once a *second* `mock.module()` exists anywhere in the same file
+— confirmed on 1.4.0, undocumented. This breaks vitest's `vi.mock(path, async
+(importOriginal) => ({ ...(await importOriginal()), foo: vi.fn() }))` partial-mock idiom
+the moment a file has more than one mocked module (which is normal). The fix, applied to
+the handful of files that used it: capture the real module as a plain top-level `await
+import(path)` snapshot *before* any `mock.module()` call, then hand that snapshot to a
+synchronous factory — e.g.:
+
+```ts
+const __actual_api = { ...(await import("./api")) };
+vi.mock("./api", () => ({ ...__actual_api, someFn: vi.fn() }));
+```
+
+If you add a new file using this pattern, follow the same shape — `vi.mock`'s shim
+deliberately has no `importOriginal` support, so the naive vitest idiom will hang the
+whole run, not fail one test.

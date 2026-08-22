@@ -361,6 +361,11 @@ jobs:
         run: bun nx run web:typecheck
 
       # ── Test ──────────────────────────────────────────────────────────────────
+      # `web:test` (apps/web/project.json) runs Bun's native test runner
+      # (`bun test --parallel`), not vitest — see apps/web/CLAUDE.md's Testing section.
+      # Requires Bun >= 1.4.0: `--parallel` was flaky (silent false failures) on 1.3.14 and
+      # confirmed stable on 1.4.0. `bun-version: latest` above already satisfies this, but
+      # don't pin this job below 1.4.0 without re-verifying that finding.
       - name: Test
         run: bun nx run web:test
 
