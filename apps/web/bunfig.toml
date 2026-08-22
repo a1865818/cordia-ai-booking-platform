@@ -1,2 +1,12 @@
 [test]
 preload = ["./src/test-setup.bun.ts"]
+
+# Matches vite.config.ts's old vitest `coverage: { provider: "v8", reporter: [...] }` block.
+# Test files themselves are excluded from the report by default; the migration's own
+# support files and the gitignored generated contract aren't source we're measuring.
+coverageReporter = ["text", "lcov"]
+coveragePathIgnorePatterns = [
+  "src/test-setup.bun.ts",
+  "src/test/**",
+  "../../libs/**",
+]
