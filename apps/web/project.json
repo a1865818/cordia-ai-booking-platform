@@ -80,12 +80,14 @@
       "executor": "nx:run-commands",
       "dependsOn": [],
       "inputs": [
-        "typescript"
+        "typescript",
+        "{projectRoot}/bunfig.toml",
+        "{projectRoot}/.env.test"
       ],
       "cache": true,
       "options": {
         "cwd": "apps/web",
-        "command": "bunx vitest run --coverage"
+        "command": "bun test --parallel --coverage"
       },
       "outputs": [
         "{projectRoot}/coverage"

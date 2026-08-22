@@ -72,11 +72,13 @@ The dev server proxies `/api` to `VITE_API_PROXY_TARGET` (default
 
 ## Testing
 
-Tests run on Bun's native test runner (`bun test --parallel`), migrated off Vitest for
-speed. `--parallel` is mandatory, not a preference: Bun's bare default shares one module
-registry across every file in the run, so one file's `mock.module()` silently leaks into
-another's and produces false failures. `vitest run` still works if you need it (`bun run
-test:vitest`) — the deps and `vite.config.ts`'s `test` block are untouched.
+Tests run on Bun's native test runner (`bun test --parallel`) — Vitest has been fully
+removed (no `vitest`/`jsdom`/`@vitest/coverage-v8` deps, no `test` block in
+`vite.config.ts`). `--parallel` is mandatory, not a preference: Bun's bare default shares
+one module registry across every file in the run, so one file's `mock.module()` silently
+leaks into another's and produces false failures. `test:coverage` is `bun test --parallel
+--coverage`; reporters and exclusions live in `bunfig.toml`'s `coverageReporter` /
+`coveragePathIgnorePatterns`.
 
 Every test file imports `describe`/`it`/`expect`/`vi`/etc. from `src/test/vitest-compat`
 instead of `"vitest"` — a thin shim (`src/test/vi.ts`) that re-exports `bun:test`'s
