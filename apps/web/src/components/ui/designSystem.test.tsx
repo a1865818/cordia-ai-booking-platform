@@ -7,7 +7,7 @@
  * halted lifecycle never drawn as in-progress, and absent values never rendered as blank.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReasonCodeDialog } from "./ReasonCodeDialog";
 import { CorrelationIdChip } from "./CorrelationIdChip";

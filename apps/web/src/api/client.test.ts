@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "../test/vitest-compat";
 import { ApiError, fetchApi, isApiError } from "./client";
 import { ApiIdempotencyConflictError, ApiValidationError, ApiVerificationRequiredError } from "./problem";
 import { clearSession, setSession } from "./session";

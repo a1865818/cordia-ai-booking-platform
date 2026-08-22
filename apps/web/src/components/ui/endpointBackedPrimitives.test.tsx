@@ -7,7 +7,7 @@
  * consent state nobody recorded, or a countdown that outlives the action it describes.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { render, screen } from "@testing-library/react";
 import { MoneyAmount, formatMoney } from "./MoneyAmount";
 import { PermissionGate, satisfiesRole } from "./PermissionGate";

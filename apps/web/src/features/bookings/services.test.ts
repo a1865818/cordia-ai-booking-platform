@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { toBookableServices } from "./services";
 import type { CatalogItem } from "../settings/api";
 

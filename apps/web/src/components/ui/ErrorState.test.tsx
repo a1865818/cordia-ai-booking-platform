@@ -6,7 +6,7 @@
  * part that can lie.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "../../test/vitest-compat";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ErrorState } from "./ErrorState";
 import { ApiError, ApiValidationError, ApiVerificationRequiredError } from "../../api/problem";

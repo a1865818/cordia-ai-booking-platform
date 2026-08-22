@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "../../test/vitest-compat";
 import { canonicalHash } from "../../api/canonicalHash";
 import {
   buildSubmission, customerFromRef, toCanonicalPayload, toIsoInstant,

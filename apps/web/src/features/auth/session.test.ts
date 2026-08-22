@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "../../test/vitest-compat";
 import { clearSession, getSession, hasSession, setSession, type OperatorSession } from "../../api/session";
 
 const sample: OperatorSession = {

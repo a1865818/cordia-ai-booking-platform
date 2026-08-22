@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { buildWeek, dayLabel, dayOptions, shiftWeekWindow, shortDayLabel, todayIndexAt } from "./week";
 import { toIsoInstant } from "./buildSubmission";
 import { weekWindow } from "./adapters";

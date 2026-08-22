@@ -5,7 +5,7 @@
  * spaces" — was the one it did not do.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { composeReason } from "./ReasonCodeDialog";
 
 describe("composeReason", () => {

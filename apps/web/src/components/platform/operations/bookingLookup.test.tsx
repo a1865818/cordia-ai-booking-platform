@@ -6,7 +6,7 @@
  * exactly the fields the contract returns — no invented lifecycle status, no contact details.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../../test/vitest-compat";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BookingLookupPanel } from "./BookingLookupPanel";
 

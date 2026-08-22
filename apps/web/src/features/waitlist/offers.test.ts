@@ -7,7 +7,7 @@
  * genuinely actionable — offering a button that is certain to 409 is worse than offering none.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { isOfferActionable, offerExpiryLabel, toWaitlistItem } from "./adapters";
 import type { WaitlistEnrollmentSummary } from "./api";
 

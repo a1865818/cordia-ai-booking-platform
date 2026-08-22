@@ -6,7 +6,7 @@
  * been declared" rather than "nothing is free".
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { declareSlot, getAvailability, toAvailableSlots } from "./availability";
 
 describe("toAvailableSlots", () => {

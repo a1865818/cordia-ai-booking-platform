@@ -6,7 +6,7 @@
  * one-legal-step-at-a-time state machine, and the named failure path with retry.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../../test/vitest-compat";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -15,12 +15,14 @@ import { recordCatalogStatus } from "../../../features/menu/catalogs";
 import { ApiError } from "../../../api/problem";
 import type { CatalogSummary } from "../../../features/menu/api";
 
-vi.mock("../../../features/session/identity", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../features/session/identity")>()),
+const __actual_features_session_identity = { ...(await import("../../../features/session/identity")) };
+vi.mock("../../../features/session/identity", () => ({
+  ...__actual_features_session_identity,
   sessionIdentity: vi.fn(),
 }));
-vi.mock("../../../features/menu/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../features/menu/api")>()),
+const __actual_features_menu_api = { ...(await import("../../../features/menu/api")) };
+vi.mock("../../../features/menu/api", () => ({
+  ...__actual_features_menu_api,
   uploadMenuCatalog: vi.fn(),
   sendCatalogForReview: vi.fn(),
   approveCatalog: vi.fn(),

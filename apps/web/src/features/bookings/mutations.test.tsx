@@ -6,7 +6,7 @@
  * outcome the server never gave (Inv-16).
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";

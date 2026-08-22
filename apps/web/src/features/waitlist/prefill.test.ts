@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { prefillFromWaitlist } from "./prefill";
 import { buildWeek } from "../bookings/week";
 import type { WaitlistItem } from "../../data/console";

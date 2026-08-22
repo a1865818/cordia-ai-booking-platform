@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "../../../test/vitest-compat";
 import { render, screen } from "@testing-library/react";
 import { MoreScreen } from "./MoreScreen";
 

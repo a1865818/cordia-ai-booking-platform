@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "../../test/vitest-compat";
 import { submitBooking } from "./submit";
 
 /**
