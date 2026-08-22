@@ -87,6 +87,15 @@ public class VendorCatalogRepository(ApplicationDbContext db) : IVendorCatalogRe
             .OrderBy(i => i.ItemId)
             .ToListAsync(ct);
 
+    public Task<bool> HasAnyItemsAsync(string catalogId, CancellationToken ct = default)
+        // An EXISTS probe, not a row fetch: publish's itemless-catalog guard only needs the
+        // yes/no, and publish is exactly when a menu is at its largest. Any status and no
+        // published-status join, for the same reason as GetDraftItemsAsync above; tenant
+        // isolation comes from the global query filter.
+        => db.VendorCatalogItems
+            .AsNoTracking()
+            .AnyAsync(i => i.CatalogId == catalogId, ct);
+
     public async Task<IReadOnlyList<VendorCatalog>> ListAsync(
         int limit = 50, CancellationToken ct = default)
         => await db.VendorCatalogs

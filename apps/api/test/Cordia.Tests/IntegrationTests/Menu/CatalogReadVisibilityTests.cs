@@ -88,4 +88,42 @@ public class CatalogReadVisibilityTests(PostgresFixture fixture)
         Assert.Null(await repo.GetPublishedItemAsync("a-secret", CancellationToken.None));
         Assert.Null(await repo.GetPublishedItemAsync("b-item", CancellationToken.None));
     }
+
+    [Fact]
+    public async Task HasAnyItems_TrueWhenPopulated_FalseWhenEmpty_FalseForAnotherTenant()
+    {
+        var tenantA = $"t-has-a-{Guid.NewGuid():N}";
+        var tenantB = $"t-has-b-{Guid.NewGuid():N}";
+        var populatedCatA = $"has-{Guid.NewGuid():N}";
+        var emptyCatA = $"empty-{Guid.NewGuid():N}";
+        var populatedCatB = $"hasb-{Guid.NewGuid():N}";
+
+        // Tenant A: one approved catalog with an item, one with none at all.
+        await using (var ctx = fixture.CreateContext(tenantA))
+        {
+            ctx.VendorCatalogs.Add(Catalog(tenantA, populatedCatA, CatalogStatus.Approved));
+            ctx.VendorCatalogs.Add(Catalog(tenantA, emptyCatA, CatalogStatus.Approved));
+            ctx.VendorCatalogItems.Add(Item(tenantA, populatedCatA, "a-dish", "Approved Dish"));
+            await ctx.SaveChangesAsync();
+        }
+
+        // Tenant B: a catalog that DOES have items — the cross-tenant probe below must still say no.
+        await using (var ctx = fixture.CreateContext(tenantB))
+        {
+            ctx.VendorCatalogs.Add(Catalog(tenantB, populatedCatB, CatalogStatus.Approved));
+            ctx.VendorCatalogItems.Add(Item(tenantB, populatedCatB, "b-dish", "B Dish"));
+            await ctx.SaveChangesAsync();
+        }
+
+        await using var readCtx = fixture.CreateContext(tenantA);
+        var repo = new VendorCatalogRepository(readCtx);
+
+        // Any status counts (these are approved, not published) — which is what publish's guard wants.
+        Assert.True(await repo.HasAnyItemsAsync(populatedCatA, CancellationToken.None));
+        Assert.False(await repo.HasAnyItemsAsync(emptyCatA, CancellationToken.None));
+
+        // The assertion worth having: the global query filter, not the catalog id, is what keeps
+        // tenant B's items out — otherwise a colliding id elsewhere could vouch for an empty catalog.
+        Assert.False(await repo.HasAnyItemsAsync(populatedCatB, CancellationToken.None));
+    }
 }

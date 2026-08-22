@@ -157,6 +157,21 @@ public class GlobalExceptionHandlerTests
         Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
     }
 
+    // ------------------------------------------------------------------
+    // CatalogHasNoItemsException → 409 (issue #89: must never fall through to a raw 500)
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task CatalogHasNoItems_Returns409()
+    {
+        var ctx = CreateContext();
+        var ex = new CatalogHasNoItemsException("cat-1");
+
+        var handled = await _handler.TryHandleAsync(ctx, ex, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status409Conflict, ctx.Response.StatusCode);
+    }
+
     [Fact]
     public async Task VerificationRequired_Returns403()
     {

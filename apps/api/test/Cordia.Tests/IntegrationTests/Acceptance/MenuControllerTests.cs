@@ -33,6 +33,23 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         return catalogId;
     }
 
+    /// <summary>Adds one draft item, namespaced as the ingestion handler does ({catalogId}:{itemId}).</summary>
+    private async Task SeedDraftItemAsync(string tenantId, string catalogId)
+    {
+        await using var ctx = fixture.CreateContext(tenantId);
+        ctx.VendorCatalogItems.Add(new VendorCatalogItem
+        {
+            TenantId = tenantId,
+            ItemId = $"{catalogId}:d1",
+            CatalogId = catalogId,
+            Name = "Sample Dish",
+            Description = "Sample description",
+            PriceMinor = 1500,
+            Currency = "AUD",
+        });
+        await ctx.SaveChangesAsync();
+    }
+
     [Fact]
     public async Task Upload_Returns202_CreatesUploadedCatalog_AndEnqueuesIngest()
     {
@@ -204,6 +221,7 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
     {
         var tenantId = TestIds.New("acc-menu-pb");
         var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.Approved);
+        await SeedDraftItemAsync(tenantId, catalogId);
 
         await fixture.Host.Scenario(x =>
         {
@@ -219,6 +237,30 @@ public class MenuControllerTests(AcceptanceApiFixture fixture)
         var catalog = await ctx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
             .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
         Assert.Equal(CatalogStatus.Published, catalog.Status);
+    }
+
+    [Fact]
+    public async Task Publish_EmptyCatalog_Returns409_NotServerError()
+    {
+        // Issue #89: publishing an itemless catalog would supersede the live menu with nothing.
+        // Refused as a 409 through the global handler — never a raw 500.
+        var tenantId = TestIds.New("acc-menu-pb0");
+        var catalogId = await SeedCatalogAsync(tenantId, CatalogStatus.Approved);
+
+        await fixture.Host.Scenario(x =>
+        {
+            x.Post.RawJson("{}").ToUrl($"/api/menu/catalogs/{catalogId}/publish");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "owner-1");
+            x.WithRequestHeader("X-Reason-Code", "rc_test");
+            x.WithRequestHeader("X-Actor-Role", "owner");
+            x.StatusCodeShouldBe(HttpStatusCode.Conflict);
+        });
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var catalog = await ctx.VendorCatalogs.AsNoTracking().IgnoreQueryFilters()
+            .FirstAsync(c => c.TenantId == tenantId && c.CatalogId == catalogId);
+        Assert.Equal(CatalogStatus.Approved, catalog.Status);
     }
 
     [Fact]
