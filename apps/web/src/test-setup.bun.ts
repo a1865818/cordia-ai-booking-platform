@@ -13,6 +13,21 @@
 // it's written, so `register()` above it is guaranteed to happen first.
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
+// `bun test --parallel` produced silent false failures on 1.3.14 (2 of 8 runs), confirmed
+// clean across 23 runs on 1.4.0 — see apps/web/CLAUDE.md's Testing section. `engines.bun`
+// in package.json documents this but Bun doesn't enforce `engines` (confirmed: `bun
+// install`/`bun run` neither warn nor fail on an unmet constraint), so without this check a
+// dev on an older Bun gets exactly that flakiness with no signal at all. Failing the whole
+// run up front, before anything else in this file even loads, beats a stale test passing
+// for the wrong reason.
+const MIN_BUN_VERSION = ">=1.4.0";
+if (!Bun.semver.satisfies(Bun.version, MIN_BUN_VERSION)) {
+  throw new Error(
+    `apps/web's test suite requires Bun ${MIN_BUN_VERSION} (found ${Bun.version}). ` +
+      `bun test --parallel is known-flaky below 1.4.0 — upgrade with \`bun upgrade\`.`,
+  );
+}
+
 GlobalRegistrator.register();
 
 // `require`, not `await import(...)`: jest-dom's own types (types/index.d.ts) are a pure

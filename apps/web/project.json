@@ -63,7 +63,9 @@
       "executor": "nx:run-commands",
       "dependsOn": [],
       "inputs": [
-        "typescript"
+        "typescript",
+        "{projectRoot}/bunfig.toml",
+        "{projectRoot}/.env.test"
       ],
       "cache": true,
       "metadata": {
