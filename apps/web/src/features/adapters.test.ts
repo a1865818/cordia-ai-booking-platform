@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test/vitest-compat";
 import { operationStatusLabel, toQueueItems } from "./operations/adapters";
 import { toChannel, toMessages, toThreads, timeAgo } from "./conversations/adapters";
 import { toCustomers, lastSeenLabel } from "./customers/adapters";

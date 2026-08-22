@@ -6,7 +6,7 @@
  * tests pin the owner spine (X-Actor + X-Actor-Role + fixed X-Reason-Code on every call).
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { hasFailed, looksStuck, STALE_INGESTION_SECONDS } from "./api";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act } from "@testing-library/react";
@@ -108,7 +108,7 @@ describe("lifecycle transport", () => {
   }
 
   it("every action carries the mandatory owner spine with its fixed reason code", async () => {
-    const api = await vi.importActual<typeof import("./api")>("./api");
+    const api = __actual_api;
 
     await api.uploadMenuCatalog("s3://menus/spring.pdf", "spring-v2");
     let { url, headers, body } = lastRequest();
@@ -137,13 +137,13 @@ describe("lifecycle transport", () => {
   });
 
   it("omits the version label rather than sending an empty one", async () => {
-    const api = await vi.importActual<typeof import("./api")>("./api");
+    const api = __actual_api;
     await api.uploadMenuCatalog("ref-only");
     expect(lastRequest().body).toEqual({ source_artifact_ref: "ref-only" });
   });
 
   it("reads a confirmed {catalog_id, status} and refuses anything less", async () => {
-    const api = await vi.importActual<typeof import("./api")>("./api");
+    const api = __actual_api;
     expect(api.catalogFromResponse({ catalog_id: "cat_1", status: "approved" }))
       .toEqual({ catalogId: "cat_1", status: "approved" });
     expect(api.catalogFromResponse({ catalog_id: "cat_1" })).toBeNull();
@@ -154,8 +154,9 @@ describe("lifecycle transport", () => {
 
 // ---------------------------------------------------------------------------
 
-vi.mock("./api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./api")>()),
+const __actual_api = { ...(await import("./api")) };
+vi.mock("./api", () => ({
+  ...__actual_api,
   uploadMenuCatalog: vi.fn(),
   sendCatalogForReview: vi.fn(),
   approveCatalog: vi.fn(),

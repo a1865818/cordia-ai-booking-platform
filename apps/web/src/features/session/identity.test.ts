@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "../../test/vitest-compat";
 import { getTenantId } from "../../api/config";
 import { clearSession, setSession } from "../../api/session";
 import { idInitials, sessionIdentity, sessionIdentityHint } from "./identity";

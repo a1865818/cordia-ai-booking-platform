@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "../../../test/vitest-compat";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { WaitlistScreen } from "./WaitlistScreen";
 import type { WaitlistItem } from "../../../data/console";

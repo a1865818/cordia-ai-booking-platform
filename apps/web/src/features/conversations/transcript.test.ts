@@ -6,7 +6,7 @@
  * investigation from idle browsing.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "../../test/vitest-compat";
 import { SENSITIVE_READ_PURPOSES, type SensitiveReadPurpose } from "./purposes";
 
 vi.mock("../../api/client", () => ({ fetchApi: vi.fn() }));

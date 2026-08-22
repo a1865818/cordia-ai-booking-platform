@@ -4,7 +4,7 @@
  * booked), and the local clear/dismiss row stays a plainly-labelled local acknowledgement.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "../../../test/vitest-compat";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueueScreen } from "./QueueScreen";
 import type { QueueItem } from "../../../data/console";

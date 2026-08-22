@@ -7,7 +7,7 @@
  * resolve carry the mandatory operator spine, cancel and alternatives carry none of it.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { operationActions, TERMINAL_OPERATION_STATUSES } from "./adapters";
 import {
   requestOperationCancellation, resolveOperation, respondToAlternatives, resumeOperation,

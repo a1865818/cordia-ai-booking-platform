@@ -14,7 +14,7 @@
  *   2. Nothing is asserted that the API does not record.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "../test/vitest-compat";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -26,9 +26,10 @@ vi.mock("../features/bookings/api", () => ({
   getOperationStatus: vi.fn(),
   recordAttendance: vi.fn(),
 }));
-vi.mock("../features/operations/api", async (importOriginal) => ({
+const __actual_features_operations_api = { ...(await import("../features/operations/api")) };
+vi.mock("../features/operations/api", () => ({
   // `statusFromResponse` stays real: the follow-up toasts echo what it reads from the body.
-  ...(await importOriginal<typeof import("../features/operations/api")>()),
+  ...__actual_features_operations_api,
   listOperations: vi.fn(),
   listOpenWorkItems: vi.fn(),
   requestOperationCancellation: vi.fn(),
@@ -38,12 +39,14 @@ vi.mock("../features/operations/api", async (importOriginal) => ({
 }));
 // Both spread the original: `preflight` re-exports `refusalMessage`, and `submit` still owns
 // `submitCancellation` for the cancel path — stubbing the whole module would break either.
-vi.mock("../features/bookings/preflight", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/bookings/preflight")>()),
+const __actual_features_bookings_preflight = { ...(await import("../features/bookings/preflight")) };
+vi.mock("../features/bookings/preflight", () => ({
+  ...__actual_features_bookings_preflight,
   preflightReschedule: vi.fn(),
 }));
-vi.mock("../features/bookings/submit", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/bookings/submit")>()),
+const __actual_features_bookings_submit = { ...(await import("../features/bookings/submit")) };
+vi.mock("../features/bookings/submit", () => ({
+  ...__actual_features_bookings_submit,
   submitBooking: vi.fn(),
 }));
 vi.mock("../features/conversations/api", () => ({ listSessions: vi.fn(), getTranscript: vi.fn() }));
@@ -53,41 +56,50 @@ vi.mock("../features/waitlist/api", () => ({
   enrollGuest: vi.fn(), listWaitlistLocations: vi.fn(),
 }));
 vi.mock("../features/settings/api", () => ({ listCatalogItems: vi.fn(), getConsentPolicy: vi.fn() }));
-vi.mock("../features/reporting/api", async (importOriginal) => ({
+const __actual_features_reporting_api = { ...(await import("../features/reporting/api")) };
+vi.mock("../features/reporting/api", () => ({
   // `rangeToWindow` is pure date maths the screen needs; only the fetchers are stubbed.
-  ...(await importOriginal<typeof import("../features/reporting/api")>()),
+  ...__actual_features_reporting_api,
   getBookingFunnel: vi.fn(), getBookingOverview: vi.fn(), getKpis: vi.fn(),
 }));
-vi.mock("../features/settings/profile", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/settings/profile")>()),
+const __actual_features_settings_profile = { ...(await import("../features/settings/profile")) };
+vi.mock("../features/settings/profile", () => ({
+  ...__actual_features_settings_profile,
   getTenantProfile: vi.fn(), setTenantProfile: vi.fn(),
 }));
-vi.mock("../features/settings/hours", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/settings/hours")>()),
+const __actual_features_settings_hours = { ...(await import("../features/settings/hours")) };
+vi.mock("../features/settings/hours", () => ({
+  ...__actual_features_settings_hours,
   getOperatingHours: vi.fn(), setOperatingHours: vi.fn(),
 }));
-vi.mock("../features/resources/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/resources/api")>()),
+const __actual_features_resources_api = { ...(await import("../features/resources/api")) };
+vi.mock("../features/resources/api", () => ({
+  ...__actual_features_resources_api,
   listStaffResources: vi.fn(), createStaffResource: vi.fn(),
 }));
-vi.mock("../features/campaigns/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/campaigns/api")>()),
+const __actual_features_campaigns_api = { ...(await import("../features/campaigns/api")) };
+vi.mock("../features/campaigns/api", () => ({
+  ...__actual_features_campaigns_api,
   listCampaigns: vi.fn(),
 }));
-vi.mock("../features/deposits/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/deposits/api")>()),
+const __actual_features_deposits_api = { ...(await import("../features/deposits/api")) };
+vi.mock("../features/deposits/api", () => ({
+  ...__actual_features_deposits_api,
   listDeposits: vi.fn(), getPayoutSummary: vi.fn(),
 }));
-vi.mock("../features/settings/guardrails", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/settings/guardrails")>()),
+const __actual_features_settings_guardrails = { ...(await import("../features/settings/guardrails")) };
+vi.mock("../features/settings/guardrails", () => ({
+  ...__actual_features_settings_guardrails,
   getGuardrails: vi.fn(),
 }));
-vi.mock("../features/settings/knowledge", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/settings/knowledge")>()),
+const __actual_features_settings_knowledge = { ...(await import("../features/settings/knowledge")) };
+vi.mock("../features/settings/knowledge", () => ({
+  ...__actual_features_settings_knowledge,
   listKnowledge: vi.fn(),
 }));
-vi.mock("../features/settings/depositPolicy", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../features/settings/depositPolicy")>()),
+const __actual_features_settings_depositPolicy = { ...(await import("../features/settings/depositPolicy")) };
+vi.mock("../features/settings/depositPolicy", () => ({
+  ...__actual_features_settings_depositPolicy,
   getDepositPolicy: vi.fn(),
 }));
 

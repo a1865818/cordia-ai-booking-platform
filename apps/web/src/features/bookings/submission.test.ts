@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "../../test/vitest-compat";
 import { canonicalHash } from "../../api/canonicalHash";
 import {
   buildSubmission, customerFromRef, toCanonicalPayload, toIsoInstant,
@@ -453,7 +453,10 @@ describe("who the confirmation identifies (spec 04 / spec 14)", () => {
         customer: customerFromRef("gc_2f8ac1"),
       });
 
-      expect(payload.customer).toEqual({ contact_ref: "gc_2f8ac1" });
+      // `toCanonicalPayload` deliberately omits unset fields rather than nulling them (see its
+      // own doc comment) — the cast is type-only, so bun's typed `toEqual` accepts a partial
+      // literal; the real assertion still requires the other three keys to be genuinely absent.
+      expect(payload.customer as Partial<typeof payload.customer>).toEqual({ contact_ref: "gc_2f8ac1" });
     });
 
     it("routes a legacy inline phone to phone_e164, never to contact_ref", () => {
@@ -466,7 +469,7 @@ describe("who the confirmation identifies (spec 04 / spec 14)", () => {
         customer: customerFromRef("+61400111222"),
       });
 
-      expect(payload.customer).toEqual({ phone_e164: "+61400111222" });
+      expect(payload.customer as Partial<typeof payload.customer>).toEqual({ phone_e164: "+61400111222" });
     });
 
     it("carries an opaque operator handle as customer_id without claiming it is a destination", () => {
@@ -476,7 +479,7 @@ describe("who the confirmation identifies (spec 04 / spec 14)", () => {
         customer: customerFromRef("console-operator"),
       });
 
-      expect(payload.customer).toEqual({ customer_id: "console-operator" });
+      expect(payload.customer as Partial<typeof payload.customer>).toEqual({ customer_id: "console-operator" });
     });
 
     it("omits the customer node entirely when the booking records no ref", () => {

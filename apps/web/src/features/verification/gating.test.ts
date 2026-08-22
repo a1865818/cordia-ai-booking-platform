@@ -12,7 +12,7 @@
  * pin the wire shape the API actually sends.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { toApiError, isApiVerificationRequiredError } from "../../api/problem";
 import { queryKeys } from "../../api/queryKeys";
 

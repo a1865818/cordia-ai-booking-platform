@@ -6,13 +6,14 @@
  * as the race it is, not as a bug.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "../../test/vitest-compat";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-vi.mock("./api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./api")>()),
+const __actual_api = { ...(await import("./api")) };
+vi.mock("./api", () => ({
+  ...__actual_api,
   requestOperationCancellation: vi.fn(),
   resumeOperation: vi.fn(),
   resolveOperation: vi.fn(),

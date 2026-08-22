@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../../test/vitest-compat";
 import { render, screen } from "@testing-library/react";
 import { ConversationsScreen } from "./ConversationsScreen";
 import { ErrorState } from "../../ui/ErrorState";

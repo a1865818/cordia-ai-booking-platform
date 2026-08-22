@@ -10,7 +10,7 @@
  *   **every booking on the day is inside [start, end].**
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../../test/vitest-compat";
 import { dayWindowForTest as dayWindow } from "./TodayScreen";
 import type { Booking } from "../../../data/console";
 

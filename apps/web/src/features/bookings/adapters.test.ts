@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { UNASSIGNED_RESOURCE_ID } from "./resources";
 import type { ScheduledBooking } from "./api";
 import { startOfWeek, toBooking, toBookingStatus, toBookings, toDayAndStart, weekWindow } from "./adapters";

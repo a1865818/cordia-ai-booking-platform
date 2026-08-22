@@ -8,7 +8,7 @@
  * original request landed, so the refetched list remains the only truth about that.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -36,7 +36,7 @@ describe("enrollGuest (transport)", () => {
   it("POSTs the validator's required fields with audited actor headers", async () => {
     // importActual: the module is mocked for the mutation tests below, but these transport
     // tests exercise the real request-building code against a stubbed global fetch.
-    const { enrollGuest } = await vi.importActual<typeof import("./api")>("./api");
+    const { enrollGuest } = __actual_api;
     await enrollGuest(input);
 
     const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
@@ -66,7 +66,7 @@ describe("enrollGuest (transport)", () => {
   it("sends the attempt's idempotency key, so a retry is recognised by identity", async () => {
     // Without a caller key the server falls back to hashing the enrolment's own fields, which
     // cannot tell a retry apart from a deliberate second entry carrying the same details.
-    const { enrollGuest } = await vi.importActual<typeof import("./api")>("./api");
+    const { enrollGuest } = __actual_api;
     await enrollGuest(input);
 
     const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
@@ -75,7 +75,7 @@ describe("enrollGuest (transport)", () => {
   });
 
   it("never sends the consent/deposit/verification fields the console cannot vouch for", async () => {
-    const { enrollGuest } = await vi.importActual<typeof import("./api")>("./api");
+    const { enrollGuest } = __actual_api;
     await enrollGuest(input);
 
     const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
@@ -91,8 +91,9 @@ describe("enrollGuest (transport)", () => {
 
 // ---------------------------------------------------------------------------
 
-vi.mock("./api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./api")>()),
+const __actual_api = { ...(await import("./api")) };
+vi.mock("./api", () => ({
+  ...__actual_api,
   enrollGuest: vi.fn(),
 }));
 

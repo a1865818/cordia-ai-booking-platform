@@ -63,12 +63,17 @@
       "executor": "nx:run-commands",
       "dependsOn": [],
       "inputs": [
-        "typescript"
+        "typescript",
+        "{projectRoot}/bunfig.toml",
+        "{projectRoot}/.env.test"
       ],
       "cache": true,
+      "metadata": {
+        "description": "Bun's native test runner, not vitest. `--parallel` (isolated global per worker process) is required — Bun's bare default shares one module registry across every test file in the run, so one file's `mock.module()` silently leaks into another's. See src/test/vi.ts for why partial module mocks (vitest's `importOriginal` idiom) are written the way they are; that workaround is for an unrelated, still-open Bun 1.4 `mock.module`+`import()` deadlock, not for this."
+      },
       "options": {
         "cwd": "apps/web",
-        "command": "bunx vitest run --reporter=verbose"
+        "command": "bun test --parallel"
       }
     },
     "test-coverage": {

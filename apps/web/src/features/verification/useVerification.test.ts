@@ -13,7 +13,7 @@
  */
 
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "../../test/vitest-compat";
 import { useVerification } from "./useVerification";
 
 const requestVerification = vi.fn();

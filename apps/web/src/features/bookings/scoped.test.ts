@@ -4,7 +4,7 @@
  * clearing in a `useEffect` looks correct and is too late.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../../test/vitest-compat";
 import { updateForKey, valueForKey, type ScopedTo } from "./scoped";
 
 interface Booking {

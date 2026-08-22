@@ -12,7 +12,7 @@
  *     pre-order surviving a dead booking conditional on the customer agreeing.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "../../test/vitest-compat";
 import { replayDeadLetterMessage } from "./deadLetters";
 import { getModelTrace } from "./modelTraces";
 import { cancelPreorder, convertPreorderToStandalone } from "./preorderRecovery";

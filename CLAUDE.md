@@ -43,7 +43,7 @@ All commands use `bun nx`. **Do not run multiple `nx` commands in parallel** (da
 |---------|-------|
 | `bun nx run <project>:install` | Python: `uv sync` + pre-commit; .NET: `dotnet restore` |
 | `bun nx build <project>` | Python: `uv build`; .NET: `dotnet build` |
-| `bun nx test <project>` | Python: `pytest tests/unit_tests`; .NET: `dotnet test --filter Category=Unit`; web: `vitest run` |
+| `bun nx test <project>` | Python: `pytest tests/unit_tests`; .NET: `dotnet test --filter Category=Unit`; web: `bun test --parallel` (Bun's native runner — `--parallel` is required, see `apps/web/project.json`) |
 | `bun nx test-integration <project>` | integration suites |
 | `bun nx lint <project>` | Python: `ruff check`; .NET: `dotnet format --verify-no-changes`; web: `oxlint` |
 | `bun nx run langgraph:format` | `ruff format` |

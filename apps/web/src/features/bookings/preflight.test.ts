@@ -6,7 +6,7 @@
  * would let an outage on an advisory call take down a mutation that would have succeeded.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "../../test/vitest-compat";
 import { preflightReschedule, refusalMessage } from "./preflight";
 
 vi.mock("./submit", () => ({ validateChange: vi.fn() }));
