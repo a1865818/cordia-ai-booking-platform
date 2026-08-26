@@ -1,6 +1,6 @@
 # Wave 1 — Cheap correctness and hygiene
 
-Status: Plan · Branch: `fix/wave-1-correctness` · Base: `chore/wave-0-foundations` @958a168
+Status: **Complete — all 6 phases implemented and validated** · Branch: `fix/wave-1-correctness` · Base: `chore/wave-0-foundations` @958a168
 Research: [`../research/2026-08-26_wave-1-correctness.md`](../research/2026-08-26_wave-1-correctness.md)
 Closes: #96, #95, #53, #81, #77, #85, #79 · Partially: #94 (D9)
 
@@ -333,3 +333,47 @@ scope. Re-scope the issue body to match.
 ## Package notes
 
 **No new packages** in any lane.
+
+
+---
+
+## Stage 6 — Validation
+
+Run against a **dropped** database, the condition CI faces every run.
+
+| Check | Result |
+|---|---|
+| `bun nx test-integration api` from an empty database | **692 total / 691 passed / 0 failed / 1 skipped**, 31 s |
+| migrations applied | **39** · `42P07` occurrences **0** |
+| `bun nx test api` | **1819 passed** (baseline 1812) |
+| `bun nx test langgraph` | **1431 passed** (baseline 1428) |
+| `lint api` · `lint langgraph` · `lint web` · `typecheck web` | all clean |
+| `v1.json` after regeneration | one intended 7-line deletion (#77); no unexplained drift |
+
+### Regression diff vs the Stage 1 baseline audit
+
+| Baseline item | Disposition | Verified |
+|---|---|---|
+| B1 outbox publisher | intentionally changed | per-row body lifted verbatim; `OutboxRepository` and `LogicalQueue` untouched |
+| B2 artifact-ref exemption | intentionally changed | exactly one key removed; `provider_ref` and `customer_ref` pinned by their own tests |
+| B3 cancellation | intentionally changed | `RequestCancellationCommandHandler` **unchanged** — it was already correct |
+| B4 CORS / correlation / Swagger | intentionally changed | `CorrelationMiddleware` **unchanged** — it already validates |
+| B5 gap docs / §13-C | intentionally changed | 16 gaps marked closed with `file:line`; first automated §13-C guard |
+
+**Must-stay-the-same, all confirmed unchanged:** `RequestCancellationCommandHandler.cs`,
+`CorrelationMiddleware.cs`, `OutboxRepository.cs`, `OutboxPublisherTests.cs`, `LogicalQueue.cs`,
+and `ScheduledJobPollerOptions.LeaseSeconds` (still 30).
+
+**Deviations from the plan, both recorded at the time:**
+1. `v1.json` was predicted to regenerate identically; removing the `[FromHeader]` parameter deletes
+   7 lines. Behaviour unchanged for callers.
+2. #53's race is covered by **unit** tests, not the planned integration race — reproducing the
+   window through HTTP means winning a timing race every run, which this repo already declined once.
+
+### Carried forward
+
+- **The §13-C guard has never executed.** Web suite needs Bun ≥ 1.4.0; local is 1.3.14. Verified by
+  typecheck, lint, and an equivalent Node scan incl. an injected violation. CI is its first real run.
+- **#84** remains the structural fix behind #95 — once artifacts live in object storage there is no
+  document in the ref to mask.
+- **OD-3's heartbeat renewal** is deliberately unimplemented; the lease is sized, not renewable.
