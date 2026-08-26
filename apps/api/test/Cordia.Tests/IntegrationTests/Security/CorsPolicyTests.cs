@@ -113,6 +113,25 @@ public class CorsPolicyTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The method half of the same assertion. Without this, the narrowing is only positively
+    /// tested — <c>Preflight_AllowsEveryMethodTheConsoleUses</c> passes just as happily under
+    /// <c>AllowAnyMethod()</c>, so reintroducing the wildcard would go unnoticed.
+    ///
+    /// <para>PATCH is the probe because the console never issues one (its writes are POST, PUT and
+    /// DELETE) and no controller exposes a PATCH route — spec 04 §10.4 requires PUT/PATCH/DELETE to
+    /// create durable modify/cancel operations through the acceptance front door rather than
+    /// mutating a row, so there is nothing here for a browser to PATCH.</para>
+    /// </summary>
+    [Fact]
+    public async Task Preflight_RefusesAMethodTheApiDoesNotUse()
+    {
+        var allowed = await PreflightHeaderAsync(
+            AllowedOrigin, "PATCH", "Content-Type", "Access-Control-Allow-Methods");
+
+        Assert.DoesNotContain("PATCH", allowed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Provider- and webhook-facing headers are §13-C surface: never sent from a browser. Allowing
     /// them would advertise a capability the console must not have.
     /// </summary>
