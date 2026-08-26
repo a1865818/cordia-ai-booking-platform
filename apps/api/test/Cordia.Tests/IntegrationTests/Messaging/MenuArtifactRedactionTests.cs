@@ -1,4 +1,5 @@
 ﻿#pragma warning disable xUnit1051
+using System.Text;
 using System.Text.Json;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Security;
@@ -31,6 +32,13 @@ public class MenuArtifactRedactionTests(PostgresFixture fixture)
 
     // ── The fix: a PAN inside an inline: artifact ref is masked at rest ─────────────
 
+    /// <summary>
+    /// Asserts the WHOLE persisted reference, not just "the PAN is gone". A masker that
+    /// replaced the entire value with the token would satisfy the weaker pair of checks while
+    /// destroying every upload it touched — the consumer reads this reference straight back
+    /// out and hands it to the scanner and extractor, so what survives matters as much as
+    /// what does not.
+    /// </summary>
     [Fact]
     public async Task InlineArtifactRefCarryingPan_IsMaskedInThePersistedPayload()
     {
@@ -42,7 +50,9 @@ public class MenuArtifactRedactionTests(PostgresFixture fixture)
         var payload = await ReadPayloadAsync(tenantId, messageId);
 
         Assert.DoesNotContain(Pan, payload);
-        Assert.Contains(SensitiveDataMask.MaskToken, payload);
+        Assert.Equal(
+            $"inline:Specials — paid by card {SensitiveDataMask.MaskToken} on account",
+            await ReadRefAsync(tenantId, messageId));
     }
 
     [Fact]
@@ -56,7 +66,49 @@ public class MenuArtifactRedactionTests(PostgresFixture fixture)
         var payload = await ReadPayloadAsync(tenantId, messageId);
 
         Assert.DoesNotContain(Pan, payload);
-        Assert.Contains(SensitiveDataMask.MaskToken, payload);
+        Assert.Equal(
+            $"data:text/plain,Tasting 120.00 card {SensitiveDataMask.MaskToken}",
+            await ReadRefAsync(tenantId, messageId));
+    }
+
+    // ── The encoded form the first fix missed (#95 follow-up) ──────────────────────
+
+    /// <summary>
+    /// The reference that actually got through. Base64 re-alphabets the card's digits, so
+    /// <c>card 4111111111111111</c> reaches this row as <c>Y2FyZCA0MTExMTExMTExMTExMTEx</c>:
+    /// two ASCII digits, no 13-digit run, nothing for any detector to find. Taking
+    /// <c>source_artifact_ref</c> off the exemption list made the choke point LOOK at the
+    /// value; it took decoding to make it see one.
+    /// </summary>
+    [Fact]
+    public async Task Base64ArtifactRefCarryingPan_IsMaskedInsideTheDecodedPayload()
+    {
+        var tenantId = $"artifact-b64-{Guid.NewGuid():N}";
+        var messageId = await WriteMenuIngestAsync(
+            tenantId,
+            B64Ref($"Tasting menu 120.00 card {Pan} on account"));
+
+        var decoded = DecodeB64Ref(await ReadRefAsync(tenantId, messageId));
+
+        Assert.Equal(
+            $"Tasting menu 120.00 card {SensitiveDataMask.MaskToken} on account",
+            decoded);
+    }
+
+    /// <summary>
+    /// The re-encode must be lossless for clean content: an ordinary base64 menu comes back
+    /// byte-identical. Decoding and re-encoding every upload is the risk this fix introduces,
+    /// and this is the assertion that bounds it.
+    /// </summary>
+    [Fact]
+    public async Task Base64ArtifactRefWithOrdinaryMenu_SurvivesVerbatim()
+    {
+        var tenantId = $"artifact-b64-menu-{Guid.NewGuid():N}";
+        var reference = B64Ref("Soup 8.50, Salad 12.00, Set menu for 2 at 65.00, table 12");
+
+        var messageId = await WriteMenuIngestAsync(tenantId, reference);
+
+        Assert.Equal(reference, await ReadRefAsync(tenantId, messageId));
     }
 
     // ── The cost of the fix, bounded: ordinary menu content must survive ────────────
@@ -116,6 +168,17 @@ public class MenuArtifactRedactionTests(PostgresFixture fixture)
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────────
+
+    private static string B64Ref(string text) =>
+        $"data:text/plain;base64,{Convert.ToBase64String(Encoding.UTF8.GetBytes(text))}";
+
+    private static string DecodeB64Ref(string reference) =>
+        Encoding.UTF8.GetString(Convert.FromBase64String(reference.Split(',', 2)[1]));
+
+    /// <summary>The persisted <c>source_artifact_ref</c>, JSON-decoded.</summary>
+    private async Task<string> ReadRefAsync(string tenantId, string messageId) =>
+        JsonDocument.Parse(await ReadPayloadAsync(tenantId, messageId))
+            .RootElement.GetProperty("source_artifact_ref").GetString()!;
 
     /// <summary>Writes the exact envelope shape <c>UploadMenuCommandHandler</c> emits.</summary>
     private async Task<string> WriteMenuIngestAsync(string tenantId, string sourceArtifactRef)

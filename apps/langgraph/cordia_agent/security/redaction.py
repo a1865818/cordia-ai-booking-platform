@@ -20,7 +20,10 @@ only (spec 14 §7 latency budget: < 5 ms per turn-emit).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -53,6 +56,13 @@ _CVV_IN_CONTEXT = re.compile(
 # US SSN (###-##-####) and AU TFN (### ### ### with space/dash separators).
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _TFN = re.compile(r"\b\d{3}[ -]\d{3}[ -]\d{3}\b")
+
+# RFC 2397 shape markers. ANY media type is accepted here, deliberately: this filter
+# guards a wider surface than the C# resolver (which reads only text/plain), and a
+# masker that inherited the narrower contract would skip forms it is meant to scan.
+# Mirrors SensitiveDataMask.cs.
+_DATA_URI_PREFIX = "data:"
+_BASE64_PARAM = "base64"
 
 
 def _luhn_valid(digits: str) -> bool:
@@ -127,17 +137,79 @@ def _mask_pans(text: str, token: str) -> str:
     return _PAN_CANDIDATE.sub(lambda m: _mask_candidate_run(m.group(0), token), text)
 
 
-def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
-    """Return *text* with PAN/CVV (always) and government ids (per policy) masked.
+def _try_redact_data_uri(text: str, effective: RedactionPolicy) -> str | None:
+    """Mask the DECODED content of an RFC 2397 ``data:`` reference, re-encoded in place.
 
-    Args:
-        text: The free text to scrub (transcript, log line, hint).
-        policy: Tenant redaction policy; defaults to the always-on baseline.
+    Mirrors ``SensitiveDataMask.TrySanitizeDataUri``.
+
+    A ``data:`` reference carries its document in a TRANSPORT ENCODING, so every
+    detector in this module scans the encoding rather than the document. base64 is
+    the case that matters, because it re-alphabets the digits themselves:
+    ``card 4111111111111111`` encodes to ``Y2FyZCA0MTExMTExMTExMTExMTEx``, whose only
+    digits are a single ``2`` and a single ``0`` separated by letters. That never
+    reaches the three-digit fast path, let alone forms a 13-digit candidate run.
+
+    Percent-encoding does NOT defeat the detectors — ``%XX`` escapes only non-digit
+    bytes, so a card's digits survive as literal ASCII and still match. It is handled
+    here because masking the RAW percent form turns ``card%204111…`` into
+    ``card%[REDACTED]`` (the ``2`` and ``0`` of ``%20`` join the digit run), a broken
+    escape the resolver can no longer decode. Decoding first leaves a ref that resolves.
 
     Returns:
-        The scrubbed text; the input string is never mutated.
+        The re-encoded, masked reference, or ``None`` when this is not a decodable
+        ``data:`` reference or its content needed no masking — in which case the caller
+        runs the ordinary passes over the raw text. Falling through is deliberate: an
+        undecodable ref never ends up LESS masked than it was before.
+
+    Both re-encoders are byte-identical to the C# lane's, which is why the percent
+    branch escapes only ``%``: the resolver copies literal characters through and
+    interprets only ``%HH``, so escaping the escape character alone round-trips exactly,
+    while ``urllib.parse.quote`` and ``Uri.EscapeDataString`` disagree on ``!'()*``.
     """
-    effective = policy or get_redaction_policy()
+    if text[: len(_DATA_URI_PREFIX)].lower() != _DATA_URI_PREFIX:
+        return None
+
+    # First comma, not last: a comma is ordinary content inside the payload.
+    comma = text.find(",")
+    if comma < 0:
+        return None
+
+    header, payload = text[:comma], text[comma + 1 :]
+
+    # RFC 2397: `;base64` is the last parameter when present.
+    parts = header.split(";")
+    is_base64 = len(parts) > 1 and parts[-1].strip().lower() == _BASE64_PARAM
+
+    if is_base64:
+        try:
+            decoded = base64.b64decode(payload, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            # Not text this filter can scan. The raw base64 still takes the ordinary
+            # passes below, so this is a fall-through, not a skip.
+            return None
+    else:
+        # errors="replace" rather than "strict" so this is a total function, matching
+        # Uri.UnescapeDataString, which never throws. The two lanes differ on what an
+        # UNDECODABLE escape becomes (U+FFFD here, a literal "%FF" there); they do not
+        # differ on the masking verdict, because neither substitution touches digits.
+        decoded = urllib.parse.unquote(payload, errors="replace")
+
+    masked = _redact_plain(decoded, effective)
+    if masked == decoded:
+        return None
+
+    if is_base64:
+        return f"{header},{base64.b64encode(masked.encode('utf-8')).decode('ascii')}"
+    return f"{header},{masked.replace('%', '%25')}"
+
+
+def _redact_plain(text: str, effective: RedactionPolicy) -> str:
+    """Run the detector passes over text that is already in the clear.
+
+    Split out of :func:`redact_text` so the ``data:`` branch can mask decoded content
+    without re-entering that branch — a payload that itself decodes to a ``data:``
+    string would otherwise recurse without bound. Mirrors ``SanitizePlain``.
+    """
     token = effective.mask_token
 
     # Fast path: nothing to mask can exist with fewer than 3 digits (the
@@ -161,6 +233,28 @@ def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
         out = _TFN.sub(token, out)
 
     return out
+
+
+def redact_text(text: str, policy: RedactionPolicy | None = None) -> str:
+    """Return *text* with PAN/CVV (always) and government ids (per policy) masked.
+
+    Args:
+        text: The free text to scrub (transcript, log line, hint).
+        policy: Tenant redaction policy; defaults to the always-on baseline.
+
+    Returns:
+        The scrubbed text; the input string is never mutated.
+    """
+    effective = policy or get_redaction_policy()
+
+    # A `data:` reference hides its content from every detector; decode, mask, re-encode.
+    # Runs BEFORE the digit fast path, because base64 can encode a PAN into a string
+    # holding fewer than three digits.
+    masked_ref = _try_redact_data_uri(text, effective)
+    if masked_ref is not None:
+        return masked_ref
+
+    return _redact_plain(text, effective)
 
 
 # Control-plane identifier keys are EXEMPT from value-level text redaction:

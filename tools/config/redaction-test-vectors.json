@@ -25,7 +25,12 @@
     { "input": "blob 999999999999999999999999999999999999999999999999999999999999 end", "expect_masked": true, "class": "long-run-cap" },
     { "input": "inline:Specials — paid by card 4111111111111111 on account", "expect_masked": true, "class": "inline-artifact-embeds-pan" },
     { "input": "inline:Lunch 18.50, Dinner 32.00, Set menu for 2 at 65.00, table 12", "expect_masked": false, "class": "inline-artifact-menu-prices" },
-    { "input": "data:text/plain,Tasting 120.00 card 4111 1111 1111 1111", "expect_masked": true, "class": "data-artifact-embeds-pan" }
+    { "input": "data:text/plain,Tasting 120.00 card 4111 1111 1111 1111", "expect_masked": true, "class": "data-artifact-embeds-pan" },
+    { "input": "data:text/plain;base64,Y2FyZCA0MTExMTExMTExMTExMTEx", "expect_masked": true, "class": "data-artifact-base64-embeds-pan" },
+    { "input": "data:text/plain;base64,U291cCA4LjUwLCBTYWxhZCAxMi4wMCwgU2V0IG1lbnUgNjUuMDA=", "expect_masked": false, "class": "data-artifact-base64-menu-prices" },
+    { "input": "data:text/plain;charset=utf-8;base64,Y2FyZCA0MTExMTExMTExMTExMTEx", "expect_masked": true, "class": "data-artifact-base64-charset-param" },
+    { "input": "data:text/plain;base64,card 4111111111111111", "expect_masked": true, "class": "data-artifact-base64-undecodable-falls-through" },
+    { "input": "data:text/plain;base64,//4=", "expect_masked": false, "class": "data-artifact-base64-not-utf8-text" }
   ],
   "payload_key_vectors_description": "Structured-payload key exemptions (SanitizeJson / redact_payload). Each key holds a Luhn-valid PAN string; expect_exempt=true means the value must round-trip byte-for-byte (system-minted control-plane identifier), false means it must mask. Pins the exact-name *_ref allowlist so the C# and Python lanes cannot silently diverge.",
   "payload_key_vectors": [

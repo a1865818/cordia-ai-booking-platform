@@ -35,7 +35,14 @@ public class SensitiveDataMaskParityTests
     [MemberData(nameof(Vectors))]
     public void SharedCorpusVector(string input, bool expectMasked, string vectorClass)
     {
-        var masked = SensitiveDataMask.Sanitize(input).Contains(SensitiveDataMask.MaskToken);
+        // "Did the filter change the value", NOT "does the output contain the token".
+        // A `data:` vector masks inside its DECODED payload and re-encodes, so for a base64
+        // ref the token is present but base64-encoded, and a Contains() check reads a
+        // correctly-masked PAN as unmasked. That is precisely the could-not-fire defect this
+        // corpus exists to catch, one level up in the harness itself. Where the token and the
+        // PAN actually land inside an encoded ref is asserted by SensitiveDataMaskDataUriTests
+        // and MenuArtifactRedactionTests, which decode before asserting.
+        var masked = SensitiveDataMask.Sanitize(input) != input;
         Assert.True(
             masked == expectMasked,
             $"{vectorClass}: expected expect_masked={expectMasked} for '{input}'");
