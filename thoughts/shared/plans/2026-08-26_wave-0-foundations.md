@@ -399,14 +399,39 @@ those are Wave 2's, and writing assertions for them now would pin behaviour Wave
 test file). It may slip a wave without blocking Wave 2's start.
 
 **Automated Verification**
-- [ ] `bun nx test api` green, new tests included
-- [ ] `bun nx lint api` green (new `.cs` file **UTF-8 with BOM**)
+- [x] `bun nx test api` green — **1812 passed** (was 1801; +11 new), 0 failed
+- [x] `bun nx lint api` green; new `.cs` file is UTF-8 **with BOM**, LF endings
 
 **Manual Verification**
-- [ ] Each new test fails if its guard is removed (verify by temporarily inverting one condition).
+- [x] Each guard genuinely fails its tests when removed — mutation-verified, see discovery 2.
 
 **Discoveries and Notable Information**
-_(implementer fills in)_
+
+1. **Scope held deliberately narrow.** Eleven tests over the three *guard* branches that run before
+   any transaction opens: unknown/foreign operation → `Wait`; non-`Held`/`Finalizing` status →
+   `Continue` (six statuses via `[Theory]`); and the Inv-7 in-flight guard. The TXN1/TXN2 provider
+   paths are **not** covered on purpose — issues #51, #55, #56, #57 and #58 all intend to change
+   that routing, and pinning today's behaviour would make a correct fix arrive looking like a
+   regression.
+
+2. **Mutation-verified, because a guard test that cannot fail is worse than none.**
+
+   | Mutation of the handler | Result |
+   |---|---|
+   | drop `op.TenantId != command.TenantId` from the null-check | **RED** — 1 failed |
+   | disable the Inv-7 guard (`if (false && op.Status == Finalizing …`) | **RED** — 2 failed (both theory cases) |
+   | handler restored | **GREEN** — 11 passed, file byte-identical to backup |
+
+3. **The `FinalizeOutcome` trap is now written down in the harness.** The zero value is `Finalized`,
+   so an unconfigured `Mock<ICapacityReservation>` silently answers "hold finalized, proceed to
+   Booked" — the *benign* direction, which is the dangerous one: a test that forgets to configure
+   capacity tests the happy path while looking like it tests the branch. `CreateHandler` sets it
+   explicitly. This mirrors the existing note in the neighbouring suite about `OperationTypeEnum`,
+   whose zero value is `Cancel`.
+
+4. **`TryTransitionStatusAsync` takes an extra `string? bookingId` before the token**, which is easy
+   to miss when writing a Moq `Verify` — the compiler caught it (CS1503 "argument 7"), but a looser
+   `It.IsAny<>` chain would have compiled and silently matched nothing.
 
 ---
 
