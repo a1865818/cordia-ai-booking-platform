@@ -257,11 +257,44 @@ the TL;DR. Fix `frontend-api-wiring.md` §12 gaps 1, 2, 9. Add a web test assert
 `POST …/consent`.
 
 **Automated Verification**
-- [ ] the guard fails when a forbidden path is added to a component, and passes on `main`
-- [ ] every closed-gap claim carries a `file:line`
-- [ ] **cannot run `bun nx test web` locally (Bun 1.3.14 < 1.4.0)** — CI verifies
+- [x] guard logic verified against the real tree — 195 files, **0 hits**; injecting a real call site
+      into `features/operations/api.ts` is caught with the exact `file:line`; tree restored clean
+- [x] every closed-gap claim carries a `file:line`
+- [x] `bun nx typecheck web` clean · `bun nx lint web` 0 warnings / 0 errors
+- [ ] **the test itself has never been executed** — `bun nx test web` needs Bun ≥ 1.4.0, local is
+      1.3.14. See discovery 3.
 
-**Discoveries** _(implementer fills in)_
+**Discoveries**
+
+1. **The docs were staler than even the re-scoped plan assumed.** Sixteen of eighteen gaps are
+   closed, including the one that called itself *"the only item that stops the app being
+   deployable"* — `AuthController` had already shipped when the document said so. Migration
+   `20260813121656_ConsoleCompleteness` landed the **same day** the doc was mapped and closed most
+   of the list. The original TL;DR is struck through rather than deleted, because *how* it went
+   wrong is the argument for keeping the inventory current.
+
+2. **One claim was inverted, not merely stale.** The doc said `IDepositPolicy` is registered as
+   `NoDepositPolicy`. It resolves to `TenantDepositPolicyProvider`
+   (`InfrastructureServiceCollectionExtensions.cs:208`); `NoDepositPolicy` is dead code registered
+   nowhere. A reader acting on that would have "fixed" something already working.
+
+3. **The §13-C guard is written but unexecuted, and that is stated rather than glossed.** The web
+   suite hard-throws below `MIN_BUN_VERSION = ">=1.4.0"`; local Bun is 1.3.14. What *was* verified:
+   `typecheck` and `lint` pass, and an equivalent Node implementation of the same scan was run
+   against the real tree (0 hits), against both prefix-collision negatives, against every pattern's
+   own call shape, and against an injected violation, which it caught at `file:line`. CI, pinned to
+   `bun-version: latest`, is the first run of the test itself.
+
+4. **Portability cost real edits.** The suite runs on `bun:test` via `vitest-compat`, so `it.each`
+   templating and vitest's `expect(value, message)` second argument are not guaranteed — both were
+   removed in favour of a plain loop and self-describing assertions. Typecheck then caught
+   `String.replaceAll` being outside the configured lib target. Neither would have been visible
+   without running those two gates.
+
+5. **The two prefix collisions are pinned by their own tests.** `/api/notification` is a prefix of
+   both C3 and the `/api/notifications` read that #83 will add; `consent` appears in both C5 and the
+   legitimate `GET /api/consent-policies`. Each has an explicit negative test, because a guard that
+   false-positives on a legitimate route gets deleted rather than fixed.
 
 ---
 
