@@ -307,7 +307,31 @@ duplicate of **#74** and `BookingOperationsController.cs:161` is adjacent to **#
 close it). The 25 `TODO(cordia)` markers are in `.github/workflows` and belong to **#94** — out of
 scope. Re-scope the issue body to match.
 
-**Discoveries** _(implementer fills in)_
+**Discoveries**
+
+1. **The issue's premise was a miscount, and the roadmap repeated it.** Across `apps/api/src`,
+   `cordia_agent` and `apps/web/src` there are **15** marker hits: **11 false positives** — prose
+   describing the `\uXXXX` escape format in the canonical-hash and JWS code, in three languages —
+   and **4** real deferred TODOs. There are **zero** `TODO(cordia)` markers in application code.
+
+2. **The 25 `TODO(cordia)` markers are all in `.github/workflows`** (17 in `ci-cd.yml`, 8 in
+   `app-deploy.yml`) and are Azure resource-id, OIDC and app-settings placeholders. They are #94's
+   deployment work, not code-level debt, and were deliberately left alone.
+
+3. **One of the four is a rediscovery of another open issue.**
+   `NotificationWebhooksController.cs:59` *is* #74 — the shared-secret check that issue asks to
+   replace with HMAC. Tagging it `TODO(#74)` means the next reader finds the issue rather than
+   re-triaging the comment.
+
+4. **One was left deferred with its reason recorded rather than closed.**
+   `BookingOperationsController.cs:161` asks for `cancellation_pending` on the status projection.
+   `OperationStatusView` is a generated Pydantic contract, so a dedicated field is a cross-language
+   regen rather than a controller change, and `GetOperationStatusQuery` already tells the customer
+   through `CustomerMessage`. The narrower thing Phase 3 fixed *is* done, and the comment now says
+   so — this endpoint no longer claims a cancellation is pending on a terminal operation.
+
+5. **No TODO in application code is untagged now**, which is the property worth keeping: the value
+   of this phase is not deleting comments, it is making every remaining one point at an owner.
 
 ---
 
