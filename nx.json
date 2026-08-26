@@ -11,6 +11,7 @@
     ],
     "dotnet": [
       "{projectRoot}/src/**/*.cs",
+      "{projectRoot}/src/**/appsettings*.json",
       "{projectRoot}/src/**/*.csproj",
       "{projectRoot}/src/**/*.props",
       "{projectRoot}/src/**/*.targets",

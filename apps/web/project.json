@@ -33,7 +33,7 @@
     },
     "build": {
       "executor": "nx:run-commands",
-      "dependsOn": [],
+      "dependsOn": ["^generate-types"],
       "inputs": [
         "typescript",
         {
@@ -61,7 +61,7 @@
     },
     "test": {
       "executor": "nx:run-commands",
-      "dependsOn": [],
+      "dependsOn": ["^generate-types"],
       "inputs": [
         "typescript",
         "{projectRoot}/bunfig.toml",
@@ -78,7 +78,7 @@
     },
     "test-coverage": {
       "executor": "nx:run-commands",
-      "dependsOn": [],
+      "dependsOn": ["^generate-types"],
       "inputs": [
         "typescript",
         "{projectRoot}/bunfig.toml",
@@ -107,6 +107,7 @@
     },
     "typecheck": {
       "executor": "nx:run-commands",
+      "dependsOn": ["^generate-types"],
       "inputs": [
         "typescript"
       ],

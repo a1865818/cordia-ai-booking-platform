@@ -28,7 +28,8 @@
     "build": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "install"
+        "install",
+        "^generate-types"
       ],
       "inputs": [
         "dotnet"
@@ -140,7 +141,8 @@
     "lint": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "install"
+        "install",
+        "^generate-types"
       ],
       "inputs": [
         "dotnet"
