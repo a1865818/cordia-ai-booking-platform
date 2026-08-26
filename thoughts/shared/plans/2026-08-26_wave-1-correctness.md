@@ -203,10 +203,44 @@ add generated-type surface for no benefit.
   *before* `UseCors`, so the gate goes on the calls.
 
 **Automated Verification**
-- [ ] `bun nx run api-contract:generate-types` then `git diff --exit-code libs/api-contract/openapi/v1.json` — the exporter must still scrape `/swagger`
-- [ ] new CORS test; `CorrelationChainContractTests` passes unchanged
+- [x] the exporter still scrapes `/swagger/v1/swagger.json` (200) through the new gate
+- [x] `CorsPolicyTests` — 16 tests · `CorrelationChainContractTests` unchanged and green
+- [x] `bun nx test api` **1819** · lint clean · integration **692 / 691 passed / 0 failed**, 34 s
+- [ ] ~~`v1.json` regenerates identically~~ — **it does not; see discovery 4**
 
-**Discoveries** _(implementer fills in)_
+**Discoveries**
+
+1. **"What the console sends" was established, not guessed.** `fetchApi`
+   (`apps/web/src/api/client.ts`) is the single front door for every console call and sets exactly
+   nine headers. The idempotency key is **not** one of them — it travels in the request body as
+   `idempotency_key`. Checked specifically, because omitting a real header breaks the console at
+   browser *preflight*, which no .NET test and no web test can observe.
+
+2. **`CorsPolicyTests` exists to cover that blind spot**, asserting header-by-header that the policy
+   permits everything the client sends, with a failure message naming the fix. Alba's `Scenario` has
+   no OPTIONS verb and a simple request only reveals `Access-Control-Allow-Origin`, so the tests
+   drive a real preflight through the test server's own `HttpClient`.
+
+3. **The Swagger gate had to go on the calls, not on CORS.** `UseSwagger`/`UseSwaggerUI` run at
+   `Program.cs:337-338`, *before* `UseCors` at `:339`, so a CORS-based restriction would never have
+   applied to them. Wave 0's decision to keep the otherwise-dead `OpenApiExport:Enabled` flag is
+   what makes the gate safe: the exporter sets it and still scrapes `/swagger` (200).
+
+4. **Deviation from the stated blast radius.** The plan said `v1.json` would regenerate identically.
+   It does not: removing the `[FromHeader]` parameter deletes 7 lines, because the endpoint no
+   longer *declares* `X-Correlation-Id`. Behaviourally nothing changes for callers — they still send
+   it and `CorrelationMiddleware` still honours it — but the prediction was wrong and the regenerated
+   contract is committed.
+
+5. **#81 was lower severity than its title, and that is recorded in the code.** Origins are an
+   allowlist, empty by default outside Development, and the policy sets no `AllowCredentials`, so the
+   wildcards could not be used to ride a session. The comment says so, so nobody re-raises it as a
+   critical finding — and `Preflight_FromAnUnlistedOrigin_IsNotAllowed` pins the property that made
+   it survivable.
+
+6. **Mutation-verified.** Restoring `AllowAnyHeader().AllowAnyMethod()` reds exactly the three
+   "refuses" assertions and leaves the 13 permissive ones green — correct, since a wildcard allows
+   those too.
 
 ---
 

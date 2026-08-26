@@ -10810,13 +10810,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "X-Correlation-Id",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "requestBody": {
