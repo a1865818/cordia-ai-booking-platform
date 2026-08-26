@@ -138,7 +138,7 @@ public sealed partial class ResolveTenantContextCommandHandler(
     /// expander lands — BOTH claim lists carry the pinned bundle id as the single policy reference
     /// (empty bundle ⇒ empty lists). This preserves the pinned authorization for the downstream
     /// resolver without inventing schema.
-    /// TODO(spec-15/spec-03): replace with the real bundle → {agent,tool} policy-id expansion.
+    /// TODO(#79-followup, spec-15/spec-03): replace with the real bundle → {agent,tool} policy-id expansion.
     /// </summary>
     private static IReadOnlyList<string> DerivePolicyIds(TenantChannelEndpoint endpoint)
         => string.IsNullOrEmpty(endpoint.PolicyBundleId)

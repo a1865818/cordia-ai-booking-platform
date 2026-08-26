@@ -45,21 +45,27 @@ public sealed class UploadMenuCommandHandler(
                 CorrelationId = catalogId,
                 // Payload carries the catalog id + the artifact ref.
                 //
-                // The ref is NOT opaque and this is NOT bytes-free (#95). For today's canonical
-                // `inline:` form the ref *is* the uploaded document, and `source_artifact_ref` is on
-                // SensitiveDataMask's control-plane EXEMPTION list (SensitiveDataMask.cs:94-99,
-                // 173-174), so it is written to `outbox_messages.payload` — jsonb, no length cap —
-                // verbatim and unscreened for PAN/CVV/SSN, as it is to any DLQ copy. The old comment
-                // here asserted "no secrets/bytes — Inv-12", which is true of a storage key and
-                // false of `inline:`.
+                // The ref is NOT opaque. For today's canonical `inline:` form the ref *is* the
+                // uploaded document — InlineMenuArtifactTextResolver resolves only `inline:` and
+                // `data:text/plain`, and object-store schemes arrive with #84.
                 //
-                // The exemption is DELIBERATE and pinned by cross-language vectors
-                // (cordia_agent/security/redaction.py, tools/config/redaction-test-vectors.json with
-                // "expect_exempt": true) — do not flip it here. The real fix is #84 putting artifacts
-                // in object storage, after which the ref is genuinely an opaque key again and this
-                // comment becomes true. Until then UploadMenuValidator bounds the damage
-                // (MaxSourceArtifactRefChars) rather than removing it, and the mask still holds on
-                // every LOG path: this is data at rest in two Postgres columns, not log leakage.
+                // #95, FIXED: `source_artifact_ref` used to sit on SensitiveDataMask's control-plane
+                // exemption list, so this payload reached `outbox_messages.payload` (jsonb, no
+                // length cap) verbatim and unscreened for PAN/CVV/SSN — the Inv-12 choke point in
+                // OutboxRepository.AddAsync ran and was a deliberate no-op for this one key. The key
+                // is off the list now, in BOTH lanes (SensitiveDataMask.cs and
+                // cordia_agent/security/redaction.py), with the shared vector flipped to
+                // "expect_exempt": false. Masking replaces only detected spans, so ordinary menu
+                // content still round-trips for the consumer that reads this ref back out —
+                // MenuArtifactRedactionTests pins both halves against the persisted row.
+                //
+                // provider_ref and the streaming refs are still exempt, on purpose: they are
+                // genuinely system-minted, and masking a Luhn-coincidental one would break the
+                // §16.2 reconciliation joins. Exactly one key left the list.
+                //
+                // #84 remains the structural fix — once artifacts live in object storage the ref is
+                // an opaque key again and there is no document here to mask. UploadMenuValidator's
+                // MaxSourceArtifactRefChars still bounds payload size.
                 Payload = JsonSerializer.Serialize(new
                 {
                     catalog_id = catalogId,

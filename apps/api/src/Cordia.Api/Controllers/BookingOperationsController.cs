@@ -158,7 +158,12 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
     /// This endpoint does NOT cancel an already-Booked operation — that is a separate new-
     /// operation flow defined in spec 08.
     ///
-    /// T11 TODO: surface cancellation_pending=true in the status projection.
+    /// TODO(#79-followup): surface cancellation_pending on the status projection too.
+    /// Deliberately still deferred: OperationStatusView is a generated Pydantic contract, so a
+    /// dedicated field is a cross-language regen rather than a controller change, and
+    /// GetOperationStatusQuery already tells the customer through CustomerMessage. What #53
+    /// fixed is narrower and is done: THIS endpoint no longer claims a cancellation is pending
+    /// when the operation has already reached a terminal state.
     /// </summary>
     [HttpPost("{operationId}/cancel")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
@@ -178,17 +183,49 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
         // X2: terminal operations cannot be cancelled via this endpoint.
         // Post-booking cancellation (already-Booked) is a separate flow defined in spec 08.
         if (op.Terminal)
-            return Conflict(new
-            {
-                operation_id = operationId,
-                detail = "Terminal operations cannot be cancelled via this endpoint. " +
-                         "Post-booking cancellation is a separate flow (spec 08).",
-            });
+            return TerminalConflict(operationId);
 
-        // Idempotent: 202 whether the flag was newly set or was already pending (§15.5).
-        await mediator.Send(new RequestCancellationCommand(tenant.TenantId, operationId), ct);
+        // The read above is a SNAPSHOT. Between it and the write below the workflow driver can
+        // legally commit a terminal transition (Finalizing→Booked, AlternativesRequired→FailedFinal,
+        // …), so the guard alone does not make the answer true — only usually true.
+        //
+        // RequestCancellationCommand already reports what actually happened: its repository filter
+        // is `CancellationRequestedAt == null AND NOT terminal`, so it returns false when it matched
+        // no row. This used to discard that and hardcode cancellation_pending = true, telling the
+        // caller a cancellation was pending on an operation that had already finished (#53, Inv-16).
+        var newlySet = await mediator.Send(new RequestCancellationCommand(tenant.TenantId, operationId), ct);
+
+        if (!newlySet)
+        {
+            // false is ambiguous by design — "already pending" OR "raced into terminal". Those need
+            // different answers, so re-read rather than guess.
+            var fresh = await mediator.Send(new GetOperationStatusQuery(tenant.TenantId, operationId), ct);
+
+            if (fresh is null)
+                return NotFound();
+
+            if (fresh.Terminal)
+                return TerminalConflict(operationId);
+
+            // Non-terminal and not newly set ⇒ a cancellation was already pending. 202 with
+            // cancellation_pending = true is both idempotent and true (§15.5).
+        }
+
         return Accepted(new { operation_id = operationId, cancellation_pending = true });
     }
+
+    /// <summary>
+    /// The 409 body for an already-terminal operation. Shared by the up-front guard and the
+    /// post-write re-read so a caught race is indistinguishable from a caught snapshot — a caller
+    /// must not be able to tell which check fired.
+    /// </summary>
+    private ConflictObjectResult TerminalConflict(string operationId) =>
+        Conflict(new
+        {
+            operation_id = operationId,
+            detail = "Terminal operations cannot be cancelled via this endpoint. " +
+                     "Post-booking cancellation is a separate flow (spec 08).",
+        });
 
     /// <summary>
     /// Authorized controlled retry for a ManualReview operation (spec 06 Inv-15, §17.4).

@@ -46,6 +46,9 @@ public sealed class OutboxPublisherHostedService(
     {
         var pub = _options.Publisher;
         var now = DateTimeOffset.UtcNow;
+        // ONE lease for the whole batch, stamped at claim time and never renewed. See
+        // OutboxPublisherOptions.LeaseSeconds for why that is deliberate, and for what it
+        // does NOT guarantee once a single lane holds several slow rows.
         var leaseExpiresAt = now.AddSeconds(pub.LeaseSeconds);
 
         // ── Claim phase ─────────────────────────────────────────────────────────────
@@ -80,24 +83,76 @@ public sealed class OutboxPublisherHostedService(
 
         var maxAttempts = pub.MaxPublishAttempts;
 
-        // ── Publish + Mark phase (per message, fresh scope each) ────────────────────
-        var published = 0;
+        // ── Route phase ─────────────────────────────────────────────────────────────
+        // Resolve every claimed row to its logical queue BEFORE dispatching any of them, so the
+        // publish phase can run one lane per queue.
+        var lanes = new Dictionary<LogicalQueue, List<ClaimedRow>>();
+        var unroutable = new List<ClaimedRow>();
+
         foreach (var row in claimed)
         {
-            await using var scope = scopeFactory.CreateAsyncScope();
-
-            // An unroutable message_type is a PERMANENT producer defect — it will never route, so
-            // leaving it unpublished would reclaim it forever. Dead-letter it (so it stops looping
-            // and stays visible/replayable) instead of waiting out the attempt cap.
-            if (!LogicalQueueRegistry.TryResolve(row.MessageType, out var queue))
+            if (LogicalQueueRegistry.TryResolve(row.MessageType, out var resolved))
             {
-                await DeadLetterPoisonAsync(scope, row, "unroutable_message_type", ct);
-                logger.LogError(
-                    "Outbox publisher {WorkerId}: unroutable message_type {MessageType} " +
-                    "message_id={MessageId}; dead-lettered (permanent producer defect)",
-                    _workerId, row.MessageType, row.MessageId);
-                continue;
+                if (!lanes.TryGetValue(resolved, out var lane))
+                    lanes[resolved] = lane = [];
+
+                // Insertion order preserves the claim's ORDER BY occurred_at within the lane.
+                lane.Add(row);
             }
+            else
+            {
+                unroutable.Add(row);
+            }
+        }
+
+        // An unroutable message_type is a PERMANENT producer defect — it will never route, so
+        // leaving it unpublished would reclaim it forever. Dead-letter it (so it stops looping
+        // and stays visible/replayable) instead of waiting out the attempt cap. Done before the
+        // lanes start: it touches no transport and must not be delayed behind a slow lane.
+        foreach (var row in unroutable)
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            await DeadLetterPoisonAsync(scope, row, "unroutable_message_type", ct);
+            logger.LogError(
+                "Outbox publisher {WorkerId}: unroutable message_type {MessageType} " +
+                "message_id={MessageId}; dead-lettered (permanent producer defect)",
+                _workerId, row.MessageType, row.MessageId);
+        }
+
+        // ── Publish + Mark phase ────────────────────────────────────────────────────
+        // Lanes run CONCURRENTLY with each other; rows WITHIN a lane stay strictly sequential.
+        //
+        // Both halves matter. Sequential-within-lane preserves the per-queue ordering the registry
+        // declares (LogicalQueueMetadata.OrderingRequired is true for booking.commands and
+        // booking.reconcile). Concurrent-across-lanes is the fix for #96: menu.commands carries a
+        // menu extraction that can hold for LangGraphOptions.ExtractTimeoutSeconds (120 s) inside
+        // the consumer's inbox transaction, and before this every booking.commands and
+        // notification.commands row claimed in the same batch waited behind it — head-of-line
+        // blocking across unrelated queues, which spec 05 never budgets for.
+        //
+        // Concurrency is bounded by the number of distinct logical queues in the batch (≤ 9), not
+        // by BatchSize, so this cannot open an unbounded number of scopes/connections.
+        var laneCounts = await Task.WhenAll(
+            lanes.Select(lane => PublishLaneAsync(lane.Key, lane.Value, maxAttempts, ct)));
+
+        return laneCounts.Sum();
+    }
+
+    /// <summary>
+    /// Publishes one logical queue's claimed rows, strictly in order, each in its own scope.
+    /// This is the original per-row body; only the scheduling around it changed (#96).
+    /// </summary>
+    private async Task<int> PublishLaneAsync(
+        LogicalQueue queue,
+        IReadOnlyList<ClaimedRow> rows,
+        int maxAttempts,
+        CancellationToken ct)
+    {
+        var published = 0;
+
+        foreach (var row in rows)
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
 
             var transport = scope.ServiceProvider.GetRequiredService<IMessageTransport>();
             var markRepo = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();

@@ -160,11 +160,42 @@ builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<Cordia.Api.Errors.GlobalExceptionHandler>();
 
 const string CorsPolicy = "CordiaCors";
+
+// The exact request headers apps/web sends. `fetchApi` (apps/web/src/api/client.ts) is the single
+// front door for every console call, so this list is enumerable rather than guessed — it is that
+// function's header set, plus the two simple headers a browser sends regardless.
+//
+// Keep in sync with client.ts. A header added there and not here fails CORS preflight in the
+// browser only, which no .NET test would catch — CorsPolicyTests exists to close that gap.
+//
+// Note the idempotency key is NOT here: it travels in the request body (`idempotency_key`), not a
+// header. And the provider/webhook headers the API also reads (X-Webhook-Secret, X-Provider-*) are
+// deliberately absent — those endpoints are §13-C, never called from a browser.
+string[] corsHeaders =
+[
+    "Accept",
+    "Content-Type",
+    "X-Actor",
+    "X-Actor-Role",
+    "X-Correlation-Id",
+    "X-Grant-Id",
+    "X-Reason-Code",
+    "X-Tenant-Context",
+    "X-Tenant-Id",
+];
+
 builder.Services.AddCors(options =>
 {
     var origins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+
+    // #81: was AllowAnyHeader().AllowAnyMethod(). That was low risk rather than no risk — origins
+    // are allowlisted (empty by default outside Development) and the policy sets no
+    // AllowCredentials, so a wildcard header/method set could not be used to ride a session. It is
+    // still a wildcard nobody needs, so it is now the enumerated set the console actually uses.
     options.AddPolicy(CorsPolicy, policy =>
-        policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod());
+        policy.WithOrigins(origins)
+              .WithHeaders(corsHeaders)
+              .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS"));
 });
 
 var app = builder.Build();
@@ -334,8 +365,21 @@ else
 
 // --- Pipeline ---
 app.UseSerilogRequestLogging();
-app.UseSwagger();
-app.UseSwaggerUI();
+
+// #94 D9: the API is reachable externally on App Service, and an unauthenticated OpenAPI document
+// there hands an attacker the whole route surface. Gated to Development, plus an explicit opt-in
+// for the OpenAPI exporter — tools/scripts/export_openapi.mjs sets OpenApiExport__Enabled and
+// scrapes /swagger/v1/swagger.json to produce libs/api-contract, so the gate must not close on it.
+//
+// The gate is on these two calls, not on CORS: they run BEFORE UseCors below, so a CORS-based
+// restriction would never have applied to them.
+if (app.Environment.IsDevelopment()
+    || app.Configuration.GetValue("OpenApiExport:Enabled", false))
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
 app.UseCors(CorsPolicy);
 
 // Serve the bundled SPA (present in the combined Docker image under wwwroot/).

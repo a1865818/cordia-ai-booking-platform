@@ -1,7 +1,7 @@
 # Backend Gaps — what the console still cannot show, and what to build
 
-**Status:** Plan · **Audience:** whoever builds `apps/api` toward a complete end-to-end web app ·
-**Mapped:** 2026-08-13 (against `apps/web/src` and the 21 controllers in `apps/api/src/Cordia.Api/Controllers`)
+**Status:** Mostly closed · **Audience:** whoever builds `apps/api` toward a complete end-to-end web app ·
+**Mapped:** 2026-08-13 · **Re-verified against code:** 2026-08-26 (issue [#85](https://github.com/Hazzng/Cordia/issues/85))
 
 This is the complement to [`frontend-api-wiring.md`](./frontend-api-wiring.md). That document
 answers *"which existing endpoints does the console reach?"* — and its answer is **all of them**
@@ -12,12 +12,28 @@ it is still demo.
 The two are not interchangeable. "Left to wire: 0" and "the app is complete" are different
 statements, and the distance between them is exactly what is written down here.
 
-> **TL;DR** — One gap blocks deployment at all (**no web-origin authentication** — the console
+> **TL;DR — 2026-08-26: sixteen of the eighteen gaps below are closed.** Only **G17**
+> (notification delivery state) and **G18** (menu artifact upload) are still open, tracked as
+> [#83](https://github.com/Hazzng/Cordia/issues/83) and
+> [#84](https://github.com/Hazzng/Cordia/issues/84).
+>
+> **The original TL;DR is struck through below because it is now wrong in an instructive way.** It
+> said "one gap blocks deployment at all" (web-origin auth), "two whole screens have no backend",
+> and "five Settings panels persist nothing". None of that holds: `AuthController` ships
+> login/session/logout, `DepositsController` and `CampaignsController` exist, and every Settings
+> panel is wired. Migration `20260813121656_ConsoleCompleteness` landed the **same day** this
+> document was mapped and closed most of the list; the document was never updated to match.
+>
+> Each gap below now carries its verdict and the `file:line` that settles it. A stale inventory is
+> worse than none — it makes people re-derive the same triage and mistrust the entries that are
+> still correct.
+>
+> ~~One gap blocks deployment at all (**no web-origin authentication** — the console
 > runs on a Development-gated tenant shim). Two whole screens have no backend (**deposits**,
 > **campaigns**). Five Settings panels persist nothing. The rest are **data-model** gaps rather
 > than missing controllers — no resource/staff model, no booking provenance, no attendance
 > state — and each of those blocks two or three visible surfaces at once, which is why they
-> rank above the endpoints that merely read them.
+> rank above the endpoints that merely read them.~~
 
 ---
 
@@ -49,7 +65,12 @@ an id; it never mints one. That distinction is enforced in `features/bookings/se
 
 ### P0 — blocks running outside a dev machine
 
-#### G1. No web-origin authentication *(= `frontend-api-wiring.md` §12 gap 1)*
+#### G1. No web-origin authentication — **CLOSED 2026-08-26** *(= `frontend-api-wiring.md` §12 gap 1)*
+
+> Closed by `Cordia.Api/Controllers/AuthController.cs` — `POST /api/auth/login` (`:26`),
+> `GET /api/auth/session` (`:52`), `POST /api/auth/logout` (`:66`), with `LoginPage.tsx` and
+> `RequireSession.tsx` on the web side. **This is the entry that called itself the only
+> deployability blocker, and it had already shipped when this document said so.**
 
 The console sends `X-Tenant-Id`, a dev shim the API disables outside Development via
 `Tenancy:AllowHeaderShim`. Spec 15's signed `X-Tenant-Context` is *verified* by the API but only
@@ -76,7 +97,13 @@ completeness.
 
 ### P1 — whole screens with no backend
 
-#### G2. Deposits and payouts *(= §12 gap 2)*
+#### G2. Deposits and payouts — **CLOSED 2026-08-26** *(= §12 gap 2)*
+
+> Closed by `DepositsController.cs` (`GET /api/deposits` `:25`, refund `:49`) and
+> `PayoutsController.cs:19`. The claim that `IDepositPolicy` is registered as
+> `NoDepositPolicy` is **inverted**: it resolves to `TenantDepositPolicyProvider`
+> (`InfrastructureServiceCollectionExtensions.cs:208`), and `NoDepositPolicy` is dead code
+> registered nowhere. `Booking.dep` reads a real column (`adapters.ts:139,162`).
 
 `DepositsScreen.tsx` imports `DEPOSITS` and `PAYOUT` and calls nothing. The earlier framing —
 "spec 09 is deferred" — is wrong: spec 09 is **built** (`DepositSession`,
@@ -96,7 +123,10 @@ payment hold the platform never took"); the Analytics "Deposits captured" KPI is
 `MoreScreen` deliberately shows no money figure at all, having previously shown `PAYOUT.held`,
 "the most credible fabrication in the product".
 
-#### G3. Campaigns
+#### G3. Campaigns — **CLOSED 2026-08-26**
+
+> Closed by `CampaignsController.cs` with full CQRS (create / approve / reject / schedule /
+> audience-estimate); `CampaignsScreen.tsx` is wired to it.
 
 `CampaignsScreen.tsx` is entirely local, and unlike everything else in this document **no spec
 owns it**. It needs a product decision before an endpoint. The shape the screen already implies:
@@ -107,7 +137,13 @@ first-class state, not a client-side flag.
 
 ---
 
-### P2 — Settings: six panels, five persisting nothing
+### P2 — Settings: six panels, five persisting nothing — **ALL CLOSED 2026-08-26**
+
+> G4 `TenantProfileController`; G5 `useOperatingHours`/`setOperatingHours`; G6
+> `adapters.ts:147` reads `row.duration_minutes`; G7 `DepositPolicyController`; G8
+> `AgentPolicyController`; G9 `AgentKnowledgeController`; G10 the venue-level auto-book
+> switch is saved (`WaitlistScreen.test.tsx:64` asserts it is no longer badged).
+> The table below is kept as the record of what each panel needed.
 
 `SettingsScreen.tsx` is the densest concentration of gaps in the app. Live today: venue display
 name, consent policy (read-only), published catalog items, the menu-catalog lifecycle, capacity
@@ -131,7 +167,10 @@ These are not "add a controller". They add a field to a ratified contract — Py
 JSON Schema → C# and TS (see [`type-generation.md`](./type-generation.md)) — which is why they
 cost more and rank here despite blocking more surfaces than P2 does.
 
-#### G11. No resource / staff model *(= §12 gap 9)*
+#### G11. No resource / staff model — **CLOSED 2026-08-26** *(= §12 gap 9)*
+
+> Closed by `ResourcesController.cs` (`GET`/`POST /api/resources`), `useStaffResources`,
+> `StaffRosterPanel`, and `adapters.ts:145` reading `row.resource_id`.
 
 Neither `BookingRequest` nor `ScheduledBookingView` carries a resource, so the schedule grid
 draws **one unnamed lane** (`bookings/adapters.ts:136`: "this is a grid coordinate, not an
@@ -144,7 +183,10 @@ carries"* — service and location. It is not a staff registry.
 **Needed:** a resource field on the booking payload and the schedule projection, plus
 `GET`/`POST /api/resources`.
 
-#### G12. No booking provenance
+#### G12. No booking provenance — **CLOSED 2026-08-26**
+
+> Closed: `adapters.ts:158` is `prov: toProv(row.attributed_source)` — a real column, not the
+> hard-coded value this entry describes.
 
 `prov: "unknown"` on every live row (`bookings/adapters.ts:151`). Nothing records whether the
 agent or a person made a booking, which is why the Analytics *"Who handled them"* split is
@@ -153,13 +195,18 @@ badged **"not recorded server-side"** and why no row can say "Booked by AI". `GE
 
 Cheap relative to its visibility — one attributed column written at finalize.
 
-#### G13. No no-show / attendance state
+#### G13. No no-show / attendance state — **CLOSED 2026-08-26**
+
+> Closed by the `AttendanceStatus` enum and `RecordAttendanceCommand`, surfaced in
+> `BookingDetailDrawer.tsx` and the customers feature.
 
 No-show rate is a headline KPI *and* a customer tag (`'No-show risk'`) *and* the justification
 for the "require a deposit from customers with a past no-show" guardrail. None of the three is
 derivable today. This needs a lifecycle transition on the booking, not just a report over one.
 
-#### G14. Headline KPIs
+#### G14. Headline KPIs — **CLOSED 2026-08-26**
+
+> Closed by `GetKpisQuery`, wired through `useKpis` into `AnalyticsScreen.tsx`.
 
 `GET /api/reporting/funnel` owns the stage counts and `GET /api/reporting/overview` owns per-day
 / per-channel / per-service. Missing: `GET /api/reporting/kpis` with **prior-period deltas** —
@@ -169,7 +216,10 @@ Sequencing matters: of the four cards, one needs G2 (deposits captured), one nee
 (AI-handled %) and one needs G13 (no-show rate). Built before those, the endpoint can honestly
 return exactly one card.
 
-#### G15. Customer profile depth
+#### G15. Customer profile depth — **CLOSED 2026-08-26**
+
+> Closed by `CustomersController.cs:18-19` (`GET /api/customers/{ref}`, `PUT .../notes`) and
+> `SetCustomerNotesCommand`.
 
 `GET /api/customers` projects `customer_ref`, `booking_count`, first/last activity and
 `last_service_id` — spec 14 minimisation. The screen suppresses the rest rather than zero-filling
@@ -184,7 +234,10 @@ guest to a staff-made booking.
 
 **Needed:** `GET /api/customers/{ref}` for depth, a notes/tags write, and an origin field.
 
-#### G16. Conversation summary depth
+#### G16. Conversation summary depth — **CLOSED 2026-08-26**
+
+> Closed for the two joins this entry names: `adapters.ts:160,163` read `row.channel` and
+> `row.session_id`. The deeper session-summary preview text was not re-verified line by line.
 
 `ConversationSessionSummary` carries no outcome, no provenance and no preview text — so
 `Thread.status` and `Thread.prov` are deliberately left unset (setting them "meant every ended
@@ -198,14 +251,23 @@ the grid cannot show how a booking arrived.
 Note the boundary: the fix is a **richer read**. Writing turns or consent from the console stays
 forbidden (§13 C4/C5) — a transcript is evidence of what was said, and consent is the guest's.
 
-#### G17. Notification delivery state
+#### G17. Notification delivery state — **STILL OPEN**, re-verified 2026-08-26 ([#83](https://github.com/Hazzng/Cordia/issues/83))
+
+> `NotificationWebhooksController` carries only the provider-facing **write** route; no
+> controller exposes a delivery-state read. Reading is not the same capability as asserting a
+> receipt — see `frontend-api-wiring.md` §13-C C3.
 
 Spec 10 exposes a provider-facing **write** (`POST /api/notification-webhooks/delivery-receipts`,
 secret-authenticated) and **no read**. If the console should ever show "confirmation sent" or
 "delivery failed", that is a new read endpoint over `notifications`. §13 C3 is explicit that
 reading is not the same capability as asserting a receipt.
 
-#### G18. Menu artifact upload *(= §12 gap 5)*
+#### G18. Menu artifact upload — **STILL OPEN**, re-verified 2026-08-26 ([#84](https://github.com/Hazzng/Cordia/issues/84)) *(= §12 gap 5)*
+
+> `InlineMenuArtifactTextResolver` resolves `inline:` and `data:text/plain` only; every other
+> scheme settles `extract_failed`. This is also why #95 had to drop `source_artifact_ref` from
+> the redaction exemption list: while the ref *is* the document, exempting it leaked raw
+> uploaded text into queue payloads.
 
 `source_artifact_ref` references an already-stored artifact and the object-storage lifecycle is a
 known deferred item, so "Register a menu" takes a reference string rather than a file.

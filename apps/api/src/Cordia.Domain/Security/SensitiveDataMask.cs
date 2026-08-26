@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -35,6 +36,21 @@ public static partial class SensitiveDataMask
     // PAN separator groups are never longer than 6 digits (4-4-4-4, 4-6-5…);
     // a longer space-separated group signals independent adjacent numbers.
     private const int MaxPanGroupDigits = 6;
+
+    // RFC 2397 shape markers. Kept here rather than referencing
+    // InlineMenuArtifactTextResolver: Domain cannot depend on Infrastructure, and this
+    // masker deliberately accepts ANY media type (the resolver accepts only text/plain).
+    // Scanning a form the resolver would reject costs one failed decode and keeps the
+    // masker from inheriting a narrower contract than the one it is guarding.
+    private const string DataUriPrefix = "data:";
+    private const string Base64Parameter = "base64";
+
+    // Throwing decoder, not the shared Encoding.UTF8: that instance substitutes U+FFFD, which
+    // would turn undecodable bytes into a "successfully decoded" string with nothing maskable
+    // in it. Bytes that are not UTF-8 text are not something this masker can scan, and saying
+    // so routes them to the raw-text path instead.
+    private static readonly UTF8Encoding _strictUtf8 =
+        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     // Any contiguous run of >= 13 ASCII digits allowing up to 3 space/dash
     // separators between digits — {0,3} (not the former single {0,1}) so a PAN
@@ -88,13 +104,22 @@ public static partial class SensitiveDataMask
 
     // Bare envelope keys plus the system/provider-minted *_ref keys production emits:
     // provider_ref (provider message/booking references - masking a Luhn-coincidental
-    // one would break the sec-16 reconciliation joins), object-store refs, and the
-    // streaming chunk/channel refs. Kept identical to redaction.py for parity - pinned
-    // by the payload_key_vectors in tools/config/redaction-test-vectors.json.
+    // one would break the sec-16 reconciliation joins), and the streaming chunk/channel
+    // refs. Kept identical to redaction.py for parity - pinned by the payload_key_vectors
+    // in tools/config/redaction-test-vectors.json.
+    //
+    // source_artifact_ref is NOT here, deliberately (#95). The exemption assumes an opaque
+    // system-minted handle, which is true of a storage key and false of what this repo
+    // actually emits: InlineMenuArtifactTextResolver resolves only `inline:` and
+    // `data:text/plain`, so today the ref IS the uploaded document. Exempting it wrote the
+    // raw document into outbox_messages.payload (jsonb, no length cap) unscanned for
+    // PAN/CVV/SSN, which spec 14 SS272 forbids outright ("queue payloads carry no transcript
+    // text / no secrets", Inv-12). Object-store refs arrive with #84; when they do, the key
+    // to exempt is the storage handle, not this one.
     private static readonly HashSet<string> _controlPlaneKeys =
     [
         "id", "seq", "ts",
-        "provider_ref", "source_artifact_ref", "image_ref",
+        "provider_ref", "image_ref",
         "chunk_ref", "audio_chunk_ref", "channel_ref", "audio_ref",
     ];
 
@@ -114,7 +139,15 @@ public static partial class SensitiveDataMask
     /// </summary>
     public static string SanitizeJson(string json)
     {
-        if (string.IsNullOrEmpty(json) || CountAsciiDigits(json) < 3)
+        if (string.IsNullOrEmpty(json))
+            return json;
+
+        // The digit fast path cannot be applied blindly. A base64 `data:` value re-alphabets
+        // its document's digits, so a payload whose only sensitive content is a PAN inside
+        // such a ref legitimately carries fewer than three ASCII digits overall — see
+        // TrySanitizeDataUri for the worked example.
+        if (CountAsciiDigits(json) < 3
+            && json.IndexOf(DataUriPrefix, StringComparison.OrdinalIgnoreCase) < 0)
             return json;
 
         JsonNode? root;
@@ -205,6 +238,23 @@ public static partial class SensitiveDataMask
 
     public static string Sanitize(string text)
     {
+        // A `data:` reference hides its content from every detector below. Decode, mask the
+        // document, re-encode. Runs BEFORE the digit fast path, because base64 can encode a
+        // PAN into a string holding fewer than three ASCII digits.
+        if (TrySanitizeDataUri(text, out var maskedRef))
+            return maskedRef;
+
+        return SanitizePlain(text);
+    }
+
+    /// <summary>
+    /// The detector passes, over text that is already in the clear. Split out of
+    /// <see cref="Sanitize(string)"/> so the <c>data:</c> branch can mask decoded content
+    /// without re-entering that branch: a payload that itself decodes to a <c>data:</c>
+    /// string would otherwise recurse without bound.
+    /// </summary>
+    private static string SanitizePlain(string text)
+    {
         // Fast path: nothing maskable exists with fewer than 3 ASCII digits.
         if (CountAsciiDigits(text) < 3)
             return text;
@@ -215,6 +265,100 @@ public static partial class SensitiveDataMask
         output = Ssn().Replace(output, MaskToken);
         output = Tfn().Replace(output, MaskToken);
         return output;
+    }
+
+    /// <summary>
+    /// Masks the DECODED content of an RFC 2397 <c>data:</c> reference and re-encodes it in
+    /// the form it arrived in, so the stored value still resolves to the same document minus
+    /// the sensitive spans.
+    ///
+    /// <para><b>Why this is needed at all (#95 follow-up).</b> Taking
+    /// <c>source_artifact_ref</c> off the control-plane exemption list made the masker LOOK at
+    /// the ref, but looking is not seeing: a <c>data:</c> ref carries its document in a
+    /// transport encoding, and every detector above scans the encoding. base64 is the case
+    /// that matters, because it re-alphabets the digits themselves —
+    /// <c>card 4111111111111111</c> encodes to <c>Y2FyZCA0MTExMTExMTExMTExMTEx</c>, whose only
+    /// digits are a single <c>2</c> and a single <c>0</c> separated by letters. That does not
+    /// reach the three-digit fast path, let alone form a 13-digit candidate run, so the PAN
+    /// reached <c>outbox_messages.payload</c> untouched.</para>
+    ///
+    /// <para>Percent-encoding does NOT defeat the detectors — <c>%XX</c> escapes only
+    /// non-digit bytes, so a card's digits stay literal ASCII and still match. It is handled
+    /// here for a different reason: masking the RAW percent form rewrites
+    /// <c>card%204111…</c> to <c>card%[REDACTED]</c>, because the <c>2</c> and <c>0</c> of the
+    /// <c>%20</c> join the digit run. Same card removed either way, but that output is a
+    /// broken escape the resolver can no longer decode; decoding first leaves a ref that still
+    /// resolves.</para>
+    ///
+    /// <para>Returns <see langword="false"/> — leaving the caller to scan the raw text — for
+    /// anything that is not a decodable <c>data:</c> reference, and for one whose content
+    /// needed no masking. Falling through is deliberate rather than a bailout: the raw form
+    /// then takes the ordinary passes, which is exactly the pre-existing behaviour, so an
+    /// undecodable ref never ends up LESS masked than it was before.</para>
+    ///
+    /// <para><b>Both re-encoders are byte-identical to the Python lane's</b>, which is why the
+    /// percent branch escapes only <c>%</c>: <c>InlineMenuArtifactTextResolver</c> copies
+    /// literal characters straight through and interprets only <c>%HH</c>, so escaping the
+    /// escape character alone round-trips exactly — while <c>Uri.EscapeDataString</c> and
+    /// Python's <c>quote</c> disagree on <c>!'()*</c> and would break parity for nothing.</para>
+    /// </summary>
+    private static bool TrySanitizeDataUri(string text, out string masked)
+    {
+        masked = text;
+
+        if (!text.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // First comma, not last: a comma is ordinary content inside the payload.
+        var comma = text.IndexOf(',');
+        if (comma < 0)
+            return false;
+
+        var header = text[..comma];
+        var payload = text[(comma + 1)..];
+
+        // RFC 2397: `;base64` is the last parameter when present.
+        var parts = header.Split(';');
+        var isBase64 = parts.Length > 1
+            && parts[^1].Trim().Equals(Base64Parameter, StringComparison.OrdinalIgnoreCase);
+
+        string decoded;
+        if (isBase64)
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = Convert.FromBase64String(payload);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            try
+            {
+                decoded = _strictUtf8.GetString(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                // Not text this masker can scan. The raw base64 still takes the ordinary
+                // passes, so this is a fall-through, not a skip.
+                return false;
+            }
+        }
+        else
+        {
+            decoded = Uri.UnescapeDataString(payload);
+        }
+
+        var sanitized = SanitizePlain(decoded);
+        if (sanitized == decoded)
+            return false;
+
+        masked = isBase64
+            ? $"{header},{Convert.ToBase64String(Encoding.UTF8.GetBytes(sanitized))}"
+            : $"{header},{sanitized.Replace("%", "%25", StringComparison.Ordinal)}";
+        return true;
     }
 
     private static int CountAsciiDigits(string text)

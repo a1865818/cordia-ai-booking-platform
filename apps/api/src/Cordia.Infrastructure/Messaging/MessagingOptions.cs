@@ -83,6 +83,10 @@ public sealed class ScheduledJobPollerOptions
     /// <summary>
     /// Seconds a claim lease is held before another poller may reclaim the job.
     /// Default: 30 s.
+    ///
+    /// <para>Deliberately NOT the same as <see cref="OutboxPublisherOptions.LeaseSeconds"/>
+    /// (300 s). That lane carries menu extraction, whose provider call is bounded at 120 s;
+    /// this one dispatches scheduled jobs and has no such step. Do not "align" them.</para>
     /// </summary>
     public int LeaseSeconds { get; set; } = 30;
 }
@@ -203,9 +207,47 @@ public sealed class OutboxPublisherOptions
 
     /// <summary>
     /// Seconds a claim lease is held before another publisher may reclaim the row (§5.2/§8).
-    /// Default: 30 s.
+    /// Default: 300 s.
+    ///
+    /// <para>Sizes spec 05 §12 <b>OD-3</b>, which proposed "lease = 2× p99 step latency,
+    /// heartbeat-renewable" and never committed to a number. The slowest consumer on any lane is
+    /// menu ingestion, whose provider call is bounded by
+    /// <c>LangGraphOptions.ExtractTimeoutSeconds</c> (120 s) and runs inside the consumer's inbox
+    /// transaction. 300 s is 2.5× that: enough for ONE worst-case extraction to finish inside the
+    /// lease covering it.</para>
+    ///
+    /// <para><b>It is not enough for a backed-up lane, and no fixed number would be.</b>
+    /// <c>leaseExpiresAt</c> is computed once per TICK and stamped on every row the claim returns,
+    /// while rows within a lane publish strictly sequentially — so N same-lane rows share one
+    /// lease and the Nth finishes at roughly N × 120 s. Three slow <c>menu.commands</c> rows in
+    /// one batch reach ~360 s against a 300 s lease, and nothing bounds N below
+    /// <see cref="BatchSize"/>. Sizing for that worst case instead (50 × 120 s) would park rows
+    /// for 100 minutes after a genuine crash, which is worse. Only renewal closes a multiplier,
+    /// and renewal — OD-3's other half — is deliberately NOT implemented here. <b>This is a sized
+    /// lease, not a renewable one, and OD-3 stays open.</b></para>
+    ///
+    /// <para><b>Why that is tolerable: the lease was never the correctness boundary.</b> Spec 05
+    /// §12.5 is explicit that leases "prevent <i>simultaneous</i> processing only; they do not
+    /// replace ... inbox dedup", and the §8 crash-window matrix already names this exact row —
+    /// "lease expired but original worker still alive (zombie) → two claimants possible" — with
+    /// that second layer, not the lease, as the recovery. It holds here: a reclaiming publisher's
+    /// <c>TryAdmitAsync</c> INSERT blocks on the first worker's uncommitted inbox row, then finds
+    /// the committed key and suppresses the duplicate. The handler never runs twice and no second
+    /// extraction is issued.</para>
+    ///
+    /// <para><b>The residual cost, recorded rather than hidden.</b> A spurious reclaim still
+    /// burns a <c>publish_attempts</c> increment against <see cref="MaxPublishAttempts"/> with no
+    /// way to tell "this attempt failed" from "this attempt was still succeeding on another
+    /// worker", and the reclaiming thread blocks on that inbox lock for the remainder of the
+    /// first extraction. Both are bounded; neither loses nor duplicates work. Raising this
+    /// number does not fix either — it only moves the row count at which they start.</para>
+    ///
+    /// <para><b>There are two <c>LeaseSeconds</c> in this file and they are not the same knob.</b>
+    /// This one is the outbox publisher's, at 300 s.
+    /// <see cref="ScheduledJobPollerOptions.LeaseSeconds"/> governs scheduled-job redelivery on a
+    /// different lane and stays at 30 s. Do not "align" them.</para>
     /// </summary>
-    public int LeaseSeconds { get; set; } = 30;
+    public int LeaseSeconds { get; set; } = 300;
 
     /// <summary>
     /// Max claim/publish attempts before a row is treated as poison and dead-lettered (instead of

@@ -56,7 +56,9 @@ public class NotificationWebhooksController(
         // Spec 14 §24.4: the secret comes from the ISecretStore custody seam
         // (Secrets:NotificationsWebhookSecret); the legacy Notifications:WebhookSecret config key
         // is the migration fallback. The value is compared here only — never logged or serialized.
-        // TODO (§31): replace shared-secret check with full HMAC signature verification before production.
+        // TODO(#74, §31): replace this shared-secret check with full HMAC signature
+        // verification. A shared secret proves the caller knows a value; an HMAC proves the
+        // MESSAGE was not altered, which is what a delivery receipt actually needs.
         var configuredSecret = secrets.GetSecret("NotificationsWebhookSecret")
             ?? config["Notifications:WebhookSecret"];
         if (string.IsNullOrEmpty(configuredSecret))

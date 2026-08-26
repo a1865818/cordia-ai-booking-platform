@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from cordia_agent.contracts.security import RedactionPolicy
@@ -279,3 +281,114 @@ def test_active_policy_registry_drives_default_redaction() -> None:
         reset_redaction_policy()
     # After reset the baseline (empty tenant list) applies again.
     assert redact_payload({"member_number": "M-1"})["member_number"] == "M-1"
+
+
+# ── data: artifact references (#95 follow-up) ────────────────────────────────────
+#
+# Taking source_artifact_ref off the exemption list made the filter LOOK at the ref;
+# these prove it can also SEE it. A base64 payload re-alphabets the card's digits
+# ("card 4111111111111111" -> "Y2FyZCA0MTExMTExMTExMTExMTEx", two digits total), so
+# before the decode step the PAN cleared both the 3-digit fast path and the 13-digit
+# candidate run and reached the queue payload verbatim.
+
+
+def _b64_ref(text: str, header: str = "data:text/plain;base64") -> str:
+    return f"{header},{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
+
+
+def _decode_b64_ref(ref: str) -> str:
+    return base64.b64decode(ref.split(",", 1)[1]).decode("utf-8")
+
+
+@pytest.mark.unit
+def test_base64_data_ref_masks_the_pan_inside_the_payload() -> None:
+    """The PAN is removed from the DECODED document, not merely from the ref text."""
+    ref = _b64_ref(f"Tasting menu 120.00 card {VISA_PAN}")
+
+    out = redact_text(ref)
+
+    assert out != ref
+    decoded = _decode_b64_ref(out)
+    assert VISA_PAN not in decoded
+    assert MASK in decoded
+
+
+@pytest.mark.unit
+def test_base64_data_ref_keeps_the_menu_around_the_pan() -> None:
+    """Masking replaces the card and nothing else — the consumer reads this ref back
+    out and hands it to the extractor, so the surrounding menu has to survive."""
+    ref = _b64_ref(f"Tasting menu 120.00 card {VISA_PAN} on account")
+
+    decoded = _decode_b64_ref(redact_text(ref))
+
+    assert decoded == f"Tasting menu 120.00 card {MASK} on account"
+
+
+@pytest.mark.unit
+def test_base64_data_ref_without_a_pan_round_trips_byte_identical() -> None:
+    """An ordinary menu must come back unchanged, byte for byte: a decode/re-encode
+    that normalised padding or whitespace would corrupt every clean upload."""
+    ref = _b64_ref("Soup 8.50, Salad 12.00, Set menu for 2 at 65.00, table 12")
+
+    assert redact_text(ref) == ref
+
+
+@pytest.mark.unit
+def test_percent_encoded_data_ref_stays_resolvable_after_masking() -> None:
+    """Percent-encoding never defeated the detector — `%XX` escapes only non-digit
+    bytes, so the card's digits stayed literal. It defeated the OUTPUT: masking the raw
+    form swallowed the `2` and `0` of `%20` into the digit run and left `card%[REDACTED]`,
+    a broken escape. Decoding first keeps the ref decodable."""
+    ref = f"data:text/plain,card%20{VISA_PAN}"
+
+    out = redact_text(ref)
+
+    assert VISA_PAN not in out
+    assert "%[REDACTED]" not in out
+    assert out.split(",", 1)[1] == f"card {MASK}"
+
+
+@pytest.mark.unit
+def test_undecodable_base64_falls_through_to_the_raw_passes() -> None:
+    """A `;base64` header whose payload is not valid base64 must not be SKIPPED — the
+    raw text still takes the ordinary passes, so a literal PAN in it still masks."""
+    ref = f"data:text/plain;base64,card {VISA_PAN}"
+
+    out = redact_text(ref)
+
+    assert VISA_PAN not in out
+    assert MASK in out
+
+
+@pytest.mark.unit
+def test_base64_payload_that_is_not_utf8_text_is_left_alone() -> None:
+    """Valid base64, undecodable as text: nothing to scan and nothing to over-mask."""
+    ref = "data:text/plain;base64,//4="
+
+    assert redact_text(ref) == ref
+
+
+@pytest.mark.unit
+def test_data_ref_masking_applies_through_the_payload_lane() -> None:
+    """The queue-payload walker reaches the same branch — this is the shape that
+    actually lands in outbox_messages.payload."""
+    ref = _b64_ref(f"card {VISA_PAN}")
+
+    out = redact_payload({"catalog_id": "cat-1", "source_artifact_ref": ref})
+
+    assert out["catalog_id"] == "cat-1"
+    assert VISA_PAN not in _decode_b64_ref(out["source_artifact_ref"])
+
+
+@pytest.mark.unit
+def test_nested_data_ref_does_not_recurse_without_bound() -> None:
+    """A payload whose decoded content is itself a `data:` string terminates: the
+    decoded text takes the plain passes, never the data: branch again."""
+    inner = _b64_ref(f"card {VISA_PAN}")
+    outer = _b64_ref(inner)
+
+    out = redact_text(outer)
+
+    # The inner ref is opaque base64 to the plain passes, so nothing matches and the
+    # outer value round-trips unchanged. The point is that it RETURNS.
+    assert out == outer

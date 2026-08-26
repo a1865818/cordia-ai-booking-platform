@@ -36,7 +36,13 @@ _PAYLOAD_KEY_VECTORS = _CORPUS["payload_key_vectors"]
 @pytest.mark.unit
 @pytest.mark.parametrize("vector", _VECTORS, ids=[v["class"] for v in _VECTORS])
 def test_shared_corpus_vector(vector: dict) -> None:
-    masked = "[REDACTED]" in redact_text(vector["input"])
+    # "Did the filter change the value", NOT "is the token in the output". A `data:` vector
+    # masks inside its DECODED payload and re-encodes, so for a base64 ref the token is
+    # present but base64-encoded, and a substring check reads a correctly-masked PAN as
+    # unmasked — precisely the could-not-fire defect this corpus exists to catch, one level
+    # up in the harness itself. Where the token and the PAN actually land inside an encoded
+    # ref is asserted by test_redaction.py, which decodes before asserting.
+    masked = redact_text(vector["input"]) != vector["input"]
     assert masked == vector["expect_masked"], (
         f"{vector['class']}: expected expect_masked={vector['expect_masked']} "
         f"for {vector['input']!r}"
