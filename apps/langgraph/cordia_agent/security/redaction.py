@@ -188,7 +188,10 @@ _CONTROL_PLANE_KEYS = frozenset(
         "seq",
         "ts",
         "provider_ref",
-        "source_artifact_ref",
+        # source_artifact_ref is deliberately absent (#95) - mirrors SensitiveDataMask.cs.
+        # The exemption assumes an opaque handle; today the ref IS the document
+        # (`inline:` / `data:text/plain`), so exempting it leaked raw uploaded text into
+        # queue payloads unscanned. Spec 14 SS272 forbids that (Inv-12).
         "image_ref",
         "chunk_ref",
         "audio_chunk_ref",

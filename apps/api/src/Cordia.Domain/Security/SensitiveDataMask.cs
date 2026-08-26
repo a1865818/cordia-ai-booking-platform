@@ -88,13 +88,22 @@ public static partial class SensitiveDataMask
 
     // Bare envelope keys plus the system/provider-minted *_ref keys production emits:
     // provider_ref (provider message/booking references - masking a Luhn-coincidental
-    // one would break the sec-16 reconciliation joins), object-store refs, and the
-    // streaming chunk/channel refs. Kept identical to redaction.py for parity - pinned
-    // by the payload_key_vectors in tools/config/redaction-test-vectors.json.
+    // one would break the sec-16 reconciliation joins), and the streaming chunk/channel
+    // refs. Kept identical to redaction.py for parity - pinned by the payload_key_vectors
+    // in tools/config/redaction-test-vectors.json.
+    //
+    // source_artifact_ref is NOT here, deliberately (#95). The exemption assumes an opaque
+    // system-minted handle, which is true of a storage key and false of what this repo
+    // actually emits: InlineMenuArtifactTextResolver resolves only `inline:` and
+    // `data:text/plain`, so today the ref IS the uploaded document. Exempting it wrote the
+    // raw document into outbox_messages.payload (jsonb, no length cap) unscanned for
+    // PAN/CVV/SSN, which spec 14 SS272 forbids outright ("queue payloads carry no transcript
+    // text / no secrets", Inv-12). Object-store refs arrive with #84; when they do, the key
+    // to exempt is the storage handle, not this one.
     private static readonly HashSet<string> _controlPlaneKeys =
     [
         "id", "seq", "ts",
-        "provider_ref", "source_artifact_ref", "image_ref",
+        "provider_ref", "image_ref",
         "chunk_ref", "audio_chunk_ref", "channel_ref", "audio_ref",
     ];
 

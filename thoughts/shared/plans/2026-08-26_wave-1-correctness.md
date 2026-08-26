@@ -100,15 +100,45 @@ comment, which currently documents the hole.
 **One commit across both lanes** — the corpus is shared; splitting reds one suite.
 
 **Automated Verification**
-- [ ] `bun nx test api` and `bun nx test langgraph` both green with the flipped vector
-- [ ] new test: an `inline:` ref containing a Luhn-valid PAN is masked in the persisted payload
-- [ ] **new test: a realistic menu with prices still extracts** — masking must not break ingestion
-- [ ] `customer_ref` and the `_ref` suffix policy unchanged
+- [x] `bun nx test api` **1815 passed** (was 1812) · `bun nx test langgraph` **1431 passed** (was 1428) · both lints clean
+- [x] `InlineArtifactRefCarryingPan_IsMaskedInThePersistedPayload` + the `data:` twin — asserted against the row as persisted
+- [x] `ArtifactRefWithOrdinaryMenuPrices_SurvivesVerbatim` — masking does not break ingestion
+- [x] `customer_ref` still `expect_exempt: false`; `_ref` suffix policy untouched
+- [x] `bun nx test-integration api` **676 / 675 passed / 0 failed**, 32 s (baseline 672/671)
 
 **Manual Verification**
-- [ ] Every new vector has ≥3 ASCII digits, or it passes via the `CountAsciiDigits < 3` fast path for the wrong reason.
+- [x] New vectors carry 16, 15 and 21 ASCII digits — all clear the `CountAsciiDigits < 3` fast path.
 
-**Discoveries** _(implementer fills in)_
+**Discoveries**
+
+1. **The choke point was already running and doing nothing.** `OutboxRepository.AddAsync:12-19`
+   calls `SanitizeJson` on every write as the documented Inv-12 choke point. It executed, saw
+   `source_artifact_ref` on the exemption list, and returned the value verbatim. This is the same
+   failure shape Wave 0 kept finding in tests — a guard that runs and cannot fire — but in
+   production code.
+
+2. **Mutation was precise.** Restoring the exemption reds exactly the two PAN tests
+   (`Inline…`, `DataUrl…`) and leaves the two that must not move green. That asymmetry is the point:
+   it proves one entry left the list, not the mechanism.
+
+3. **The cost of the fix is bounded and now asserted.** `IngestVendorMenuCommandHandler` reads the
+   ref straight back out and hands it to the scanner and extractor, so a fix that mangled ordinary
+   content would break ingestion rather than secure it. Masking replaces only *detected* spans and a
+   price list contains no Luhn-valid 13–19 digit run — asserted by
+   `ArtifactRefWithOrdinaryMenuPrices_SurvivesVerbatim` rather than assumed.
+
+4. **`provider_ref` deliberately stays exempt**, with its own regression test. Masking a
+   Luhn-coincidental provider reference would break the §16.2 reconciliation joins that look up by
+   it. `ProviderRef_RemainsExempt_AndRoundTripsVerbatim` fails if anyone "tidies" the list by
+   deleting the mechanism.
+
+5. **An obsolete instruction was removed, not just a value.** `UploadMenuCommandHandler`'s comment
+   said *"The exemption is DELIBERATE and pinned by cross-language vectors … do not flip it here."*
+   Left in place it would have told the next reader to undo this change.
+
+6. **#84 is still the structural fix.** Once artifacts live in object storage the ref is a genuinely
+   opaque key and there is no document to mask. This closes the leak; it does not remove the reason
+   the leak was possible.
 
 ---
 
