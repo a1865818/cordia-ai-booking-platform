@@ -152,11 +152,42 @@ operation: terminal → **409** (same body as the up-front guard); already-pendi
 add generated-type surface for no benefit.
 
 **Automated Verification**
-- [ ] new integration test races a terminal transition into the window and asserts 409, not a false 202
-- [ ] `Cancel_TerminalOp_Returns409` and `Cancel_NonTerminalOp_Returns202` pass unchanged
-- [ ] `v1.json` regenerates identically
+- [x] the window is exercised deterministically — **as unit tests, not an integration race**; see discovery 2
+- [x] `Cancel_TerminalOp_Returns409` and `Cancel_NonTerminalOp_Returns202` pass unchanged
+- [x] `v1.json` regenerates identically — no drift from touching the controller
+- [x] `bun nx test api` **1819 passed** (was 1815) · lint clean · integration **676 / 675 passed / 0 failed**, 38 s
 
-**Discoveries** _(implementer fills in)_
+**Discoveries**
+
+1. **The handler was already right; the whole defect was a discarded return value.** Its repository
+   filter is `CancellationRequestedAt == null AND NOT terminal`, and
+   `CompensationAndCancellationTests.cs:758-802` already asserted it returns `false` for a terminal
+   op. The fix captures that value.
+
+2. **Deviation from the plan, recorded rather than substituted quietly.** The plan asked for an
+   *integration* test that races a terminal transition into the window. It is not written that way.
+   Reproducing the window through the HTTP stack means winning a timing race on every CI run, and
+   this repo has already declined that kind of test once as inherently flaky
+   (`2026-08-04_frontend-api-wiring` review). Mocking `IMediator` makes the window deterministic —
+   the second `GetOperationStatusQuery` answers differently from the first, which is exactly what a
+   lost race looks like from the controller's side.
+
+3. **`false` is ambiguous by design, so the fix re-reads rather than guesses.** It means "already
+   pending" *or* "raced into terminal", and those need different answers (202 vs 409). A third case
+   fell out of writing it: the row can also vanish inside the window, which is a 404, not a
+   fabricated 202.
+
+4. **The 409 body is shared between both checks**, so a caller cannot tell whether the up-front
+   guard or the post-write re-read fired.
+
+5. **Mutation-verified.** Discarding the result again reds exactly
+   `RacedIntoTerminal_Returns409_NotAFalsePending` and `DisappearsInsideTheWindow_Returns404`; both
+   202 paths stay green, which is correct — they return 202 either way.
+
+6. **Left alone deliberately:** `BookingOperationsController.cs:161`'s `T11 TODO: surface
+   cancellation_pending in the status projection`. `GetOperationStatusQuery` surfaces pending-ness
+   through `CustomerMessage` because a dedicated field needs a Pydantic change and a cross-language
+   regen. Adjacent, but genuinely separate work — Phase 6 retags it.
 
 ---
 
