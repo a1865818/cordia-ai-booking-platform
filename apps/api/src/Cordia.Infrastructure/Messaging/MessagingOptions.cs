@@ -203,9 +203,24 @@ public sealed class OutboxPublisherOptions
 
     /// <summary>
     /// Seconds a claim lease is held before another publisher may reclaim the row (§5.2/§8).
-    /// Default: 30 s.
+    /// Default: 300 s.
+    ///
+    /// <para>Resolves spec 05 §12 <b>OD-3</b>, which proposed "lease = 2× p99 step latency,
+    /// heartbeat-renewable" and never committed to a number. The slowest consumer on any lane is
+    /// menu ingestion, whose provider call is bounded by
+    /// <c>LangGraphOptions.ExtractTimeoutSeconds</c> (120 s) and runs inside the consumer's inbox
+    /// transaction. 300 s is 2.5× that, so a legitimately slow extraction can no longer outlive
+    /// its own lease and be reclaimed mid-flight by another publisher.</para>
+    ///
+    /// <para>OD-3's other half — heartbeat renewal — is deliberately NOT implemented; this is a
+    /// sized lease, not a renewable one. The cost is a slower reclaim after a genuine publisher
+    /// crash on a lane, which is acceptable now that lanes no longer block one another (#96).</para>
+    ///
+    /// <para><b>This is not the only <c>LeaseSeconds = 30</c> in this file.</b>
+    /// <see cref="ScheduledJobPollerOptions.LeaseSeconds"/> is a different lane governing
+    /// scheduled-job redelivery; it stays at 30 s. Do not "align" them.</para>
     /// </summary>
-    public int LeaseSeconds { get; set; } = 30;
+    public int LeaseSeconds { get; set; } = 300;
 
     /// <summary>
     /// Max claim/publish attempts before a row is treated as poison and dead-lettered (instead of
