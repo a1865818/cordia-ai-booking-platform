@@ -83,6 +83,10 @@ public sealed class ScheduledJobPollerOptions
     /// <summary>
     /// Seconds a claim lease is held before another poller may reclaim the job.
     /// Default: 30 s.
+    ///
+    /// <para>Deliberately NOT the same as <see cref="OutboxPublisherOptions.LeaseSeconds"/>
+    /// (300 s). That lane carries menu extraction, whose provider call is bounded at 120 s;
+    /// this one dispatches scheduled jobs and has no such step. Do not "align" them.</para>
     /// </summary>
     public int LeaseSeconds { get; set; } = 30;
 }
@@ -238,9 +242,10 @@ public sealed class OutboxPublisherOptions
     /// first extraction. Both are bounded; neither loses nor duplicates work. Raising this
     /// number does not fix either — it only moves the row count at which they start.</para>
     ///
-    /// <para><b>This is not the only <c>LeaseSeconds = 30</c> in this file.</b>
-    /// <see cref="ScheduledJobPollerOptions.LeaseSeconds"/> is a different lane governing
-    /// scheduled-job redelivery; it stays at 30 s. Do not "align" them.</para>
+    /// <para><b>There are two <c>LeaseSeconds</c> in this file and they are not the same knob.</b>
+    /// This one is the outbox publisher's, at 300 s.
+    /// <see cref="ScheduledJobPollerOptions.LeaseSeconds"/> governs scheduled-job redelivery on a
+    /// different lane and stays at 30 s. Do not "align" them.</para>
     /// </summary>
     public int LeaseSeconds { get; set; } = 300;
 
