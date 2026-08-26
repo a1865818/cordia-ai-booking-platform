@@ -46,6 +46,9 @@ public sealed class OutboxPublisherHostedService(
     {
         var pub = _options.Publisher;
         var now = DateTimeOffset.UtcNow;
+        // ONE lease for the whole batch, stamped at claim time and never renewed. See
+        // OutboxPublisherOptions.LeaseSeconds for why that is deliberate, and for what it
+        // does NOT guarantee once a single lane holds several slow rows.
         var leaseExpiresAt = now.AddSeconds(pub.LeaseSeconds);
 
         // ── Claim phase ─────────────────────────────────────────────────────────────
