@@ -166,7 +166,74 @@ Plus:
 - [ ] Regression: `OutboxTenantScopeParityTests` still passes; new scheduled-job parity test passes.
 
 **Discoveries and Notable Information**
-_(implementer fills in)_
+
+1. **Baseline captured before any edit** (the number nothing in the repo recorded):
+   **668 total / 652 passed / 15 failed / 1 skipped, in 5 m 3 s.**
+   All 15 failures are one cause — the `TenantResolutionApi` collection fixture dying in
+   `InitializeAsync` with `Npgsql.PostgresException 42P07: relation "tenant_resources" already
+   exists`. That is exactly the **three concurrent first-run migrators** predicted in research B4
+   (`PostgresFixture:29` `MigrateAsync()`, plus `MigrateOnStartup=true` in both
+   `AcceptanceApiFixture:48` and `TenantResolutionApiFixture:42`). It reproduces the
+   `channel_endpoint_id ... already exists` failure recorded in the 2026-08-04 wiring plan, so this
+   is recurring, not a one-off. **Phase 3 cannot make the CI job green until this is fixed**, which
+   is why Phase 3 lands as `continue-on-error`.
+
+2. **The roadmap's "G1 = deletion-only for 5 files" was wrong, and so was its file count.**
+   17 files reference the helper: **5 already migrated** (helper gone, only the "there used to be…"
+   comment remains, `ScopeOutboxClaimToTenant` already called) — *zero work*; **1** unrelated comment
+   (`NotificationReconcileTests:166`); **11** unmigrated, of which `OutboxPublisherTests` is
+   deliberately excluded. Real scope was **10 conversions**, not 12.
+
+3. **`NeutralizeExistingScheduledJobsAsync` existed in exactly one file** — `RetryAndFailureTests`
+   (defined `:208`, called `:359`, `:580`). Its own comment said it would stay *"until that claim is
+   scoped too"*. `ScheduledJobTenantScope` now does that, so it is gone and the loop the #91 comment
+   opened is closed.
+
+4. **Two files needed a `using` the Messaging ones did not.** `OutboxTenantScope` lives in
+   `Cordia.Tests.IntegrationTests.Messaging`; `Capacity/FinalizeAgainstHoldTests` and
+   `Menu/MenuLifecycleEndToEndTests` are in sibling namespaces and failed to compile with CS1061
+   until `using Cordia.Tests.IntegrationTests.Messaging;` was added.
+
+5. **`MenuIngestionTests` has three builders and one of them took a different overload.**
+   `BuildContainerWithHttpExtractor` calls `services.AddInfrastructure(config, new
+   DevelopmentHostEnvironment())`, so a mechanical `AddInfrastructure(config);` rewrite silently
+   covered only two of three containers. Caught by counting registrations, not by the compiler —
+   the third container would have kept claiming cross-tenant with nothing failing.
+
+6. **One test must scope to a different variable.**
+   `NotificationSenderTests.TenantIsolation_NotificationUnderTenantA_NotVisibleToTenantB` seeds its
+   outbox row under `tenantA` and uses `tenantB` only for query-filter assertions, so it scopes to
+   `tenantA`. A blanket `tenantId` rewrite would not have compiled here — but in a class where both
+   names existed it would have compiled and scoped to the wrong tenant.
+
+7. **`OutboxPublisherTests` remains the sole holder of the neutralize helper**, as designed —
+   verified by grep: it is the only file that still defines or calls it.
+
+8. **The new parity test was written wrong, and only mutation testing found it.** The first version
+   passed — and kept passing when the mirror's `ORDER BY run_after` was rewritten to
+   `ORDER BY job_id`. Cause: the seeded `job_id`s (`s0…s7`) ascended in the same order as
+   `run_after`, so both orderings selected the same rows and the fixture pinned nothing about
+   ordering. Fixed by making the ids descend as `run_after` ascends (`z9`, `y8`, `w6` … `a0`), which
+   is now stated in a comment so nobody "tidies" the names back.
+
+   Re-verified by three mutations of the mirror, each of which must turn it red:
+
+   | Mutation | Result |
+   |---|---|
+   | `ORDER BY run_after` → `ORDER BY job_id` | **RED** (1 of 2 failed) |
+   | claim bumps `row.Attempt++` (violates §15.2) | **RED** |
+   | drop the `lease_owner IS NULL OR lease_expires_at < …` predicate | **RED** |
+   | mirror restored | **GREEN** (2 passed) |
+
+   The rebuild was confirmed in each run (`Cordia.Tests -> …Cordia.Tests.dll`), so these are real
+   verdicts, not stale binaries.
+
+9. **The pre-existing `OutboxTenantScopeParityTests` appears to carry the identical blind spot.**
+   Its seeds are `p0-unleased` … `p5-beyond-limit` with `occurred_at` ascending in the same order,
+   so `ORDER BY message_id` and `ORDER BY occurred_at` would select the same rows. If that holds, a
+   drifted `ORDER BY` in `TenantScopedOutboxRepository` would not be caught by the test whose sole
+   purpose is catching drift. **Flagged as outside this phase's approved blast radius** — see the
+   verification note below for the empirical result and the decision.
 
 ---
 

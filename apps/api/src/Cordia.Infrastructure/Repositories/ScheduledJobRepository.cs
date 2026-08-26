@@ -51,6 +51,11 @@ public class ScheduledJobRepository(ApplicationDbContext db) : IScheduledJobRepo
         DateTimeOffset now,
         CancellationToken ct = default)
     {
+        // NOTE: the integration suite mirrors this method (production claim + a tenant_id predicate)
+        // in Cordia.Tests' TenantScopedScheduledJobRepository. Change this and change that; the
+        // mirror is pinned by ScheduledJobTenantScopeParityTests, which fails if the two stop
+        // agreeing. Same arrangement as OutboxRepository.ClaimBatchAsync and its mirror.
+        //
         // Cross-tenant worker claim (T5, §5.1 mirror). Open an explicit short transaction:
         // SELECT FOR UPDATE SKIP LOCKED acquires row locks; committing releases them so the
         // lease fields become visible to other workers before next tick.

@@ -60,7 +60,7 @@ file sealed class PoisonThrowingAdapter : IBookingProviderAdapter
 [Collection("Postgres")]
 public class PoisonDeadLetterTests(PostgresFixture fixture)
 {
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter? fakeAdapter = null)
+    private static ServiceProvider BuildContainer(string tenantId, IBookingProviderAdapter? fakeAdapter = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -79,6 +79,7 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         if (fakeAdapter is not null)
             services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
@@ -94,17 +95,14 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "t11-poison-cleanup")
-    {
-        await using var ctx = fixture.CreateContext(cleanupTenant);
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>
     /// FM#14 / Inv-14: adapter throws PoisonMessageException → driver persists work-item +
@@ -115,8 +113,6 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
     [Fact]
     public async Task PoisonException_Inv14_PersistsBeforeDeadLetter_OpStaysInProgress()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-poison-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -139,7 +135,7 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer(fakeAdapter: new PoisonThrowingAdapter());
+        await using var sp = BuildContainer(tenantId, fakeAdapter: new PoisonThrowingAdapter());
         var publisher = BuildPublisher(sp);
 
         // One publisher tick: Accepted→Validating→ReservingCapacity→Finalizing→PoisonException.
@@ -219,8 +215,6 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
     [Fact]
     public async Task PoisonException_DeterministicOutboxId_Deduplicates()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-poison-dedup-{Guid.NewGuid():N}";
         string operationId;
 
@@ -245,7 +239,7 @@ public class PoisonDeadLetterTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer(fakeAdapter: new PoisonThrowingAdapter());
+        await using var sp = BuildContainer(tenantId, fakeAdapter: new PoisonThrowingAdapter());
         var publisher = BuildPublisher(sp);
 
         // Two publisher ticks simulating redelivery.

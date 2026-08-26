@@ -103,7 +103,7 @@ public class ConsentEndpointTests(AcceptanceApiFixture fixture)
         Assert.True(redaction.GetProperty("mask_pan").GetBoolean());
         Assert.True(redaction.GetProperty("mask_cvv").GetBoolean());
         var fields = redaction.GetProperty("configured_sensitive_fields")
-            .EnumerateArray().Select(f => f.GetString()).ToArray();
+            .EnumerateArray().Select(f => f.GetString()!).ToArray();
         Assert.Equal(["allergy_notes", "loyalty_number"], fields);
     }
 

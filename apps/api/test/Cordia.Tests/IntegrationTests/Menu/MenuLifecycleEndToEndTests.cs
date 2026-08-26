@@ -11,6 +11,7 @@ using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Messaging;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;
+using Cordia.Tests.IntegrationTests.Messaging;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -33,7 +34,7 @@ namespace Cordia.Tests.IntegrationTests.Menu;
 [Collection("Postgres")]
 public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
 {
-    private static ServiceProvider BuildContainer()
+    private static ServiceProvider BuildContainer(string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -55,6 +56,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
         return services.BuildServiceProvider();
     }
 
@@ -64,22 +66,18 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
             sp.GetRequiredService<IOptions<MessagingOptions>>(),
             NullLogger<OutboxPublisherHostedService>.Instance);
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t11-e2e-cleanup");
-        await ctx.OutboxMessages.IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     [Fact]
     public async Task FullLifecycle_IngestThroughPublish_ExposesOnlyPublishedItems()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-e2e-{Guid.NewGuid():N}";
         var catalogId = $"cat-{Guid.NewGuid():N}";
 
@@ -107,7 +105,7 @@ public class MenuLifecycleEndToEndTests(PostgresFixture fixture)
         }
 
         // ── Step 1: ingestion (scan + extract) drives uploaded → draft_ready. ───────────────────
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         await using (var ctx1 = fixture.CreateContext(tenantId))

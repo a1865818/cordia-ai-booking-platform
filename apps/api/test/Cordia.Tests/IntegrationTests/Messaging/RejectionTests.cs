@@ -35,7 +35,7 @@ file sealed class AlwaysRejectPolicy(string reason) : IValidationPolicy
 [Collection("Postgres")]
 public class RejectionTests(PostgresFixture fixture)
 {
-    private static ServiceProvider BuildContainer(IValidationPolicy? fakePolicy = null)
+    private static ServiceProvider BuildContainer(string tenantId, IValidationPolicy? fakePolicy = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -54,6 +54,7 @@ public class RejectionTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         if (fakePolicy is not null)
             services.AddSingleton<IValidationPolicy>(fakePolicy);
@@ -69,17 +70,14 @@ public class RejectionTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "t11-reject-cleanup")
-    {
-        await using var ctx = fixture.CreateContext(cleanupTenant);
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>
     /// Fake IValidationPolicy returns a rejection reason → op→Rejected,
@@ -88,8 +86,6 @@ public class RejectionTests(PostgresFixture fixture)
     [Fact]
     public async Task ValidationPolicyRejects_OpTransitionsToRejected_WithNotificationAndAudit()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-reject-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -113,7 +109,7 @@ public class RejectionTests(PostgresFixture fixture)
 
         var fakePolicy = new AlwaysRejectPolicy("underage_guest_policy");
 
-        await using var sp = BuildContainer(fakePolicy: fakePolicy);
+        await using var sp = BuildContainer(tenantId, fakePolicy: fakePolicy);
         var publisher = BuildPublisher(sp);
 
         // One publisher tick: Accepted → Validating → policy rejects → Rejected.
@@ -160,8 +156,6 @@ public class RejectionTests(PostgresFixture fixture)
     [Fact]
     public async Task AlwaysValidPolicy_OpProceedsPastValidating_NoRejection()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-valid-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -184,7 +178,7 @@ public class RejectionTests(PostgresFixture fixture)
         }
 
         // No override → default AlwaysValidPolicy.
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 

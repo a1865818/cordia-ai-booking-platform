@@ -83,7 +83,7 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
     /// Hosted services are never started (IHostedService.StartAsync is not called by a manually
     /// constructed ServiceProvider); the publisher is driven via PublishPendingBatchAsync directly.
     /// </summary>
-    private static ServiceProvider BuildContainer()
+    private static ServiceProvider BuildContainer(string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -106,6 +106,7 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         // Register the test consumer handler; it lives in the test assembly so AddApplication's
         // MediatR assembly-scan does not discover it.
@@ -130,31 +131,24 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
             NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    // ── Neutralize helper ────────────────────────────────────────────────────────────────────
-
     /// <summary>
     /// Marks all pre-existing unpublished outbox rows as published so the publisher batch
     /// reaches only the freshly seeded row.  Mirrors OutboxPublisherTests.NeutralizeExistingUnpublishedAsync.
     /// </summary>
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("e2e-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── Test A: happy path (§5.1) ────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task HappyPath_OutboxPublisherDrivesFullChain_ConsumerRunsOnce()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-e2e-a-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         const string MessageType = "booking.e2e_capstone.requested.v1";
@@ -177,7 +171,7 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
         }
 
         // Build the full DI container and register the test consumer factory.
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
 
         var registry = sp.GetRequiredService<ConsumerRegistry>();
         registry.Register(MessageType, env =>
@@ -223,8 +217,6 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
     [Fact]
     public async Task DuplicateDelivery_InboxDedupsSecondPublish_ConsumerRunsOnce()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t8-e2e-b-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         const string MessageType = "booking.e2e_capstone.requested.v1";
@@ -246,7 +238,7 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
 
         var registry = sp.GetRequiredService<ConsumerRegistry>();
         registry.Register(MessageType, env =>

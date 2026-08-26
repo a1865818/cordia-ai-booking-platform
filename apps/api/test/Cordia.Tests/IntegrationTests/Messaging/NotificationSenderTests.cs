@@ -24,7 +24,7 @@ namespace Cordia.Tests.IntegrationTests.Messaging;
 [Collection("Postgres")]
 public class NotificationSenderTests(PostgresFixture fixture)
 {
-    private static ServiceProvider BuildContainer()
+    private static ServiceProvider BuildContainer(string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -43,6 +43,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
         return services.BuildServiceProvider();
     }
 
@@ -91,17 +92,14 @@ public class NotificationSenderTests(PostgresFixture fixture)
         });
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "t10-ntf-cleanup")
-    {
-        await using var ctx = fixture.CreateContext(cleanupTenant);
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>
     /// Happy path: booking_confirmed outbox row → publisher tick → exactly ONE notifications row
@@ -110,8 +108,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task BookingConfirmed_OutboxRow_YieldsOneAcceptedNotification_AndAdmittedInbox()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t10-ntf-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -133,7 +129,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -175,8 +171,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task WaitlistOffer_NoOperationRow_DeliversNotification_WithNullOperationId()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-wlntf-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         var operationId = $"op_wl_{Guid.NewGuid():N}"; // deliberately NO booking_operations row
@@ -201,7 +195,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -240,8 +234,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task WaitlistOfferExpired_NoOperationRow_DeliversNotification()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t11-wlexp-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         var operationId = $"op_wl_{Guid.NewGuid():N}"; // no booking_operations row
@@ -263,7 +255,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         await BuildPublisher(sp).PublishPendingBatchAsync(CancellationToken.None);
 
         await using var assertCtx = fixture.CreateContext(tenantId);
@@ -288,8 +280,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task TenantIsolation_NotificationUnderTenantA_NotVisibleToTenantB()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantA = $"t10-iso-a-{Guid.NewGuid():N}";
         var tenantB = $"t10-iso-b-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
@@ -312,7 +302,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantA);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -357,8 +347,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task LogicalDedup_TwoOutboxRowsSameIdentity_YieldsOneNotification_SecondSuppressed()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t10-dedup-{Guid.NewGuid():N}";
         var msgId1 = $"msg-{Guid.NewGuid():N}";
         var msgId2 = $"msg-{Guid.NewGuid():N}";
@@ -392,7 +380,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -427,8 +415,6 @@ public class NotificationSenderTests(PostgresFixture fixture)
     [Fact]
     public async Task MaterialRevisionChange_YieldsSecondDistinctNotification_StaleUntouched()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t10-rev-{Guid.NewGuid():N}";
         var msgId1 = $"msg-{Guid.NewGuid():N}";
         var msgId2 = $"msg-{Guid.NewGuid():N}";
@@ -457,7 +443,7 @@ public class NotificationSenderTests(PostgresFixture fixture)
             await seedCtx.SaveChangesAsync();
         }
 
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
 
         // Tick 1: delivers the revision-1 confirmation → notification N1 (material_revision=1).

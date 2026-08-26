@@ -14,6 +14,7 @@ using Cordia.Infrastructure.Extensions;
 using Cordia.Infrastructure.Messaging;
 using Cordia.Infrastructure.Repositories;
 using Cordia.Infrastructure.Services;
+using Cordia.Tests.IntegrationTests.Messaging;
 using Cordia.Tests.IntegrationTests.Persistence;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -90,7 +91,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
 {
     // ── Container builder ─────────────────────────────────────────────────────────────────────
 
-    private static ServiceProvider BuildContainer(IBookingProviderAdapter fakeAdapter)
+    private static ServiceProvider BuildContainer(string tenantId, IBookingProviderAdapter fakeAdapter)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -109,6 +110,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         // Override the provider adapter (last AddSingleton wins).
         services.AddSingleton<IBookingProviderAdapter>(fakeAdapter);
@@ -124,17 +126,14 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
             scopeFactory, options, NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t7-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── Seeding helpers ───────────────────────────────────────────────────────────────────────
 
@@ -308,8 +307,6 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
     [Fact]
     public async Task HappyPath_FinalizeAgainstHold_SlotHeldToBooked_OpBooked_ConfirmedEmitted()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t7-fp-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -323,7 +320,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
             CreateRef = $"book-t7-fp-{Guid.NewGuid():N}",
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -407,7 +404,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         };
 
         StepOutcome finalizeOutcome;
-        await using (var sp = BuildContainer(fakeAdapter))
+        await using (var sp = BuildContainer(tenantId, fakeAdapter))
         {
             using var scope = sp.CreateScope();
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
@@ -466,8 +463,6 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
     [Fact]
     public async Task NonTrackedFinalize_NoHold_TransitionsToBooked_Unchanged()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t7-notrack-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         var operationId = await SeedNonTrackedFinalizingOpAsync(tenantId);
@@ -481,7 +476,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
             CreateRef = $"book-t7-notrack-{Guid.NewGuid():N}",
         };
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -565,8 +560,6 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
     [Fact]
     public async Task Compensation_FreesActiveHold_SlotHeldZero_OpFailedFinal()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t7-comp-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -580,7 +573,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         // be called because providerRef is null in the 4b path).
         var fakeAdapter = new T7FakeBookingProviderAdapter();
 
-        await using var sp = BuildContainer(fakeAdapter);
+        await using var sp = BuildContainer(tenantId, fakeAdapter);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
