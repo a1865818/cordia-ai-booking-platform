@@ -22,11 +22,16 @@ public class PostgresFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        await EnsureTestDatabaseExistsAsync();
+        // Serialised against the two Alba fixtures, which migrate the same database from their own
+        // collections in parallel. See TestSchemaLock for the 42P07 race this closes.
+        await using (await TestSchemaLock.AcquireAsync())
+        {
+            await EnsureTestDatabaseExistsAsync();
 
-        // Run migrations against the test database.
-        await using var ctx = CreateContext("fixture-init");
-        await ctx.Database.MigrateAsync();
+            // Run migrations against the test database.
+            await using var ctx = CreateContext("fixture-init");
+            await ctx.Database.MigrateAsync();
+        }
 
         // Settle what previous runs left behind, or the cross-tenant sweepers' bounded batches
         // slowly fill with history until a test's own row no longer fits (see StaleFixtureLitter).

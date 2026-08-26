@@ -237,13 +237,25 @@ Plus:
 
 ---
 
-### Phase 3 — Run the integration suite in CI (#91 c)
+### Phase 3 — Fix the migration race, then run the suite in CI (#91 c)
 
-`ci: run the integration suite against a postgres service container`
+`fix(test): serialise test-schema setup` + `ci: run the integration suite against a postgres service container`
 
-Lands as **`continue-on-error: true` / non-required**, promoted to required only at the end of
-Wave 1. Turning a knowingly-contaminated suite into a required gate buys a red gate that gets
-disabled permanently.
+**Scope changed, user-approved 2026-08-26.** The plan originally said `continue-on-error: true`.
+Phase 2's baseline proved that would be worthless: the 15 failures are a **first-run-only** race
+between three concurrent migrators, and CI gets a **fresh database on every run** — so the job would
+be red every single time, and a permanently-red non-required check gets deleted, not fixed. The
+race is therefore fixed first and the job lands as a **real gate**.
+
+**The fix (test-only — no production change).** `TestSchemaLock` takes a session-level PostgreSQL
+`pg_advisory_lock` on the *maintenance* database (`postgres`, which always exists, because the first
+caller may still have to `CREATE DATABASE`). All three fixtures wrap create-plus-migrate in it:
+`PostgresFixture`, `AcceptanceApiFixture`, `TenantResolutionApiFixture`.
+
+An advisory lock rather than a `static SemaphoreSlim` on purpose: a static gate serialises the three
+fixtures *within one process*, which covers this race, but does nothing about two concurrent
+`dotnet test` processes — the documented trap in this repo. An advisory lock is held in the database,
+so it covers both.
 
 Constraints found in research:
 - `PostgresFixture.TestConnStr` (`Persistence/PostgresFixture.cs:20`), `AcceptanceApiFixture.TestConnStr`,

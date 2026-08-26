@@ -65,17 +65,23 @@ public class OutboxTenantScopeParityTests(PostgresFixture fixture)
         // has expired (reclaimable), a row under a live lease (excluded), a row with prior attempts
         // (pins the increment), an already-published row (excluded), and a spare eligible row that
         // LIMIT must leave behind (pins LIMIT + ORDER BY).
+        //
+        // The message_id values descend as occurred_at ascends, ON PURPOSE. They used to ascend
+        // together (p0…p5), which meant ORDER BY message_id and ORDER BY occurred_at selected the
+        // same rows and this fixture pinned nothing about ordering at all. Proven by mutation:
+        // rewriting the double to ORDER BY message_id left this test GREEN. It is red now.
         var specs = new[]
         {
-            new RowSpec("p0-unleased", AncientBase, 0, null, null, null),
-            new RowSpec("p1-lease-expired", AncientBase.AddSeconds(1), 1, "stale-owner", now.AddSeconds(-60), null),
-            new RowSpec("p2-lease-live", AncientBase.AddSeconds(2), 1, "live-owner", now.AddSeconds(300), null),
-            new RowSpec("p3-prior-attempts", AncientBase.AddSeconds(3), 2, null, null, null),
-            new RowSpec("p4-published", AncientBase.AddSeconds(4), 1, null, null, now.AddSeconds(-120)),
-            new RowSpec("p5-beyond-limit", AncientBase.AddSeconds(5), 0, null, null, null),
+            new RowSpec("z5-unleased", AncientBase, 0, null, null, null),
+            new RowSpec("s4-lease-expired", AncientBase.AddSeconds(1), 1, "stale-owner", now.AddSeconds(-60), null),
+            new RowSpec("q3-lease-live", AncientBase.AddSeconds(2), 1, "live-owner", now.AddSeconds(300), null),
+            new RowSpec("m2-prior-attempts", AncientBase.AddSeconds(3), 2, null, null, null),
+            new RowSpec("f1-published", AncientBase.AddSeconds(4), 1, null, null, now.AddSeconds(-120)),
+            new RowSpec("a0-beyond-limit", AncientBase.AddSeconds(5), 0, null, null, null),
         };
 
-        // Eligible in occurred_at order: p0, p1, p3, p5 — a limit of 3 must stop before p5.
+        // Eligible in occurred_at order: z5, s4, m2, a0 — a limit of 3 must stop before a0.
+        // Eligible in message_id order would be: a0, m2, s4 — a different set, which is the point.
         const int limit = 3;
 
         try
@@ -115,7 +121,7 @@ public class OutboxTenantScopeParityTests(PostgresFixture fixture)
             // over it. If BOTH implementations change together this is what notices, and whoever
             // updates it has to decide deliberately that the new selection is correct.
             Assert.Equal(
-                new[] { "p0-unleased", "p1-lease-expired", "p3-prior-attempts" },
+                new[] { "m2-prior-attempts", "s4-lease-expired", "z5-unleased" },
                 MessageIdsOf(productionClaimed, tenantId));
         }
         finally

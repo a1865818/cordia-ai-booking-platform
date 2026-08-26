@@ -33,14 +33,19 @@ public class TenantResolutionApiFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        await EnsureTestDatabaseExistsAsync();
-
-        Host = await AlbaHost.For<Program>(builder =>
+        // Serialised against AcceptanceApiFixture and PostgresFixture, which migrate the same
+        // database from their own collections in parallel. See TestSchemaLock.
+        await using (await Persistence.TestSchemaLock.AcquireAsync())
         {
-            builder.UseEnvironment("Test");
-            builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
-            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
-        });
+            await EnsureTestDatabaseExistsAsync();
+
+            Host = await AlbaHost.For<Program>(builder =>
+            {
+                builder.UseEnvironment("Test");
+                builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
+                builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            });
+        }
     }
 
     public async ValueTask DisposeAsync()

@@ -35,18 +35,24 @@ public class AcceptanceApiFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        // Step 1: ensure the database exists before the host tries to migrate it.
-        await EnsureTestDatabaseExistsAsync();
-
-        // Step 2: boot the Alba host.
-        // UseSetting overrides appsettings.json values inside the test process.
-        Host = await AlbaHost.For<Program>(builder =>
+        // Steps 1 and 2 run under one lock: this fixture, TenantResolutionApiFixture and
+        // PostgresFixture all bring the schema up, and xUnit starts their collections in parallel.
+        // Against an empty database that races and the losers die on 42P07 — see TestSchemaLock.
+        await using (await Persistence.TestSchemaLock.AcquireAsync())
         {
-            builder.UseEnvironment("Test");
-            builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
-            // Run EF migrations on startup so the schema is always current.
-            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
-        });
+            // Step 1: ensure the database exists before the host tries to migrate it.
+            await EnsureTestDatabaseExistsAsync();
+
+            // Step 2: boot the Alba host.
+            // UseSetting overrides appsettings.json values inside the test process.
+            Host = await AlbaHost.For<Program>(builder =>
+            {
+                builder.UseEnvironment("Test");
+                builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
+                // Run EF migrations on startup so the schema is always current.
+                builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            });
+        }
 
         // Both collections share one database, so either may be the first to run. Settling here
         // too means the backlog is cleared whichever order xUnit picks (see StaleFixtureLitter).
