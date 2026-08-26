@@ -20,7 +20,7 @@ means. Wave 0 makes the rest of the roadmap falsifiable.
 | Tenant-scoped scheduled-job claim in tests | `IntegrationTests/Messaging/OutboxTenantScope.cs` — the proven DI-override pattern | New `ScheduledJobTenantScope.cs` is a sibling, not a new mechanism. Mirrors `ScheduledJobRepository.ClaimDueAsync` exactly, plus `tenant_id`. |
 | Parity pin for that mirror | `OutboxTenantScopeParityTests` | A sibling parity test, or the new mirror drifts from production the way the outbox one would have. |
 | CI integration job | `ci-cd.yml`'s existing `ci-dotnet` job shape | A new job reusing the same setup steps + a `services: postgres` block. Not a new pipeline. |
-| Redis in local dev | `docker-compose.yml`'s single `postgres` service | A second service in the same file. No new compose variant. |
+| ~~Redis in local dev~~ | — | **Not shipped.** A `redis` service was written and reverted; D2 is re-scoped to Wave 5. See Phase 4 discovery 2. |
 | Finalize unit-test harness | `ReconcileOperationCommandHandlerTests.cs` `CreateHandler()` factory | Same Moq-fields + factory + shared-defaults shape. Copy the convention, do not invent one. |
 | nx cache correctness | `nx.json` `namedInputs` | Fix the three inert gitignored entries; do not restructure the input sets. |
 
@@ -156,14 +156,14 @@ Plus:
 `OutboxPublisherTests`, the 5 already-migrated classes.
 
 **Automated Verification**
-- [ ] `bun nx test-integration api` green (needs `docker compose up -d postgres`)
-- [ ] `bun nx test-integration api` green when run **twice concurrently is NOT tested** — instead assert zero `testhost` before each run
-- [ ] `grep -rl NeutralizeExisting apps/api/test` returns **only** `OutboxPublisherTests.cs`
-- [ ] `bun nx lint api` green · zero CS8631 in build output
+- [x] `bun nx test-integration api` green — **670 / 669 passed / 0 failed** (baseline 668 / 652 / 15)
+- [x] zero `testhost` processes asserted before every run. The concurrent double-run is **deliberately not tested** — it is the documented trap, and a test that races two `dotnet test` invocations would be the flake it is meant to catch. `TestSchemaLock`'s advisory lock covers the cross-process case structurally instead.
+- [x] `grep -rl NeutralizeExisting apps/api/test` returns **only** `OutboxPublisherTests.cs`
+- [x] `bun nx lint api` green · zero CS8631 in build output
 
 **Manual Verification**
-- [ ] Regression: `OutboxPublisherTests.ClaimBatchAsync_SetsLease_AndIsCrossTenant` still asserts both tenants and passes.
-- [ ] Regression: `OutboxTenantScopeParityTests` still passes; new scheduled-job parity test passes.
+- [x] Regression: `OutboxPublisherTests.ClaimBatchAsync_SetsLease_AndIsCrossTenant` still asserts both tenants and passes; the file was not touched at all.
+- [x] Regression: `OutboxTenantScopeParityTests` passes (and was corrected — see discovery 9); the new scheduled-job parity test passes and is mutation-verified.
 
 **Discoveries and Notable Information**
 
@@ -276,8 +276,10 @@ Constraints found in research:
       diff is a pure insertion; `yaml.safe_load` parses and lists all 11 jobs
 - [x] both new shell steps dry-run locally against the real container: the health-wait reports
       `postgres healthy`, and the migration assertion prints `migrations applied: 39 → WOULD PASS`
-- [ ] **the job itself cannot be verified until it runs on GitHub.** Written and locally
-      dry-run, but never executed by Actions. First PR is the real test.
+- [x] **the job ran on GitHub and passed** — PR #100, run 32957905677: `ci-dotnet-integration`
+      **success** against a fresh Postgres service. That same run also caught a real break this
+      wave introduced (`ci-dotnet` and `ci-web` failing on `uv: not found`), which is exactly what
+      the job existed to surface.
 
 **Manual Verification**
 - [x] Suite wall-clock recorded — see discovery 3 below. Nothing in the repo had one.
@@ -319,12 +321,18 @@ Constraints found in research:
 
 ### Phase 4 — Collapse the duplicate langgraph config (#94 D12; D2 re-scoped to Wave 5)
 
-`chore(langgraph): add redis to compose and collapse the duplicate production config`
+`chore(langgraph): collapse the duplicate production config`
+
+> **Retitled during implementation.** The planned commit said "add redis to compose and collapse…";
+> the redis half was reverted, so the shipped commit is the collapse only.
 
 `langgraph.json` and `langgraph.production.json` are **byte-identical** (verified by diff).
 Delete the production copy and update its four references: `nx.json:42`,
 `apps/langgraph/project.json:86`, `apps/langgraph/scripts/build_image.sh:13`,
-`docs/deployment.md:68,121`. Add a `redis` service to `docker-compose.yml` alongside `postgres`.
+`docs/deployment.md:68,121`.
+
+> ~~Add a `redis` service to `docker-compose.yml` alongside `postgres`.~~ **Reverted** — see
+> discovery 2. `docker-compose.yml` is unchanged by this wave.
 
 **Scope honesty:** this gets the production image from `KeyError: REDIS_URI` to
 `ValueError: License verification failed`. It does **not** make langgraph start — that is #94 D1,
@@ -443,7 +451,7 @@ Derived from research B1–B8.
 `tools/scripts/export_openapi.mjs`, `CLAUDE.md`, 10 integration test classes,
 `RetryAndFailureTests` scheduled-job helper, `ConsentEndpointTests:107`, new
 `ScheduledJobTenantScope.cs` + parity test, `.github/workflows/ci-cd.yml` (new job only),
-`docker-compose.yml` (+redis), `langgraph.production.json` (deleted) and its four references,
+`langgraph.production.json` (deleted) and its four references,
 new `FinalizeBookingCommandHandlerTests.cs`.
 
 **Must stay byte-for-byte:**
@@ -488,8 +496,8 @@ not a change.
 
 ## Package notes
 
-**No new packages** in any lane. The redis compose service uses a stock image; no client library is
-added (nothing in `apps/api` or `apps/langgraph` gains a redis dependency in this wave).
+**No new packages** in any lane, and — after the revert — **no new compose services either**.
+Nothing in `apps/api` or `apps/langgraph` gains a redis dependency in this wave.
 
 ## Environment preconditions
 

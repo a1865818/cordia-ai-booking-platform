@@ -384,11 +384,14 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         // Phase C: REDELIVER the exact same message_id (reset published_at on the same outbox row)
         // and neutralize the Phase-B continuation so only the duplicate is in the batch.
         await RepublishOutboxRowAsync(tenantId, paidMessageId);
+        // The tenant predicate is load-bearing — see EndToEndSubstrateTests for the full
+        // reasoning. Without it this settles every other tenant's pending rows; with the claim
+        // already scoped to tenantId, only this tenant's rows can reach the batch anyway.
         await using (var neutralCtx = fixture.CreateContext("t7-dup-neutralize"))
         {
             await neutralCtx.OutboxMessages
                 .IgnoreQueryFilters()
-                .Where(m => m.PublishedAt == null && m.MessageId != paidMessageId)
+                .Where(m => m.TenantId == tenantId && m.PublishedAt == null && m.MessageId != paidMessageId)
                 .ExecuteUpdateAsync(b => b
                     .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
                     .SetProperty(m => m.LeaseOwner, (string?)null)

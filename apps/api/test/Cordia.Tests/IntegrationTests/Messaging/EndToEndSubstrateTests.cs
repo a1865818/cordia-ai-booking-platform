@@ -277,13 +277,20 @@ public class EndToEndSubstrateTests(PostgresFixture fixture)
                     .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
         }
 
-        // Neutralize any OTHER unpublished rows that appeared between the two ticks
-        // so only our duplicate row is in the second batch.
+        // Settle THIS TENANT's other unpublished rows that appeared between the two ticks, so
+        // only the duplicate row is in the second batch.
+        //
+        // The tenant predicate is load-bearing. Without it this stamps every OTHER tenant's
+        // unpublished rows as published — the exact cross-tenant corruption that
+        // ScopeOutboxClaimToTenant was introduced to end, re-entering through a raw DbContext
+        // instead of the publisher. It is also unnecessary without it: the claim in this
+        // container is already bounded to tenantId, so a foreign row can never reach this
+        // batch to begin with.
         await using (var neutralCtx = fixture.CreateContext("e2e-neutralize-2"))
         {
             await neutralCtx.OutboxMessages
                 .IgnoreQueryFilters()
-                .Where(m => m.PublishedAt == null && m.MessageId != messageId)
+                .Where(m => m.TenantId == tenantId && m.PublishedAt == null && m.MessageId != messageId)
                 .ExecuteUpdateAsync(b => b
                     .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
                     .SetProperty(m => m.LeaseOwner, (string?)null)

@@ -17,8 +17,14 @@ namespace Cordia.Tests.IntegrationTests.Messaging;
 
 /// <summary>
 /// Integration tests for the SendNotification consumer (spec 10 §4, §6.2, T2).
-/// Mirrors <see cref="RejectionTests"/> harness: seed outbox, neutralize pre-existing
-/// unpublished rows, tick the publisher, assert notifications + consumer_inbox rows.
+/// Mirrors <see cref="RejectionTests"/> harness: seed outbox, tick the publisher, assert
+/// notifications + consumer_inbox rows.
+///
+/// <para>The harness no longer neutralizes pre-existing unpublished rows. It bounds the
+/// publisher's CLAIM to this test's tenant instead (<c>ScopeOutboxClaimToTenant</c>), which
+/// isolates the tick without mutating any other tenant's state — the sweep could only ever
+/// settle rows that existed at that instant, and it stamped concurrent tests' rows published
+/// on the way past.</para>
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Postgres")]

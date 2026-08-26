@@ -37,8 +37,7 @@ namespace Cordia.Tests.IntegrationTests.Persistence;
 /// </summary>
 internal static class TestSchemaLock
 {
-    private const string MaintenanceConnStr =
-        "Host=localhost;Port=5432;Database=postgres;Username=cordia;Password=localdev";
+    private const string MaintenanceConnStr = TestDatabase.MaintenanceConnStr;
 
     /// <summary>
     /// Arbitrary but fixed. Advisory-lock keys share one namespace per database, so this only has to

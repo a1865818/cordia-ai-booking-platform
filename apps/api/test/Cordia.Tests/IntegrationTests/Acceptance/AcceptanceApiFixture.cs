@@ -22,13 +22,11 @@ namespace Cordia.Tests.IntegrationTests.Acceptance;
 /// </summary>
 public class AcceptanceApiFixture : IAsyncLifetime
 {
-    private const string MaintenanceConnStr =
-        "Host=localhost;Port=5432;Database=postgres;Username=cordia;Password=localdev";
+    private const string MaintenanceConnStr = Persistence.TestDatabase.MaintenanceConnStr;
 
-    // Re-use the same connection string as the Postgres persistence fixture so
-    // both fixture families share one test database.
-    public const string TestConnStr =
-        "Host=localhost;Port=5432;Database=Cordia_API_Test;Username=cordia;Password=localdev";
+    // Both fixture families share one test database; the value lives in TestDatabase so the
+    // port and credentials cannot drift between fixtures.
+    public const string TestConnStr = Persistence.TestDatabase.ConnStr;
 
     /// <summary>The in-process Alba host; available after <see cref="InitializeAsync"/> completes.</summary>
     public IAlbaHost Host { get; private set; } = null!;

@@ -14,11 +14,13 @@ namespace Cordia.Tests.IntegrationTests.Persistence;
 /// </summary>
 public class PostgresFixture : IAsyncLifetime
 {
-    private const string MaintenanceConnStr =
-        "Host=localhost;Port=5432;Database=postgres;Username=cordia;Password=localdev";
+    private const string MaintenanceConnStr = TestDatabase.MaintenanceConnStr;
 
-    public const string TestConnStr =
-        "Host=localhost;Port=5432;Database=Cordia_API_Test;Username=cordia;Password=localdev";
+    /// <summary>
+    /// Kept as a forwarding constant rather than moved: 26 test files reference
+    /// <c>PostgresFixture.TestConnStr</c> by name. The value lives in <see cref="TestDatabase"/>.
+    /// </summary>
+    public const string TestConnStr = TestDatabase.ConnStr;
 
     public async ValueTask InitializeAsync()
     {

@@ -548,11 +548,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────────
   docker-api:
     runs-on: ubuntu-latest
-    needs: [ci-dotnet, ci-web]
+    needs: [ci-dotnet, ci-web, ci-dotnet-integration]
     if: >-
       github.event_name != 'pull_request' &&
       needs.ci-dotnet.result == 'success' &&
-      needs.ci-web.result == 'success'
+      needs.ci-web.result == 'success' &&
+      needs.ci-dotnet-integration.result != 'failure'
     environment: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -736,7 +737,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────────
   release:
     runs-on: ubuntu-latest
-    needs: [detect-affected, generate-schemas, ci-python, ci-dotnet, ci-web]
+    needs: [detect-affected, generate-schemas, ci-python, ci-dotnet, ci-dotnet-integration, ci-web]
     if: >-
       always() && !cancelled() &&
       github.ref == 'refs/heads/main' &&
@@ -747,6 +748,7 @@ jobs:
        needs.detect-affected.outputs.web-affected == 'true') &&
       needs.generate-schemas.result != 'failure' &&
       needs.ci-python.result != 'failure' &&
+      needs.ci-dotnet-integration.result != 'failure' &&
       needs.ci-dotnet.result != 'failure' &&
       needs.ci-web.result != 'failure'
     permissions:

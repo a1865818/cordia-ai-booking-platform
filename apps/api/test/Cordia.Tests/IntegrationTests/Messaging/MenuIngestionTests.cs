@@ -229,9 +229,13 @@ public class MenuIngestionTests(PostgresFixture fixture)
     {
         await using var ctx = fixture.CreateContext(tenantId);
 
+        // Tenant-scoped deliberately: an unqualified sweep here settles every other tenant's
+        // pending outbox rows, which is the cross-tenant corruption ScopeOutboxClaimToTenant
+        // exists to prevent. This container's claim is already bounded to tenantId, so settling
+        // this tenant's own rows is all that is needed to isolate the re-armed message.
         await ctx.OutboxMessages
             .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
+            .Where(m => m.TenantId == tenantId && m.PublishedAt == null)
             .ExecuteUpdateAsync(b => b
                 .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
                 .SetProperty(m => m.LeaseOwner, (string?)null)
