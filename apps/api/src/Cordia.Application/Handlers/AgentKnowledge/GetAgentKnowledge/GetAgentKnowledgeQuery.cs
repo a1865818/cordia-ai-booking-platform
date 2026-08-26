@@ -9,7 +9,7 @@ namespace Cordia.Application.Handlers.AgentKnowledge;
 /// Lists agent knowledge-base entries (docs/backend-gaps.md G9). Not owner-gated — the
 /// console needs the unanswered count on the settings panel.
 ///
-/// TODO: also include open <c>HandoffWorkItem</c> rows that have no knowledge entry yet as
+/// TODO(#79-followup): also include open <c>HandoffWorkItem</c> rows that have no knowledge entry yet as
 /// <c>needs-answer</c> sourced from <c>handoff</c>. <c>IHandoffWorkItemRepository</c> currently
 /// has no list-open-items method (only <c>GetByIdempotencyKeyAsync</c> / <c>TryAddAsync</c>),
 /// so auto-seed from handoffs is skipped until that surface exists.

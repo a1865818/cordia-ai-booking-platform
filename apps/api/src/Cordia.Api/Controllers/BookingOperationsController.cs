@@ -158,7 +158,12 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
     /// This endpoint does NOT cancel an already-Booked operation — that is a separate new-
     /// operation flow defined in spec 08.
     ///
-    /// T11 TODO: surface cancellation_pending=true in the status projection.
+    /// TODO(#79-followup): surface cancellation_pending on the status projection too.
+    /// Deliberately still deferred: OperationStatusView is a generated Pydantic contract, so a
+    /// dedicated field is a cross-language regen rather than a controller change, and
+    /// GetOperationStatusQuery already tells the customer through CustomerMessage. What #53
+    /// fixed is narrower and is done: THIS endpoint no longer claims a cancellation is pending
+    /// when the operation has already reached a terminal state.
     /// </summary>
     [HttpPost("{operationId}/cancel")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
