@@ -21,26 +21,29 @@ namespace Cordia.Tests.IntegrationTests.TenantResolution;
 /// </summary>
 public class TenantResolutionApiFixture : IAsyncLifetime
 {
-    private const string MaintenanceConnStr =
-        "Host=localhost;Port=5432;Database=postgres;Username=cordia;Password=localdev";
+    private const string MaintenanceConnStr = Persistence.TestDatabase.MaintenanceConnStr;
 
-    // Same test database as the other integration-fixture families.
-    public const string TestConnStr =
-        "Host=localhost;Port=5432;Database=Cordia_API_Test;Username=cordia;Password=localdev";
+    // Same test database as the other integration-fixture families; value in TestDatabase.
+    public const string TestConnStr = Persistence.TestDatabase.ConnStr;
 
     /// <summary>The in-process Alba host; available after <see cref="InitializeAsync"/> completes.</summary>
     public IAlbaHost Host { get; private set; } = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await EnsureTestDatabaseExistsAsync();
-
-        Host = await AlbaHost.For<Program>(builder =>
+        // Serialised against AcceptanceApiFixture and PostgresFixture, which migrate the same
+        // database from their own collections in parallel. See TestSchemaLock.
+        await using (await Persistence.TestSchemaLock.AcquireAsync())
         {
-            builder.UseEnvironment("Test");
-            builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
-            builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
-        });
+            await EnsureTestDatabaseExistsAsync();
+
+            Host = await AlbaHost.For<Program>(builder =>
+            {
+                builder.UseEnvironment("Test");
+                builder.UseSetting("ConnectionStrings:CordiaDBConnection", TestConnStr);
+                builder.UseSetting("DatabaseBootstrap:MigrateOnStartup", "true");
+            });
+        }
     }
 
     public async ValueTask DisposeAsync()

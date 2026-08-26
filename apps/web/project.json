@@ -107,6 +107,7 @@
     },
     "typecheck": {
       "executor": "nx:run-commands",
+      "dependsOn": [],
       "inputs": [
         "typescript"
       ],

@@ -316,6 +316,103 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────────────────────
+  # CI — .NET integration suite (Alba + real Postgres)
+  #
+  # Separate from ci-dotnet because it needs a database and ci-dotnet does not.
+  # Postgres comes from the repo's own docker-compose.yml rather than a `services:`
+  # block, deliberately: the three test fixtures hardcode
+  #   Host=localhost;Port=5432;Username=cordia;Password=localdev
+  # as `const` strings (26 call sites for PostgresFixture.TestConnStr alone), and
+  # compose already declares exactly that, plus `-c max_connections=500` and the
+  # init scripts. Reusing it keeps CI and local dev on one source of truth instead
+  # of a second copy of the same credentials that can drift.
+  #
+  # This is a real gate, not continue-on-error. It only became one once the
+  # first-run migration race was fixed (see TestSchemaLock): three fixtures used to
+  # migrate an empty database concurrently and lose on 42P07, which fires on every
+  # CI run because CI always starts from a fresh database.
+  # ──────────────────────────────────────────────────────────────────────────────
+  ci-dotnet-integration:
+    runs-on: ubuntu-latest
+    needs: [detect-affected, generate-schemas]
+    if: >-
+      always() && !cancelled() &&
+      needs.detect-affected.outputs.api-affected == 'true' &&
+      needs.generate-schemas.result != 'failure'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Download shared schemas
+        if: needs.generate-schemas.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: shared-schemas
+          path: libs/shared-schemas/
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('apps/api/**/*.csproj', 'apps/api/**/*.sln') }}-${{ github.run_id }}
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ hashFiles('apps/api/**/*.csproj', 'apps/api/**/*.sln') }}-
+            nuget-${{ runner.os }}-
+
+      # ── Database ──────────────────────────────────────────────────────────────
+      - name: Start Postgres
+        run: |
+          docker compose up -d postgres
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' cordia-postgres 2>/dev/null || echo starting)"
+            if [ "$status" = "healthy" ]; then
+              echo "postgres healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::postgres did not become healthy within 120s"
+          docker compose logs postgres
+          exit 1
+
+      # ── Install ───────────────────────────────────────────────────────────────
+      - name: Install NX workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install .NET dependencies
+        run: bun nx run api:install
+
+      # ── Test ──────────────────────────────────────────────────────────────────
+      # The fixtures create Cordia_API_Test and apply all migrations themselves,
+      # under TestSchemaLock. There is no separate migration step by design: the
+      # thing being proved is that the fixtures can do it from scratch.
+      - name: Integration tests
+        run: bun nx run api:test-integration
+
+      # Exit criterion for Wave 0: the full migration set really did apply to an
+      # empty database, rather than the suite passing against a half-built schema.
+      - name: Assert the schema was built from scratch
+        run: |
+          query='select count(*) from "__EFMigrationsHistory";'
+          applied="$(docker exec cordia-postgres psql -U cordia -d Cordia_API_Test -t -A -c "$query" | tr -d '[:space:]')"
+          echo "migrations applied: $applied"
+          if [ "$applied" -lt 39 ]; then
+            echo "::error::expected at least 39 migrations applied, found $applied"
+            exit 1
+          fi
+
+      - name: Postgres logs on failure
+        if: failure()
+        run: docker compose logs postgres
+
+  # ──────────────────────────────────────────────────────────────────────────────
   # CI — Web (React SPA)
   # ──────────────────────────────────────────────────────────────────────────────
   ci-web:
@@ -451,11 +548,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────────
   docker-api:
     runs-on: ubuntu-latest
-    needs: [ci-dotnet, ci-web]
+    needs: [ci-dotnet, ci-web, ci-dotnet-integration]
     if: >-
       github.event_name != 'pull_request' &&
       needs.ci-dotnet.result == 'success' &&
-      needs.ci-web.result == 'success'
+      needs.ci-web.result == 'success' &&
+      needs.ci-dotnet-integration.result != 'failure'
     environment: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -639,7 +737,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────────
   release:
     runs-on: ubuntu-latest
-    needs: [detect-affected, generate-schemas, ci-python, ci-dotnet, ci-web]
+    needs: [detect-affected, generate-schemas, ci-python, ci-dotnet, ci-dotnet-integration, ci-web]
     if: >-
       always() && !cancelled() &&
       github.ref == 'refs/heads/main' &&
@@ -650,6 +748,7 @@ jobs:
        needs.detect-affected.outputs.web-affected == 'true') &&
       needs.generate-schemas.result != 'failure' &&
       needs.ci-python.result != 'failure' &&
+      needs.ci-dotnet-integration.result != 'failure' &&
       needs.ci-dotnet.result != 'failure' &&
       needs.ci-web.result != 'failure'
     permissions:

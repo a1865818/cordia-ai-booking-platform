@@ -53,6 +53,7 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
     // ── Container helpers ────────────────────────────────────────────────────────────────────
 
     private static ServiceProvider BuildContainer(
+        string tenantId,
         IDepositPolicy? depositPolicy = null,
         IVerificationService? verificationService = null)
     {
@@ -73,6 +74,7 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         // Override fakes AFTER AddInfrastructure so they shadow the default singletons.
         if (depositPolicy is not null)
@@ -92,17 +94,14 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
             NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t7-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>Seeds an op in Accepted status + booking.command.requested.v1 trigger outbox row.</summary>
     private async Task<(string tenantId, string operationId)> SeedOperationAndTriggerAsync(string prefix)
@@ -172,10 +171,9 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
     public async Task NoDeposit_DefaultPolicy_OperationReachesBooked()
     {
         // Confirms the RequestPayment no-deposit path: Held→Finalizing→Booked (one publisher tick).
-        await NeutralizeExistingUnpublishedAsync();
         var (tenantId, operationId) = await SeedOperationAndTriggerAsync("t7-reg");
 
-        await using var sp = BuildContainer(); // default policies (no deposit, no user action)
+        await using var sp = BuildContainer(tenantId); // default policies (no deposit, no user action)
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -192,11 +190,10 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
     [Fact]
     public async Task Deposit_HappyPath_AwaitingPaymentThenBooked()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var (tenantId, operationId) = await SeedOperationAndTriggerAsync("t7-dep");
 
         // Phase A: drive to AwaitingPayment (deposit required fake).
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -225,10 +222,9 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         }
 
         // Phase B: simulate deposit_paid event via outbox row (publisher sets tenant context).
-        await NeutralizeExistingUnpublishedAsync();
         await SeedPaymentEventAsync(tenantId, operationId, "payment.deposit_paid.v1");
 
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             // First tick: deposit_paid → Finalizing + continuation booking.command.requested.v1 emitted.
@@ -257,21 +253,19 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
     [Fact]
     public async Task Deposit_Expired_OperationExpiredAndOutboxesEmitted()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var (tenantId, operationId) = await SeedOperationAndTriggerAsync("t7-exp");
 
         // Drive to AwaitingPayment.
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
         }
 
         // Simulate deposit_expired event.
-        await NeutralizeExistingUnpublishedAsync();
         await SeedPaymentEventAsync(tenantId, operationId, "payment.deposit_expired.v1");
 
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -308,11 +302,10 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
     [Fact]
     public async Task UserAction_RequiredThenCompleted_OperationReachesBooked()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var (tenantId, operationId) = await SeedOperationAndTriggerAsync("t7-ua");
 
         // Phase A: drive to AwaitingUserAction (verification required).
-        await using (var sp = BuildContainer(verificationService: new FakeVerificationService(required: true)))
+        await using (var sp = BuildContainer(tenantId, verificationService: new FakeVerificationService(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -333,10 +326,9 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         }
 
         // Phase B: simulate user action completed. Verification now returns false → re-validation passes.
-        await NeutralizeExistingUnpublishedAsync();
         await SeedUserActionEventAsync(tenantId, operationId);
 
-        await using (var sp = BuildContainer(verificationService: new FakeVerificationService(required: false)))
+        await using (var sp = BuildContainer(tenantId, verificationService: new FakeVerificationService(required: false)))
         {
             var publisher = BuildPublisher(sp);
             // First tick: user_action.completed → Accepted + continuation booking.command.requested.v1 emitted.
@@ -362,22 +354,20 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         // SAME payment.deposit_paid.v1 message_id must admit exactly one consumer_inbox row and
         // transition the operation exactly once (the InboxDeduplicationBehavior DO-NOTHING path
         // suppresses the second delivery before the handler runs).
-        await NeutralizeExistingUnpublishedAsync();
         var (tenantId, operationId) = await SeedOperationAndTriggerAsync("t7-dup");
 
         // Phase A: drive to AwaitingPayment.
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
         }
 
         // Phase B: first paid event (FIXED message_id) → op AwaitingPayment→Finalizing, inbox admits.
-        await NeutralizeExistingUnpublishedAsync();
         var paidMessageId = $"evt-dup-{Guid.NewGuid():N}";
         await SeedPaymentEventAsync(tenantId, operationId, "payment.deposit_paid.v1", paidMessageId);
 
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -394,18 +384,21 @@ public class DepositAndUserActionTests(PostgresFixture fixture)
         // Phase C: REDELIVER the exact same message_id (reset published_at on the same outbox row)
         // and neutralize the Phase-B continuation so only the duplicate is in the batch.
         await RepublishOutboxRowAsync(tenantId, paidMessageId);
+        // The tenant predicate is load-bearing — see EndToEndSubstrateTests for the full
+        // reasoning. Without it this settles every other tenant's pending rows; with the claim
+        // already scoped to tenantId, only this tenant's rows can reach the batch anyway.
         await using (var neutralCtx = fixture.CreateContext("t7-dup-neutralize"))
         {
             await neutralCtx.OutboxMessages
                 .IgnoreQueryFilters()
-                .Where(m => m.PublishedAt == null && m.MessageId != paidMessageId)
+                .Where(m => m.TenantId == tenantId && m.PublishedAt == null && m.MessageId != paidMessageId)
                 .ExecuteUpdateAsync(b => b
                     .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
                     .SetProperty(m => m.LeaseOwner, (string?)null)
                     .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
         }
 
-        await using (var sp = BuildContainer(depositPolicy: new FakeDepositPolicy(required: true)))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new FakeDepositPolicy(required: true)))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);

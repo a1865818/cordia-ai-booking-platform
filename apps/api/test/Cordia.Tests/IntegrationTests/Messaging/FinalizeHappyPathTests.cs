@@ -42,7 +42,7 @@ public class FinalizeHappyPathTests(PostgresFixture fixture)
 {
     // ── Container builder ────────────────────────────────────────────────────────────────────
 
-    private static ServiceProvider BuildContainer()
+    private static ServiceProvider BuildContainer(string tenantId)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -61,6 +61,7 @@ public class FinalizeHappyPathTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -75,27 +76,20 @@ public class FinalizeHappyPathTests(PostgresFixture fixture)
             NullLogger<OutboxPublisherHostedService>.Instance);
     }
 
-    // ── Neutralize helper ────────────────────────────────────────────────────────────────────
-
-    private async Task NeutralizeExistingUnpublishedAsync()
-    {
-        await using var ctx = fixture.CreateContext("t4-cleanup");
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     // ── Happy path: single publisher tick reaches Booked ────────────────────────────────────
 
     [Fact]
     public async Task HappyPath_SinglePublisherTick_OperationReachesBooked()
     {
-        await NeutralizeExistingUnpublishedAsync();
-
         var tenantId = $"t4-happy-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
 
@@ -119,7 +113,7 @@ public class FinalizeHappyPathTests(PostgresFixture fixture)
         }
 
         // Drive one publisher tick — the in-process driver loop should advance to Booked.
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 

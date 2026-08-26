@@ -92,6 +92,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     // ── Container helpers ────────────────────────────────────────────────────────────────────
 
     private static ServiceProvider BuildContainer(
+        string tenantId,
         IValidationPolicy? validationPolicy = null,
         ICapacityReservation? capacityReservation = null,
         IDepositPolicy? depositPolicy = null)
@@ -113,6 +114,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         services.AddSingleton<IConfiguration>(config);
         services.AddApplication();
         services.AddInfrastructure(config);
+        services.ScopeOutboxClaimToTenant(tenantId);
 
         // Override fakes AFTER AddInfrastructure to shadow registered services.
         if (validationPolicy is not null)
@@ -137,17 +139,14 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     /// Neutralizes all unpublished outbox rows in the shared test DB so the publisher
     /// only processes rows seeded by this test.
     /// </summary>
-    private async Task NeutralizeExistingUnpublishedAsync(string cleanupTenant = "capstone-cleanup")
-    {
-        await using var ctx = fixture.CreateContext(cleanupTenant);
-        await ctx.OutboxMessages
-            .IgnoreQueryFilters()
-            .Where(m => m.PublishedAt == null)
-            .ExecuteUpdateAsync(b => b
-                .SetProperty(m => m.PublishedAt, DateTimeOffset.UtcNow)
-                .SetProperty(m => m.LeaseOwner, (string?)null)
-                .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)null));
-    }
+    // There used to be a NeutralizeExistingUnpublishedAsync() here that stamped EVERY tenant's
+    // unpublished outbox rows as published before each tick, so the cross-tenant claim would only
+    // find this test's message. It could not work: it settles the backlog that exists at that
+    // instant, and the AcceptanceApi collection — which xUnit runs in parallel against the same
+    // database — keeps inserting booking.command.requested.v1 rows afterwards. It also stamped
+    // those foreign rows published, corrupting a concurrent test's state. Bounding the claim to
+    // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
+    // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
     /// <summary>Seeds op (Accepted) + booking.command.requested.v1 trigger outbox row. Returns operationId.</summary>
     private async Task<string> SeedTriggerAsync(string tenantId)
@@ -259,12 +258,11 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     [Fact]
     public async Task Terminal_Booked_ReachableViaEngine_EmitsExpectedEvents()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-booked-{Guid.NewGuid():N}";
         var operationId = await SeedTriggerAsync(tenantId);
 
         // Default container: stub adapter creates booking, no deposit, always-valid policy.
-        await using var sp = BuildContainer();
+        await using var sp = BuildContainer(tenantId);
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -297,11 +295,10 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     [Fact]
     public async Task Terminal_Rejected_ReachableViaEngine_EmitsExpectedEvents()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-rejected-{Guid.NewGuid():N}";
         var operationId = await SeedTriggerAsync(tenantId);
 
-        await using var sp = BuildContainer(validationPolicy: new CapstoneRejectPolicy("underage_capstone"));
+        await using var sp = BuildContainer(tenantId, validationPolicy: new CapstoneRejectPolicy("underage_capstone"));
         var publisher = BuildPublisher(sp);
         await publisher.PublishPendingBatchAsync(CancellationToken.None);
 
@@ -334,13 +331,12 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     [Fact]
     public async Task Terminal_Waitlisted_ReachableViaEngine_EmitsExpectedEvents()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-waitlisted-{Guid.NewGuid():N}";
         // Seed op with a canonical payload pointing to a full slot → real NoCapacity.
         var operationId = await SeedTriggerWithFullSlotAsync(tenantId);
 
         // Phase 1: Real ICapacityReservation returns NoCapacity → AlternativesRequired.
-        await using (var sp = BuildContainer())
+        await using (var sp = BuildContainer(tenantId))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -355,7 +351,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         }
 
         // Phase 2: Customer responds Waitlist via direct command.
-        await using var sp2 = BuildContainer();
+        await using var sp2 = BuildContainer(tenantId);
         using var scope = sp2.CreateScope();
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
         tenantCtx.TenantId = tenantId;
@@ -390,20 +386,19 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     [Fact]
     public async Task Terminal_FailedFinal_ReachableViaEngine_EmitsExpectedEvents()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-failed-{Guid.NewGuid():N}";
         // Seed op with a canonical payload pointing to a full slot → real NoCapacity.
         var operationId = await SeedTriggerWithFullSlotAsync(tenantId);
 
         // Phase 1: Real ICapacityReservation returns NoCapacity → AlternativesRequired.
-        await using (var sp = BuildContainer())
+        await using (var sp = BuildContainer(tenantId))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
         }
 
         // Phase 2: Customer declines → FailedFinal.
-        await using var sp2 = BuildContainer();
+        await using var sp2 = BuildContainer(tenantId);
         using var scope = sp2.CreateScope();
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
         tenantCtx.TenantId = tenantId;
@@ -438,12 +433,11 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
     [Fact]
     public async Task Terminal_Expired_ReachableViaEngine_EmitsExpectedEvents()
     {
-        await NeutralizeExistingUnpublishedAsync();
         var tenantId = $"capstone-expired-{Guid.NewGuid():N}";
         var operationId = await SeedTriggerAsync(tenantId);
 
         // Phase 1: Drive to AwaitingPayment (deposit required).
-        await using (var sp = BuildContainer(depositPolicy: new CapstoneDepositRequiredPolicy()))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new CapstoneDepositRequiredPolicy()))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);
@@ -458,7 +452,6 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         }
 
         // Phase 2: Seed deposit_expired event + drive one publisher tick.
-        await NeutralizeExistingUnpublishedAsync();
         await using (var evtCtx = fixture.CreateContext(tenantId))
         {
             evtCtx.OutboxMessages.Add(new OutboxMessage
@@ -474,7 +467,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
             await evtCtx.SaveChangesAsync();
         }
 
-        await using (var sp = BuildContainer(depositPolicy: new CapstoneDepositRequiredPolicy()))
+        await using (var sp = BuildContainer(tenantId, depositPolicy: new CapstoneDepositRequiredPolicy()))
         {
             var publisher = BuildPublisher(sp);
             await publisher.PublishPendingBatchAsync(CancellationToken.None);

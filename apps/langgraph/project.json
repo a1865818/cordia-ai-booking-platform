@@ -83,7 +83,7 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/langgraph",
-        "command": "uv run langgraph up -c langgraph.production.json --watch --port 8123 --postgres-uri postgresql://cordia:localdev@host.docker.internal:5432/Cordia_Agent?sslmode=disable"
+        "command": "uv run langgraph up -c langgraph.json --watch --port 8123 --postgres-uri postgresql://cordia:localdev@host.docker.internal:5432/Cordia_Agent?sslmode=disable"
       }
     },
     "test": {

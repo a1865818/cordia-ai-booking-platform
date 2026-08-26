@@ -65,7 +65,7 @@ the optional ones.
 
 | Var | Secret | Missing ⇒ |
 |---|---|---|
-| `REDIS_URI` | **yes** (URI carries credentials) | **Crash loop at import** — `KeyError: "Config 'REDIS_URI' is missing, and has no default."`. Proven by building the image from `langgraph.production.json`. There is no Redis in this repo. |
+| `REDIS_URI` | **yes** (URI carries credentials) | **Crash loop at import** — `KeyError: "Config 'REDIS_URI' is missing, and has no default."`. Proven by building the image from `langgraph.json`. There is no Redis in this repo. |
 | `DATABASE_URI` (a.k.a. `POSTGRES_URI`) | **yes** | Crash loop. This is the *agent's own* Postgres — checkpoints and runs — **not** the API's `Cordia_API` database. |
 | `LANGGRAPH_CLOUD_LICENSE_KEY` (or `LANGSMITH_API_KEY`) | **yes** | Lifespan abort: `License verification failed`. `langgraph dev` never hits this because the in-memory runtime ships a no-op licence shim; `langgraph build` produces the licensed variant. Procurement, not configuration. |
 
@@ -118,7 +118,7 @@ each is now either a startup failure or a loud log line.
 ### 4.1 The agent listens on **8000** in production, not 2024
 
 `langgraph dev` binds `:2024`. The image `langgraph build` produces from
-`langgraph.production.json` serves **8000**. `LangGraph__Host` must name the port
+`langgraph.json` serves **8000**. `LangGraph__Host` must name the port
 the deployed container actually listens on; `http://…:2024` there is a connection
 refusal on every ingestion.
 

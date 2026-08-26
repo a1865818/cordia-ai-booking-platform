@@ -246,8 +246,20 @@ try {
       ...process.env,
       ASPNETCORE_ENVIRONMENT: "Development",
       ASPNETCORE_URLS: baseUrl,
-      ConnectionStrings__MAgeDBConnection: "Host=127.0.0.1;Port=5432;Database=openapi_export;Username=openapi;Password=openapi",
+      // The API reads exactly one connection-string key, CordiaDBConnection
+      // (InfrastructureServiceCollectionExtensions.cs). This used to say
+      // MAgeDBConnection -- a key nothing reads -- so the throwaway database named
+      // here was ignored and the export silently bound appsettings.json's committed
+      // loopback value instead. Nothing dials the database during a Swagger scrape
+      // (measured: 200 in ~450ms with no Postgres running), so this is about not
+      // depending on a committed default we do not control, not about connectivity.
+      ConnectionStrings__CordiaDBConnection:
+        "Host=127.0.0.1;Port=5432;Database=openapi_export;Username=openapi;Password=openapi",
       DatabaseBootstrap__MigrateOnStartup: "false",
+      // Not read by apps/api today (zero consumers). Kept deliberately: gating
+      // app.UseSwagger() outside Development is issue #94 D9, and this is the flag
+      // that export must set to keep scraping /swagger once that gate lands.
+      // Do not delete it as dead config without moving the gate somewhere else.
       OpenApiExport__Enabled: "true",
     },
     stdio: ["ignore", "pipe", "pipe"],

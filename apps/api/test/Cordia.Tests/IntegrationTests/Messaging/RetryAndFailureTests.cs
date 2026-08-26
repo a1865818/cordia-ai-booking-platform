@@ -172,6 +172,7 @@ public class RetryAndFailureTests(PostgresFixture fixture)
             services.AddScoped<ICapacityReservation>(_ => fakeCapacity);
 
         services.ScopeOutboxClaimToTenant(tenantId);
+        services.ScopeScheduledJobClaimToTenant(tenantId);
 
         return services.BuildServiceProvider();
     }
@@ -201,18 +202,13 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     // this test's tenant (OutboxTenantScope) is what actually isolates the tick, and it makes the
     // sweep unnecessary: every test here mints a fresh GUID tenant with no backlog of its own.
 
-    // NOT the outbox twin above: scheduled_jobs has its OWN cross-tenant claim
-    // (ScheduledJobRepository.ClaimDueAsync, same shape, no tenant predicate), which
-    // OutboxTenantScope does not cover. This sweep is still the only thing keeping a foreign
-    // due job out of BuildPoller's tick, so it stays until that claim is scoped too.
-    private async Task NeutralizeExistingScheduledJobsAsync()
-    {
-        await using var ctx = fixture.CreateContext("t6-sched-cleanup");
-        await ctx.ScheduledJobs
-            .IgnoreQueryFilters()
-            .Where(j => j.Status == ScheduledJobStatus.Pending)
-            .ExecuteUpdateAsync(b => b.SetProperty(j => j.Status, ScheduledJobStatus.Done));
-    }
+    // A NeutralizeExistingScheduledJobsAsync() used to live here for the same reason, against the
+    // OTHER cross-tenant claim: ScheduledJobRepository.ClaimDueAsync has the same shape as the
+    // outbox one and no tenant predicate either. Its comment said it would stay "until that claim
+    // is scoped too" — ScheduledJobTenantScope now does exactly that, so the sweep is gone with the
+    // outbox one. It had the same defect: marking pending jobs Done covered only the backlog at
+    // that instant, never a row a concurrent writer inserts before the tick, and it terminalised
+    // other tenants' live jobs on the way past.
 
     // ── Test 1: NoCapacity → AlternativesRequired (FM#8) ────────────────────────────────────
 
@@ -356,8 +352,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task Transient_FirstCreate_DurableRetry_ThenSuccess()
     {
-        await NeutralizeExistingScheduledJobsAsync();
-
         var tenantId = $"t6-transient-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;
@@ -577,8 +571,6 @@ public class RetryAndFailureTests(PostgresFixture fixture)
     [Fact]
     public async Task CircuitOpen_NoProviderFlood_DurableRetryScheduled()
     {
-        await NeutralizeExistingScheduledJobsAsync();
-
         var tenantId = $"t6-circuit-{Guid.NewGuid():N}";
         var messageId = $"msg-{Guid.NewGuid():N}";
         string operationId;

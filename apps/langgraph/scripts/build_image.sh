@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Docker image for the Cordia LangGraph server from langgraph.production.json.
+# Build a Docker image for the Cordia LangGraph server from langgraph.json.
 #
 # Usage: bash scripts/build_image.sh [tag] [platform]
 #   tag      image tag        (default: cordia-langgraph)
@@ -10,7 +10,7 @@ set -euo pipefail
 
 TAG="${1:-cordia-langgraph}"
 PLATFORM="${2:-linux/amd64}"
-CONFIG="langgraph.production.json"
+CONFIG="langgraph.json"
 
 echo "Building LangGraph image '${TAG}' for ${PLATFORM} from ${CONFIG}..."
 uv run langgraph build -t "${TAG}" --platform "${PLATFORM}" -c "${CONFIG}"
