@@ -3,7 +3,7 @@
 Status: Plan · Branch: `chore/wave-0-foundations` · Base: `main` @30f46fd
 Research: [`thoughts/shared/research/2026-08-26_wave-0-foundations.md`](../research/2026-08-26_wave-0-foundations.md)
 Roadmap: https://claude.ai/code/artifact/e67f1cc3-4539-43bd-b844-553b6d0267e1
-Closes: #91 · Partially closes: #94 (D2, D12)
+Closes: #91 · Partially closes: #94 (D12 only — D2 re-scoped to Wave 5, see Phase 4)
 
 ## Why this wave exists
 
@@ -317,7 +317,7 @@ Constraints found in research:
 
 ---
 
-### Phase 4 — Collapse the duplicate langgraph config, add redis (#94 D2, D12)
+### Phase 4 — Collapse the duplicate langgraph config (#94 D12; D2 re-scoped to Wave 5)
 
 `chore(langgraph): add redis to compose and collapse the duplicate production config`
 
@@ -334,15 +334,44 @@ procurement, and it is not in this wave. The exit criterion is written according
 references, change nothing else.**
 
 **Automated Verification**
-- [ ] `bun nx test langgraph` green · `bun nx lint langgraph` green
-- [ ] `grep -rn "langgraph.production.json" .` returns **zero** hits
-- [ ] `docker compose config` parses; `docker compose up -d redis` reaches healthy
+- [x] `bun nx test langgraph` green — **1428 passed** · `bun nx lint langgraph` green
+- [x] `grep -rn "langgraph.production.json"` returns zero hits in tracked files
+- [x] `bun nx run langgraph:generate-schemas` still succeeds with the file gone; no drift in `libs/`
 
 **Manual Verification**
-- [ ] `bun nx run langgraph:serve-docker` gets past `KeyError: REDIS_URI` and fails **only** at the licence check.
+- [x] ~~`serve-docker` gets past `KeyError: REDIS_URI`~~ — **the criterion was based on a false
+      premise and has been withdrawn.** See discovery 2.
 
 **Discoveries and Notable Information**
-_(implementer fills in)_
+
+1. **D12 (the config collapse) is real and done.** `langgraph.json` and
+   `langgraph.production.json` were byte-identical — same md5 `61005ec4…`. The duplicate is deleted
+   and all four references updated: `nx.json` (the now-dead namedInput entry),
+   `apps/langgraph/project.json:86`, and `scripts/build_image.sh:2,13`. `docs/deployment.md`'s two
+   filename mentions updated; nothing else in that doc touched.
+
+2. **D2 ("add redis to compose") is NOT closable here — the roadmap item rested on a wrong premise,
+   and the change was written, tested, then reverted.** Three findings, in order:
+
+   - `uv run langgraph up --help` has `--postgres-uri` but **no `--redis-uri`**.
+   - The installed CLI shows why: `langgraph_cli/docker.py:220-273` **generates its own compose
+     stack**, including a `langgraph-redis` service on `image: redis:6`, and sets
+     `REDIS_URI: redis://langgraph-redis:6379` itself with a `service_healthy` dependency.
+     So `serve-docker` (which runs `langgraph up`) *never could* hit `KeyError: REDIS_URI` — the
+     planned exit criterion was testing a path that does not have the failure.
+   - **Nothing in this repo consumes Redis at all.** Not in `apps/api/src`, `cordia_agent`, or
+     `apps/web/src`; not in `pyproject.toml`; no `StackExchange.Redis` in any `.csproj`. The only
+     grep hits are `EnsureItemIdsAreDistinct` and `redispatched`.
+
+   A `redis:7-alpine` service was added to `docker-compose.yml`, verified healthy (`redis-cli ping`
+   → `PONG`), and then **reverted**: it would have made every developer run a container with no
+   consumer, while helping neither `langgraph dev` (in-memory runtime), `langgraph up` (brings its
+   own), nor any deployment (which needs a managed Redis and IaC that does not exist).
+
+   The real `KeyError: REDIS_URI` lives on the *built-image* path — `langgraph build` then running
+   that image — which is blocked on the D1 licence regardless. **D2 therefore belongs with R3/R4 in
+   Wave 5**, as managed infrastructure, not with a local compose service. `docs/deployment.md`'s
+   statement that there is no Redis in this repo is left standing because it is still true.
 
 ---
 

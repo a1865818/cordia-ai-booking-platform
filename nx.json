@@ -40,7 +40,6 @@
       "{projectRoot}/pytest.ini",
       "{workspaceRoot}/tools/config/*.json",
       "{projectRoot}/langgraph.json",
-      "{projectRoot}/langgraph.production.json",
       "!{projectRoot}/.venv/**/*",
       "!{projectRoot}/CLAUDE.md",
       "!{projectRoot}/AGENTS.md",
