@@ -1,6 +1,6 @@
 # Wave 0 — Foundations
 
-Status: Plan · Branch: `chore/wave-0-foundations` · Base: `main` @30f46fd
+Status: **Complete — all 5 phases implemented and validated** · Branch: `chore/wave-0-foundations` · Base: `main` @30f46fd
 Research: [`thoughts/shared/research/2026-08-26_wave-0-foundations.md`](../research/2026-08-26_wave-0-foundations.md)
 Roadmap: https://claude.ai/code/artifact/e67f1cc3-4539-43bd-b844-553b6d0267e1
 Closes: #91 · Partially closes: #94 (D12 only — D2 re-scoped to Wave 5, see Phase 4)
@@ -496,3 +496,53 @@ added (nothing in `apps/api` or `apps/langgraph` gains a redis dependency in thi
 - Docker Desktop must be running for Phases 2, 3, 4 (`docker compose up -d postgres`).
   Currently **down**; nothing on 5432 or 6379.
 - Toolchain verified: bun 1.3.14, .NET SDK 10.0.302, node v24.14.1.
+
+
+---
+
+## Stage 6 — Validation
+
+Run against a **dropped** database, i.e. the condition CI faces on every run.
+
+| Check | Result |
+|---|---|
+| `bun nx test-integration api` from an empty database | **670 total / 669 passed / 0 failed / 1 skipped**, 1 m 25 s |
+| migrations applied to the fresh database | **39** |
+| `42P07` occurrences | **0** |
+| `bun nx test api` | **1812 passed / 0 failed** (was 1801 at baseline) |
+| `bun nx lint api` | clean |
+| `bun nx test langgraph` / `lint langgraph` | **1428 passed** / clean |
+| `git status --porcelain libs/` after regeneration | empty |
+
+### Regression diff vs the Stage 1 baseline audit
+
+| Baseline item | Disposition | Verified |
+|---|---|---|
+| B1 exporter → api-contract → drift gate | intentionally changed (2 dead keys) | `v1.json` **unchanged vs `main`** across the whole wave |
+| B2 nx cache inputs | intentionally changed | contract change now busts `api:build`; appsettings change busts `api:test` |
+| B3 cross-tenant claim contamination | intentionally changed — **test harness only** | production claims byte-identical; `OutboxPublisherTests` untouched |
+| B4 CI coverage | intentionally changed (new job) | `ci-cd.yml` diff removes **0** lines — pure insertion |
+| B5 langgraph runtime config | partially changed (D12 only) | D2 re-scoped to Wave 5 with evidence |
+| B6 Finalize unit coverage | intentionally changed (new harness) | mutation-verified, guards genuinely pinned |
+| B7 CS8631 orphan warning | intentionally fixed | zero CS8631 in build output |
+
+**Must-stay-the-same, all confirmed unchanged:** `OutboxRepository.cs`, `OutboxPublisherTests.cs`,
+`OutboxTenantScope.cs`, `CancelFulfilmentTests.cs`, `CompensationAndCancellationTests.cs`,
+`ManualRecoveryTests.cs`, `ReconciliationTests.cs`, and the `test-integration` target
+(still no `inputs`, no `cache`, no `dependsOn`).
+
+**One deviation from the original blast radius, both user-approved mid-flight:**
+`OutboxTenantScopeParityTests` (listed as must-stay-unchanged) was fixed after mutation testing
+proved it could not detect the drift it exists to detect; and Phase 3 absorbed the migration-race
+fix so the CI job could land as a real gate rather than `continue-on-error`.
+
+**Across the entire wave, exactly one production file changed** —
+`ScheduledJobRepository.cs`, five added lines, **all comments**.
+
+### Carried forward
+
+- `ci-dotnet-integration` must be added to branch protection to become a required check — a repo
+  setting, not a workflow change.
+- The CI job is unverified until it runs on GitHub; the first PR is its real test.
+- `bun nx test web` cannot run locally below Bun 1.4.0 (local is 1.3.14); CI pins `latest`.
+- #94 D2 re-scoped to Wave 5. #94 D1 (licence) remains unbounded procurement.
