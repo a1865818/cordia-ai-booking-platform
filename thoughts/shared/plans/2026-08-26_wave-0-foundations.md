@@ -270,16 +270,50 @@ Constraints found in research:
 - Record #91's explicit ask in the issue: **integration is now a CI gate, not local-only.**
 
 **Automated Verification**
-- [ ] the new job runs `bun nx run api:test-integration` and reports a result on a PR
-- [ ] all 39 migrations apply cleanly to an empty `Cordia_API_Test` (assert in the job log)
-- [ ] existing `ci-dotnet`, `ci-web`, `ci-python`, `generate-schemas` jobs unchanged and green
+- [x] all 39 migrations apply cleanly to an empty `Cordia_API_Test` — verified by **dropping the
+      database** and re-running: 39 applied, 41 tables, **670 / 669 passed / 0 failed**, zero 42P07
+- [x] existing `ci-dotnet`, `ci-web`, `ci-python`, `generate-schemas` jobs unchanged — the workflow
+      diff is a pure insertion; `yaml.safe_load` parses and lists all 11 jobs
+- [x] both new shell steps dry-run locally against the real container: the health-wait reports
+      `postgres healthy`, and the migration assertion prints `migrations applied: 39 → WOULD PASS`
+- [ ] **the job itself cannot be verified until it runs on GitHub.** Written and locally
+      dry-run, but never executed by Actions. First PR is the real test.
 
 **Manual Verification**
-- [ ] Suite wall-clock recorded in the plan (currently unknown anywhere in the repo).
-- [ ] Job is non-required; a red run does not block merge.
+- [x] Suite wall-clock recorded — see discovery 3 below. Nothing in the repo had one.
+- [ ] Branch protection updated to require `ci-dotnet-integration` (a repo setting, not a workflow
+      change — cannot be done from here).
 
 **Discoveries and Notable Information**
-_(implementer fills in)_
+
+1. **The race is fixed and proven against the real first-run condition.** `TestSchemaLock` takes a
+   session-level `pg_advisory_lock` on the maintenance database; all three fixtures wrap
+   create-plus-migrate in it. Verified by `DROP DATABASE Cordia_API_Test WITH (FORCE)` and a full
+   re-run — the exact thing CI does on every run.
+
+2. **Postgres comes from the repo's own `docker-compose.yml`, not a `services:` block.** The three
+   fixtures hardcode `Host=localhost;Port=5432;Username=cordia;Password=localdev` as `const`
+   strings (26 call sites for `PostgresFixture.TestConnStr` alone). Compose already declares exactly
+   that, plus `-c max_connections=500` and the init scripts. A `services:` block would be a second
+   copy of the same credentials, free to drift, and could not pass `max_connections`.
+
+3. **The suite is FASTER on a fresh database, not slower — the opposite of the assumption.**
+
+   | Database state | Result | Wall clock |
+   |---|---|---|
+   | accumulated (first measurement) | 652 passed / 15 failed | **5 m 3 s** |
+   | accumulated (second run) | 669 passed / 0 failed | **3 m 1 s** |
+   | **dropped and rebuilt from nothing** | 669 passed / 0 failed | **38 s** |
+
+   The shared test database accumulates litter across runs, and the bounded `ORDER BY … LIMIT n`
+   claims scan more as it grows. CI starts fresh every time, so **CI is the fast case (~40 s)**.
+   That removes the main cost objection to gating on the suite, and it means a *slow* CI run is
+   itself a signal that something is leaving rows behind.
+
+4. **No separate migration step in the job, on purpose.** The fixtures create the database and apply
+   migrations themselves under the lock. Adding a `dotnet ef database update` step would prove
+   something the fixtures no longer need to do, and would hide a regression in the thing being
+   tested — that the fixtures can build the schema from scratch concurrently.
 
 ---
 
