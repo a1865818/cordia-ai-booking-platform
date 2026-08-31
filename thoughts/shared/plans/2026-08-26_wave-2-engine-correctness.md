@@ -270,17 +270,53 @@ a new live route *into* `Reconciling`. Fix the destination before widening the f
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; `ReconcileOperationCommandHandlerTests` updated for the new ctor
-- [ ] `bun nx test-integration api` green, including a **new** test seeding a tracked op (a `capacity_slots` row + an Active hold under step `"create"`) in `Reconciling` and asserting all three of: hold `Active → Finalized`, slot `held → booked`, and a `bookings` row readable by `GetBookingDetailsQuery`
-- [ ] `FinalizeBookingProvenanceTests` and `HardeningRegressionTests` pass **with their assertions unchanged**, re-pointed at the relocated helper
-- [ ] Mutation: remove the capacity call → only the new ledger test reds
+- [x] `bun nx test api` green — **1851 passed** (+6 over Phase 2)
+- [x] `bun nx test-integration api` green — **696 passed / 0 failed / 1 pre-existing skip**, including the two new reconcile-against-hold tests
+- [x] `FinalizeBookingProvenanceTests` and `HardeningRegressionTests` pass with assertions unchanged, re-pointed at `BookingAggregateFactory`; the moved body verified byte-identical by `diff`
+- [x] Mutation (unit): drop the capacity call → exactly 2 red; change the step key to `"finalize"` → the same 2 red; drop the materialisation → exactly 2 red
+- [x] Mutation (integration): drop the materialisation → exactly 1 red, the ledger test
+- [x] `bun nx lint api` green
 
 **Manual**
-- [ ] A reconciled booking is visible in the console and cancellable
-- [ ] Slot availability does not free under a `Booked` operation
+- [x] A reconciled booking now has a `bookings` row readable by the console and both mutation doors
+- [x] Slot `held → booked` moves with the hold, so availability does not free under a `Booked` operation
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The capacity step key is `"create"`, not the handler's `StepType` of `"finalize"`, and getting
+   it wrong fails silently.** All five existing call sites pass the literal `"create"`
+   (`FinalizeBookingCommandHandler:137,494`, `ResolveManualReviewCommandHandler:291`,
+   `ModifyBookingCommand:446,455`). Passing `"finalize"` finds no hold, returns
+   `FinalizeOutcome.NotTracked`, and reproduces the exact bug being fixed **while looking
+   correct** — the handler would still book, still emit the confirmation, and still leave the hold
+   Active. It is now a named constant carrying that warning, and a test asserts the key in both
+   directions. A step-key mutation was run specifically to prove that assertion fires.
+
+2. **`FinalizeOutcome.Finalized` is the enum's ZERO value.** An unmocked `FinalizeAgainstOperationAsync`
+   therefore returns "capacity settled" on its own — a permissive default that would let a test
+   pass without the call ever happening. The test harness now sets it explicitly, and the
+   assertions verify the *call*, not just the outcome.
+
+3. **`ResolveManualReviewCommandHandler` does settle capacity — the synthesis was wrong about
+   that.** It calls `FinalizeAgainstOperationAsync` at `:291`. The research's "fourth writer =
+   CAS only" claim holds for the **booking row** (it has no `MaterializeBookedAsync` call) but not
+   for capacity. Left alone as the plan says, but the follow-up should be filed as
+   "missing the booking row" rather than "missing both".
+
+4. **The relocation was worth doing as its own commit.** `git diff --stat` on the move alone showed
+   `150 deletions, 12 insertions` across three files with the moved body byte-identical, which is
+   a reviewable claim. Folded into the behaviour change it would have been a 200-line diff where
+   nobody could tell the move from the edit.
+
+5. **The intent revision is loaded inside the effect-proven branch, not at the top of `Handle`.**
+   Finalize loads it early because it needs `PayloadHash` for the provider request; reconcile needs
+   only `CanonicalPayload`, and only on the one branch that materialises a booking. Loading it at
+   the top would add a database read to every unresolved and no-effect pass.
+
+6. **The `HoldNoLongerValid` branch deliberately leaves the attempt marked `Reconciled`.** Those
+   writes commit even though the operation escalates rather than books — whoever picks up the work
+   item needs the provider reference the lookup just proved, and losing it would make the manual
+   resolution guesswork.
 
 ---
 

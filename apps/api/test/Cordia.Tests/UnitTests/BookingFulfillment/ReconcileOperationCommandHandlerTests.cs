@@ -30,6 +30,8 @@ public class ReconcileOperationCommandHandlerTests
     private readonly Mock<IRetryPolicy> _retryPolicy = new();
     private readonly Mock<IUnitOfWork> _uow = new();
     private readonly Mock<ICapacityReservation> _capacityReservation = new();
+    private readonly Mock<IBookingRepository> _bookingRepo = new();
+    private readonly Mock<IBookingIntentRepository> _intentRepo = new();
 
     // ManualReviewEscalator is a sealed class; wire it with a sub-set of mocked repos.
     private ManualReviewEscalator CreateEscalator() =>
@@ -40,7 +42,8 @@ public class ReconcileOperationCommandHandlerTests
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _outboxRepo.Object, _auditRepo.Object, _adapter.Object,
             _retryPolicy.Object, CreateEscalator(), _uow.Object,
-            _capacityReservation.Object, new Metrics());
+            _capacityReservation.Object, _bookingRepo.Object, _intentRepo.Object,
+            new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId,
@@ -784,5 +787,122 @@ public class ReconcileOperationCommandHandlerTests
             tenantId, opId, It.IsAny<long>(),
             OperationStatus.Reconciling, OperationStatus.Booked,
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── U1: a Booked operation must have a bookings row ────────────────────────────────────
+
+    /// <summary>
+    /// MaterializeBookedAsync had exactly two call sites, both inside
+    /// FinalizeBookingCommandHandler, so an operation reconciled to Booked had no booking row.
+    /// It looked finished from every angle except the ones the customer and the console use —
+    /// GetBookingDetailsQuery, the cancel door and the modify door all read that row and found
+    /// nothing.
+    /// </summary>
+    [Fact]
+    public async Task Handle_EffectFound_MaterialisesTheBookingRow()
+    {
+        var (tenantId, opId) = ("t-mat", "op-materialise");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 2));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_mat"));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Terminal, result);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.Is<Booking>(x =>
+                x.TenantId == tenantId &&
+                x.BookingId == "ext_ref_mat" &&
+                x.ProviderReference == "ext_ref_mat" &&
+                x.LifecycleStatus == BookingLifecycleStatus.Confirmed),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// The identity that ends up on the booking row is the one AuthorizeMutationAsync later
+    /// matches a verification grant against, so it must come from the intent revision's canonical
+    /// payload — not from the provider reference fallback.
+    /// </summary>
+    [Fact]
+    public async Task Handle_EffectFound_TakesTheCustomerIdentityFromTheIntentRevision()
+    {
+        var (tenantId, opId) = ("t-mat-id", "op-materialise-identity");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 2));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_id"));
+
+        _intentRepo.Setup(r => r.GetRevisionAsync(tenantId, "int-1", 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = tenantId,
+                IntentId = "int-1",
+                Revision = 1,
+                CanonicalPayload = """{"customer_id":"cus_real"}""",
+                PayloadHash = "h",
+            });
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.Is<Booking>(x => x.CustomerId == "cus_real"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>A lost CAS writes nothing — no booking row for an operation someone else owns.</summary>
+    [Fact]
+    public async Task Handle_EffectFound_LostBookedRace_WritesNoBookingRow()
+    {
+        var (tenantId, opId) = ("t-mat-race", "op-materialise-race");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 2));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_race"));
+
+        // CAS loses.
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.IsAny<Booking>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

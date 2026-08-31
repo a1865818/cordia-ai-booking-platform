@@ -21,8 +21,8 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Reconcile;
 ///
 /// Effect proven (Created / AlreadyExists + reference):
 ///   In ONE transaction — update/create the Reconciled attempt row, mark finalize step Succeeded,
-///   settle first-party capacity (#59), transition op Reconciling → Booked, add notification
-///   outbox row (Inv-8), add audit event.
+///   settle first-party capacity (#59), transition op Reconciling → Booked, materialise the
+///   `bookings` row (U1), add notification outbox row (Inv-8), add audit event.
 ///   Returns <see cref="StepOutcome.Terminal"/>.
 ///   If the hold is gone (<see cref="FinalizeOutcome.HoldNoLongerValid"/>) the booking exists with
 ///   no capacity backing: escalate to ManualReview and do NOT book (Inv-6).
@@ -52,6 +52,8 @@ public sealed class ReconcileOperationCommandHandler(
     ManualReviewEscalator manualReviewEscalator,
     IUnitOfWork uow,
     ICapacityReservation capacityReservation,
+    IBookingRepository bookingRepo,
+    IBookingIntentRepository intentRepo,
     Metrics metrics)
     : IRequestHandler<ReconcileOperationCommand, StepOutcome>
 {
@@ -323,6 +325,35 @@ public sealed class ReconcileOperationCommandHandler(
 
                     if (rows > 0)
                     {
+                        // ─────────────────────────────────────────────────────
+                        // U1: the `bookings` row, in the SAME transaction as the Booked claim.
+                        //
+                        // MaterializeBookedAsync had exactly two call sites, both inside
+                        // FinalizeBookingCommandHandler, so an operation that reached Booked
+                        // through reconciliation had no booking row at all. The operation looked
+                        // finished from every angle except the one the customer and the console
+                        // use: GetBookingDetailsQuery:43, SubmitBookingCancellationCommandHandler:41,
+                        // SubmitBookingModificationCommandHandler:41, ValidateBookingChangeQueryHandler:24,
+                        // CancelBookingCommandHandler:88, ModifyBookingCommand:112 and
+                        // RequestVerificationCommandHandler:34 all read it and all found nothing.
+                        // A reconciled booking was unviewable, uncancellable and unmodifiable.
+                        //
+                        // The revision is loaded here rather than at the top of Handle because
+                        // only this branch needs it — the unresolved and no-effect paths would be
+                        // paying for a read they never use.
+                        // ─────────────────────────────────────────────────────
+                        var revision = await intentRepo.GetRevisionAsync(
+                            tenantId, freshOp.IntentId, freshOp.IntentRevision, ct2);
+
+                        await bookingRepo.MaterializeBookedAsync(
+                            BookingAggregateFactory.BuildBookingAggregate(
+                                tenantId,
+                                freshOp,
+                                r.ProviderReference!,
+                                revision?.CanonicalPayload ?? "{}",
+                                now),
+                            ct2);
+
                         // Inv-8: outcome outbox row in the SAME transaction as the Booked transition.
                         // Spec 11 §5.3: a pre-order op signals the saga instead of notifying directly.
                         await outboxRepo.AddAsync(new OutboxMessage
