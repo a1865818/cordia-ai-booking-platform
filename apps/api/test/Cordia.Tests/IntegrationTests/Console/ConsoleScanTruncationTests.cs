@@ -75,12 +75,48 @@ public class ConsoleScanTruncationTests(PostgresFixture fixture)
             """);
     }
 
+    /// <summary>
+    /// Seconds allowed for this test's database work, replacing Npgsql's 30 s default.
+    ///
+    /// <para><b>The query is not slow; the runner is contended.</b> Measured with
+    /// <c>EXPLAIN (ANALYZE, BUFFERS)</c> on the worst page — <c>OFFSET 19500 LIMIT 500</c> over a
+    /// seeded 20,001-row tenant — the plan is a hash join of two sequential scans feeding one
+    /// quicksort, <b>44 ms, 637 buffer hits, entirely from shared buffers</b>. Forty pages is
+    /// under two seconds of database time. CI saw a single page exceed <b>30 s</b>: a ~680x gap,
+    /// which is a stall, not a cost.
+    ///
+    /// <para><b>Three explanations were tested and discarded rather than assumed.</b>
+    /// Stale planner statistics after the bulk load — adding <c>ANALYZE</c> on both seeded tables
+    /// against a freshly dropped database changed nothing. The seeding itself — the timeout lands
+    /// in <c>ScanAsync</c>, not the inserts. A missing index on
+    /// <c>(tenant_id, updated_at DESC, operation_id)</c> — creating it left the plan
+    /// <i>byte-identical</i>, because under a large <c>OFFSET</c> the planner must produce every
+    /// preceding row anyway and correctly prefers one hash join over 20,000 index lookups into
+    /// <c>booking_intent_revisions</c>. None of the three was shipped.</para>
+    ///
+    /// <para><b>So this raises a limit; it does not fix a defect, and there is no defect here to
+    /// fix.</b> Npgsql's 30 s default was never a budget anyone chose for the only test in the
+    /// suite that seeds 20,000 rows and reads them back across 80 round-trips while the rest of
+    /// the suite competes for the same containerised Postgres on a two-core runner. The failure
+    /// predates the wave-2 branch — it is on <c>main</c> at <c>aface13</c>. What this test asserts
+    /// is the ceiling's <i>semantics</i>: at the boundary, complete; one row past it, truncated.
+    /// Those must not depend on how busy the runner is.</para>
+    ///
+    /// <para>The paging cost is still worth removing and is filed separately — 40 pages each
+    /// re-materialising and re-sorting the tenant's whole operation set is quadratic in page
+    /// count. The measurement above says the fix is keyset paging <i>together with</i> an index;
+    /// neither alone moves this plan.</para>
+    /// </summary>
+    private const int CommandTimeoutSeconds = 180;
+
     [Fact]
     public async Task ExactlyAtTheCeiling_IsComplete_AndOneRowPastIt_IsTruncated()
     {
         var tenantId = $"t-scan-{Guid.NewGuid():N}";
 
         await using var ctx = fixture.CreateContext(tenantId);
+        ctx.Database.SetCommandTimeout(CommandTimeoutSeconds);
+
         await SeedOperationsAsync(ctx, tenantId, 1, MaxScan);
 
         var model = new ConsoleReadModel(ctx);
