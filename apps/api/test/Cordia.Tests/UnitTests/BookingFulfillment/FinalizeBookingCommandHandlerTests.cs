@@ -22,11 +22,12 @@ namespace Cordia.Tests.UnitTests.BookingFulfillment;
 /// integration test going through <c>IMediator</c>. Four open issues against this handler cite the
 /// missing harness, so it is built once, here, before the riskier fixes need it.</para>
 ///
-/// <para><b>Deliberately narrow.</b> This covers the three <i>guard</i> branches that run before any
-/// transaction opens — the ones every later change has to keep intact. It does NOT cover the TXN1 /
-/// TXN2 provider paths. Those are exactly the behaviour issues #51, #55, #56, #57 and #58 intend to
-/// change, and pinning them now would encode the current (wrong) routing as expected, so a correct
-/// fix would arrive looking like a regression.</para>
+/// <para><b>Originally deliberately narrow.</b> It began covering only the three <i>guard</i>
+/// branches that run before any transaction opens, on the reasoning that pinning the TXN1/TXN2
+/// routing before issues #51/#55/#56/#57/#58 were fixed would encode the wrong behaviour as
+/// expected. Those fixes have now landed, so the idempotent recovery shortcut is covered here too
+/// (#57 + U2) — it is a transaction, but it makes no provider call, which is what made it testable
+/// with mocks alone.</para>
 ///
 /// <para><b>The trap this harness makes explicit.</b> <see cref="FinalizeOutcome"/> declares
 /// <c>Finalized, HoldNoLongerValid, NotTracked</c> in that order, so its <b>zero value is
@@ -93,7 +94,8 @@ public class FinalizeBookingCommandHandlerTests
         string operationId,
         OperationStatus status,
         long version = 0,
-        OperationTypeEnum operationType = OperationTypeEnum.Create) =>
+        OperationTypeEnum operationType = OperationTypeEnum.Create,
+        DateTimeOffset? cancellationRequestedAt = null) =>
         new()
         {
             TenantId = tenantId,
@@ -102,6 +104,7 @@ public class FinalizeBookingCommandHandlerTests
             IntentRevision = 1,
             Status = status,
             Version = version,
+            CancellationRequestedAt = cancellationRequestedAt,
             // Explicit: Cancel is the ZERO value of the generated enum, so leaving it unset would
             // silently make every operation here a cancellation.
             OperationType = operationType,
@@ -245,5 +248,140 @@ public class FinalizeBookingCommandHandlerTests
                 It.IsAny<OperationStatus>(), OperationStatus.Reconciling,
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // ── #57 + U2: the idempotent recovery shortcut ──────────────────────────────────────────
+    //
+    // The shortcut runs when a prior attempt already Succeeded and carries a provider reference:
+    // the booking exists, so it skips the external call and just settles the operation. It was
+    // the one Finalizing → Booked writer that read neither CancellationRequestedAt nor emitted an
+    // outcome.
+
+    private void ArrangeRecoveryShortcut(
+        string tenantId, string opId, BookingOperation op, string? providerRef)
+    {
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Succeeded, providerRef: providerRef));
+
+        // Every destination succeeds if reached, so a wrong route commits and is observable.
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Finalizing, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+    }
+
+    /// <summary>
+    /// Inv-8. The shortcut wrote the Booked row and nothing else — no outbox, no audit — so a
+    /// booking recovered after a crash notified nobody while the operation reported success.
+    /// </summary>
+    [Fact]
+    public async Task Handle_RecoveryShortcut_EmitsTheConfirmedOutcomeEnvelope()
+    {
+        var (tenantId, opId) = ("t-rec", "op-recovery");
+        ArrangeRecoveryShortcut(
+            tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 3), "ext_ref_rec");
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Terminal, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Booked,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _outboxRepo.Verify(r => r.AddAsync(
+            It.Is<OutboxMessage>(m =>
+                m.TenantId == tenantId &&
+                m.OperationId == opId &&
+                m.MessageType == "notification.booking_confirmed.v1"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<AuditEvent>(e => e.OperationId == opId && e.EventType == "operation.booked"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        // The booking row was already written here before this change; assert it still is.
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.Is<Booking>(x => x.BookingId == "ext_ref_rec"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// #57. A guest who cancelled while the operation was recovering from a crash had their
+    /// booking confirmed anyway — this was the only Finalizing → Booked writer that never read
+    /// CancellationRequestedAt. Same destination and reason as the main path so Compensate
+    /// cancels the provider booking exactly as it does there.
+    /// </summary>
+    [Fact]
+    public async Task Handle_RecoveryShortcut_WithCancellationRequested_CompensatesInsteadOfBooking()
+    {
+        var (tenantId, opId) = ("t-rec-cancel", "op-recovery-cancelled");
+        ArrangeRecoveryShortcut(
+            tenantId, opId,
+            MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 4,
+                cancellationRequestedAt: DateTimeOffset.UtcNow.AddSeconds(-5)),
+            "ext_ref_cancel");
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        // Continue, so the driver dispatches Compensate.
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Booked,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Inv-16: no confirmation for a booking the guest asked to cancel.
+        _outboxRepo.Verify(r => r.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == "notification.booking_confirmed.v1"),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.IsAny<Booking>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// U2. The gate was <c>latest.ProviderRef is not null</c>, which admits the empty string —
+    /// so an attempt whose reference was committed blank booked the operation with an empty
+    /// bookingId, producing a booking row keyed on "" that no lookup will ever match.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Handle_RecoveryShortcut_BlankProviderRef_DoesNotBook(string blankRef)
+    {
+        var (tenantId, opId) = ("t-rec-blank", "op-recovery-blank");
+        ArrangeRecoveryShortcut(
+            tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 2), blankRef);
+
+        // The shortcut must not be entered. What happens instead is not this test's concern —
+        // only that no booking is claimed on a reference that does not identify anything.
+        try
+        {
+            await CreateHandler().Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+        }
+        catch (NullReferenceException)
+        {
+            // Fell through to the provider path, which this harness does not mock. That is
+            // itself proof the shortcut was skipped.
+        }
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Booked,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.IsAny<Booking>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

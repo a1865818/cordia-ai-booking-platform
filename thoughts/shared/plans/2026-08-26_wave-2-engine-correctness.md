@@ -341,16 +341,40 @@ disjoint from Phases 5–7, but Finalize edits are serialised to keep the file's
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; new unit tests for the cancellation gate, the outbox/audit emission, and the blank-ref guard
-- [ ] `bun nx test-integration api` green
-- [ ] Mutation: drop the outbox emission → only the Inv-8 test reds; drop the cancellation read → only that test reds
+- [x] `bun nx test api` green — **1855 passed** (+4)
+- [x] `bun nx lint api` green
+- [x] Mutation, three separate ones, each caught by exactly its own test: revert the U2 gate to `is not null` → 2 red (both blank-ref theory cases); disable the cancellation check → 1 red; disable the outbox emission → 1 red
+- [ ] `bun nx test-integration api` — deferred to the end-of-wave run
 
 **Manual**
-- [ ] A booking recovered via the shortcut produces exactly one `booking_confirmed` notification and one audit row
-- [ ] An op with `CancellationRequestedAt` set does not take the shortcut
+- [x] A booking recovered via the shortcut produces exactly one `booking_confirmed` outbox row and one `operation.booked` audit row
+- [x] An op with `CancellationRequestedAt` set routes to `CompensationRequired` and emits no confirmation
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **U2 needed fixing in two places, not one.** The plan described only the writer
+   (`Finalize:432` committing a blank `ProviderRef`). Fixing the writer stops NEW blank rows but
+   does nothing about rows already in the table, and the shortcut's `is not null` gate would still
+   admit them. Both are fixed: the writer normalises blank to `null`, and the gate now tests
+   `!string.IsNullOrWhiteSpace`. The theory case covers `""` and `"   "` — whitespace was never
+   mentioned anywhere and `IsNullOrWhiteSpace` was already the standard used 100 lines below.
+
+2. **The shortcut's cancellation destination is `CompensationRequired`, not `ManualReview`.**
+   That differs from Phase 1 and Phase 3, deliberately. Here the booking is *known* to exist and
+   the guest's intent is *known* to be cancel, so the compensating action is unambiguous and
+   already implemented — it is the same `cancelled_after_create` route the main TXN2 takes at
+   `:454-461`. `ManualReview` is for when the effect or the right action is genuinely unknown.
+
+3. **The blank-ref test tolerates a `NullReferenceException` on purpose.** With the shortcut
+   correctly skipped, control falls through to the provider path, which this mock-only harness does
+   not stub. Catching that is not laziness — reaching it *is* the proof the shortcut was skipped,
+   and the assertions that matter (no Booked transition, no booking row) hold either way. The
+   mutation run confirms the test still fails when the gate is reverted.
+
+4. **The metrics the shortcut was missing were not just observability.**
+   `FulfillmentAcceptedToBookedMs` is the accepted→booked latency histogram; every booking
+   recovered after a crash was silently absent from it, which biases the metric toward the fast
+   path precisely when the system is behaving worst.
 
 ---
 

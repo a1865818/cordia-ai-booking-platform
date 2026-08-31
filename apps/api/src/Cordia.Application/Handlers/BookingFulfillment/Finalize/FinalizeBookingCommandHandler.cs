@@ -35,8 +35,11 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///     (reconcile no-effect+escalation → ManualReview; §11 forbids direct Finalizing→ManualReview).
 ///   FM#13 (cancel-before-create): if CancellationRequestedAt != null at the top of finalize and
 ///     there is no in-flight attempt, skip straight to CompensationRequired.
-///   FM#13 (cancel-after-create): in the success TXN2, if CancellationRequestedAt != null, route
-///     to CompensationRequired instead of Booked so Compensate cancels the created booking.
+///   FM#13 (cancel-after-create): in the success TXN2 AND in the idempotent recovery shortcut,
+///     if CancellationRequestedAt != null, route to CompensationRequired instead of Booked so
+///     Compensate cancels the created booking (#57 — the shortcut used to skip this check).
+///   The recovery shortcut emits the same Inv-8 outcome envelope as the main path: outbox row,
+///     audit event and metrics, all inside the Booked transaction (#57).
 ///
 /// Idempotent recovery shortcut (§12.6): if the latest attempt already Succeeded/Reconciled,
 /// just ensure Booked and return Terminal without re-calling the provider.
@@ -112,7 +115,11 @@ public sealed class FinalizeBookingCommandHandler(
         // do NOT create a new booking. Transition to Reconciling and let the driver dispatch
         // ReconcileOperationCommand to probe via the §16.2 lookup order before any re-create.
         var latest = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct);
-        if (latest is { Outcome: AttemptOutcome.Succeeded or AttemptOutcome.Reconciled } && latest.ProviderRef is not null)
+        // `is not null` was not the invariant this gate meant: it admitted the empty string, which
+        // is how U2 reached the Booked transition below. Rows written before that fix still carry
+        // one, so the gate is checked too, not just the writer.
+        if (latest is { Outcome: AttemptOutcome.Succeeded or AttemptOutcome.Reconciled }
+            && !string.IsNullOrWhiteSpace(latest.ProviderRef))
         {
             // Ensure op is Booked; may be a no-op if already Booked.
             var fresh = await opRepo.GetAsync(operationId, ct);
@@ -121,12 +128,68 @@ public sealed class FinalizeBookingCommandHandler(
                 // Track whether a HoldNoLongerValid race was detected in the recovery shortcut
                 // so we can return Continue (→Reconciling) instead of Terminal after the txn.
                 var recoveryHoldExpired = false;
+                var recoveryCancelled = false;
 
                 await uow.ExecuteInTransactionAsync(async ct2 =>
                 {
+                    var now = DateTimeOffset.UtcNow;
+
                     var current2 = await opRepo.GetAsync(operationId, ct2);
                     if (current2 is null || current2.Status != OperationStatus.Finalizing)
                         return;
+
+                    // ─────────────────────────────────────────────────────────
+                    // #57: FM#13 (cancel-after-create) applies here too.
+                    //
+                    // This was the ONE Finalizing → Booked writer that never read
+                    // CancellationRequestedAt — the main TXN2 checks it at :454, the FM#13
+                    // fast path checks it at :221, and this shortcut checked nothing. A guest
+                    // who cancelled while the operation was recovering from a crash got their
+                    // booking confirmed anyway, and GetOperationStatusQuery:109 then told them
+                    // so in as many words.
+                    //
+                    // The issue blamed a lost version race, which cannot happen:
+                    // SetCancellationRequestedAsync (BookingOperationRepository:110-124) never
+                    // bumps the version, and the only writer that does always changes Status —
+                    // which would fail this block's own Finalizing gate. The real route in is
+                    // the blank-reference shortcut entry (U2, fixed above) or a
+                    // Reconciling → Held → Finalizing walk-back. The trigger was wrong; the
+                    // defect was real.
+                    //
+                    // Same destination and reason as the main path, so Compensate cancels the
+                    // provider booking exactly as it does there.
+                    // ─────────────────────────────────────────────────────────
+                    if (current2.CancellationRequestedAt.HasValue)
+                    {
+                        var cancelRows = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, current2.Version,
+                            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+                            reason: "cancelled_after_create", ct: ct2);
+
+                        if (cancelRows > 0)
+                        {
+                            recoveryCancelled = true;
+                            await auditRepo.AddAsync(new AuditEvent
+                            {
+                                TenantId = tenantId,
+                                EventId = $"evt_{Guid.NewGuid():N}",
+                                EventType = "operation.cancellation_after_create",
+                                Actor = "system",
+                                SubjectRef = operationId,
+                                CorrelationId = operationId,
+                                OperationId = operationId,
+                                Metadata = JsonSerializer.Serialize(new
+                                {
+                                    provider_ref = latest.ProviderRef,
+                                    reason = "cancelled_after_create",
+                                    via = "recovery_shortcut",
+                                }),
+                                OccurredAt = now,
+                            }, ct2);
+                        }
+
+                        return; // do NOT book, do NOT confirm
+                    }
 
                     // §6.1/§6.2 recovery (FIX 2+3+4+8): FinalizeAgainstOperationAsync is the SINGLE
                     // decision point. Finalized (active→finalized or already finalized idempotent) →
@@ -173,12 +236,68 @@ public sealed class FinalizeBookingCommandHandler(
                     if (bookedRows > 0)
                     {
                         await bookingRepo.MaterializeBookedAsync(
-                            BookingAggregateFactory.BuildBookingAggregate(tenantId, current2, latest.ProviderRef, canonicalPayload, now: DateTimeOffset.UtcNow),
+                            BookingAggregateFactory.BuildBookingAggregate(tenantId, current2, latest.ProviderRef, canonicalPayload, now),
                             ct2);
+
+                        // ─────────────────────────────────────────────────────
+                        // #57, Inv-8: the outcome envelope, in the SAME transaction as the
+                        // Booked transition — which this branch simply never emitted.
+                        //
+                        // `outboxRepo` appeared in this entire file only at the constructor and
+                        // in the main TXN2, so a booking confirmed through the recovery shortcut
+                        // notified nobody: no customer message, no saga signal for a pre-order,
+                        // no audit trail, no metric. The operation row said Booked and every
+                        // downstream consumer of the outcome disagreed. Inv-8 requires the
+                        // outbox row to be atomic with the state change, and it was absent
+                        // rather than late.
+                        //
+                        // Byte-for-byte the same envelope the main path emits, including the
+                        // spec 11 §5.3 pre-order routing — a pre-order signals the saga instead
+                        // of notifying the customer directly.
+                        // ─────────────────────────────────────────────────────
+                        await outboxRepo.AddAsync(new OutboxMessage
+                        {
+                            TenantId = tenantId,
+                            MessageId = $"obx_{Guid.NewGuid():N}",
+                            OperationId = operationId,
+                            MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.ConfirmedOutcomeType(current2.IsPreorder),
+                            CorrelationId = operationId,
+                            Payload = JsonSerializer.Serialize(new
+                            {
+                                operation_id = operationId,
+                                booking_id = latest.ProviderRef,
+                                tenant_id = tenantId,
+                            }),
+                            OccurredAt = now,
+                        }, ct2);
+
+                        await auditRepo.AddAsync(new AuditEvent
+                        {
+                            TenantId = tenantId,
+                            EventId = $"evt_{Guid.NewGuid():N}",
+                            EventType = "operation.booked",
+                            Actor = "system",
+                            SubjectRef = operationId,
+                            CorrelationId = operationId,
+                            OperationId = operationId,
+                            Metadata = JsonSerializer.Serialize(new
+                            {
+                                booking_id = latest.ProviderRef,
+                                provider = adapter.ProviderName,
+                                via = "recovery_shortcut",
+                            }),
+                            OccurredAt = now,
+                        }, ct2);
+
+                        metrics.FulfillmentAcceptedToBookedMs.Record(
+                            (now - op.CreatedAt).TotalMilliseconds,
+                            new KeyValuePair<string, object?>(MetricNames.Tags.Provider, adapter.ProviderName));
+                        metrics.FulfillmentOperationTerminalTotal.Add(
+                            1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "booked"));
                     }
                 }, ct);
 
-                if (recoveryHoldExpired)
+                if (recoveryHoldExpired || recoveryCancelled)
                     return StepOutcome.Continue;
             }
             await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
@@ -429,7 +548,17 @@ public sealed class FinalizeBookingCommandHandler(
 
                 // Update attempt → Succeeded (the booking WAS created, ref recorded).
                 attempt.Outcome = AttemptOutcome.Succeeded;
-                attempt.ProviderRef = result.ProviderReference;
+
+                // U2: a BLANK reference must not be persisted as though it were one.
+                // ProviderResult.ProviderReference is string?, and this assignment commits before
+                // the IsNullOrWhiteSpace guard further down this same transaction (":530") gets a
+                // say. An empty string then satisfies the recovery shortcut's `is not null` gate on
+                // the next drive, and the operation books with an empty bookingId — a booking row
+                // keyed on "" that no lookup will ever match. Normalising to null here keeps the
+                // column meaning exactly one thing: "we have a reference".
+                attempt.ProviderRef = string.IsNullOrWhiteSpace(result.ProviderReference)
+                    ? null
+                    : result.ProviderReference;
                 attempt.CompletedAt = now;
                 await attemptRepo.UpdateAsync(attempt, ct2);
 
