@@ -23,10 +23,13 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Compensate;
 ///           notification.booking_failed.v1; audit operation.compensated. Return Terminal.
 ///       - Ambiguous / Transient / PermanentError / AuthError (compensation unclear):
 ///           TXN: manualReviewEscalator (CompensationRequired→ManualReview). Return Wait.
-///   4a-bis. ProviderRef null but the latest finalize attempt is Dispatching/Ambiguous
-///       (the #51 cancel-before-create race): the effect is UNKNOWN, not absent.
+///   4a-bis. ProviderRef null but the effect is UNRESOLVED, not absent — the attempt is
+///       Dispatching/Ambiguous (the #51 cancel-before-create race), or it Succeeded with no
+///       usable reference (a provider that created a booking and named nothing):
 ///           TXN: manualReviewEscalator (CompensationRequired→ManualReview,
 ///           reason "compensation_effect_unresolved"). Return Wait.
+///       Re-checked INSIDE 4b's transaction as well, because the top-of-handler read is a
+///       snapshot and the dispatch fence commits from another transaction.
 ///   4b. ProviderRef null AND no attempt in flight (nothing was created):
 ///           TXN: step→Succeeded; op→FailedFinal (reason "failed_no_effect"); outbox
 ///           notification.booking_failed.v1; audit operation.failed_final. Return Terminal.
@@ -50,6 +53,33 @@ public sealed class CompensateOperationCommandHandler(
 {
     private const string CompensateStepType = "compensate";
     private const string ProviderAccount = "default";
+
+    /// <summary>
+    /// True when the latest finalize attempt leaves the provider effect UNKNOWN, so declaring
+    /// <c>failed_no_effect</c> would be a false authoritative outcome (Inv-16).
+    ///
+    /// <para>Two shapes qualify, and they fail for different reasons:</para>
+    /// <list type="bullet">
+    ///   <item><b>In flight</b> — <c>Dispatching</c>/<c>Ambiguous</c>. The provider call may be
+    ///     running right now; <c>FinalizeBookingCommandHandler</c> writes the reference in TXN2,
+    ///     long after it arms the attempt, so a null reference here says nothing about whether a
+    ///     booking exists.</item>
+    ///   <item><b>Succeeded without a reference</b> — the provider answered
+    ///     <c>Created</c>/<c>AlreadyExists</c> and gave no usable reference, which U2 normalises
+    ///     to <c>null</c> rather than persisting a blank. The effect DOES exist and simply cannot
+    ///     be addressed, which is the worst case of all: branch 4a skips
+    ///     <c>CancelBookingAsync</c> because there is nothing to cancel with, and branch 4b would
+    ///     then terminalise the operation as though nothing had happened.</item>
+    /// </list>
+    ///
+    /// <para><c>Planned</c> is deliberately absent: it has provably not been dispatched, and
+    /// FM#13's fast path depends on that (<c>FinalizeBookingCommandHandler</c> routes a
+    /// cancel-before-create here only for a <c>null</c>/<c>Planned</c> attempt).</para>
+    /// </summary>
+    private static bool IsEffectUnresolved(WorkflowAttempt? attempt) =>
+        attempt is { Outcome: AttemptOutcome.Dispatching or AttemptOutcome.Ambiguous }
+        || (attempt is { Outcome: AttemptOutcome.Succeeded or AttemptOutcome.Reconciled }
+            && string.IsNullOrWhiteSpace(attempt.ProviderRef));
 
     public async Task<StepOutcome> Handle(CompensateOperationCommand command, CancellationToken ct)
     {
@@ -249,7 +279,7 @@ public sealed class CompensateOperationCommandHandler(
         // dispatched, so FM#13's fast path stays fast; Phase 5 (#51b) closes the
         // Planned → Dispatching window at source by fencing the dispatch write itself.
         // ─────────────────────────────────────────────────────────────
-        if (latest is { Outcome: AttemptOutcome.Dispatching or AttemptOutcome.Ambiguous })
+        if (IsEffectUnresolved(latest))
         {
             var unresolvedOutcome = StepOutcome.Continue;
             await uow.ExecuteInTransactionAsync(async ct2 =>
@@ -281,9 +311,59 @@ public sealed class CompensateOperationCommandHandler(
         // 4b. ProviderRef null AND no attempt is in flight → nothing was created; FailedFinal.
         // ─────────────────────────────────────────────────────────────
         var nullRefCommitted = false;
+        var racedIntoFlight = false;
+        var referenceAppeared = false;
+
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
             var now = DateTimeOffset.UtcNow;
+
+            // ─────────────────────────────────────────────────────────
+            // Re-read the attempt INSIDE this transaction before concluding anything.
+            //
+            // The read at the top of Handle is a non-locking AsNoTracking SELECT under READ
+            // COMMITTED, taken before the compensate step is even created. Everything after it is
+            // a snapshot of a moment that has passed. The dispatch fence
+            // (WorkflowAttemptRepository.TryMarkDispatchingAsync) commits from a DIFFERENT
+            // transaction in a different handler, so an attempt that read `Planned` a moment ago
+            // can be armed, dispatched, and carry a provider booking by the time this transaction
+            // opens. #51b narrowed that window; it did not remove it, and this branch is where the
+            // consequence would be permanent.
+            //
+            // Two outcomes are possible and neither may fall through to FailedFinal:
+            //   * still unknown → escalate, exactly as the pre-transaction guard does;
+            //   * a reference has appeared → the booking is addressable now, so this is branch
+            //     4a's job. Write nothing and return Continue; the driver re-drives Compensate,
+            //     the top-of-handler read sees the reference, and CancelBookingAsync runs.
+            // ─────────────────────────────────────────────────────────
+            var latestInTxn = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, "finalize", ct2);
+
+            if (IsEffectUnresolved(latestInTxn))
+            {
+                var opForEscalate = await opRepo.GetAsync(operationId, ct2);
+                if (opForEscalate is not null
+                    && opForEscalate.Status == OperationStatus.CompensationRequired
+                    && await manualReviewEscalator.EscalateAsync(
+                        tenantId,
+                        operationId,
+                        opForEscalate.Version,
+                        OperationStatus.CompensationRequired,
+                        reason: "compensation_effect_unresolved",
+                        slaDeadline: DateTimeOffset.UtcNow.AddHours(2),
+                        ct: ct2))
+                {
+                    metrics.FulfillmentCompensationFailureTotal.Add(1);
+                    racedIntoFlight = true;
+                }
+
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(latestInTxn?.ProviderRef))
+            {
+                referenceAppeared = true;
+                return;
+            }
 
             // Mark compensate step Succeeded.
             if (compensateStep.Status == WorkflowStepStatus.InProgress)
@@ -351,6 +431,15 @@ public sealed class CompensateOperationCommandHandler(
                 metrics.FulfillmentOperationTerminalTotal.Add(1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "failed"));
             }
         }, ct);
+
+        // A human owns it now.
+        if (racedIntoFlight)
+            return StepOutcome.Wait;
+
+        // The booking became addressable while we were deciding it did not exist. Nothing was
+        // written; re-drive so branch 4a cancels it properly.
+        if (referenceAppeared)
+            return StepOutcome.Continue;
 
         return nullRefCommitted ? StepOutcome.Terminal : StepOutcome.Continue;
     }

@@ -71,6 +71,13 @@ public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttem
         => db.WorkflowAttempts
             .Where(a => a.TenantId == tenantId
                      && a.AttemptId == attemptId
+                     // The attempt must belong to the operation whose status is being asserted.
+                     // Without this the EXISTS below is checked against one operation while the
+                     // UPDATE arms another's attempt, so a caller that ever passed a mismatched
+                     // pair would dispatch using one operation's idempotency key and request hash
+                     // on behalf of a different operation. Today's single call site always passes
+                     // a matching pair; a conditional write should not depend on that.
+                     && a.OperationId == operationId
                      && a.Outcome == AttemptOutcome.Planned
                      && db.BookingOperations.Any(o =>
                             o.TenantId == tenantId

@@ -37,10 +37,18 @@ against the code rather than averaging them.
 |---|---|---|---|
 | **#51** | AS_DESCRIBED | high | **Yes — the only one** |
 | **#55** | AS_DESCRIBED | high | No |
-| **#56** | REAL_BUT_MISDESCRIBED | high | No |
-| **#57** | REAL_BUT_MISDESCRIBED | medium | No |
-| **#58** | REAL_BUT_MISDESCRIBED | medium | No |
+| **#56** | REAL_BUT_MISDESCRIBED | medium | No |
+| **#57** | REAL_BUT_MISDESCRIBED | high | No |
+| **#58** | REAL_BUT_MISDESCRIBED | low | No |
 | **#59** | REAL_BUT_MISDESCRIBED | high | **Yes** (part 1, via the Inv-7 race) |
+
+> **The severity column above is the ADJUDICATED value, not the verifiers' first pass.** It carried
+> the verifier severities for #56, #57 and #58 in an earlier revision, which contradicted this
+> document's own conflict table three sections down: the adjudication settles #56 at **medium**
+> (the escape is real and the branch is unreachable with the shipped adapter), #57 at **high** (it
+> is the wave's highest customer-visible severity — a booking confirmed to a guest who cancelled,
+> notifying nobody), and #58 at **low** (unreachable, and backstopped by the Compensate guard). A
+> reader who stopped at the summary would have mis-ranked half the wave.
 
 Unlike Wave 1, **nothing came back `ALREADY_FIXED` or `NOT_A_DEFECT` at the issue level** — all six describe
 real defects. But two carry traps that matter more than the misdescriptions:

@@ -152,6 +152,32 @@ public class DispatchFenceTests(PostgresFixture fixture)
         Assert.Equal(AttemptOutcome.Dispatching, await ReadOutcomeAsync(tenantId, attemptId));
     }
 
+    /// <summary>
+    /// The attempt must belong to the operation whose status is being asserted.
+    ///
+    /// <para>The predicate checked <c>attempt_id</c> against one operation's status without ever
+    /// tying the two together, so a mismatched pair would arm operation B's attempt on the
+    /// strength of operation A being <c>Finalizing</c> — and the caller would then dispatch using
+    /// B's idempotency key and request hash on A's behalf. Today's single call site always passes
+    /// a matching pair; a conditional write should not depend on that.</para>
+    /// </summary>
+    [Fact]
+    public async Task RefusesTheDispatch_WhenTheAttemptBelongsToAnotherOperation()
+    {
+        var tenantId = $"fence-xop-{Guid.NewGuid():N}";
+
+        // Both operations are Finalizing, so only the attempt/operation link can refuse this.
+        var (operationA, _) = await SeedAsync(tenantId, OperationStatus.Finalizing);
+        var (_, attemptB) = await SeedAsync(tenantId, OperationStatus.Finalizing);
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var rows = await new WorkflowAttemptRepository(ctx)
+            .TryMarkDispatchingAsync(tenantId, operationA, attemptB);
+
+        Assert.Equal(0, rows);
+        Assert.Equal(AttemptOutcome.Planned, await ReadOutcomeAsync(tenantId, attemptB));
+    }
+
     /// <summary>Tenant scope (Inv-13): another tenant's id cannot arm this attempt.</summary>
     [Fact]
     public async Task RefusesTheDispatch_ForAnotherTenant()

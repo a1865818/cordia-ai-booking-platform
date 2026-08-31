@@ -394,4 +394,135 @@ public class CompensateOperationTests
             OperationStatus.CompensationRequired, OperationStatus.ManualReview,
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ── Review follow-ups: the unresolved set, and WHEN it is evaluated ─────────────────────
+
+    /// <summary>
+    /// A <c>Succeeded</c> attempt with no usable reference. The provider answered
+    /// <c>Created</c>/<c>AlreadyExists</c> and named nothing, which U2 normalises to null rather
+    /// than persisting a blank — so branch 4a skips <c>CancelBookingAsync</c> (nothing to cancel
+    /// with) and 4b would have declared the effect absent. The effect is not absent; it is
+    /// unaddressable, which is strictly worse than in-flight.
+    /// </summary>
+    [Theory]
+    [InlineData(AttemptOutcome.Succeeded)]
+    [InlineData(AttemptOutcome.Reconciled)]
+    public async Task Handle_SucceededWithoutAReference_EscalatesInsteadOfDeclaringNoEffect(
+        AttemptOutcome outcome)
+    {
+        var (tenantId, opId) = ("t-noref", $"op-succeeded-noref-{outcome}");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 6));
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, outcome, providerRef: null));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _adapter.Verify(a => a.CancelBookingAsync(It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The race the guard was supposed to catch, arriving one step later than the guard looks.
+    ///
+    /// <para>The read at the top of Handle is a non-locking snapshot taken before the compensate
+    /// step is even created. The dispatch fence commits from a DIFFERENT transaction in
+    /// FinalizeBookingCommandHandler, so an attempt that read <c>Planned</c> — which correctly
+    /// passes the fast-path guard, because FM#13 depends on that fast path — can be armed before
+    /// branch 4b opens. Re-reading inside that transaction is the only place the change is
+    /// visible.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_AttemptArmedAfterTheInitialRead_EscalatesInsteadOfDeclaringNoEffect()
+    {
+        var (tenantId, opId) = ("t-raced", "op-armed-after-read");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 3));
+
+        // Planned at the top of the handler; Dispatching by the time 4b's transaction re-reads.
+        _attemptRepo.SetupSequence(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Planned, providerRef: null))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Dispatching, providerRef: null));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _outboxRepo.Verify(r => r.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == "notification.booking_failed.v1"),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        _capacityReservation.Verify(c => c.ReleaseByOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ReleaseReason>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The other half of the same race: the dispatch completed and a reference now exists. That
+    /// is branch 4a's job, not 4b's — so this transaction must write nothing and hand back
+    /// Continue, letting the next drive read the reference and actually cancel the booking.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ReferenceAppearsAfterTheInitialRead_WritesNothingAndRedrives()
+    {
+        var (tenantId, opId) = ("t-refappeared", "op-ref-appeared");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 3));
+
+        _attemptRepo.SetupSequence(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Planned, providerRef: null))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Succeeded, providerRef: "ext_ref_late"));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, It.IsAny<OperationStatus>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _outboxRepo.Verify(r => r.AddAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

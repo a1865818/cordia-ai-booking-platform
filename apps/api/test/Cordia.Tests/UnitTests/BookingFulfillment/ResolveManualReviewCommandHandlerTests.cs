@@ -59,7 +59,7 @@ public class ResolveManualReviewCommandHandlerTests
 
     private ResolveManualReviewCommandHandler CreateHandler() =>
         new(_opRepo.Object, _workItemRepo.Object, _outboxRepo.Object,
-            _bookingRepo.Object, _capacity.Object,
+            _bookingRepo.Object, _intents.Object, _capacity.Object,
             new Cordia.Application.Handlers.BookingFulfillment.ModifyBooking.ModifyCapacitySettlement(
                 _intents.Object, _holds.Object, _lockOrder.Object, _capacity.Object),
             new AuditWriter(_auditRepo.Object), _uow.Object);
@@ -918,5 +918,63 @@ public class ResolveManualReviewCommandHandlerTests
                 It.IsAny<BookingLifecycleStatus>(), It.IsAny<string>(),
                 BookingLifecycleStatus.Confirmed, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// A CREATE resolved as Booked must leave a `bookings` row behind.
+    ///
+    /// <para>This handler was the fourth writer of the Booked outcome and the only one still
+    /// producing an operation with no booking behind it: `MaterializeBookedAsync` had two call
+    /// sites, both in `FinalizeBookingCommandHandler`, and reconcile gained a third while this
+    /// did not. The operation, the confirmed outcome and the guest notification all committed for
+    /// a booking `GetBookingDetailsQuery`, the console, and both mutation doors cannot see.</para>
+    ///
+    /// <para>It stopped being latent when reconcile gained the `reconciled_hold_no_longer_valid`
+    /// escalation: that route makes this handler the ONLY way such an operation can reach Booked,
+    /// so the gap would have been reachable through a path the same wave introduced.</para>
+    /// </summary>
+    [Fact]
+    public async Task BookedCreate_MaterialisesTheBookingRow()
+    {
+        var (tenantId, operationId) = ("t-mrv-mat", "op-mrv-materialise");
+        const string providerRef = "ext_ref_manual";
+
+        _opRepo.Setup(r => r.GetAsync(operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, operationId, OperationStatus.ManualReview, version: 2));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, operationId, It.IsAny<long>(),
+                OperationStatus.ManualReview, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _workItemRepo.Setup(r => r.GetOpenByOperationAsync(tenantId, operationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OperationWorkItem?)null);
+
+        _intents.Setup(r => r.GetRevisionAsync(tenantId, It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BookingIntentRevision
+            {
+                TenantId = tenantId,
+                IntentId = "int-1",
+                Revision = 1,
+                CanonicalPayload = """{"customer_id":"cus_manual"}""",
+                PayloadHash = "h",
+            });
+
+        await CreateHandler().Handle(
+            new ResolveManualReviewCommand(tenantId, operationId, ManualReviewResolution.Booked,
+                providerRef, "rpl_mat", "ops", "rc", "operator"),
+            CancellationToken.None);
+
+        _bookingRepo.Verify(b => b.MaterializeBookedAsync(
+            It.Is<Booking>(x =>
+                x.TenantId == tenantId &&
+                x.BookingId == providerRef &&
+                x.ProviderReference == providerRef &&
+                // The identity a verification grant is later matched against — it must come from
+                // the intent revision, not from the provider-reference fallback.
+                x.CustomerId == "cus_manual" &&
+                x.LifecycleStatus == BookingLifecycleStatus.Confirmed),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }

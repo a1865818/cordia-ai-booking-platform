@@ -264,6 +264,10 @@ public class FinalizeBookingCommandHandlerTests
         _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
             .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Succeeded, providerRef: providerRef));
 
+        // TXN1 needs a step, so the fall-through path is deterministic rather than an exception.
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
+
         // Every destination succeeds if reached, so a wrong route commits and is observable.
         _opRepo.Setup(r => r.TryTransitionStatusAsync(
                 tenantId, opId, It.IsAny<long>(),
@@ -364,17 +368,21 @@ public class FinalizeBookingCommandHandlerTests
         ArrangeRecoveryShortcut(
             tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 2), blankRef);
 
-        // The shortcut must not be entered. What happens instead is not this test's concern —
-        // only that no booking is claimed on a reference that does not identify anything.
-        try
-        {
-            await CreateHandler().Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
-        }
-        catch (NullReferenceException)
-        {
-            // Fell through to the provider path, which this harness does not mock. That is
-            // itself proof the shortcut was skipped.
-        }
+        // The shortcut must not be entered. Control falls through to TXN1, and the #51 dispatch
+        // fence then refuses to arm (an unconfigured Task<int> mock answers 0 — the safe
+        // direction), so the handler returns Continue without ever reaching the provider.
+        //
+        // Asserted rather than caught. An earlier version wrapped this in
+        // `catch (NullReferenceException)` and treated the exception as proof the shortcut was
+        // skipped; that would equally have swallowed an NRE thrown for a genuinely wrong reason,
+        // which is the sort of test that reports green through a regression.
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
 
         _opRepo.Verify(r => r.TryTransitionStatusAsync(
             tenantId, opId, It.IsAny<long>(),
@@ -595,5 +603,78 @@ public class FinalizeBookingCommandHandlerTests
 
         _adapter.Verify(a => a.CreateBookingAsync(
             It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A cancellation pending over a booking the provider refused to name.
+    ///
+    /// <para>`Created`/`AlreadyExists` with no usable reference means the effect exists and
+    /// cannot be addressed. Routing that to `CompensationRequired` hands Compensate a booking it
+    /// cannot cancel — it skips `CancelBookingAsync` for want of a reference, and its no-effect
+    /// branch would terminalise the operation while a real reservation sits at the venue.
+    /// `Reconciling` is the destination that can recover: the §16.2 ladder looks the reference up
+    /// under the same idempotency key.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(ProviderResultKind.Created)]
+    [InlineData(ProviderResultKind.AlreadyExists)]
+    public async Task Handle_CancellationPending_WithNoProviderReference_RoutesToReconciling(
+        ProviderResultKind kind)
+    {
+        var (tenantId, opId) = ("t-cancel-noref", $"op-cancel-noref-{kind}");
+        ArrangeProviderCall(
+            tenantId, opId,
+            MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1,
+                cancellationRequestedAt: DateTimeOffset.UtcNow.AddSeconds(-5)),
+            new ProviderResult(kind));   // no reference
+
+        // A prior TransientFailure attempt, so FM#13's cancel-BEFORE-create fast path is skipped
+        // and control reaches the provider call. That path only fires for a null/Planned attempt,
+        // which is exactly the distinction it is built on.
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.TransientFailure));
+
+        await CreateHandler().Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Reconciling,
+            "cancelled_without_reference", It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // The destination that cannot act on an unnameable booking.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The half that must NOT change: WITH a reference, a pending cancellation still routes to
+    /// CompensationRequired so Compensate cancels the booking by name.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CancellationPending_WithAProviderReference_StillCompensates()
+    {
+        var (tenantId, opId) = ("t-cancel-ref", "op-cancel-with-ref");
+        ArrangeProviderCall(
+            tenantId, opId,
+            MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1,
+                cancellationRequestedAt: DateTimeOffset.UtcNow.AddSeconds(-5)),
+            new ProviderResult(ProviderResultKind.Created, "ext_ref_cancel"));
+
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.TransientFailure));
+
+        await CreateHandler().Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+            "cancelled_after_create", It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Reconciling,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

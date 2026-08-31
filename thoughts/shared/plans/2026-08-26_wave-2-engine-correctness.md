@@ -251,7 +251,18 @@ definition of what that outcome must contain**:
 | Finalize TXN2 (`:487-581`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Finalize recovery shortcut (`:136-178`) | ✅ | ✅ | ✅ | ❌ **#57** | ❌ **#57** | ❌ |
 | Reconcile (`:161-264`) | ❌ **#59p1** | ✅ | ❌ **U1** | ✅ | ✅ | ✅ |
-| ResolveManualReview (`:95-104`) | ❌ | ✅ | ❌ | — | — | — |
+| ResolveManualReview (`:95-104`) | ✅ (`:290`) | ✅ | ❌ | ✅ | ✅ | — |
+
+> **Corrected during Phase 3 — see its Discovery 3.** This row originally read ❌ for capacity,
+> carried over from the research. It is wrong: `ResolveManualReviewCommandHandler` **does** call
+> `FinalizeAgainstOperationAsync` (`:290`), and it emits both an outcome and an audit event. The
+> only thing it was missing is the `bookings` row.
+>
+> **That gap was closed in review, not left to a follow-up.** Phase 3a routes an effect-proven
+> reconcile whose hold has expired to `ManualReview` — which makes this handler the *only* way such
+> an operation can ever reach `Booked`. Leaving the booking row unwritten would have meant the fix
+> for #59 manufactured a fresh instance of #107 through a path this wave introduced, so the
+> materialisation was added here through the same shared `BookingAggregateFactory`.
 
 **Commit 3a — capacity.** Inject `ICapacityReservation`; call `FinalizeAgainstOperationAsync` inside
 the effect-proven transaction. Without it the Active hold is later swept, decrementing
@@ -587,7 +598,7 @@ property holds today — but that is a property of the reasons chosen, not of th
 - **Not extending the circuit breaker over reconcile lookups** (Q2). `grep "IsOpen(" apps/api/src` returns exactly one call site, so the §16.2 ladder calls the provider unguarded, and Phases 2 and 6 increase that traffic **by design**. This is a knowing partial defeat of FM#10/§15.4, filed separately rather than silently absorbed.
 - **Not wiring a reconcile retry scheduler.** Q2 chose sweeper re-drive; `:276-280`'s discarded `nextEligible` is deleted or used, not turned into new machinery.
 - **Not making `RetryAction` load-bearing.** It has zero production readers (only `RetryClassifierTests`). The right structural fix, but a refactor, not a bug fix — Wave 3.
-- **Not fixing `ResolveManualReviewCommandHandler`'s write-set** beyond noting it as the fourth writer, unless Phase 3 makes the shared factory cheap enough to adopt there in the same PR.
+- ~~**Not fixing `ResolveManualReviewCommandHandler`'s write-set**~~ — **this was folded in after review.** The condition the line itself set out ("unless Phase 3 makes the shared factory cheap enough") was met, and more than that: Phase 3a's `reconciled_hold_no_longer_valid` escalation makes this handler the only route to `Booked` for such an operation, so leaving it would have meant the fix for #59 created a fresh instance of #107.
 - **Not raising transaction isolation** to fix any race here.
 - **Not tuning lease or staleness options.**
 
@@ -638,8 +649,9 @@ Both now have tests pinning the *non*-guard, so neither mistake can be reintrodu
   what makes the remainder non-destructive.
 - **Reconcile's §16.2 ladder still has no circuit guard** (#105), and Phases 2 and 6 both increase
   that traffic by design. Q2's accepted trade-off, filed rather than absorbed.
-- **`ResolveManualReviewCommandHandler` is the fourth `Booked` writer** and still writes no booking
-  row (#107). Left out to keep this wave's scope honest.
+- ~~**`ResolveManualReviewCommandHandler` ... writes no booking row (#107)**~~ — **closed in review.**
+  It became reachable through a route this wave introduced, so it stopped being a separable
+  follow-up. It now materialises through the shared `BookingAggregateFactory`.
 
 ---
 
@@ -648,4 +660,4 @@ Both now have tests pinning the *non*-guard, so neither mistake can be reintrodu
 1. **Reconcile's §16.2 ladder has no circuit guard** — the Q2 gap, stated above.
 2. **`docs/specs/07:365` is stale** — "Slot provisioning is out of scope" contradicts the shipped `POST /api/availability/slots`.
 3. **`CapacityPrimitiveResolver` is hardcoded** — needs a per-`(tenant, provider)` table.
-4. **`ResolveManualReviewCommandHandler` is the fourth `Booked` writer** with the same two holes, if not folded into Phase 3.
+4. ~~**`ResolveManualReviewCommandHandler` is the fourth `Booked` writer**~~ — folded into Phase 3 after review; it settles capacity already and now writes the booking row too. #107 is resolved by this wave rather than deferred.

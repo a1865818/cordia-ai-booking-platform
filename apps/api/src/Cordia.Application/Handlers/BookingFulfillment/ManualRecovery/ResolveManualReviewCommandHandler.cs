@@ -25,6 +25,7 @@ public sealed class ResolveManualReviewCommandHandler(
     IOperationWorkItemRepository workItemRepo,
     IOutboxRepository outboxRepo,
     IBookingRepository bookingRepo,
+    IBookingIntentRepository intentRepo,
     ICapacityReservation capacityReservation,
     ModifyBooking.ModifyCapacitySettlement capacitySettlement,
     IAuditWriter audit,
@@ -289,6 +290,49 @@ public sealed class ResolveManualReviewCommandHandler(
                     // operation rather than blocking a resolution that is otherwise correct.
                     await capacityReservation.FinalizeAgainstOperationAsync(
                         command.TenantId, command.OperationId, "create", ct2);
+
+                    // ─────────────────────────────────────────────────────
+                    // ...and a `bookings` row, for the same reason the seat needed settling.
+                    //
+                    // This was the fourth writer of the Booked outcome and the only one that
+                    // still produced an operation with no booking behind it.
+                    // MaterializeBookedAsync had two call sites, both in
+                    // FinalizeBookingCommandHandler; reconcile gained one (U1) and this did not.
+                    // An operator resolving a create as Booked therefore committed an operation
+                    // row, a confirmed outcome and a guest notification for a booking that
+                    // GetBookingDetailsQuery, the console, and both the cancel and modify front
+                    // doors cannot see.
+                    //
+                    // It became urgent rather than latent with the new
+                    // "reconciled_hold_no_longer_valid" escalation: reconcile now routes a proven
+                    // booking whose hold is gone to ManualReview, so this handler is the ONLY way
+                    // that operation can ever reach Booked. Leaving the gap would mean the fix for
+                    // #59 manufactured a fresh instance of #107.
+                    //
+                    // Through the shared factory, so the CustomerId precedence chain has exactly
+                    // one definition — that value is the identity AuthorizeMutationAsync later
+                    // matches a verification grant against, and a second copy drifting would lock
+                    // guests out of their own bookings on whichever path fell behind.
+                    //
+                    // Guarded on a usable reference: on a create the provider reference IS the
+                    // booking id, and a blank one would key a row nothing can look up. The
+                    // transition above already writes it as `bookingId`, so this simply refuses to
+                    // manufacture an aggregate the id cannot address.
+                    // ─────────────────────────────────────────────────────
+                    if (!string.IsNullOrWhiteSpace(command.ProviderRef))
+                    {
+                        var revision = await intentRepo.GetRevisionAsync(
+                            command.TenantId, opInTxn.IntentId, opInTxn.IntentRevision, ct2);
+
+                        await bookingRepo.MaterializeBookedAsync(
+                            BookingAggregateFactory.BuildBookingAggregate(
+                                command.TenantId,
+                                opInTxn,
+                                command.ProviderRef,
+                                revision?.CanonicalPayload ?? "{}",
+                                now),
+                            ct2);
+                    }
                 }
 
                 // Inv-8: outcome in the same transaction. Spec 11 §5.3: a pre-order op signals the

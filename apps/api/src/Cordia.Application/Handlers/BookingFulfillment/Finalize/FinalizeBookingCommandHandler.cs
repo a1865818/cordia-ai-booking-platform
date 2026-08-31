@@ -46,6 +46,9 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///   FM#13 (cancel-after-create): in the success TXN2 AND in the idempotent recovery shortcut,
 ///     if CancellationRequestedAt != null, route to CompensationRequired instead of Booked so
 ///     Compensate cancels the created booking (#57 — the shortcut used to skip this check).
+///     If the provider gave NO usable reference, route to Reconciling instead
+///     (reason "cancelled_without_reference"): Compensate cannot cancel a booking it cannot
+///     name, and the §16.2 ladder can still find the reference.
 ///   The recovery shortcut emits the same Inv-8 outcome envelope as the main path: outbox row,
 ///     audit event and metrics, all inside the Booked transaction (#57).
 ///
@@ -670,12 +673,38 @@ public sealed class FinalizeBookingCommandHandler(
 
                 if (currentOp.CancellationRequestedAt.HasValue)
                 {
-                    // Cancellation was requested after the booking was created — route to
-                    // CompensationRequired so the Compensate handler cancels the booking.
+                    // ─────────────────────────────────────────────────────
+                    // A cancellation is pending over a booking that exists. Which destination is
+                    // correct depends entirely on whether we can NAME the booking.
+                    //
+                    // With a reference: CompensationRequired, and Compensate calls
+                    // CancelBookingAsync with it. That is the established route.
+                    //
+                    // WITHOUT one: the provider answered Created/AlreadyExists and gave nothing
+                    // usable, which U2 normalises to a null ProviderRef rather than persisting a
+                    // blank. Sending that to CompensationRequired hands Compensate an effect it
+                    // cannot address — it skips CancelBookingAsync because there is nothing to
+                    // cancel with, and its no-effect branch would then terminalise the operation
+                    // as FailedFinal / "failed_no_effect" and tell the guest their booking failed,
+                    // while a real reservation sits at the venue that nothing will ever reference.
+                    // Compensate now refuses that conclusion (IsEffectUnresolved), so the outcome
+                    // would be a ManualReview work item — correct, but it makes a human do the
+                    // one job the §16.2 ladder exists to do automatically.
+                    //
+                    // Reconciling is the destination that can actually recover: the lookup ladder
+                    // asks the provider for the reference under the same idempotency key, and
+                    // reconcile's own FM#13 branch escalates a cancel that raced a proven booking
+                    // ("cancel_raced_reconciled_booking"). Finalizing → Reconciling is legal
+                    // (OperationStateMachine:67-72).
+                    // ─────────────────────────────────────────────────────
+                    var hasReference = !string.IsNullOrWhiteSpace(result.ProviderReference);
+
                     var cancelRows = await opRepo.TryTransitionStatusAsync(
                         tenantId, operationId, currentOp.Version,
-                        OperationStatus.Finalizing, OperationStatus.CompensationRequired,
-                        reason: "cancelled_after_create", ct: ct2);
+                        OperationStatus.Finalizing,
+                        hasReference ? OperationStatus.CompensationRequired : OperationStatus.Reconciling,
+                        reason: hasReference ? "cancelled_after_create" : "cancelled_without_reference",
+                        ct: ct2);
 
                     if (cancelRows > 0)
                     {
@@ -691,7 +720,7 @@ public sealed class FinalizeBookingCommandHandler(
                             Metadata = JsonSerializer.Serialize(new
                             {
                                 provider_ref = result.ProviderReference,
-                                reason = "cancelled_after_create",
+                                reason = hasReference ? "cancelled_after_create" : "cancelled_without_reference",
                             }),
                             OccurredAt = now,
                         }, ct2);
