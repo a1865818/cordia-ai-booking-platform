@@ -472,4 +472,128 @@ public class FinalizeBookingCommandHandlerTests
         _adapter.Verify(a => a.CreateBookingAsync(
             It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ── #58: a NotFound from a CREATE proves nothing ───────────────────────────────────────
+    //
+    // RetryClassifier.cs:34 has said so all along — "a NotFound cannot prove the create did not
+    // take effect". This handler never asked, and let NotFound fall into the
+    // Rejected/PermanentError block whose `_ =>` default stamped the attempt Abandoned and routed
+    // to CompensationRequired. Nothing was ever compensated from there: that path never assigns
+    // attempt.ProviderRef, so Compensate read null and terminalised to FailedFinal with a customer
+    // "booking failed" notification — a definitive claim made from a result that proves nothing.
+
+    private void ArrangeProviderCall(
+        string tenantId, string opId, BookingOperation op, ProviderResult providerResult)
+    {
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowAttempt?)null);
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
+
+        _circuitBreaker.Setup(c => c.IsOpen("stub", "default")).Returns(false);
+
+        // The #51 fence returns Task<int>, so an unconfigured mock answers 0 — "do not dispatch".
+        // That is the safe default, and it means any test that needs the provider call must arm
+        // the dispatch deliberately.
+        _attemptRepo.Setup(r => r.TryMarkDispatchingAsync(
+                tenantId, opId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        _adapter.Setup(a => a.CreateBookingAsync(
+                It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(providerResult);
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Finalizing, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+    }
+
+    [Fact]
+    public async Task Handle_ProviderReturnsNotFound_RoutesToReconciling_NotCompensation()
+    {
+        var (tenantId, opId) = ("t-nf", "op-not-found");
+        ArrangeProviderCall(
+            tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1),
+            new ProviderResult(ProviderResultKind.NotFound));
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Reconciling,
+            "finalize_not_found", It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // The old destination, and the one that produced a false "your booking failed".
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Ambiguous, not Abandoned: the effect is unknown, and the reconcile ladder needs to know
+        // that rather than being told the attempt was given up on.
+        _attemptRepo.Verify(a => a.UpdateAsync(
+            It.Is<WorkflowAttempt>(x => x.Outcome == AttemptOutcome.Ambiguous),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// The half that must NOT change — a genuine rejection is still a compensation. Without this
+    /// the NotFound test above would pass on a handler that routed everything to Reconciling.
+    /// </summary>
+    [Theory]
+    [InlineData(ProviderResultKind.Rejected)]
+    [InlineData(ProviderResultKind.PermanentError)]
+    public async Task Handle_ProviderRejects_StillRoutesToCompensationRequired(ProviderResultKind kind)
+    {
+        var (tenantId, opId) = ("t-rej", $"op-rejected-{kind}");
+        ArrangeProviderCall(
+            tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1),
+            new ProviderResult(kind));
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+            "finalize_permanent_error", It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _attemptRepo.Verify(a => a.UpdateAsync(
+            It.Is<WorkflowAttempt>(x => x.Outcome == AttemptOutcome.Rejected),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// #51's fence, from the handler's side: a dispatch that cannot be armed must not reach the
+    /// provider. The mocked default of 0 is what makes this the cheap test it is.
+    /// </summary>
+    [Fact]
+    public async Task Handle_DispatchFenceRefuses_NeverCallsTheProvider()
+    {
+        var (tenantId, opId) = ("t-fence", "op-fence-refused");
+        ArrangeProviderCall(
+            tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1),
+            new ProviderResult(ProviderResultKind.Created, "ref"));
+
+        // The operation moved on underneath us.
+        _attemptRepo.Setup(r => r.TryMarkDispatchingAsync(
+                tenantId, opId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

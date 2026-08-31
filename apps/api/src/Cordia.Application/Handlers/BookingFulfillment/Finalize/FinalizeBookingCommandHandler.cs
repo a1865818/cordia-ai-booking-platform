@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
@@ -32,8 +33,12 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///   TXN2 (ambiguous): Finalizing→Reconciling (§16.2 lookup before re-create) — unchanged from T5.
 ///   TXN2 (NoCapacity at finalize): anomalous (§11: Finalizing has NO edge to AlternativesRequired) →
 ///     Finalizing→Reconciling (reason "unexpected_no_capacity").
+///   TXN2 (NotFound from create): the effect is UNPROVABLE, not absent — attempt=Ambiguous,
+///     Finalizing→Reconciling (reason "finalize_not_found") so §16.2 answers before anyone is
+///     told anything (#58).
 ///   TXN2 (Rejected/PermanentError): persist attempt → Finalizing→CompensationRequired
-///     (driver dispatches CompensateOperationCommand).
+///     (driver dispatches CompensateOperationCommand). The switch is exhaustive by intent; an
+///     unhandled kind throws PoisonMessageException rather than defaulting into that branch.
 ///   TXN2 (AuthError/PaymentActionRequired): persist attempt (Abandoned) → Finalizing→Reconciling
 ///     (reconcile no-effect+escalation → ManualReview; §11 forbids direct Finalizing→ManualReview).
 ///   FM#13 (cancel-before-create): if CancellationRequestedAt != null at the top of finalize and
@@ -973,15 +978,70 @@ public sealed class FinalizeBookingCommandHandler(
             return StepOutcome.Continue;
         }
 
+        // ─────────────────────────────────────────────────────────────
+        // TXN2 (NotFound from a CREATE): the effect is unprovable, not absent (#58).
+        //
+        // RetryClassifier.cs:34 has said so all along — "a NotFound cannot prove the create did
+        // not take effect" — and classifies it Ambiguous/ManualReview. This handler never asked;
+        // it let NotFound fall into the Rejected/PermanentError block below, whose `_ =>` default
+        // stamped the attempt Abandoned and routed the operation to CompensationRequired with
+        // reason "finalize_permanent_error".
+        //
+        // The issue describes that as "attempts to compensate a booking whose effect is
+        // unprovable". It is worse and also the opposite: nothing is ever compensated. This path
+        // never assigns attempt.ProviderRef, so Compensate reads null, skips CancelBookingAsync
+        // entirely, and terminalises to FailedFinal / "failed_no_effect" plus a customer
+        // "booking failed" notification — a definitive claim that nothing happened, made from a
+        // result that proves nothing, in a single driver tick.
+        //
+        // Route to Reconciling like every other unprovable outcome, so the §16.2 ladder gets to
+        // answer the question before anyone tells the guest anything.
+        // ─────────────────────────────────────────────────────────────
+        if (result.Kind == ProviderResultKind.NotFound)
+        {
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                attempt.Outcome = AttemptOutcome.Ambiguous;
+                attempt.RetryClassification = classifier.Classify(result).Classification;
+                attempt.ErrorCode = result.ErrorCode;
+                attempt.CompletedAt = DateTimeOffset.UtcNow;
+                await attemptRepo.UpdateAsync(attempt, ct2);
+
+                circuitBreaker.RecordFailure(adapter.ProviderName, ProviderAccount);
+
+                var currentOp = await opRepo.GetAsync(operationId, ct2);
+                if (currentOp is not null && currentOp.Status == OperationStatus.Finalizing)
+                {
+                    await opRepo.TryTransitionStatusAsync(
+                        tenantId, operationId, currentOp.Version,
+                        OperationStatus.Finalizing, OperationStatus.Reconciling,
+                        reason: "finalize_not_found", ct: ct2);
+                }
+            }, ct);
+
+            return StepOutcome.Continue;
+        }
+
         // TXN2 (Rejected / PermanentError): persist attempt outcome + transition
         // Finalizing → CompensationRequired.  The driver will dispatch CompensateOperationCommand.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            // EXHAUSTIVE by intent. Every other ProviderResultKind is handled above, so the only
+            // values that reach here are Rejected and PermanentError. The previous
+            // `_ => AttemptOutcome.Abandoned` default was not a fallback, it was a trap: it
+            // silently funnelled any unhandled kind — present or future — into the most
+            // destructive terminal arm this handler has, telling a customer their booking failed
+            // on the strength of a result nobody had classified. A kind that reaches here now is
+            // a genuine registration defect, and dead-lettering it (Inv-14) surfaces that instead
+            // of burying it in a false outcome.
             attempt.Outcome = result.Kind switch
             {
                 ProviderResultKind.Rejected => AttemptOutcome.Rejected,
                 ProviderResultKind.PermanentError => AttemptOutcome.Rejected,
-                _ => AttemptOutcome.Abandoned,
+                _ => throw new PoisonMessageException(
+                    $"Unhandled ProviderResultKind '{result.Kind}' reached the finalize terminal "
+                    + "branch. Give it an explicit arm rather than letting it default to a "
+                    + "customer-visible failure."),
             };
             attempt.RetryClassification = classifier.Classify(result).Classification;
             attempt.ErrorCode = result.ErrorCode;

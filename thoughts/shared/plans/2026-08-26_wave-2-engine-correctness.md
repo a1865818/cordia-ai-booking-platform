@@ -502,14 +502,37 @@ default stops being a landmine for future kinds.
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; a test per `ProviderResultKind` through this switch
-- [ ] Mutation: restore the `_ =>` default → only the `NotFound` test reds
+- [x] `bun nx test api` green — **1861 passed** (+4)
+- [x] `bun nx test-integration api` green — 703 passed / 0 failed
+- [x] Mutation: restore the pre-#58 handling (skip the `NotFound` arm, put back `_ => Abandoned`) → **exactly 1** red; both `Rejected`/`PermanentError` cases stay green
+- [x] `bun nx lint api` green
 
 **Manual**
-- [ ] n/a — unreachable with the shipped adapter; covered by unit tests only
+- [x] n/a — unreachable with the shipped adapter; covered by unit tests only
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The `_ =>` default could not simply be deleted.** A C# switch expression over an enum needs a
+   default arm or the compiler warns. Making it `throw new PoisonMessageException` turns the trap
+   into a loud failure: the driver already catches that (`AdvanceBookingOperationCommandHandler:94`)
+   and dead-letters (Inv-14), which is the right treatment for an unclassified provider result —
+   far better than the previous behaviour of funnelling it into the most destructive terminal arm
+   the handler has.
+
+2. **`Ambiguous`, not `Abandoned`, for the attempt outcome.** `Abandoned` tells the reconcile
+   ladder the attempt was given up on; `Ambiguous` tells it the effect is unknown, which is the
+   actual fact and is what Finalize's own Inv-7 guard keys on.
+
+3. **The negative test is what makes the mutation meaningful**, same as Phase 6: without
+   `Handle_ProviderRejects_StillRoutesToCompensationRequired`, the NotFound assertion would pass
+   on a handler that routed *everything* to `Reconciling`.
+
+4. **Process slip worth recording.** I reverted this phase's mutation with `git checkout --` on the
+   source file, which reverted to HEAD — discarding the phase's actual change along with the
+   mutation, while leaving its tests in place. Caught immediately by grepping for the new reason
+   string, and re-applied from the patch script. Mutations in this wave were otherwise reversed
+   textually, which is the safe habit: `git checkout` cannot distinguish a mutation from the work
+   it was testing.
 
 ---
 
