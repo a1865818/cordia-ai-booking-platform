@@ -402,15 +402,43 @@ every other caller depends on its unconditional semantics; this is a **new, addi
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` + `bun nx test-integration api` green
-- [ ] Mutation: revert to the unconditional write → only the fence test reds
-- [ ] `UpdateAsync`'s existing call sites unchanged (`git diff` shows no edit to `:32-43`)
+- [x] `bun nx test api` green — 1855 passed; `bun nx test-integration api` green — **703 passed** (+7)
+- [x] Mutation: remove the status clause → **exactly 3** red (all three `RefusesTheDispatch_OnceTheOperationHasLeftFinalizing` cases)
+- [x] `UpdateAsync` unchanged — the new method is additive
+- [x] `bun nx lint api` green
 
 **Manual**
-- [ ] A cancel arriving mid-TXN1 aborts the dispatch instead of orphaning a provider booking
+- [x] A cancel that lands before the fence aborts the dispatch instead of orphaning a provider booking
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The plan's fence predicate was wrong, and an existing integration test caught it.** The plan
+   specified `status = 'finalizing' AND cancellation_requested_at IS NULL`. That second clause
+   broke `FinalizeDetectsCancelAfterCreate_CompensatesBooking_ReachesFailedFinal` — **correctly**.
+   A pending cancellation over a `TransientFailure` attempt *must* still dispatch: the previous
+   call may already have taken effect, and calling again under the same idempotency key is the
+   only way to read back the `AlreadyExists` reference that Compensate then needs in order to
+   cancel anything. FM#13 fast-paths a cancellation only for a `null`/`Planned` attempt for exactly
+   this reason. Shipped predicate is the status clause alone, and a test now pins the
+   *non*-guard so nobody re-adds it.
+
+2. **This does not make the pair atomic, and the code says so.** If the cancel worker re-reads the
+   attempt, then the fence commits, then the cancel worker's CAS commits, both still proceed. The
+   window shrinks from "the whole duration of a provider call" to "that worker's own re-read to
+   CAS span" — orders of magnitude, not zero. Closing it completely needs both writes under one
+   lock or a shared CAS row, which is larger than this wave. **Phase 1 is what makes the remainder
+   non-destructive**, and that is the real reason the two halves of #51 were ordered 1st and 5th
+   rather than shipped together.
+
+3. **`outcome = 'planned'` in the predicate buys idempotency for free.** A redelivery that finds
+   the attempt already `Dispatching` gets 0 rows rather than re-arming a dispatch — worth having
+   given the driver's at-least-once delivery, and pinned by its own test.
+
+4. **The mocked repository now returns the *restrictive* default.** `TryMarkDispatchingAsync`
+   returns `Task<int>`, so an unconfigured mock answers `0` — "do not dispatch". That is the
+   opposite of the `FinalizeOutcome.Finalized` trap noted in Phase 3: here the safe direction is
+   the default, so a test that forgets to configure it fails loudly rather than passing quietly.
+   Worth knowing before someone "helpfully" adds a permissive default setup.
 
 ---
 

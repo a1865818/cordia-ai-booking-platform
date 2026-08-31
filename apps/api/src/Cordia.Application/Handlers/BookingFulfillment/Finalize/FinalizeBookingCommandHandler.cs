@@ -18,7 +18,8 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 /// Protocol (Inv-4, Inv-7, Inv-8):
 ///   TXN1: Held→Finalizing (if not already); create/load workflow_step; insert Planned attempt.
 ///   Circuit check: if circuit open → abandon the Planned attempt + schedule durable retry → Reschedule.
-///   Mark Dispatching (best-effort, own write, no explicit txn).
+///   Mark Dispatching (FENCED conditional write — refuses to arm if the operation has left
+///     Finalizing; #51).
 ///   External call: adapter.CreateBookingAsync.
 ///   TXN2 (success): attempt=Succeeded + step=Succeeded + op→Booked + outbox + audit.
 ///   TXN2 (transient): attempt=TransientFailure + circuit.RecordFailure.
@@ -518,10 +519,51 @@ public sealed class FinalizeBookingCommandHandler(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Mark Dispatching (best-effort, before the external call).
+        // Mark Dispatching — FENCED, not best-effort (#51).
+        //
+        // This is the last write before an irreversible external call, which makes it the right
+        // place to ask one more time whether the call is still wanted. It used to be an
+        // unconditional UpdateAsync returning Task, so it could not answer.
+        //
+        // The race: FM#13 re-reads the latest attempt inside its transaction (:239-240) and backs
+        // off if it finds one Dispatching — but that read is a non-locking AsNoTracking SELECT
+        // under READ COMMITTED, so a concurrent dispatch can arm itself right after it. The
+        // conditional write below re-asserts, in the same statement that performs the write, that
+        // the operation is still Finalizing. Zero rows means the world moved: abandon the dispatch
+        // and let the driver re-evaluate.
+        //
+        // It does NOT also test cancellation_requested_at, though an earlier version did — that
+        // broke FinalizeDetectsCancelAfterCreate_CompensatesBooking_ReachesFailedFinal, correctly.
+        // A cancellation pending over a TransientFailure attempt must still dispatch: the previous
+        // call may have taken effect, and calling again under the same idempotency key is the only
+        // way to read back the AlreadyExists reference that Compensate then needs in order to
+        // cancel anything. FM#13 fast-paths a cancellation only for a null/Planned attempt for
+        // exactly this reason.
+        //
+        // WHAT THIS DOES NOT DO, stated plainly. It does not make the pair atomic. If the cancel
+        // worker re-reads the attempt, then this fence commits, then the cancel worker's CAS
+        // commits, both still proceed — the window is now bounded by that worker's own re-read to
+        // CAS span instead of by the whole duration of a provider call, which is orders of
+        // magnitude smaller but not zero. Closing it completely needs both writes under one lock
+        // or a shared CAS row, which is a larger change than this wave carries. Phase 1 is what
+        // makes the remainder non-destructive: Compensate no longer declares "no effect" over an
+        // attempt it can see is in flight, so the residual race costs a ManualReview rather than
+        // an orphaned booking and a false failure notification.
         // ─────────────────────────────────────────────────────────────
+        var dispatchArmed = await attemptRepo.TryMarkDispatchingAsync(
+            tenantId, operationId, attempt.AttemptId, ct);
+
+        if (dispatchArmed == 0)
+        {
+            // The operation is no longer Finalizing (or this attempt was already armed).
+            // Do not call the provider.
+            // Continue so the driver reloads and dispatches whatever the new status calls for.
+            return StepOutcome.Continue;
+        }
+
+        // Keep the in-memory attempt consistent with the row: TXN2 below persists this instance
+        // through UpdateAsync, which writes every column from it.
         attempt.Outcome = AttemptOutcome.Dispatching;
-        await attemptRepo.UpdateAsync(attempt, ct);
 
         // ─────────────────────────────────────────────────────────────
         // External call — unexpected exceptions propagate to the driver (AdvanceBookingOperationCommandHandler),
