@@ -121,6 +121,13 @@ public class ManualRecoveryTests(PostgresFixture fixture)
                 ["Messaging:StepSweeper:Enabled"] = "false",
                 ["Messaging:NotificationReconcile:Enabled"] = "false",
                 ["Messaging:MissingNotificationAudit:Enabled"] = "false",
+
+                // This suite dispatches operator commands straight through MediatR with no HTTP
+                // request, so IActorContext is empty and OperatorActionBehavior's #72 provenance
+                // gate would refuse them. The Alba-hosted suites do not hit this because
+                // appsettings.Test.json:8 sets the same flag for the whole test host; this
+                // container builds its own config and has to say so itself.
+                ["Authorization:AllowAssertedStaffRole"] = "true",
             })
             .Build();
 

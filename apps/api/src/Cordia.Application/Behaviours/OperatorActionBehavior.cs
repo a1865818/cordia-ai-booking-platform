@@ -1,8 +1,10 @@
 ﻿using Cordia.Application.Common.Audit;
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
+using Cordia.Domain.Interfaces;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Behaviours;
 
@@ -15,7 +17,10 @@ namespace Cordia.Application.Behaviours;
 /// <see cref="AuthorizationFailedException"/> (403) when the actor identity,
 /// role, or reason code is missing (structural backstop behind the
 /// FluentValidation rules) — writing a DENY audit (through a fresh scope, missing
-/// fields recorded as "unknown") so the trail is complete, (a2) enforces the
+/// fields recorded as "unknown") so the trail is complete, (a1) refuses an
+/// identity that was ASSERTED rather than PROVEN — no verified operator session
+/// and <see cref="AssertedActorOptions.AllowAssertedStaffRole"/> off, which is
+/// the default outside Development (#72, Inv-11) — (a2) enforces the
 /// <see cref="StaffRole"/> matrix
 /// (GD-1: owner-required actions demand owner; operator-required actions accept
 /// operator or owner) BEFORE the handler — a mismatch writes a DENY audit
@@ -33,7 +38,10 @@ namespace Cordia.Application.Behaviours;
 ///
 /// Pipeline order: Validation → OperatorAction → InboxDedup → Handler.
 /// </summary>
-public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFactory scopeFactory)
+public sealed class OperatorActionBehavior<TRequest, TResponse>(
+    IServiceScopeFactory scopeFactory,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor)
     : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
@@ -80,6 +88,62 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(IServiceScopeFac
             throw new AuthorizationFailedException(
                 op.ActionName,
                 "Operator actions require an actor identity (X-Actor), a staff role (X-Actor-Role), and a reason code (X-Reason-Code) (spec 14 §24.5).");
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Is this identity PROVEN, or merely asserted? (#72, Inv-11)
+        //
+        // Everything below this point checks what the actor CLAIMS to be. StaffRole.Satisfies
+        // validates the vocabulary of a role; it cannot tell a verified operator from a string
+        // in a header. And `ActorBinder.Resolve` — by design, for the dev shim — returns the raw
+        // `X-Actor` / `X-Actor-Role` values verbatim whenever no operator session was presented.
+        //
+        // So without this check, `X-Actor: anyone` + `X-Actor-Role: owner` + `X-Reason-Code: x`
+        // satisfied the matrix on every one of the ~32 IOperatorActionRequest commands — menu
+        // publish, deposit refunds, dead-letter replay, manual-review resolution — in every
+        // environment, with no session and no password.
+        //
+        // The gate for exactly this already existed and was already configured correctly.
+        // AssertedActorOptions defaults ON in Development and OFF everywhere else, and its own
+        // doc comment describes this precise attack ("anyone who knows a booking id can send
+        // X-Actor-Role: operator"). It was simply never consulted here — only two unrelated
+        // handlers read it. This wires it to the path it was written for.
+        //
+        // `IActorContext.ActorId` is non-empty ONLY when TenantContextVerificationMiddleware
+        // bound it from a signature-verified, non-revoked `opctx+jws` session, so it is the
+        // authoritative "was this proven" signal. Same test ActorBinder uses to decide
+        // precedence, applied here to decide sufficiency.
+        //
+        // Safe for background work: no IOperatorActionRequest is also an IInboxConsumerRequest,
+        // so an operator action never arrives from a queue with no request actor to prove.
+        // ─────────────────────────────────────────────────────────────
+        if (string.IsNullOrEmpty(actorContext.ActorId) && !assertedActor.Value.AllowAssertedStaffRole)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var denyAudit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();
+            await denyAudit.WriteAsync(
+                new AuditRecord(
+                    TenantId: op.TenantId,
+                    ActorType: StaffRole.IsKnown(op.ActorRole) ? op.ActorRole : "operator",
+                    ActorId: op.ActorId,
+                    Action: op.ActionName,
+                    TargetType: op.TargetType,
+                    TargetId: op.TargetId,
+                    Decision: "deny",
+                    DataClasses: ["operations"],
+                    ReasonCode: op.ReasonCode,
+                    Extra: new
+                    {
+                        error = "identity_unverified",
+                        asserted_role = op.ActorRole,
+                        required_role = op.RequiredRole,
+                    }),
+                CancellationToken.None); // B2: durable even if the client disconnects.
+
+            throw new AuthorizationFailedException(
+                op.ActionName,
+                "Operator actions require a verified operator session; an asserted "
+                + "X-Actor-Role authorizes nothing outside Development (spec 08 §12, Inv-11).");
         }
 
         if (!StaffRole.Satisfies(op.ActorRole, op.RequiredRole))
