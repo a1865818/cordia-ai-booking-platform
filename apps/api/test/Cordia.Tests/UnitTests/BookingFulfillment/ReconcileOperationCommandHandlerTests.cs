@@ -1,5 +1,6 @@
 ﻿using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
@@ -28,6 +29,7 @@ public class ReconcileOperationCommandHandlerTests
     private readonly Mock<IBookingProviderAdapter> _adapter = new();
     private readonly Mock<IRetryPolicy> _retryPolicy = new();
     private readonly Mock<IUnitOfWork> _uow = new();
+    private readonly Mock<ICapacityReservation> _capacityReservation = new();
 
     // ManualReviewEscalator is a sealed class; wire it with a sub-set of mocked repos.
     private ManualReviewEscalator CreateEscalator() =>
@@ -37,7 +39,8 @@ public class ReconcileOperationCommandHandlerTests
     private ReconcileOperationCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object,
             _outboxRepo.Object, _auditRepo.Object, _adapter.Object,
-            _retryPolicy.Object, CreateEscalator(), _uow.Object, new Metrics());
+            _retryPolicy.Object, CreateEscalator(), _uow.Object,
+            _capacityReservation.Object, new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId,
@@ -88,6 +91,14 @@ public class ReconcileOperationCommandHandlerTests
                 It.IsAny<Func<CancellationToken, Task>>(),
                 It.IsAny<CancellationToken>()))
             .Returns<Func<CancellationToken, Task>, CancellationToken>((work, ct) => work(ct));
+
+        // Capacity settles cleanly unless a test says otherwise. Stated explicitly because
+        // FinalizeOutcome.Finalized is the enum's ZERO value: an unmocked call returns "settled"
+        // on its own, which is a permissive default worth making visible rather than inheriting.
+        _capacityReservation.Setup(c => c.FinalizeAgainstOperationAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FinalizeOutcome.Finalized);
 
         // Default: budget not exhausted → no-effect path goes to Held.
         // Individual tests can override this to null to exercise the ManualReview path.
@@ -631,6 +642,147 @@ public class ReconcileOperationCommandHandlerTests
         _opRepo.Verify(r => r.TryTransitionStatusAsync(
             tenantId, opId, It.IsAny<long>(),
             OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+
+    // ── #59: reconcile must settle first-party capacity before claiming Booked ──────────────
+
+    /// <summary>
+    /// The ledger half of the Booked write-set. Without this call the hold stays Active under a
+    /// terminal Booked operation; ReleaseExpiredHolds later sweeps it and decrements
+    /// HeldCapacity while BookedCapacity was never incremented, so the seat reads FREE while the
+    /// booking exists (Inv-6).
+    ///
+    /// <para>Asserts the step key too. Capacity holds are keyed "create", not this handler's
+    /// StepType of "finalize" — passing the wrong one finds no hold, returns NotTracked, and
+    /// reproduces the bug while looking correct.</para>
+    /// </summary>
+    [Fact]
+    public async Task Handle_EffectFound_SettlesCapacityAgainstTheCreateStep_BeforeBooking()
+    {
+        var (tenantId, opId) = ("t-cap", "op-cap-finalize");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 3));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_cap"));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Terminal, result);
+
+        _capacityReservation.Verify(c => c.FinalizeAgainstOperationAsync(
+            tenantId, opId, "create", It.IsAny<CancellationToken>()), Times.Once);
+
+        // And never against this handler's own step type.
+        _capacityReservation.Verify(c => c.FinalizeAgainstOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), "finalize", It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The hold is gone but the provider holds a booking — there is no capacity backing it.
+    /// Finalize routes this to CompensationRequired; that edge does not exist from Reconciling,
+    /// so Q1 chose ManualReview. Booking anyway would be the Inv-6 violation.
+    /// </summary>
+    [Fact]
+    public async Task Handle_EffectFound_HoldNoLongerValid_EscalatesInsteadOfBooking()
+    {
+        var (tenantId, opId) = ("t-cap-gone", "op-hold-gone");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 5));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_gone"));
+
+        _capacityReservation.Setup(c => c.FinalizeAgainstOperationAsync(
+                tenantId, opId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FinalizeOutcome.HoldNoLongerValid);
+
+        // Both destinations succeed if reached, so a wrong route is observable.
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Booked,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // No confirmation may be emitted for a booking with no capacity behind it (Inv-16).
+        _outboxRepo.Verify(r => r.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType.Contains("confirmed")),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A non-tracked operation (no hold was ever created) still books — capacity settlement is a
+    /// gate, not a requirement.
+    /// </summary>
+    [Fact]
+    public async Task Handle_EffectFound_NotTracked_StillBooks()
+    {
+        var (tenantId, opId) = ("t-cap-untracked", "op-untracked");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 1));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.AlreadyExists, "ext_ref_ut"));
+
+        _capacityReservation.Setup(c => c.FinalizeAgainstOperationAsync(
+                tenantId, opId, "create", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FinalizeOutcome.NotTracked);
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.Booked,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Terminal, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Booked,
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

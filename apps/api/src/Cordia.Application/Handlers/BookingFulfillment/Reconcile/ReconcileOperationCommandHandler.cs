@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
@@ -20,8 +21,12 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Reconcile;
 ///
 /// Effect proven (Created / AlreadyExists + reference):
 ///   In ONE transaction — update/create the Reconciled attempt row, mark finalize step Succeeded,
-///   transition op Reconciling → Booked, add notification outbox row (Inv-8), add audit event.
+///   settle first-party capacity (#59), transition op Reconciling → Booked, add notification
+///   outbox row (Inv-8), add audit event.
 ///   Returns <see cref="StepOutcome.Terminal"/>.
+///   If the hold is gone (<see cref="FinalizeOutcome.HoldNoLongerValid"/>) the booking exists with
+///   no capacity backing: escalate to ManualReview and do NOT book (Inv-6).
+///   Returns <see cref="StepOutcome.Wait"/>.
 ///
 /// No effect PROVEN (the ladder answered NotFound):
 ///   Budget not exhausted → Reconciling → Held (re-create under same key, Inv-7).
@@ -46,11 +51,26 @@ public sealed class ReconcileOperationCommandHandler(
     IRetryPolicy retryPolicy,
     ManualReviewEscalator manualReviewEscalator,
     IUnitOfWork uow,
+    ICapacityReservation capacityReservation,
     Metrics metrics)
     : IRequestHandler<ReconcileOperationCommand, StepOutcome>
 {
     private const string StepType = "finalize";
     private const string ProviderAccount = "default";
+
+    /// <summary>
+    /// The workflow step first-party capacity holds are keyed by — <c>"create"</c>, NOT
+    /// <see cref="StepType"/>.
+    ///
+    /// <para>These two strings look interchangeable and are not. <c>StepType</c> ("finalize")
+    /// keys the <c>workflow_steps</c>/<c>workflow_attempts</c> rows this handler reconciles;
+    /// capacity holds are keyed by "create" at every one of the five existing call sites
+    /// (<c>FinalizeBookingCommandHandler:137,494</c>, <c>ResolveManualReviewCommandHandler:291</c>,
+    /// <c>ModifyBookingCommand:446,455</c>). Passing "finalize" here would find no hold, return
+    /// <see cref="FinalizeOutcome.NotTracked"/>, and silently reproduce the exact bug this fixes —
+    /// while looking correct.</para>
+    /// </summary>
+    private const string CapacityStep = "create";
 
     public async Task<StepOutcome> Handle(ReconcileOperationCommand command, CancellationToken ct)
     {
@@ -184,6 +204,7 @@ public sealed class ReconcileOperationCommandHandler(
             }
 
             // Effect found — record reconciliation result and advance to Booked.
+            var holdNoLongerValid = false;
             await uow.ExecuteInTransactionAsync(async ct2 =>
             {
                 var now = DateTimeOffset.UtcNow;
@@ -233,6 +254,60 @@ public sealed class ReconcileOperationCommandHandler(
                     await stepRepo.TryTransitionStatusAsync(
                         tenantId, step.WorkflowStepId, step.Version,
                         WorkflowStepStatus.InProgress, WorkflowStepStatus.Succeeded, ct2);
+                }
+
+                // ─────────────────────────────────────────────────────────────
+                // #59: settle first-party capacity BEFORE claiming Booked.
+                //
+                // This handler booked without ever calling FinalizeAgainstOperationAsync, so the
+                // hold stayed Active under a terminal Booked operation. ReleaseExpiredHolds then
+                // swept it and decremented HeldCapacity (FirstPartyCapacityReservation:523) while
+                // BookedCapacity was never incremented — the seat read as FREE while the booking
+                // existed, and the venue could sell it twice (Inv-6).
+                //
+                // The issue filed this as defense-in-depth. It is not: the path is live with the
+                // shipped adapter. Worker B is inside CreateBookingAsync with the attempt
+                // Dispatching; worker A hits Finalize's Inv-7 guard and CASes Finalizing →
+                // Reconciling; B returns, commits the attempt Succeeded, then sees at
+                // Finalize:451-452 that the op is no longer Finalizing and returns WITHOUT
+                // reaching its own FinalizeAgainstOperationAsync at :493. The hold is left Active
+                // and reconcile books over it.
+                //
+                // FinalizeAgainstOperationAsync is the SINGLE decision point (§6.1/§6.2) and is
+                // idempotent for an already-Finalized hold, so calling it here adds a settlement,
+                // never a double-move.
+                // ─────────────────────────────────────────────────────────────
+                var finalizeOutcome = await capacityReservation.FinalizeAgainstOperationAsync(
+                    tenantId, operationId, CapacityStep, ct2);
+
+                if (finalizeOutcome == FinalizeOutcome.HoldNoLongerValid)
+                {
+                    // The provider holds a booking but its capacity backing is gone. Finalize
+                    // routes this to CompensationRequired so Compensate cancels the booking —
+                    // that edge does NOT exist from Reconciling (OperationStateMachine:73-79
+                    // allows only Held, Booked, AlternativesRequired, ManualReview), and
+                    // TryTransitionStatusAsync would throw InvalidStateTransitionException, which
+                    // the driver treats as poison and dead-letters. Q1 chose ManualReview: legal,
+                    // no spec-06 §11 amendment, and it matches §16.2's ladder ending in a human.
+                    //
+                    // Booking anyway is not an option — that is the Inv-6 violation above.
+                    var opForEscalate = await opRepo.GetAsync(operationId, ct2);
+                    if (opForEscalate is not null && opForEscalate.Status == OperationStatus.Reconciling)
+                    {
+                        await manualReviewEscalator.EscalateAsync(
+                            tenantId,
+                            operationId,
+                            opForEscalate.Version,
+                            OperationStatus.Reconciling,
+                            reason: "reconciled_hold_no_longer_valid",
+                            slaDeadline: DateTimeOffset.UtcNow.AddMinutes(30),
+                            ct: ct2);
+                        holdNoLongerValid = true;
+                    }
+
+                    // Do NOT book. The attempt is already marked Reconciled above, deliberately:
+                    // whoever picks up the work item needs the provider reference we just proved.
+                    return;
                 }
 
                 // Version-guarded op transition: Reconciling → Booked.
@@ -288,6 +363,10 @@ public sealed class ReconcileOperationCommandHandler(
                     }
                 }
             }, ct);
+
+            // Escalated instead of booked: a human owns it now, so the driver must stop.
+            if (holdNoLongerValid)
+                return StepOutcome.Wait;
 
             return StepOutcome.Terminal;
         }
