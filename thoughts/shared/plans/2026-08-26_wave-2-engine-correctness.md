@@ -6,7 +6,7 @@ base: main @ aface13
 repository: Cordia
 topic: "Wave 2 — engine correctness: #51, #55, #59, #57, #56, #58"
 tags: [plan, apps/api, booking-fulfillment, finalize, reconcile, compensate, inv-6, inv-7, inv-8, inv-16, spec-06, spec-07]
-status: awaiting-approval
+status: complete
 issues: [51, 55, 59, 57, 56, 58]
 research:
   - thoughts/shared/research/2026-08-26_wave-2-engine-correctness.md
@@ -597,6 +597,49 @@ property holds today — but that is a property of the reasons chosen, not of th
 
 - **No new packages** in any lane.
 - **No EF migration in this wave.** Phase 3 writes `bookings` via the existing `MaterializeBookedAsync` upsert; Phase 5's fence uses the existing `status` and `cancellation_requested_at` columns. Spec 12 owns all DDL and is untouched. If any phase turns out to need a column, **stop and re-plan** — that is a spec-12 change, not an implementation detail.
+
+---
+
+## Outcome
+
+All seven phases shipped on `fix/wave-2-engine-correctness`, one commit each (Phase 3 in two:
+a content-preserving relocation, then the behaviour change). PR #109.
+
+| Gate | Result |
+|---|---|
+| `test api` | **1861 passed** (baseline 1834) |
+| `test-integration api` from a dropped database | **703 passed / 0 failed / 1 pre-existing skip** (baseline 694) |
+| `test langgraph` | 1444 — unchanged |
+| `lint api` · `lint langgraph` · `lint web` · `typecheck web` | clean |
+| `libs/api-contract/openapi/v1.json` | **byte-identical** |
+| EF migrations | **none**, as planned |
+
+**Eleven mutations run, each caught by exactly its own test**, and each paired with a negative test
+that stayed green so an over-routing fix would still fail.
+
+### Where the plan was wrong
+
+Twice, and the code caught both rather than review:
+
+1. **Phase 1's guarded set.** The plan said `{Planned, Dispatching, Ambiguous}`. Including `Planned`
+   would have sent every legitimate cancel-before-create to a human — FM#13 *depends* on that fast
+   path and `Finalize:218-223` says so outright.
+2. **Phase 5's fence predicate.** The plan required `cancellation_requested_at IS NULL`; that broke
+   an existing integration test, correctly. A cancellation pending over a `TransientFailure` attempt
+   must still dispatch, because calling again under the same idempotency key is the only way to read
+   back the reference Compensate then needs.
+
+Both now have tests pinning the *non*-guard, so neither mistake can be reintroduced quietly.
+
+### What this wave did not close
+
+- **#51 is narrowed, not closed** (#108). The fence and the cancel worker's CAS are still not
+  atomic; the window shrank from a provider call's duration to one re-read-to-CAS span. Phase 1 is
+  what makes the remainder non-destructive.
+- **Reconcile's §16.2 ladder still has no circuit guard** (#105), and Phases 2 and 6 both increase
+  that traffic by design. Q2's accepted trade-off, filed rather than absorbed.
+- **`ResolveManualReviewCommandHandler` is the fourth `Booked` writer** and still writes no booking
+  row (#107). Left out to keep this wave's scope honest.
 
 ---
 
