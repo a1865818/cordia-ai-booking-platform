@@ -384,4 +384,92 @@ public class FinalizeBookingCommandHandlerTests
         _bookingRepo.Verify(b => b.MaterializeBookedAsync(
             It.IsAny<Booking>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ── #56: the circuit-open branch must honour an exhausted retry budget ──────────────────
+    //
+    // `?? now.AddSeconds(30)` was the only `??` over a NextEligibleAt call in apps/api/src, and
+    // it discarded the one signal that call exists to produce. A null means FM#11 — the budget is
+    // spent. Coalescing it turned a terminal condition into a loop that inserted a fresh attempt
+    // row every pass and never told anyone.
+
+    private void ArrangeCircuitOpen(string tenantId, string opId, BookingOperation op)
+    {
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>())).ReturnsAsync(op);
+
+        // No prior attempt: the recovery shortcut, the Inv-7 guard and FM#13 all fall through.
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowAttempt?)null);
+
+        _stepRepo.Setup(r => r.GetOrAddAsync(It.IsAny<WorkflowStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep candidate, CancellationToken _) => candidate);
+
+        _circuitBreaker.Setup(c => c.IsOpen("stub", "default")).Returns(true);
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Finalizing, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+    }
+
+    /// <summary>
+    /// Budget spent: route to Reconciling rather than rescheduling. The destination is the same
+    /// one the transient branch already uses when its budget runs out, and Phases 2 and 3 of this
+    /// wave are what made that destination correct.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CircuitOpen_BudgetExhausted_RoutesToReconciling_InsteadOfRescheduling()
+    {
+        var (tenantId, opId) = ("t-circuit", "op-circuit-exhausted");
+        ArrangeCircuitOpen(tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1));
+
+        _retryPolicy.Setup(r => r.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(), It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>()))
+            .Returns((DateTimeOffset?)null);
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        // Continue, so the driver loops straight into Reconcile.
+        Assert.Equal(StepOutcome.Continue, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Reconciling,
+            "retry_budget_exhausted", It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // The provider is never called with the circuit open, exhausted or not.
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Budget remaining: unchanged behaviour — reschedule, stay Finalizing. This is the half that
+    /// must NOT change, and it is what makes the mutation above meaningful.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CircuitOpen_BudgetRemaining_ReschedulesAndStaysFinalizing()
+    {
+        var (tenantId, opId) = ("t-circuit-ok", "op-circuit-remaining");
+        ArrangeCircuitOpen(tenantId, opId, MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 1));
+
+        _retryPolicy.Setup(r => r.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(), It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>()))
+            .Returns(DateTimeOffset.UtcNow.AddSeconds(12));
+
+        var result = await CreateHandler()
+            .Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Reschedule, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Finalizing, OperationStatus.Reconciling,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _adapter.Verify(a => a.CreateBookingAsync(
+            It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

@@ -459,14 +459,30 @@ releases one probe per open window).
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; a test asserting `NextEligibleAt == null` routes to `Reconciling`, not a reschedule
-- [ ] Mutation: restore the `??` → only that test reds
+- [x] `bun nx test api` green — **1857 passed** (+2)
+- [x] Mutation: restore the `??` → **exactly 1** red; the budget-remaining case stays green
+- [x] `bun nx lint api` green
 
 **Manual**
-- [ ] A budget-exhausted op stops accumulating `Abandoned` attempt rows
+- [x] A budget-exhausted op routes to `Reconciling` and stops accumulating `Abandoned` attempt rows
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The route already existed; only this branch ignored it.** The TXN2 transient path does exactly
+   the right thing at `:831-844` — `next == null` → `Finalizing → Reconciling` reason
+   `retry_budget_exhausted` → `Continue`. The circuit-open branch is 300 lines above it and simply
+   coalesced the signal away instead. This is a one-branch alignment, not a new mechanism, which is
+   why it is small and why it belongs late in the wave rather than early.
+
+2. **The transition goes inside the same transaction as the abandoned attempt.** Scheduling and
+   abandoning were already atomic (the "FIX (X3)" comment explains why); the exhaustion route has
+   the same requirement for the same reason — otherwise a crash between them leaves the operation
+   Finalizing with a spent budget and nothing scheduled.
+
+3. **The paired negative test is what gives the mutation meaning.** Asserting only that exhaustion
+   routes to `Reconciling` would still pass if the branch routed *everything* there.
+   `Handle_CircuitOpen_BudgetRemaining_ReschedulesAndStaysFinalizing` pins the half that must not
+   change, and stays green under the mutation.
 
 ---
 

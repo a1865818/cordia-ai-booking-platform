@@ -17,7 +17,9 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///
 /// Protocol (Inv-4, Inv-7, Inv-8):
 ///   TXN1: Held→Finalizing (if not already); create/load workflow_step; insert Planned attempt.
-///   Circuit check: if circuit open → abandon the Planned attempt + schedule durable retry → Reschedule.
+///   Circuit check: if circuit open → abandon the Planned attempt, then either schedule a durable
+///     retry → Reschedule, or (budget exhausted, FM#11) Finalizing→Reconciling
+///     (reason "retry_budget_exhausted") → Continue (#56).
 ///   Mark Dispatching (FENCED conditional write — refuses to arm if the operation has left
 ///     Finalizing; #51).
 ///   External call: adapter.CreateBookingAsync.
@@ -494,12 +496,32 @@ public sealed class FinalizeBookingCommandHandler(
             var now = DateTimeOffset.UtcNow;
 
             // Compute a durable retry time before opening the transaction (pure, no I/O).
-            // Fall back to 30 s if budget is already exhausted.
+            //
+            // #56: this used to end in `?? now.AddSeconds(30)` — the ONLY `??` over a
+            // NextEligibleAt call in apps/api/src, and it discarded the one signal the call
+            // exists to produce. A null means FM#11: the retry budget is spent. Coalescing it to
+            // "try again in 30 seconds" converted a terminal condition into a loop, and each pass
+            // inserted a fresh attempt row at latestAttemptNumber + 1 whose Abandoned outcome
+            // matches none of the earlier guards, so control always came back here.
+            //
+            // The issue understates the reachability and overstates the duration. It presumes the
+            // budget is already exhausted when the circuit opens; it need not be — the branch
+            // SELF-exhausts, reaching MaxAttempts in four passes with zero provider calls. And
+            // "forever" is wrong: InMemoryProviderCircuitBreaker.CheckIsOpen releases one probe
+            // per open window, so an operation does eventually escape. What it does not do is
+            // stop burning attempt rows, or ever tell anyone.
+            //
+            // Honour the null, using the same route the transient branch already takes when its
+            // budget runs out (see the TXN2 transient path below): Finalizing → Reconciling with
+            // reason "retry_budget_exhausted". Reconcile then proves no effect and escalates to
+            // ManualReview — a destination Phases 2 and 3 of this wave made correct first.
             var nextEligible = retryPolicy.NextEligibleAt(
                 StepRetryBudget.ForCreateBooking,
                 attempt.AttemptNumber,
                 finalizeStep.CreatedAt,
-                now) ?? now.AddSeconds(30);
+                now);
+
+            var budgetExhausted = nextEligible is null;
 
             // FIX (X3): Abandon the attempt AND schedule the durable retry INSIDE the same
             // transaction so a crash between the two writes cannot leave the op in Finalizing with
@@ -511,11 +533,30 @@ public sealed class FinalizeBookingCommandHandler(
                 attempt.CompletedAt = now;
                 await attemptRepo.UpdateAsync(attempt, ct2);
 
+                if (budgetExhausted)
+                {
+                    // FM#11: route Finalizing → Reconciling in the same transaction as the
+                    // abandoned attempt, so there is no window where the op is Finalizing with a
+                    // spent budget and nothing scheduled.
+                    var currentOp = await opRepo.GetAsync(operationId, ct2);
+                    if (currentOp is not null && currentOp.Status == OperationStatus.Finalizing)
+                    {
+                        await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, currentOp.Version,
+                            OperationStatus.Finalizing, OperationStatus.Reconciling,
+                            reason: "retry_budget_exhausted",
+                            ct: ct2);
+                    }
+
+                    return;
+                }
+
                 await retryScheduler.ScheduleAsync(
-                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible, ct2);
+                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible!.Value, ct2);
             }, ct);
 
-            return StepOutcome.Reschedule;
+            // Exhausted → op is now Reconciling; Continue so the driver loops into Reconcile.
+            return budgetExhausted ? StepOutcome.Continue : StepOutcome.Reschedule;
         }
 
         // ─────────────────────────────────────────────────────────────
