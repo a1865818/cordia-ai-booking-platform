@@ -23,7 +23,11 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Compensate;
 ///           notification.booking_failed.v1; audit operation.compensated. Return Terminal.
 ///       - Ambiguous / Transient / PermanentError / AuthError (compensation unclear):
 ///           TXN: manualReviewEscalator (CompensationRequired→ManualReview). Return Wait.
-///   4b. ProviderRef null (nothing was created):
+///   4a-bis. ProviderRef null but the latest finalize attempt is Dispatching/Ambiguous
+///       (the #51 cancel-before-create race): the effect is UNKNOWN, not absent.
+///           TXN: manualReviewEscalator (CompensationRequired→ManualReview,
+///           reason "compensation_effect_unresolved"). Return Wait.
+///   4b. ProviderRef null AND no attempt in flight (nothing was created):
 ///           TXN: step→Succeeded; op→FailedFinal (reason "failed_no_effect"); outbox
 ///           notification.booking_failed.v1; audit operation.failed_final. Return Terminal.
 ///
@@ -61,6 +65,9 @@ public sealed class CompensateOperationCommandHandler(
         var operationId = command.OperationId;
 
         // Determine whether a booking was created that needs to be undone.
+        //
+        // BOTH fields matter. Before #51 this handler read only ProviderRef and never looked at
+        // Outcome at all, which made an in-flight attempt look exactly like no attempt.
         var latest = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, "finalize", ct);
         var providerRef = latest?.ProviderRef;
 
@@ -215,7 +222,63 @@ public sealed class CompensateOperationCommandHandler(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 4b. ProviderRef null → nothing was created; go directly to FailedFinal.
+        // 4a-bis. ProviderRef null BUT the latest finalize attempt is still in flight (#51).
+        //
+        // A null ProviderRef is not the same fact as "no booking was created". It means only
+        // that no reference has been WRITTEN YET. FinalizeBookingCommandHandler assigns
+        // attempt.ProviderRef in TXN2 (:432), long after it flips the attempt to Dispatching
+        // (:404-405) and calls the provider (:412) — so for the whole duration of the provider
+        // call the row reads {Outcome: Dispatching, ProviderRef: null}, which is indistinguishable
+        // from "nothing was ever attempted" to a reader that looks only at the reference.
+        //
+        // FM#13 is built on that distinction and gets it right: it routes to CompensationRequired
+        // only when the attempt is null or Planned, and sends Dispatching/Ambiguous to the Inv-7
+        // reconcile path instead (Finalize:196-210, :218-223). Reaching this handler with an
+        // in-flight attempt therefore means the cancel-before-create race actually happened —
+        // FM#13's re-read at Finalize:239-240 is a non-locking AsNoTracking SELECT under READ
+        // COMMITTED, so a concurrent dispatch can flip Planned → Dispatching after that read and
+        // before the CAS commits.
+        //
+        // Declaring "failed_no_effect" here would be a false authoritative outcome (Inv-16): it
+        // terminalises the operation, releases the first-party hold, reverts the booking
+        // lifecycle, and tells the guest their booking failed — while a real reservation exists
+        // at the venue that nothing will ever reference again. Escalate instead; an operator can
+        // resolve to Reconciling and let the §16.2 ladder establish what actually happened.
+        //
+        // Planned is deliberately NOT in this set. A Planned attempt has provably not been
+        // dispatched, so FM#13's fast path stays fast; Phase 5 (#51b) closes the
+        // Planned → Dispatching window at source by fencing the dispatch write itself.
+        // ─────────────────────────────────────────────────────────────
+        if (latest is { Outcome: AttemptOutcome.Dispatching or AttemptOutcome.Ambiguous })
+        {
+            var unresolvedOutcome = StepOutcome.Continue;
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                var freshOp = await opRepo.GetAsync(operationId, ct2);
+                if (freshOp is null || freshOp.Status != OperationStatus.CompensationRequired)
+                    return;
+
+                var escalated = await manualReviewEscalator.EscalateAsync(
+                    tenantId,
+                    operationId,
+                    freshOp.Version,
+                    OperationStatus.CompensationRequired,
+                    reason: "compensation_effect_unresolved",
+                    slaDeadline: DateTimeOffset.UtcNow.AddHours(2),
+                    ct: ct2);
+
+                if (escalated)
+                {
+                    metrics.FulfillmentCompensationFailureTotal.Add(1);
+                    unresolvedOutcome = StepOutcome.Wait;
+                }
+            }, ct);
+
+            return unresolvedOutcome;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 4b. ProviderRef null AND no attempt is in flight → nothing was created; FailedFinal.
         // ─────────────────────────────────────────────────────────────
         var nullRefCommitted = false;
         await uow.ExecuteInTransactionAsync(async ct2 =>

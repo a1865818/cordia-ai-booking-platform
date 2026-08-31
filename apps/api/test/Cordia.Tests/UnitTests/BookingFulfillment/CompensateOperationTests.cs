@@ -17,6 +17,8 @@ namespace Cordia.Tests.UnitTests.BookingFulfillment;
 /// - providerRef present + cancel acknowledged → FailedFinal transition + booking_failed outbox.
 /// - providerRef present + cancel ambiguous → ManualReviewEscalator.EscalateAsync called.
 /// - providerRef null → FailedFinal with CancelBooking NEVER called.
+/// - providerRef null but the latest attempt is still in flight (#51) → ManualReview, NOT
+///   FailedFinal, and no customer failure notification (Inv-16).
 /// </summary>
 [Trait("Category", "Unit")]
 public class CompensateOperationTests
@@ -260,5 +262,136 @@ public class CompensateOperationTests
                 m.OperationId == opId &&
                 m.MessageType == "notification.booking_failed.v1"),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── #51: a null ProviderRef is not proof that nothing happened ──────────────────────────
+    //
+    // FinalizeBookingCommandHandler writes attempt.ProviderRef in TXN2 (:432), long after it flips
+    // the attempt to Dispatching (:404-405) and calls the provider (:412). For the whole duration
+    // of that call the row reads {Outcome: Dispatching, ProviderRef: null} — identical, to a
+    // reader that checks only the reference, to "nothing was ever attempted".
+
+    [Theory]
+    [InlineData(AttemptOutcome.Dispatching)]
+    [InlineData(AttemptOutcome.Ambiguous)]
+    public async Task Handle_ProviderRefNull_AttemptInFlight_EscalatesInsteadOfDeclaringNoEffect(
+        AttemptOutcome outcome)
+    {
+        var (tenantId, opId) = ("t-inflight", $"op-inflight-{outcome}");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 7));
+
+        // The race shape: an attempt exists and is in flight, but has no reference yet.
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, outcome, providerRef: null));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, OperationStatus.ManualReview,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // The whole point: the operation must NOT be terminalised on an unproven effect.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Inv-16. Terminalising was only half the harm — the other half is telling the guest their
+    /// booking failed while a real reservation may exist at the venue.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ProviderRefNull_AttemptInFlight_EmitsNoCustomerFailureNotification()
+    {
+        var (tenantId, opId) = ("t-inflight-notify", "op-inflight-notify");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 2));
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Dispatching, providerRef: null));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, OperationStatus.ManualReview,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        // The FailedFinal CAS must also SUCCEED if it is reached. Without this the branch 4b
+        // writes sit behind `if (rows > 0)` with rows defaulting to 0, and the assertions below
+        // would hold even with the guard removed — a test that cannot fail.
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        _outboxRepo.Verify(r => r.AddAsync(
+            It.Is<OutboxMessage>(m => m.MessageType == "notification.booking_failed.v1"),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        // And the first-party hold is not released on an unproven effect either.
+        _capacityReservation.Verify(c => c.ReleaseByOperationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ReleaseReason>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The other side of the guard, and the reason it is scoped to Dispatching/Ambiguous rather
+    /// than to every non-terminal outcome.
+    ///
+    /// <para>A <c>Planned</c> attempt has provably NOT been dispatched — the provider was never
+    /// called. FM#13 is built on exactly that distinction: it routes a cancel-before-create to
+    /// <c>CompensationRequired</c> only when the attempt is null or <c>Planned</c>, and sends
+    /// Dispatching/Ambiguous to the Inv-7 reconcile path instead
+    /// (<c>FinalizeBookingCommandHandler.cs:196-210</c>, <c>:218-223</c>). Widening this guard to
+    /// include <c>Planned</c> would send every legitimate cancel-before-create to a human.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(AttemptOutcome.Planned)]
+    [InlineData(AttemptOutcome.Rejected)]
+    public async Task Handle_ProviderRefNull_AttemptNotInFlight_StillTakesTheNoEffectPath(
+        AttemptOutcome outcome)
+    {
+        var (tenantId, opId) = ("t-noeffect", $"op-noeffect-{outcome}");
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.CompensationRequired, version: 1));
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, outcome, providerRef: null));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new CompensateOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Terminal, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.FailedFinal,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.CompensationRequired, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

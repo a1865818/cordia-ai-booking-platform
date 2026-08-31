@@ -133,15 +133,43 @@ and #58's false failure terminate at this same branch.
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; new unit tests for each `AttemptOutcome` value
-- [ ] `bun nx lint api` green
-- [ ] Mutation: revert the guard → **only** the new unresolved-attempt tests red; the genuine-no-effect and successful-cancel paths stay green
+- [x] `bun nx test api` green — **1839 passed** (baseline 1834, +5)
+- [x] `bun nx lint api` green
+- [x] Mutation: disable the guard → **exactly 3** red (the two in-flight theory cases and the notification test); the not-in-flight and successful-cancel paths stay green
 
 **Manual**
-- [ ] A `Dispatching` attempt under a `CompensationRequired` op reaches `ManualReview` with an open work item, and **no** `booking_failed` notification is emitted
+- [x] A `Dispatching` attempt under a `CompensationRequired` op reaches `ManualReview`, and **no** `booking_failed` notification is emitted and **no** hold is released
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The plan's unresolved set was wrong, and using it would have caused a regression.** This plan
+   said `Planned` / `Dispatching` / `Ambiguous`. `Planned` must **not** be in it. A `Planned`
+   attempt has provably not been dispatched — the provider was never called — and FM#13 is built
+   on exactly that distinction: `FinalizeBookingCommandHandler.cs:218-223` routes a
+   cancel-before-create to `CompensationRequired` **only** when the attempt is `null` or `Planned`,
+   and sends `Dispatching`/`Ambiguous` to the Inv-7 reconcile path instead. Its comment states the
+   contract outright: *"The Compensate handler will see providerRef == null and transition straight
+   to FailedFinal."* Guarding `Planned` would send every legitimate cancel-before-create to a human.
+   The shipped set is `{Dispatching, Ambiguous}`, matching Finalize's own Inv-7 guard at `:196-197`,
+   and a theory case pins `Planned` and `Rejected` on the fast path so the mistake cannot be
+   reintroduced.
+
+2. **Reaching this handler with an in-flight attempt *is* the #51 race, by construction.** Because
+   FM#13 only routes `null`/`Planned` here, a `Dispatching` attempt in `CompensationRequired` can
+   only mean the window at `Finalize:239-240` was lost — which is useful: the guard is not
+   defensive programming, it is the detector for the exact race Phase 5 closes at source.
+
+3. **My first version of the notification test could not fail.** It mocked only the `ManualReview`
+   transition, so the `FailedFinal` CAS returned `default(int)` = 0 and every branch-4b write sat
+   behind `if (rows > 0)` and never ran — the assertions held with the guard removed. Caught by the
+   mutation run showing 2 red instead of 3. Fixed by mocking the `FailedFinal` CAS to succeed as
+   well. Worth remembering for Phases 4-7: **in this handler family, a `Times.Never` assertion is
+   vacuous unless the CAS it depends on is mocked to return 1.**
+
+4. **The escalation reason is new but the mechanism is not.** `compensation_effect_unresolved`
+   joins `compensation_ambiguous` on the existing `ManualReviewEscalator` path;
+   `CompensationRequired → ManualReview` was verified legal in `OperationStateMachine.cs:80-84`
+   before the code was written.
 
 ---
 
