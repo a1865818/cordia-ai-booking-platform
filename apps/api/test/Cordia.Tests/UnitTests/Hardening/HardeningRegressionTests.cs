@@ -1,4 +1,5 @@
 ﻿using Cordia.Application.Handlers.BookingFulfillment.Finalize;
+using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Domain.Bookings;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Enums;
@@ -33,7 +34,7 @@ public class HardeningRegressionTests
 
         Assert.Equal(
             "cust_1",
-            FinalizeBookingCommandHandler.ReadFirstString(payload, "customer_id", "contact_ref"));
+            BookingAggregateFactory.ReadFirstString(payload, "customer_id", "contact_ref"));
     }
 
     /// <summary>
@@ -52,7 +53,7 @@ public class HardeningRegressionTests
              "customer":{"customer_id":"cust_real"}}
             """;
 
-        Assert.Equal("cust_real", FinalizeBookingCommandHandler.ReadFirstString(payload, "customer_id"));
+        Assert.Equal("cust_real", BookingAggregateFactory.ReadFirstString(payload, "customer_id"));
     }
 
     [Fact]
@@ -62,12 +63,12 @@ public class HardeningRegressionTests
 
         Assert.Equal(
             "gc_ref",
-            FinalizeBookingCommandHandler.ReadFirstString(payload, "customer_id", "contact_ref"));
+            BookingAggregateFactory.ReadFirstString(payload, "customer_id", "contact_ref"));
     }
 
     [Fact]
     public void ReadFirstString_TreatsUnparseableJsonAsAbsent()
-        => Assert.Null(FinalizeBookingCommandHandler.ReadFirstString("{not json", "customer_id"));
+        => Assert.Null(BookingAggregateFactory.ReadFirstString("{not json", "customer_id"));
 
     // ── Notification channel conflict (NotificationRecipientResolver) ───────────────────────────
 

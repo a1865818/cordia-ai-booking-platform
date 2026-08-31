@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
+using Cordia.Domain.Exceptions;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Fulfillment;
 using Cordia.Domain.Interfaces;
@@ -17,8 +18,11 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///
 /// Protocol (Inv-4, Inv-7, Inv-8):
 ///   TXN1: Held→Finalizing (if not already); create/load workflow_step; insert Planned attempt.
-///   Circuit check: if circuit open → abandon the Planned attempt + schedule durable retry → Reschedule.
-///   Mark Dispatching (best-effort, own write, no explicit txn).
+///   Circuit check: if circuit open → abandon the Planned attempt, then either schedule a durable
+///     retry → Reschedule, or (budget exhausted, FM#11) Finalizing→Reconciling
+///     (reason "retry_budget_exhausted") → Continue (#56).
+///   Mark Dispatching (FENCED conditional write — refuses to arm if the operation has left
+///     Finalizing; #51).
 ///   External call: adapter.CreateBookingAsync.
 ///   TXN2 (success): attempt=Succeeded + step=Succeeded + op→Booked + outbox + audit.
 ///   TXN2 (transient): attempt=TransientFailure + circuit.RecordFailure.
@@ -29,14 +33,24 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Finalize;
 ///   TXN2 (ambiguous): Finalizing→Reconciling (§16.2 lookup before re-create) — unchanged from T5.
 ///   TXN2 (NoCapacity at finalize): anomalous (§11: Finalizing has NO edge to AlternativesRequired) →
 ///     Finalizing→Reconciling (reason "unexpected_no_capacity").
+///   TXN2 (NotFound from create): the effect is UNPROVABLE, not absent — attempt=Ambiguous,
+///     Finalizing→Reconciling (reason "finalize_not_found") so §16.2 answers before anyone is
+///     told anything (#58).
 ///   TXN2 (Rejected/PermanentError): persist attempt → Finalizing→CompensationRequired
-///     (driver dispatches CompensateOperationCommand).
+///     (driver dispatches CompensateOperationCommand). The switch is exhaustive by intent; an
+///     unhandled kind throws PoisonMessageException rather than defaulting into that branch.
 ///   TXN2 (AuthError/PaymentActionRequired): persist attempt (Abandoned) → Finalizing→Reconciling
 ///     (reconcile no-effect+escalation → ManualReview; §11 forbids direct Finalizing→ManualReview).
 ///   FM#13 (cancel-before-create): if CancellationRequestedAt != null at the top of finalize and
 ///     there is no in-flight attempt, skip straight to CompensationRequired.
-///   FM#13 (cancel-after-create): in the success TXN2, if CancellationRequestedAt != null, route
-///     to CompensationRequired instead of Booked so Compensate cancels the created booking.
+///   FM#13 (cancel-after-create): in the success TXN2 AND in the idempotent recovery shortcut,
+///     if CancellationRequestedAt != null, route to CompensationRequired instead of Booked so
+///     Compensate cancels the created booking (#57 — the shortcut used to skip this check).
+///     If the provider gave NO usable reference, route to Reconciling instead
+///     (reason "cancelled_without_reference"): Compensate cannot cancel a booking it cannot
+///     name, and the §16.2 ladder can still find the reference.
+///   The recovery shortcut emits the same Inv-8 outcome envelope as the main path: outbox row,
+///     audit event and metrics, all inside the Booked transaction (#57).
 ///
 /// Idempotent recovery shortcut (§12.6): if the latest attempt already Succeeded/Reconciled,
 /// just ensure Booked and return Terminal without re-calling the provider.
@@ -112,7 +126,11 @@ public sealed class FinalizeBookingCommandHandler(
         // do NOT create a new booking. Transition to Reconciling and let the driver dispatch
         // ReconcileOperationCommand to probe via the §16.2 lookup order before any re-create.
         var latest = await attemptRepo.GetLatestForStepAsync(tenantId, operationId, StepType, ct);
-        if (latest is { Outcome: AttemptOutcome.Succeeded or AttemptOutcome.Reconciled } && latest.ProviderRef is not null)
+        // `is not null` was not the invariant this gate meant: it admitted the empty string, which
+        // is how U2 reached the Booked transition below. Rows written before that fix still carry
+        // one, so the gate is checked too, not just the writer.
+        if (latest is { Outcome: AttemptOutcome.Succeeded or AttemptOutcome.Reconciled }
+            && !string.IsNullOrWhiteSpace(latest.ProviderRef))
         {
             // Ensure op is Booked; may be a no-op if already Booked.
             var fresh = await opRepo.GetAsync(operationId, ct);
@@ -121,12 +139,68 @@ public sealed class FinalizeBookingCommandHandler(
                 // Track whether a HoldNoLongerValid race was detected in the recovery shortcut
                 // so we can return Continue (→Reconciling) instead of Terminal after the txn.
                 var recoveryHoldExpired = false;
+                var recoveryCancelled = false;
 
                 await uow.ExecuteInTransactionAsync(async ct2 =>
                 {
+                    var now = DateTimeOffset.UtcNow;
+
                     var current2 = await opRepo.GetAsync(operationId, ct2);
                     if (current2 is null || current2.Status != OperationStatus.Finalizing)
                         return;
+
+                    // ─────────────────────────────────────────────────────────
+                    // #57: FM#13 (cancel-after-create) applies here too.
+                    //
+                    // This was the ONE Finalizing → Booked writer that never read
+                    // CancellationRequestedAt — the main TXN2 checks it at :454, the FM#13
+                    // fast path checks it at :221, and this shortcut checked nothing. A guest
+                    // who cancelled while the operation was recovering from a crash got their
+                    // booking confirmed anyway, and GetOperationStatusQuery:109 then told them
+                    // so in as many words.
+                    //
+                    // The issue blamed a lost version race, which cannot happen:
+                    // SetCancellationRequestedAsync (BookingOperationRepository:110-124) never
+                    // bumps the version, and the only writer that does always changes Status —
+                    // which would fail this block's own Finalizing gate. The real route in is
+                    // the blank-reference shortcut entry (U2, fixed above) or a
+                    // Reconciling → Held → Finalizing walk-back. The trigger was wrong; the
+                    // defect was real.
+                    //
+                    // Same destination and reason as the main path, so Compensate cancels the
+                    // provider booking exactly as it does there.
+                    // ─────────────────────────────────────────────────────────
+                    if (current2.CancellationRequestedAt.HasValue)
+                    {
+                        var cancelRows = await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, current2.Version,
+                            OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+                            reason: "cancelled_after_create", ct: ct2);
+
+                        if (cancelRows > 0)
+                        {
+                            recoveryCancelled = true;
+                            await auditRepo.AddAsync(new AuditEvent
+                            {
+                                TenantId = tenantId,
+                                EventId = $"evt_{Guid.NewGuid():N}",
+                                EventType = "operation.cancellation_after_create",
+                                Actor = "system",
+                                SubjectRef = operationId,
+                                CorrelationId = operationId,
+                                OperationId = operationId,
+                                Metadata = JsonSerializer.Serialize(new
+                                {
+                                    provider_ref = latest.ProviderRef,
+                                    reason = "cancelled_after_create",
+                                    via = "recovery_shortcut",
+                                }),
+                                OccurredAt = now,
+                            }, ct2);
+                        }
+
+                        return; // do NOT book, do NOT confirm
+                    }
 
                     // §6.1/§6.2 recovery (FIX 2+3+4+8): FinalizeAgainstOperationAsync is the SINGLE
                     // decision point. Finalized (active→finalized or already finalized idempotent) →
@@ -173,12 +247,68 @@ public sealed class FinalizeBookingCommandHandler(
                     if (bookedRows > 0)
                     {
                         await bookingRepo.MaterializeBookedAsync(
-                            BuildBookingAggregate(tenantId, current2, latest.ProviderRef, canonicalPayload, now: DateTimeOffset.UtcNow),
+                            BookingAggregateFactory.BuildBookingAggregate(tenantId, current2, latest.ProviderRef, canonicalPayload, now),
                             ct2);
+
+                        // ─────────────────────────────────────────────────────
+                        // #57, Inv-8: the outcome envelope, in the SAME transaction as the
+                        // Booked transition — which this branch simply never emitted.
+                        //
+                        // `outboxRepo` appeared in this entire file only at the constructor and
+                        // in the main TXN2, so a booking confirmed through the recovery shortcut
+                        // notified nobody: no customer message, no saga signal for a pre-order,
+                        // no audit trail, no metric. The operation row said Booked and every
+                        // downstream consumer of the outcome disagreed. Inv-8 requires the
+                        // outbox row to be atomic with the state change, and it was absent
+                        // rather than late.
+                        //
+                        // Byte-for-byte the same envelope the main path emits, including the
+                        // spec 11 §5.3 pre-order routing — a pre-order signals the saga instead
+                        // of notifying the customer directly.
+                        // ─────────────────────────────────────────────────────
+                        await outboxRepo.AddAsync(new OutboxMessage
+                        {
+                            TenantId = tenantId,
+                            MessageId = $"obx_{Guid.NewGuid():N}",
+                            OperationId = operationId,
+                            MessageType = Cordia.Application.Handlers.Preorder.PreorderSagaMessages.ConfirmedOutcomeType(current2.IsPreorder),
+                            CorrelationId = operationId,
+                            Payload = JsonSerializer.Serialize(new
+                            {
+                                operation_id = operationId,
+                                booking_id = latest.ProviderRef,
+                                tenant_id = tenantId,
+                            }),
+                            OccurredAt = now,
+                        }, ct2);
+
+                        await auditRepo.AddAsync(new AuditEvent
+                        {
+                            TenantId = tenantId,
+                            EventId = $"evt_{Guid.NewGuid():N}",
+                            EventType = "operation.booked",
+                            Actor = "system",
+                            SubjectRef = operationId,
+                            CorrelationId = operationId,
+                            OperationId = operationId,
+                            Metadata = JsonSerializer.Serialize(new
+                            {
+                                booking_id = latest.ProviderRef,
+                                provider = adapter.ProviderName,
+                                via = "recovery_shortcut",
+                            }),
+                            OccurredAt = now,
+                        }, ct2);
+
+                        metrics.FulfillmentAcceptedToBookedMs.Record(
+                            (now - op.CreatedAt).TotalMilliseconds,
+                            new KeyValuePair<string, object?>(MetricNames.Tags.Provider, adapter.ProviderName));
+                        metrics.FulfillmentOperationTerminalTotal.Add(
+                            1, new KeyValuePair<string, object?>(MetricNames.Tags.State, "booked"));
                     }
                 }, ct);
 
-                if (recoveryHoldExpired)
+                if (recoveryHoldExpired || recoveryCancelled)
                     return StepOutcome.Continue;
             }
             await ExtendContactRetentionAsync(tenantId, canonicalPayload, ct);
@@ -374,12 +504,32 @@ public sealed class FinalizeBookingCommandHandler(
             var now = DateTimeOffset.UtcNow;
 
             // Compute a durable retry time before opening the transaction (pure, no I/O).
-            // Fall back to 30 s if budget is already exhausted.
+            //
+            // #56: this used to end in `?? now.AddSeconds(30)` — the ONLY `??` over a
+            // NextEligibleAt call in apps/api/src, and it discarded the one signal the call
+            // exists to produce. A null means FM#11: the retry budget is spent. Coalescing it to
+            // "try again in 30 seconds" converted a terminal condition into a loop, and each pass
+            // inserted a fresh attempt row at latestAttemptNumber + 1 whose Abandoned outcome
+            // matches none of the earlier guards, so control always came back here.
+            //
+            // The issue understates the reachability and overstates the duration. It presumes the
+            // budget is already exhausted when the circuit opens; it need not be — the branch
+            // SELF-exhausts, reaching MaxAttempts in four passes with zero provider calls. And
+            // "forever" is wrong: InMemoryProviderCircuitBreaker.CheckIsOpen releases one probe
+            // per open window, so an operation does eventually escape. What it does not do is
+            // stop burning attempt rows, or ever tell anyone.
+            //
+            // Honour the null, using the same route the transient branch already takes when its
+            // budget runs out (see the TXN2 transient path below): Finalizing → Reconciling with
+            // reason "retry_budget_exhausted". Reconcile then proves no effect and escalates to
+            // ManualReview — a destination Phases 2 and 3 of this wave made correct first.
             var nextEligible = retryPolicy.NextEligibleAt(
                 StepRetryBudget.ForCreateBooking,
                 attempt.AttemptNumber,
                 finalizeStep.CreatedAt,
-                now) ?? now.AddSeconds(30);
+                now);
+
+            var budgetExhausted = nextEligible is null;
 
             // FIX (X3): Abandon the attempt AND schedule the durable retry INSIDE the same
             // transaction so a crash between the two writes cannot leave the op in Finalizing with
@@ -391,18 +541,78 @@ public sealed class FinalizeBookingCommandHandler(
                 attempt.CompletedAt = now;
                 await attemptRepo.UpdateAsync(attempt, ct2);
 
+                if (budgetExhausted)
+                {
+                    // FM#11: route Finalizing → Reconciling in the same transaction as the
+                    // abandoned attempt, so there is no window where the op is Finalizing with a
+                    // spent budget and nothing scheduled.
+                    var currentOp = await opRepo.GetAsync(operationId, ct2);
+                    if (currentOp is not null && currentOp.Status == OperationStatus.Finalizing)
+                    {
+                        await opRepo.TryTransitionStatusAsync(
+                            tenantId, operationId, currentOp.Version,
+                            OperationStatus.Finalizing, OperationStatus.Reconciling,
+                            reason: "retry_budget_exhausted",
+                            ct: ct2);
+                    }
+
+                    return;
+                }
+
                 await retryScheduler.ScheduleAsync(
-                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible, ct2);
+                    tenantId, operationId, finalizeStep.WorkflowStepId, StepType, nextEligible!.Value, ct2);
             }, ct);
 
-            return StepOutcome.Reschedule;
+            // Exhausted → op is now Reconciling; Continue so the driver loops into Reconcile.
+            return budgetExhausted ? StepOutcome.Continue : StepOutcome.Reschedule;
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Mark Dispatching (best-effort, before the external call).
+        // Mark Dispatching — FENCED, not best-effort (#51).
+        //
+        // This is the last write before an irreversible external call, which makes it the right
+        // place to ask one more time whether the call is still wanted. It used to be an
+        // unconditional UpdateAsync returning Task, so it could not answer.
+        //
+        // The race: FM#13 re-reads the latest attempt inside its transaction (:239-240) and backs
+        // off if it finds one Dispatching — but that read is a non-locking AsNoTracking SELECT
+        // under READ COMMITTED, so a concurrent dispatch can arm itself right after it. The
+        // conditional write below re-asserts, in the same statement that performs the write, that
+        // the operation is still Finalizing. Zero rows means the world moved: abandon the dispatch
+        // and let the driver re-evaluate.
+        //
+        // It does NOT also test cancellation_requested_at, though an earlier version did — that
+        // broke FinalizeDetectsCancelAfterCreate_CompensatesBooking_ReachesFailedFinal, correctly.
+        // A cancellation pending over a TransientFailure attempt must still dispatch: the previous
+        // call may have taken effect, and calling again under the same idempotency key is the only
+        // way to read back the AlreadyExists reference that Compensate then needs in order to
+        // cancel anything. FM#13 fast-paths a cancellation only for a null/Planned attempt for
+        // exactly this reason.
+        //
+        // WHAT THIS DOES NOT DO, stated plainly. It does not make the pair atomic. If the cancel
+        // worker re-reads the attempt, then this fence commits, then the cancel worker's CAS
+        // commits, both still proceed — the window is now bounded by that worker's own re-read to
+        // CAS span instead of by the whole duration of a provider call, which is orders of
+        // magnitude smaller but not zero. Closing it completely needs both writes under one lock
+        // or a shared CAS row, which is a larger change than this wave carries. Phase 1 is what
+        // makes the remainder non-destructive: Compensate no longer declares "no effect" over an
+        // attempt it can see is in flight, so the residual race costs a ManualReview rather than
+        // an orphaned booking and a false failure notification.
         // ─────────────────────────────────────────────────────────────
+        var dispatchArmed = await attemptRepo.TryMarkDispatchingAsync(
+            tenantId, operationId, attempt.AttemptId, ct);
+
+        if (dispatchArmed == 0)
+        {
+            // The operation is no longer Finalizing (or this attempt was already armed).
+            // Do not call the provider.
+            // Continue so the driver reloads and dispatches whatever the new status calls for.
+            return StepOutcome.Continue;
+        }
+
+        // Keep the in-memory attempt consistent with the row: TXN2 below persists this instance
+        // through UpdateAsync, which writes every column from it.
         attempt.Outcome = AttemptOutcome.Dispatching;
-        await attemptRepo.UpdateAsync(attempt, ct);
 
         // ─────────────────────────────────────────────────────────────
         // External call — unexpected exceptions propagate to the driver (AdvanceBookingOperationCommandHandler),
@@ -429,7 +639,17 @@ public sealed class FinalizeBookingCommandHandler(
 
                 // Update attempt → Succeeded (the booking WAS created, ref recorded).
                 attempt.Outcome = AttemptOutcome.Succeeded;
-                attempt.ProviderRef = result.ProviderReference;
+
+                // U2: a BLANK reference must not be persisted as though it were one.
+                // ProviderResult.ProviderReference is string?, and this assignment commits before
+                // the IsNullOrWhiteSpace guard further down this same transaction (":530") gets a
+                // say. An empty string then satisfies the recovery shortcut's `is not null` gate on
+                // the next drive, and the operation books with an empty bookingId — a booking row
+                // keyed on "" that no lookup will ever match. Normalising to null here keeps the
+                // column meaning exactly one thing: "we have a reference".
+                attempt.ProviderRef = string.IsNullOrWhiteSpace(result.ProviderReference)
+                    ? null
+                    : result.ProviderReference;
                 attempt.CompletedAt = now;
                 await attemptRepo.UpdateAsync(attempt, ct2);
 
@@ -453,12 +673,38 @@ public sealed class FinalizeBookingCommandHandler(
 
                 if (currentOp.CancellationRequestedAt.HasValue)
                 {
-                    // Cancellation was requested after the booking was created — route to
-                    // CompensationRequired so the Compensate handler cancels the booking.
+                    // ─────────────────────────────────────────────────────
+                    // A cancellation is pending over a booking that exists. Which destination is
+                    // correct depends entirely on whether we can NAME the booking.
+                    //
+                    // With a reference: CompensationRequired, and Compensate calls
+                    // CancelBookingAsync with it. That is the established route.
+                    //
+                    // WITHOUT one: the provider answered Created/AlreadyExists and gave nothing
+                    // usable, which U2 normalises to a null ProviderRef rather than persisting a
+                    // blank. Sending that to CompensationRequired hands Compensate an effect it
+                    // cannot address — it skips CancelBookingAsync because there is nothing to
+                    // cancel with, and its no-effect branch would then terminalise the operation
+                    // as FailedFinal / "failed_no_effect" and tell the guest their booking failed,
+                    // while a real reservation sits at the venue that nothing will ever reference.
+                    // Compensate now refuses that conclusion (IsEffectUnresolved), so the outcome
+                    // would be a ManualReview work item — correct, but it makes a human do the
+                    // one job the §16.2 ladder exists to do automatically.
+                    //
+                    // Reconciling is the destination that can actually recover: the lookup ladder
+                    // asks the provider for the reference under the same idempotency key, and
+                    // reconcile's own FM#13 branch escalates a cancel that raced a proven booking
+                    // ("cancel_raced_reconciled_booking"). Finalizing → Reconciling is legal
+                    // (OperationStateMachine:67-72).
+                    // ─────────────────────────────────────────────────────
+                    var hasReference = !string.IsNullOrWhiteSpace(result.ProviderReference);
+
                     var cancelRows = await opRepo.TryTransitionStatusAsync(
                         tenantId, operationId, currentOp.Version,
-                        OperationStatus.Finalizing, OperationStatus.CompensationRequired,
-                        reason: "cancelled_after_create", ct: ct2);
+                        OperationStatus.Finalizing,
+                        hasReference ? OperationStatus.CompensationRequired : OperationStatus.Reconciling,
+                        reason: hasReference ? "cancelled_after_create" : "cancelled_without_reference",
+                        ct: ct2);
 
                     if (cancelRows > 0)
                     {
@@ -474,7 +720,7 @@ public sealed class FinalizeBookingCommandHandler(
                             Metadata = JsonSerializer.Serialize(new
                             {
                                 provider_ref = result.ProviderReference,
-                                reason = "cancelled_after_create",
+                                reason = hasReference ? "cancelled_after_create" : "cancelled_without_reference",
                             }),
                             OccurredAt = now,
                         }, ct2);
@@ -538,7 +784,7 @@ public sealed class FinalizeBookingCommandHandler(
                 if (rows > 0)
                 {
                     await bookingRepo.MaterializeBookedAsync(
-                        BuildBookingAggregate(tenantId, currentOp, result.ProviderReference, canonicalPayload, now),
+                        BookingAggregateFactory.BuildBookingAggregate(tenantId, currentOp, result.ProviderReference, canonicalPayload, now),
                         ct2);
 
                     // Inv-8: outcome outbox row in the SAME transaction as the Booked transition.
@@ -761,15 +1007,70 @@ public sealed class FinalizeBookingCommandHandler(
             return StepOutcome.Continue;
         }
 
+        // ─────────────────────────────────────────────────────────────
+        // TXN2 (NotFound from a CREATE): the effect is unprovable, not absent (#58).
+        //
+        // RetryClassifier.cs:34 has said so all along — "a NotFound cannot prove the create did
+        // not take effect" — and classifies it Ambiguous/ManualReview. This handler never asked;
+        // it let NotFound fall into the Rejected/PermanentError block below, whose `_ =>` default
+        // stamped the attempt Abandoned and routed the operation to CompensationRequired with
+        // reason "finalize_permanent_error".
+        //
+        // The issue describes that as "attempts to compensate a booking whose effect is
+        // unprovable". It is worse and also the opposite: nothing is ever compensated. This path
+        // never assigns attempt.ProviderRef, so Compensate reads null, skips CancelBookingAsync
+        // entirely, and terminalises to FailedFinal / "failed_no_effect" plus a customer
+        // "booking failed" notification — a definitive claim that nothing happened, made from a
+        // result that proves nothing, in a single driver tick.
+        //
+        // Route to Reconciling like every other unprovable outcome, so the §16.2 ladder gets to
+        // answer the question before anyone tells the guest anything.
+        // ─────────────────────────────────────────────────────────────
+        if (result.Kind == ProviderResultKind.NotFound)
+        {
+            await uow.ExecuteInTransactionAsync(async ct2 =>
+            {
+                attempt.Outcome = AttemptOutcome.Ambiguous;
+                attempt.RetryClassification = classifier.Classify(result).Classification;
+                attempt.ErrorCode = result.ErrorCode;
+                attempt.CompletedAt = DateTimeOffset.UtcNow;
+                await attemptRepo.UpdateAsync(attempt, ct2);
+
+                circuitBreaker.RecordFailure(adapter.ProviderName, ProviderAccount);
+
+                var currentOp = await opRepo.GetAsync(operationId, ct2);
+                if (currentOp is not null && currentOp.Status == OperationStatus.Finalizing)
+                {
+                    await opRepo.TryTransitionStatusAsync(
+                        tenantId, operationId, currentOp.Version,
+                        OperationStatus.Finalizing, OperationStatus.Reconciling,
+                        reason: "finalize_not_found", ct: ct2);
+                }
+            }, ct);
+
+            return StepOutcome.Continue;
+        }
+
         // TXN2 (Rejected / PermanentError): persist attempt outcome + transition
         // Finalizing → CompensationRequired.  The driver will dispatch CompensateOperationCommand.
         await uow.ExecuteInTransactionAsync(async ct2 =>
         {
+            // EXHAUSTIVE by intent. Every other ProviderResultKind is handled above, so the only
+            // values that reach here are Rejected and PermanentError. The previous
+            // `_ => AttemptOutcome.Abandoned` default was not a fallback, it was a trap: it
+            // silently funnelled any unhandled kind — present or future — into the most
+            // destructive terminal arm this handler has, telling a customer their booking failed
+            // on the strength of a result nobody had classified. A kind that reaches here now is
+            // a genuine registration defect, and dead-lettering it (Inv-14) surfaces that instead
+            // of burying it in a false outcome.
             attempt.Outcome = result.Kind switch
             {
                 ProviderResultKind.Rejected => AttemptOutcome.Rejected,
                 ProviderResultKind.PermanentError => AttemptOutcome.Rejected,
-                _ => AttemptOutcome.Abandoned,
+                _ => throw new PoisonMessageException(
+                    $"Unhandled ProviderResultKind '{result.Kind}' reached the finalize terminal "
+                    + "branch. Give it an explicit arm rather than letting it default to a "
+                    + "customer-visible failure."),
             };
             attempt.RetryClassification = classifier.Classify(result).Classification;
             attempt.ErrorCode = result.ErrorCode;
@@ -809,7 +1110,7 @@ public sealed class FinalizeBookingCommandHandler(
     private async Task ExtendContactRetentionAsync(
         string tenantId, string canonicalPayload, CancellationToken ct)
     {
-        var contactRef = ReadFirstString(canonicalPayload, "contact_ref", "contactRef");
+        var contactRef = BookingAggregateFactory.ReadFirstString(canonicalPayload, "contact_ref", "contactRef");
         if (string.IsNullOrWhiteSpace(contactRef))
             return;
 
@@ -818,7 +1119,7 @@ public sealed class FinalizeBookingCommandHandler(
         // retention extension: the contact kept its capture-time window and could be erased before
         // a far-future booking was honoured — the exact failure this method exists to prevent,
         // reintroduced by a list that had merely drifted.
-        var startsAtRaw = ReadFirstString(
+        var startsAtRaw = BookingAggregateFactory.ReadFirstString(
             canonicalPayload,
             "starts_at", "startsAt", "start_at", "startAt", "scheduled_at", "requested_at", "requestedAt");
         if (!DateTimeOffset.TryParse(
@@ -840,146 +1141,4 @@ public sealed class FinalizeBookingCommandHandler(
                 tenantId);
         }
     }
-
-    internal static Booking BuildBookingAggregate(
-        string tenantId,
-        BookingOperation operation,
-        string providerReference,
-        string canonicalPayload,
-        DateTimeOffset now)
-    {
-        var bookingReference = ReadFirstString(canonicalPayload, "booking_reference", "bookingReference", "reference")
-            ?? providerReference;
-        // `contact_ref` ranks directly behind an explicit customer_id and AHEAD of the legacy
-        // value-carrying keys. Under the out-of-band contact shape the payload deliberately holds
-        // no phone or email, so without it every guest-bearing booking falls through to
-        // `?? providerReference` — which then becomes the CustomerId that AuthorizeMutationAsync
-        // compares a verification grant against, locking the guest out of their own booking, and
-        // the opaque id the console renders where the guest should be. Legacy payloads carry no
-        // contact_ref, so their resolution is unchanged.
-        var customerRef = ReadFirstString(
-                canonicalPayload,
-                "customer_id",
-                "customerId",
-                "contact_ref",
-                "contactRef",
-                "caller_id",
-                "callerId",
-                "phone_e164",
-                "phoneE164",
-                "contact_phone",
-                "contactPhone",
-                "email",
-                "contact_email",
-                "contactEmail")
-            ?? providerReference;
-
-        return new Booking
-        {
-            TenantId = tenantId,
-            BookingId = providerReference,
-            BookingReference = bookingReference,
-            ProviderReference = providerReference,
-            Version = 0,
-            LifecycleStatus = BookingLifecycleStatus.Confirmed,
-            CustomerId = customerRef,
-            AttributedSource = operation.AttributedSource,
-            CreatedAt = operation.CreatedAt,
-            UpdatedAt = now,
-        };
-    }
-
-    /// <summary>
-    /// The first of <paramref name="propertyNames"/> that the payload actually carries, in the
-    /// order the CALLER listed them.
-    ///
-    /// <para>That order is the point. Every call site here passes a deliberate preference chain —
-    /// an explicit <c>customer_id</c> outranks a <c>contact_ref</c>, which outranks the legacy
-    /// value-carrying keys — but the search used to walk the DOCUMENT and return whichever listed
-    /// name it happened to meet first, descending into a property's whole subtree before even
-    /// looking at the next top-level key. The stated precedence held only because current producers
-    /// happen to emit keys in a convenient order; a nested <c>phone_e164</c> under an earlier
-    /// property would beat a top-level <c>customer_id</c>, and the resulting value becomes the
-    /// booking's <c>CustomerId</c> — the identity a verification grant is later matched against.
-    /// One name at a time makes the precedence real instead of incidental.</para>
-    /// </summary>
-    internal static string? ReadFirstString(string json, params string[] propertyNames)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            foreach (var name in propertyNames)
-            {
-                var value = FindNamed(doc.RootElement, name);
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
-            }
-
-            return null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Searches the document for ONE property name, shallowest match first.
-    ///
-    /// <para>A true level-order walk, not a depth-first descent with the current level checked
-    /// early. Depth-first meant a match buried under an earlier property still beat a shallow one
-    /// under a later property — so for
-    /// <c>{"preorder":{"items":[{"meta":{"customer_id":"stale"}}]},"customer":{"customer_id":"real"}}</c>
-    /// the whole <c>preorder</c> subtree was exhausted first and "stale" won. That value becomes
-    /// the booking's <c>CustomerId</c>, which a verification grant is later matched against —
-    /// locking the real guest out of their own booking.</para>
-    /// </summary>
-    private static string? FindNamed(JsonElement root, string propertyName)
-    {
-        var queue = new Queue<JsonElement>();
-        queue.Enqueue(root);
-
-        while (queue.Count > 0)
-        {
-            var element = queue.Dequeue();
-
-            if (element.ValueKind == JsonValueKind.Object)
-            {
-                // Every key at this depth before anything deeper.
-                foreach (var property in element.EnumerateObject())
-                {
-                    if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var value = StringValue(property.Value);
-                        if (!string.IsNullOrWhiteSpace(value))
-                            return value;
-                    }
-                }
-
-                foreach (var property in element.EnumerateObject())
-                {
-                    if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
-                        queue.Enqueue(property.Value);
-                }
-            }
-            else if (element.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (item.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
-                        queue.Enqueue(item);
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static string? StringValue(JsonElement element)
-        => element.ValueKind switch
-        {
-            JsonValueKind.String => string.IsNullOrWhiteSpace(element.GetString()) ? null : element.GetString(),
-            JsonValueKind.Number => element.GetRawText(),
-            _ => null,
-        };
 }

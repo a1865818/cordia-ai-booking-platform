@@ -3,6 +3,7 @@ using System.Text.Json;
 using Cordia.Application.Extensions;
 using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Application.Handlers.BookingFulfillment.Finalize;
+using Cordia.Application.Handlers.BookingFulfillment.Reconcile;
 using Cordia.Domain.Capacity;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -38,6 +39,11 @@ file sealed class T7FakeBookingProviderAdapter : IBookingProviderAdapter
     public ProviderResultKind CreateResult { get; set; } = ProviderResultKind.Created;
     public string CreateRef { get; set; } = "fake_booking_t7";
 
+    // Reconcile's §16.2 ladder asks these. Default stays NotFound so every existing test keeps
+    // its behaviour; the reconcile-against-hold tests set them to prove an effect exists.
+    public ProviderResultKind LookupResult { get; set; } = ProviderResultKind.NotFound;
+    public string? LookupRef { get; set; }
+
     public Task<ProviderResult> CreateBookingAsync(ProviderBookingRequest request, CancellationToken ct = default)
         => Task.FromResult(CreateResult == ProviderResultKind.Created
             ? new ProviderResult(ProviderResultKind.Created, CreateRef)
@@ -45,7 +51,9 @@ file sealed class T7FakeBookingProviderAdapter : IBookingProviderAdapter
 
     public Task<ProviderResult> LookupByIdempotencyKeyAsync(
         string providerAccount, string providerIdempotencyKey, CancellationToken ct = default)
-        => Task.FromResult(new ProviderResult(ProviderResultKind.NotFound));
+        => Task.FromResult(LookupRef is null
+            ? new ProviderResult(LookupResult)
+            : new ProviderResult(LookupResult, LookupRef));
 
     public Task<ProviderResult> LookupByReferenceAsync(
         string providerAccount, string providerReference, CancellationToken ct = default)
@@ -595,6 +603,145 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         var slot = await assertCtx.CapacitySlots.AsNoTracking()
             .IgnoreQueryFilters()
             .SingleAsync(s => s.SlotId == slotId);
+        Assert.Equal(0, slot.HeldCapacity);
+        Assert.Equal(0, slot.BookedCapacity);
+    }
+
+    // ── Reconcile against a hold (#59 part 1 + U1) ───────────────────────────────────────────
+
+    /// <summary>
+    /// The whole Booked write-set, on the reconcile lane, against a real database.
+    ///
+    /// <para>Before this, <c>ReconcileOperationCommandHandler</c> transitioned an operation to
+    /// <c>Booked</c> while doing neither of the two things that make that outcome real: it never
+    /// settled the capacity hold, and it never wrote a <c>bookings</c> row. Nothing in the suite
+    /// could see it — <c>ReconciliationTests</c> contains no <c>CapacitySlot</c> or
+    /// <c>CapacityHold</c> reference at all, and the unit suite had no capacity mock.</para>
+    ///
+    /// <para>Asserts all three ledger facts plus the booking row, because each fails
+    /// independently: the hold could finalize without the slot moving, and both could be right
+    /// while the booking row is still missing.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReconcileAgainstHold_SettlesCapacity_AndMaterialisesTheBooking()
+    {
+        var tenantId = $"t7-rec-{Guid.NewGuid():N}";
+        var providerRef = $"book-t7-rec-{Guid.NewGuid():N}";
+
+        var (slotId, operationId, holdId) =
+            await SeedFinalizeWithHoldAsync(tenantId, OperationStatus.Reconciling);
+        await SeedFinalizeStepAndAttemptAsync(tenantId, operationId);
+
+        // The provider turns out to hold the booking after all.
+        var fakeAdapter = new T7FakeBookingProviderAdapter
+        {
+            LookupResult = ProviderResultKind.AlreadyExists,
+            LookupRef = providerRef,
+        };
+
+        StepOutcome outcome;
+        await using (var sp = BuildContainer(tenantId, fakeAdapter))
+        {
+            using var scope = sp.CreateScope();
+            scope.ServiceProvider.GetRequiredService<TenantContext>().TenantId = tenantId;
+
+            outcome = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
+                new ReconcileOperationCommand(tenantId, operationId), CancellationToken.None);
+        }
+
+        Assert.Equal(StepOutcome.Terminal, outcome);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var op = await assertCtx.BookingOperations.AsNoTracking()
+            .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+        Assert.Equal(OperationStatus.Booked, op.Status);
+
+        // (1) hold Active → Finalized.
+        var hold = await assertCtx.CapacityHolds.AsNoTracking()
+            .IgnoreQueryFilters().SingleAsync(h => h.HoldId == holdId);
+        Assert.Equal(HoldStatus.Finalized, hold.Status);
+
+        // (2) slot held → booked. This is the pair that used to drift: held was later swept to 0
+        // by expiry while booked stayed 0, so the seat read as free under a Booked operation.
+        var slot = await assertCtx.CapacitySlots.AsNoTracking()
+            .IgnoreQueryFilters().SingleAsync(s => s.SlotId == slotId);
+        Assert.Equal(0, slot.HeldCapacity);
+        Assert.Equal(1, slot.BookedCapacity);
+
+        // (3) the bookings row the console and both mutation doors read (U1).
+        var booking = await assertCtx.Bookings.AsNoTracking()
+            .IgnoreQueryFilters()
+            .SingleAsync(b => b.TenantId == tenantId && b.BookingId == providerRef);
+        Assert.Equal(providerRef, booking.ProviderReference);
+        Assert.Equal(BookingLifecycleStatus.Confirmed, booking.LifecycleStatus);
+    }
+
+    /// <summary>
+    /// The hold is gone before reconcile proves the effect: a booking exists at the provider with
+    /// no capacity behind it. Finalize routes this to CompensationRequired, but that edge does not
+    /// exist from Reconciling — attempting it throws and the driver dead-letters the operation,
+    /// which is what #59's filed remedy would have done. Q1 chose ManualReview.
+    /// </summary>
+    [Fact]
+    public async Task ReconcileAgainstHold_HoldAlreadyReleased_EscalatesAndDoesNotBook()
+    {
+        var tenantId = $"t7-rec-gone-{Guid.NewGuid():N}";
+        var providerRef = $"book-t7-gone-{Guid.NewGuid():N}";
+
+        var (slotId, operationId, holdId) =
+            await SeedFinalizeWithHoldAsync(tenantId, OperationStatus.Reconciling);
+        await SeedFinalizeStepAndAttemptAsync(tenantId, operationId);
+
+        await using (var expireCtx = fixture.CreateContext(tenantId))
+        {
+            var svc = new FirstPartyCapacityReservation(
+                expireCtx,
+                new CapacityHoldRepository(expireCtx),
+                new CapacityLockOrder(new CapacityHoldRepository(expireCtx), new CapacitySlotRepository(expireCtx)),
+                new Cordia.Infrastructure.Observability.Metrics());
+
+            await using var tx = await expireCtx.Database.BeginTransactionAsync();
+            await svc.ReleaseAsync(tenantId, holdId, ReleaseReason.Expired);
+            await tx.CommitAsync();
+        }
+
+        var fakeAdapter = new T7FakeBookingProviderAdapter
+        {
+            LookupResult = ProviderResultKind.AlreadyExists,
+            LookupRef = providerRef,
+        };
+
+        StepOutcome outcome;
+        await using (var sp = BuildContainer(tenantId, fakeAdapter))
+        {
+            using var scope = sp.CreateScope();
+            scope.ServiceProvider.GetRequiredService<TenantContext>().TenantId = tenantId;
+
+            outcome = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
+                new ReconcileOperationCommand(tenantId, operationId), CancellationToken.None);
+        }
+
+        Assert.Equal(StepOutcome.Wait, outcome);
+
+        await using var assertCtx = fixture.CreateContext(tenantId);
+
+        var op = await assertCtx.BookingOperations.AsNoTracking()
+            .FirstAsync(o => o.TenantId == tenantId && o.OperationId == operationId);
+        Assert.Equal(OperationStatus.ManualReview, op.Status);
+
+        // No booking row and no confirmation for an operation with no capacity behind it.
+        Assert.False(await assertCtx.Bookings.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(b => b.TenantId == tenantId && b.BookingId == providerRef));
+
+        Assert.False(await assertCtx.OutboxMessages.AsNoTracking().IgnoreQueryFilters()
+            .AnyAsync(m => m.TenantId == tenantId
+                && m.OperationId == operationId
+                && m.MessageType == "notification.booking_confirmed.v1"));
+
+        // Expiry already freed the held seat; reconcile must not decrement it a second time.
+        var slot = await assertCtx.CapacitySlots.AsNoTracking()
+            .IgnoreQueryFilters().SingleAsync(s => s.SlotId == slotId);
         Assert.Equal(0, slot.HeldCapacity);
         Assert.Equal(0, slot.BookedCapacity);
     }

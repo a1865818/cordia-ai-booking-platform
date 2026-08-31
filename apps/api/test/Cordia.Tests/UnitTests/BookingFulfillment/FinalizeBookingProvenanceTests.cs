@@ -1,4 +1,5 @@
 ﻿using Cordia.Application.Handlers.BookingFulfillment.Finalize;
+using Cordia.Application.Handlers.BookingFulfillment;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 
@@ -18,7 +19,7 @@ public class FinalizeBookingProvenanceTests
             CreatedAt = now.AddMinutes(-5),
         };
 
-        var booking = FinalizeBookingCommandHandler.BuildBookingAggregate(
+        var booking = BookingAggregateFactory.BuildBookingAggregate(
             "tenant-a",
             operation,
             "bk-1",
@@ -33,7 +34,7 @@ public class FinalizeBookingProvenanceTests
     [Fact]
     public void BuildBookingAggregate_LeavesSourceNullWhenOperationHasNone()
     {
-        var booking = FinalizeBookingCommandHandler.BuildBookingAggregate(
+        var booking = BookingAggregateFactory.BuildBookingAggregate(
             "tenant-a",
             new BookingOperation { CreatedAt = DateTimeOffset.UtcNow },
             "bk-1",
