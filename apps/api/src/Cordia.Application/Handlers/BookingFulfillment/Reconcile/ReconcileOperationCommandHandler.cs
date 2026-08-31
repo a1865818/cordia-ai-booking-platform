@@ -23,12 +23,18 @@ namespace Cordia.Application.Handlers.BookingFulfillment.Reconcile;
 ///   transition op Reconciling → Booked, add notification outbox row (Inv-8), add audit event.
 ///   Returns <see cref="StepOutcome.Terminal"/>.
 ///
-/// No effect proven (all lookups NotFound):
+/// No effect PROVEN (the ladder answered NotFound):
 ///   Budget not exhausted → Reconciling → Held (re-create under same key, Inv-7).
 ///     Returns <see cref="StepOutcome.Continue"/>.
 ///   Budget exhausted (FM#11) → escalate to ManualReview via <see cref="ManualReviewEscalator"/>
 ///     (work item + notification.still_confirming.v1 + audit).
 ///     Returns <see cref="StepOutcome.Wait"/>.
+///
+/// Neither proven (Transient / Ambiguous / AuthError / PermanentError, or Created with a null
+/// reference) — the lookup failed to answer the question rather than answering it "no":
+///   Budget not exhausted → stay in Reconciling, no writes at all.
+///     Returns <see cref="StepOutcome.Wait"/> and the sweeper re-drives (#55, Inv-7).
+///   Budget exhausted → the same FM#11 escalation as above.
 /// </summary>
 public sealed class ReconcileOperationCommandHandler(
     IBookingOperationRepository opRepo,
@@ -130,6 +136,26 @@ public sealed class ReconcileOperationCommandHandler(
 
         var effectProven = r.Kind is ProviderResultKind.Created or ProviderResultKind.AlreadyExists
             && r.ProviderReference is not null;
+
+        // #55: absence must be PROVEN, not merely un-proven.
+        //
+        // This used to be a single positive test. Everything that was not `effectProven` fell
+        // through to the re-create path below — which means `Transient`, `Ambiguous`, `AuthError`,
+        // `PermanentError` and a `Created` result carrying a null reference were all treated as
+        // "the provider definitely has nothing", and each one produced a second
+        // CreateBookingAsync. `NotFound` was never tested anywhere in this file, even though the
+        // class docstring claimed the branch meant "all lookups NotFound".
+        //
+        // A transport error while asking "does this booking exist?" is not an answer. Inv-7 is
+        // explicit that an unproven effect reconciles rather than re-submits, and
+        // RetryClassifier.cs:34 already carries the same rule for the create path — "a NotFound
+        // cannot prove the create did not take effect" — so the two components disagreed only
+        // because this one made its own kind decision instead of asking.
+        //
+        // Written as a whitelist so the safe set can only ever shrink by accident, never grow:
+        // any kind added to ProviderResultKind in future is unresolved here until someone decides
+        // otherwise. That also closes the Created-with-null-reference hole for free.
+        var noEffectProven = r.Kind == ProviderResultKind.NotFound;
 
         if (effectProven)
         {
@@ -266,13 +292,20 @@ public sealed class ReconcileOperationCommandHandler(
             return StepOutcome.Terminal;
         }
 
-        // No effect proven — check the finalize step's retry budget before re-creating.
+        // Neither proven created nor proven absent — check the retry budget before deciding what
+        // to do about it. The probe runs for BOTH the unresolved and the proven-absent cases, so
+        // an unresolved operation still self-terminates at the budget instead of waiting forever.
         // Use the finalize step's CreatedAt as the first-attempt proxy and the latest attempt's
         // AttemptNumber as the completed count.
         var latestAttemptNumber = latest?.AttemptNumber ?? 1;
         var firstAttemptAt = step?.CreatedAt ?? DateTimeOffset.UtcNow;
         var now = DateTimeOffset.UtcNow;
 
+        // Only the NULL-NESS of this is load-bearing; the DateTimeOffset it returns when the
+        // budget remains is deliberately unused. Q2 chose sweeper re-drive over a reconcile-side
+        // scheduler, so there is nothing here to schedule against — StepSweeperHostedService
+        // re-enters this handler on its own cadence and the 10-minute MaxElapsed in
+        // StepRetryBudget.ForCreateBooking is what eventually terminates the loop.
         var nextEligible = retryPolicy.NextEligibleAt(
             StepRetryBudget.ForCreateBooking,
             latestAttemptNumber,
@@ -308,7 +341,19 @@ public sealed class ReconcileOperationCommandHandler(
             return StepOutcome.Wait;
         }
 
-        // Budget not exhausted — re-create is safe under the same idempotency key (Inv-7).
+        // Budget remains, but the lookups did not PROVE absence: the provider may or may not hold
+        // a booking, and there is no safe way to find out except to ask again. Stay in
+        // Reconciling and let StepSweeperHostedService re-drive (Q2). Re-creating here is the
+        // Inv-7 violation this phase exists to remove — it is exactly the double-submit the
+        // §16.2 ladder is supposed to prevent.
+        //
+        // No transition, no attempt mutation, no provider write: the operation is parked exactly
+        // as it was, which is what makes returning Wait safe to repeat.
+        if (!noEffectProven)
+            return StepOutcome.Wait;
+
+        // Absence is PROVEN (every lookup in the §16.2 ladder answered NotFound) and the budget
+        // remains — re-create is safe under the same idempotency key (Inv-7).
         // Transition Reconciling → Held so the driver re-enters the payment/finalize path.
         // Mark the old Dispatching/Ambiguous attempt Abandoned so FinalizeBookingCommandHandler's
         // Inv-7 guard does NOT block the re-create when it next sees the op in Finalizing.

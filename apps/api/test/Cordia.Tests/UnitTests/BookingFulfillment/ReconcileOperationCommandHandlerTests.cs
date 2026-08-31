@@ -14,6 +14,7 @@ namespace Cordia.Tests.UnitTests.BookingFulfillment;
 /// Unit tests for <see cref="ReconcileOperationCommandHandler"/> — verifies the §16.2 lookup
 /// order (Inv-7), effect-found path (Reconciling → Booked), no-effect path (Reconciling → Held),
 /// budget-exhausted path (Reconciling → ManualReview via ManualReviewEscalator),
+/// the UNRESOLVED path (#55 — a lookup that failed to answer must not be read as "no effect"),
 /// and that <see cref="IBookingProviderAdapter.CreateBookingAsync"/> is NEVER called.
 /// </summary>
 [Trait("Category", "Unit")]
@@ -488,5 +489,148 @@ public class ReconcileOperationCommandHandlerTests
         _adapter.Verify(a => a.LookupByReferenceAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _adapter.Verify(a => a.GetStatusAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _adapter.Verify(a => a.CreateBookingAsync(It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── #55: a lookup that could not answer is not an answer of "no" ────────────────────────
+    //
+    // `effectProven` was a positive test only, and NotFound was never tested anywhere in the
+    // handler. Everything that was not proven-created therefore fell into the re-create path:
+    // Reconciling → Held, which the driver walks straight back to Finalizing and a SECOND
+    // CreateBookingAsync under the same idempotency key — in the same dispatch. A transport
+    // error while asking "does this booking exist?" produced a duplicate booking attempt.
+
+    [Theory]
+    [InlineData(ProviderResultKind.Transient)]
+    [InlineData(ProviderResultKind.Ambiguous)]
+    [InlineData(ProviderResultKind.AuthError)]
+    [InlineData(ProviderResultKind.PermanentError)]
+    public async Task Handle_LookupNeitherProvesNorDisproves_StaysReconciling_AndDoesNotRecreate(
+        ProviderResultKind kind)
+    {
+        var (tenantId, opId) = ("t-unresolved", $"op-unresolved-{kind}");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 4));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(kind));
+
+        // Both destinations are mocked to SUCCEED, so a wrong route commits and is observable.
+        // Without this the assertions below would hold even with the guard removed.
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        // Parked, not advanced: the sweeper re-drives (Q2).
+        Assert.Equal(StepOutcome.Wait, result);
+
+        // The Inv-7 violation this phase removes: no walk-back to Held, so no second create.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Held,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Nor a Booked claim on an effect that was never proven.
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Booked,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // The in-flight attempt is left alone — abandoning it is what unblocks Finalize's Inv-7
+        // guard, so doing it here would re-open the door this phase closes.
+        _attemptRepo.Verify(a => a.UpdateAsync(It.IsAny<WorkflowAttempt>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _adapter.Verify(a => a.CreateBookingAsync(It.IsAny<ProviderBookingRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The Created-with-null-reference hole, closed by the same whitelist. `effectProven` requires
+    /// a non-null reference, so this result proved neither branch — and fell into re-create.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CreatedWithNullReference_StaysReconciling_AndDoesNotRecreate()
+    {
+        var (tenantId, opId) = ("t-nullref", "op-created-nullref");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 1));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Dispatching, providerRef: null, providerKey: providerKey));
+
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Created));
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.Held,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The unresolved path must still self-terminate. Budget exhaustion is probed BEFORE the
+    /// unresolved gate, so an operation nobody can resolve reaches a human rather than parking
+    /// in Reconciling forever.
+    /// </summary>
+    [Fact]
+    public async Task Handle_Unresolved_WithBudgetExhausted_StillEscalatesToAHuman()
+    {
+        var (tenantId, opId) = ("t-unres-exh", "op-unresolved-exhausted");
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 9));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Transient));
+
+        // Budget exhausted.
+        _retryPolicy.Setup(r => r.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(), It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>()))
+            .Returns((DateTimeOffset?)null);
+
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, OperationStatus.ManualReview,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

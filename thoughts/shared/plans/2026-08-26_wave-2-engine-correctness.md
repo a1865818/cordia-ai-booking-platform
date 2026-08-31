@@ -199,15 +199,40 @@ lookup stub in the repo returns only `NotFound`/`AlreadyExists`, so no existing 
 ### Success criteria
 
 **Automated**
-- [ ] `bun nx test api` green; new unit tests per `ProviderResultKind` asserting `Transient`/`Ambiguous`/`AuthError`/`PermanentError` and `Created`-with-null-ref do **not** re-create
-- [ ] `bun nx test-integration api` green
-- [ ] Mutation: restore the negative test → only the new kind tests red; `NotFound` re-create and `AlreadyExists` book stay green
+- [x] `bun nx test api` green — **1845 passed** (+6)
+- [x] `bun nx lint api` green
+- [x] Mutation: remove the gate → **exactly 5** red (four kind cases + `Created`-with-null-ref); the `NotFound` re-create, `AlreadyExists` book, and budget-exhausted paths stay green
+- [ ] `bun nx test-integration api` — deferred to the end-of-wave run
 
 **Manual**
-- [ ] A `Transient` lookup leaves the op in `Reconciling` and issues **no** second `CreateBookingAsync`
+- [x] A `Transient` lookup leaves the op in `Reconciling`, writes nothing, and issues no second `CreateBookingAsync`
 
 ### Discoveries and Notable Information
-_(implementer fills in)_
+
+1. **The change is exactly test-neutral, as predicted.** All 1839 pre-existing tests passed before
+   a single new test was added — every lookup stub in the repo returns only `NotFound` or
+   `AlreadyExists`, so no existing case changes meaning. That is worth stating because it is also
+   the reason the bug survived: **the shipped adapter cannot produce the input that triggers it.**
+
+2. **The plan's claim that `nextEligible` is "computed and discarded" was too strong.** It *is*
+   used — `if (nextEligible == null)` drives the FM#11 escalation. What is unused is the
+   `DateTimeOffset` it returns when the budget remains, because Q2 chose sweeper re-drive over a
+   reconcile-side scheduler. Nothing to fix; the code now says so, so the next reader does not
+   "restore" a scheduler that was never wanted.
+
+3. **Gate placement matters more than the gate.** It sits *after* the budget probe, deliberately.
+   Placed before it, an unresolved operation would return `Wait` forever with nothing to terminate
+   it — trading a double-submit for a permanent park. After it, exhaustion still escalates to a
+   human on the unresolved path, which `Handle_Unresolved_WithBudgetExhausted_StillEscalatesToAHuman`
+   pins; that test stays green under the gate's mutation precisely because it never reaches the gate.
+
+4. **The unresolved path must not abandon the in-flight attempt.** Marking it `Abandoned` is what
+   unblocks Finalize's Inv-7 guard for a re-create, so doing it on this path would re-open the door
+   the phase closes. Asserted with `_attemptRepo.Verify(UpdateAsync, Times.Never)`.
+
+5. **Both destinations are mocked to succeed in the new tests.** Carried over from Phase 1's
+   discovery 3: a `Times.Never` assertion here is vacuous unless the CAS it depends on returns 1,
+   otherwise a wrong route silently no-ops and the test passes for the wrong reason.
 
 ---
 
