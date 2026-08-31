@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using Microsoft.Extensions.Options;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Deposits.ListDeposits;
 using Cordia.Application.Handlers.Deposits.RefundDeposit;
 using Cordia.Domain.Interfaces;
@@ -16,7 +17,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/deposits")]
-public class DepositsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class DepositsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>
     /// Lists recent deposit sessions. Filter <c>status</c> is the console vocabulary
@@ -33,6 +38,8 @@ public class DepositsController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "deposit.list_read");
         return Ok(await mediator.Send(
             new ListDepositsQuery(
                 tenant.TenantId,
@@ -60,6 +67,8 @@ public class DepositsController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "deposit.list_read");
         var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(

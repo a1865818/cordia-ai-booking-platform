@@ -1,4 +1,5 @@
-﻿using System.Text.Json.Serialization;
+﻿using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
 using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Console.GetCustomer;
 using Cordia.Application.Handlers.Console.ListCustomers;
@@ -46,7 +47,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/customers")]
-public class CustomersController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class CustomersController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultLimit = 50;
@@ -64,6 +69,8 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
 
         var result = await mediator.Send(
             new ListCustomersQuery(tenant.TenantId, query, limit ?? DefaultLimit),
@@ -85,6 +92,8 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
     public async Task<ActionResult<CustomerView>> Get(string customerRef, CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
 
         var customer = await mediator.Send(new GetCustomerQuery(tenant.TenantId, customerRef), ct);
         return customer is null ? NotFound() : Ok(ToView(customer));
@@ -104,6 +113,8 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
         var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var customer = await mediator.Send(

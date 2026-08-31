@@ -1,4 +1,6 @@
-﻿using Cordia.Domain.Enums;
+﻿using Microsoft.Extensions.Options;
+using Cordia.Application.Common.Authorization;
+using Cordia.Domain.Enums;
 using System.Text.Json.Serialization;
 using Cordia.Application.Handlers.Console.GetBookingOverview;
 using Cordia.Application.Handlers.Reporting.GetBookingFunnel;
@@ -21,7 +23,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/reporting")]
-public class ReportingController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class ReportingController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>
     /// Returns the separated booking funnel for the current tenant over [from, to).
@@ -40,8 +46,14 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
         [FromQuery] DateTimeOffset? to,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(tenant.TenantId))
-            return Problem(statusCode: 400, title: "Missing tenant", detail: "X-Tenant-Id header is required.");
+        // Was a hand-rolled tenant check, which is the thing TenantGuard exists to replace
+        // ("Controllers call RequireTenant instead of hand-rolling the X-Tenant-Id check").
+        // It answered the same 400 -- TenantScopeMissingException maps to it -- but being the
+        // one route in this controller shaped differently is how it ended up the one route a
+        // guard sweep missed.
+        TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "reporting.read");
 
         var resolvedTo = to ?? DateTimeOffset.UtcNow;
         var resolvedFrom = from ?? resolvedTo.AddHours(-24);
@@ -73,6 +85,8 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "reporting.read");
 
         var resolvedTo = to ?? DateTimeOffset.UtcNow;
         var resolvedFrom = from ?? resolvedTo.AddDays(-7);
@@ -114,6 +128,8 @@ public class ReportingController(IMediator mediator, ITenantContext tenant) : Co
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "reporting.read");
 
         var resolvedTo = to ?? DateTimeOffset.UtcNow;
         var resolvedFrom = from ?? resolvedTo.AddDays(-7);

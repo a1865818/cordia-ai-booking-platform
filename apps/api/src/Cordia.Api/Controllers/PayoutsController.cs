@@ -1,4 +1,6 @@
-﻿using Cordia.Application.Handlers.Payouts.GetPayoutSummary;
+﻿using Microsoft.Extensions.Options;
+using Cordia.Application.Common.Authorization;
+using Cordia.Application.Handlers.Payouts.GetPayoutSummary;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
@@ -14,7 +16,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/payouts")]
-public class PayoutsController(IMediator mediator, ITenantContext tenant) : ControllerBase
+public class PayoutsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     [HttpGet("summary")]
     [ProducesResponseType(typeof(PayoutSummaryResult), StatusCodes.Status200OK)]
@@ -22,6 +28,8 @@ public class PayoutsController(IMediator mediator, ITenantContext tenant) : Cont
     public async Task<ActionResult<PayoutSummaryResult>> Summary(CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "payout.summary_read");
         return Ok(await mediator.Send(new GetPayoutSummaryQuery(tenant.TenantId), ct));
     }
 }
