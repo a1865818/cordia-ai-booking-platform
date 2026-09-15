@@ -373,7 +373,7 @@ drop one).
 | 6 | Notification adapters (stubs) missing from the startup stub list | **Fixed** `511c241` |
 | 9 | Notification read capped oldest-first, dropping the newest state | **Fixed** `5a964a1` |
 | 8 | Verification cannot complete in deployments (no delivery channel) | **Accepted, not a code fix** — the fixed "000000" was the vulnerability; delivery channel is a follow-up |
-| 11 | `CREATE INDEX` (not `CONCURRENTLY`) on `booking_operations` blocks writes during the build | **Open — needs a decision**: requires editing the branch-only Phase 15 migration, which the migration-immutability hook blocks without `SKIP` |
+| 11 | `CREATE INDEX` (not `CONCURRENTLY`) on `booking_operations` blocks writes during the build | **Accepted, migration unchanged** (user decision 2026-09-15): Cordia is not deployed, so there is no production traffic or large `booking_operations` table for the build lock to affect. Revisit for any later index on a hot table once live |
 | 12 | Two renewal UPDATEs per row | **Not changed** — negligible next to the consumer transaction each publish runs; the per-row renewal is what makes lost-lease detection exact |
 | 15 | `tenant_capacity_primitives` not read on any live path | **Not changed** — recorded in Phase 10 discoveries; intended until an external provider is wired |
 
