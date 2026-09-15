@@ -377,4 +377,55 @@ public class NotificationWebhookTests(AcceptanceApiFixture fixture)
 
         Assert.Equal(NotificationState.Accepted, (await ReadAsync(tenantId, notificationId))!.State);
     }
+
+    // ── Review follow-ups ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Outside Development the X-Tenant-Id shim is off, so no tenant is resolved before this endpoint
+    /// runs. The signature covers the raw header, and a verified signature is what establishes the
+    /// tenant — otherwise no genuine receipt could be recorded in any deployment.
+    /// </summary>
+    [Fact]
+    public async Task Post_WithTheTenantShimOff_ASignedReceipt_IsStillRecorded()
+    {
+        var tenantId = $"wh-t16-{Guid.NewGuid():N}";
+        var notificationId = $"notif-{Guid.NewGuid():N}";
+        await SeedNotificationAsync(fixture, tenantId, notificationId);
+
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Test");
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+            builder.UseSetting("Notifications:WebhookSecret", WebhookSecret);
+            builder.UseSetting("Tenancy:AllowHeaderShim", "false");
+        });
+
+        await PostSignedAsync(host, BuildBody(notificationId, "pmsg_test", "delivered"), tenantId, WebhookSecret, HttpStatusCode.Accepted);
+
+        Assert.Equal(NotificationState.Delivered, (await ReadAsync(tenantId, notificationId))!.State);
+    }
+
+    /// <summary>
+    /// A set-but-blank store secret is unset: it must not hide the legacy key, and it must not become
+    /// an HMAC key that anyone can compute.
+    /// </summary>
+    [Fact]
+    public async Task Post_WithABlankStoreSecret_FallsBackToTheLegacyKey_AndTheBlankKeyAuthenticatesNothing()
+    {
+        var tenantId = $"wh-t17-{Guid.NewGuid():N}";
+        var notificationId = $"notif-{Guid.NewGuid():N}";
+        await SeedNotificationAsync(fixture, tenantId, notificationId);
+
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Test");
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+            builder.UseSetting("Secrets:NotificationsWebhookSecret", "   ");
+            builder.UseSetting("Notifications:WebhookSecret", WebhookSecret);
+        });
+
+        var body = BuildBody(notificationId, "pmsg_test", "delivered");
+        await PostSignedAsync(host, body, tenantId, "   ", HttpStatusCode.Unauthorized);
+        await PostSignedAsync(host, body, tenantId, WebhookSecret, HttpStatusCode.Accepted);
+    }
 }

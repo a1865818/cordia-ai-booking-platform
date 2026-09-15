@@ -12,7 +12,9 @@ namespace Cordia.Api.Security;
 ///   <item><c>X-Webhook-Timestamp</c> — Unix seconds when it signed the request.</item>
 ///   <item><c>X-Webhook-Signature</c> — <c>sha256=</c> followed by the lowercase hex
 ///   HMAC-SHA256, keyed by the shared webhook secret, of the UTF-8 bytes of
-///   <c>"{timestamp}.{tenant_id}."</c> followed by the raw request body bytes.</item>
+///   <c>"{timestamp}.{tenant_length}:{tenant_id}."</c> followed by the raw request body bytes, where
+///   <c>tenant_length</c> is the tenant id's length in UTF-8 bytes and <c>tenant_id</c> is the
+///   <c>X-Tenant-Id</c> header.</item>
 /// </list>
 ///
 /// <para><b>Why each part is signed.</b> The plain <c>X-Webhook-Secret</c> header this replaces
@@ -37,7 +39,12 @@ public static class WebhookSignature
     /// <summary>The header value a provider sends for this request.</summary>
     public static string Compute(string secret, string timestamp, string tenantId, ReadOnlySpan<byte> body)
     {
-        var prefix = Encoding.UTF8.GetBytes($"{timestamp}.{tenantId}.");
+        // Length-prefixed: with plain '.' separators a tenant "a" and a body starting "b." would
+        // sign the same bytes as tenant "a.b" and the rest of that body. The timestamp needs no
+        // prefix — Verify accepts digits only, so it can never contain the separator.
+        var tenantBytes = Encoding.UTF8.GetByteCount(tenantId);
+        var prefix = Encoding.UTF8.GetBytes(
+            $"{timestamp}.{tenantBytes.ToString(CultureInfo.InvariantCulture)}:{tenantId}.");
         var message = new byte[prefix.Length + body.Length];
         prefix.CopyTo(message, 0);
         body.CopyTo(message.AsSpan(prefix.Length));

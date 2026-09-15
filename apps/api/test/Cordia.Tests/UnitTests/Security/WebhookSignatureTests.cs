@@ -64,4 +64,18 @@ public class WebhookSignatureTests
     [Fact]
     public void AWrongLengthSignature_DoesNotVerify()
         => Assert.False(Verify(Ts(Now), signature: "sha256=abc"));
+
+    /// <summary>
+    /// The tenant/body boundary is unambiguous: tenant "a" with a body starting "b." must not sign
+    /// the same bytes as tenant "a.b" with the rest of that body.
+    /// </summary>
+    [Fact]
+    public void ShiftingBytesBetweenTenantAndBody_ChangesTheSignature()
+    {
+        var ts = Ts(Now);
+        var asA = WebhookSignature.Compute(Secret, ts, "a", Encoding.UTF8.GetBytes("b.{}"));
+        var asAb = WebhookSignature.Compute(Secret, ts, "a.b", Encoding.UTF8.GetBytes("{}"));
+
+        Assert.NotEqual(asA, asAb);
+    }
 }

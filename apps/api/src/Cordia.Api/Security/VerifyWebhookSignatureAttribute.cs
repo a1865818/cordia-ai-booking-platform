@@ -1,4 +1,5 @@
 ﻿using Cordia.Domain.Interfaces;
+using Cordia.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -25,9 +26,13 @@ public sealed class VerifyWebhookSignatureAttribute : Attribute, IAsyncResourceF
 
         // Spec 14 §24.4: the ISecretStore custody seam first, the legacy config key as the migration
         // fallback. Never logged or serialized.
-        var secret = services.GetRequiredService<ISecretStore>().GetSecret("NotificationsWebhookSecret")
-            ?? services.GetRequiredService<IConfiguration>()["Notifications:WebhookSecret"];
-        if (string.IsNullOrEmpty(secret))
+        // Blank counts as unset, for the fallback AND the refusal: a set-but-empty environment
+        // variable must neither hide the legacy key nor become an HMAC key anyone can compute.
+        var storeSecret = services.GetRequiredService<ISecretStore>().GetSecret("NotificationsWebhookSecret");
+        var secret = string.IsNullOrWhiteSpace(storeSecret)
+            ? services.GetRequiredService<IConfiguration>()["Notifications:WebhookSecret"]
+            : storeSecret;
+        if (string.IsNullOrWhiteSpace(secret))
         {
             context.Result = new UnauthorizedResult();
             return;
@@ -55,11 +60,17 @@ public sealed class VerifyWebhookSignatureAttribute : Attribute, IAsyncResourceF
         }
         http.Request.Body.Position = 0;
 
+        // The tenant is the RAW X-Tenant-Id header, not the resolved tenant context. A provider
+        // cannot present a signed tenant context, and outside Development the X-Tenant-Id shim is
+        // off, so the resolved context would be empty and no genuine receipt could ever verify.
+        // The signature is what makes this header trustworthy: only the secret holder can sign it.
+        var signedTenant = http.Request.Headers["X-Tenant-Id"].ToString();
+
         var verified = WebhookSignature.Verify(
             secret,
             http.Request.Headers[WebhookSignature.TimestampHeader].ToString(),
             http.Request.Headers[WebhookSignature.SignatureHeader].ToString(),
-            services.GetRequiredService<ITenantContext>().TenantId,
+            signedTenant,
             body,
             DateTimeOffset.UtcNow);
 
@@ -67,6 +78,21 @@ public sealed class VerifyWebhookSignatureAttribute : Attribute, IAsyncResourceF
         {
             context.Result = new UnauthorizedResult();
             return;
+        }
+
+        // Establish the tenant the signature vouches for. Where a tenant was already resolved (the
+        // shim, in Development) it must be the same one — SetTenant refuses a different tenant.
+        if (!string.IsNullOrWhiteSpace(signedTenant))
+        {
+            try
+            {
+                services.GetRequiredService<TenantContext>().SetTenant(signedTenant);
+            }
+            catch (InvalidOperationException)
+            {
+                context.Result = new UnauthorizedResult();
+                return;
+            }
         }
 
         await next();
