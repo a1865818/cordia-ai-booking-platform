@@ -204,6 +204,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<RetryClassifier>();
         services.AddSingleton<IRetryPolicy, FullJitterRetryPolicy>();
         services.AddSingleton<IProviderCircuitBreaker, InMemoryProviderCircuitBreaker>();
+        // #108 — per-operation advisory lock shared by the dispatch fence and the cancel CAS.
+        services.AddScoped<IOperationDecisionLock, Cordia.Infrastructure.EntityFramework.Concurrency.OperationDecisionLock>();
         services.AddSingleton<IBookingProviderAdapter, StubBookingProviderAdapter>();
 
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).

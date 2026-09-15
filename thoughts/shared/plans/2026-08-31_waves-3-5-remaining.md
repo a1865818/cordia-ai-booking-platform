@@ -313,3 +313,18 @@ drop one).
 - The plain `X-Webhook-Secret` path is removed, not kept as a fallback; a test pins that the right
   secret in that header now authenticates nothing. T1–T7 rewritten to sign; T8/T9 keep their subject
   (which secret source keys the signature, and precedence).
+
+### Phase 14
+- The two decision points are the dispatch fence (`WorkflowAttemptRepository.TryMarkDispatchingAsync`)
+  and Finalize's **cancel-before-create** transaction (FM#13) — not Compensate: the fence requires
+  `Finalizing`, so it can never race a `CompensationRequired` operation.
+- `pg_advisory_xact_lock(108051, hashtext(tenant:operation))` — the two-int form, so it cannot meet the
+  test suite's single-bigint schema lock. `IOperationDecisionLock` throws outside a transaction,
+  because an xact lock taken in an implicit statement transaction serialises nothing.
+- The fence was a bare `ExecuteUpdateAsync`; it now opens its own transaction when none is ambient.
+  The FM#13 lock is taken **before** the in-transaction attempt re-read — a unit test pins the order.
+- The race test drives the exact interleaving against real Postgres: cancel worker locks and re-reads,
+  the fence must still be waiting a second later, the CAS commits, and the fence then returns 0.
+- Mutation M3 (lock keyed by tenant only) first **hung** the run instead of failing it: the paired
+  negative asserted while still holding the lock, deadlocking teardown. The test now releases before
+  asserting.

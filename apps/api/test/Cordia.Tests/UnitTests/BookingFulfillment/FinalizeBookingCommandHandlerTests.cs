@@ -55,6 +55,7 @@ public class FinalizeBookingCommandHandlerTests
     private readonly Mock<ICapacityReservation> _capacity = new();
     private readonly Mock<IGuestContactRepository> _guestContacts = new();
     private readonly Mock<IScheduledJobRepository> _jobs = new();
+    private readonly Mock<IOperationDecisionLock> _decisionLock = new();
 
     private FinalizeBookingCommandHandler CreateHandler() =>
         new(_opRepo.Object, _stepRepo.Object, _attemptRepo.Object, _intentRepo.Object,
@@ -62,7 +63,7 @@ public class FinalizeBookingCommandHandlerTests
             _circuitBreaker.Object, new RetryClassifier(), _retryPolicy.Object,
             new RetryScheduler(_jobs.Object, _stepRepo.Object), _uow.Object, _capacity.Object,
             _guestContacts.Object, NullLogger<FinalizeBookingCommandHandler>.Instance,
-            new Metrics());
+            _decisionLock.Object, new Metrics());
 
     public FinalizeBookingCommandHandlerTests()
     {
@@ -676,5 +677,43 @@ public class FinalizeBookingCommandHandlerTests
             tenantId, opId, It.IsAny<long>(),
             OperationStatus.Finalizing, OperationStatus.Reconciling,
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── #108: the cancel-before-create decision holds the per-operation lock ─────────────────────
+
+    /// <summary>
+    /// The lock only serialises anything if it is taken BEFORE the in-transaction re-read of the
+    /// attempt. Taken after, the re-read could still see a Planned attempt that the fence arms a
+    /// moment later.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CancelBeforeCreate_TakesTheDecisionLock_BeforeReReadingTheAttempt()
+    {
+        var (tenantId, opId) = ("t-lock", "op-cancel-lock");
+        var calls = new List<string>();
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Finalizing, version: 2,
+                cancellationRequestedAt: DateTimeOffset.UtcNow));
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("read-attempt"))
+            .ReturnsAsync((WorkflowAttempt?)null);
+        _decisionLock.Setup(l => l.AcquireAsync(tenantId, opId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("lock"))
+            .Returns(Task.CompletedTask);
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Finalizing, OperationStatus.CompensationRequired,
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("cas"))
+            .ReturnsAsync(1);
+
+        await CreateHandler().Handle(new FinalizeBookingCommand(tenantId, opId), CancellationToken.None);
+
+        var lockAt = calls.IndexOf("lock");
+        Assert.True(lockAt >= 0, $"The decision lock was never taken: {string.Join(" → ", calls)}");
+        Assert.Equal("read-attempt", calls[lockAt + 1]);
+        Assert.Contains("cas", calls.Skip(lockAt));
+        _decisionLock.Verify(l => l.AcquireAsync(tenantId, opId, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

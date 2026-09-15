@@ -92,6 +92,7 @@ public sealed class FinalizeBookingCommandHandler(
     ICapacityReservation capacityReservation,
     IGuestContactRepository guestContacts,
     ILogger<FinalizeBookingCommandHandler> logger,
+    IOperationDecisionLock decisionLock,
     Metrics metrics)
     : IRequestHandler<FinalizeBookingCommand, StepOutcome>
 {
@@ -357,6 +358,13 @@ public sealed class FinalizeBookingCommandHandler(
             {
                 await uow.ExecuteInTransactionAsync(async ct2 =>
                 {
+                    // #108: taken BEFORE the re-reads below, and shared with the dispatch fence
+                    // (WorkflowAttemptRepository.TryMarkDispatchingAsync). Without it the fence
+                    // could commit between the attempt re-read and the CAS, and both the dispatch
+                    // and the cancellation would proceed. With it, whichever decision starts second
+                    // reads the first one's committed result.
+                    await decisionLock.AcquireAsync(tenantId, operationId, ct2);
+
                     var opInTxn = await opRepo.GetAsync(operationId, ct2);
                     if (opInTxn is null)
                         return;
@@ -589,15 +597,11 @@ public sealed class FinalizeBookingCommandHandler(
         // cancel anything. FM#13 fast-paths a cancellation only for a null/Planned attempt for
         // exactly this reason.
         //
-        // WHAT THIS DOES NOT DO, stated plainly. It does not make the pair atomic. If the cancel
-        // worker re-reads the attempt, then this fence commits, then the cancel worker's CAS
-        // commits, both still proceed — the window is now bounded by that worker's own re-read to
-        // CAS span instead of by the whole duration of a provider call, which is orders of
-        // magnitude smaller but not zero. Closing it completely needs both writes under one lock
-        // or a shared CAS row, which is a larger change than this wave carries. Phase 1 is what
-        // makes the remainder non-destructive: Compensate no longer declares "no effect" over an
-        // attempt it can see is in flight, so the residual race costs a ManualReview rather than
-        // an orphaned booking and a false failure notification.
+        // #108 closes the pair. The fence and the cancel-before-create CAS above both take the
+        // same per-operation advisory lock inside their transactions, so the cancel worker can no
+        // longer re-read a Planned attempt, lose the fence's commit in between, and CAS anyway.
+        // Compensate's refusal to declare "no effect" over an in-flight attempt (#51a) stays, as
+        // the second line of defence it always was.
         // ─────────────────────────────────────────────────────────────
         var dispatchArmed = await attemptRepo.TryMarkDispatchingAsync(
             tenantId, operationId, attempt.AttemptId, ct);

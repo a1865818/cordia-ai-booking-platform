@@ -2,6 +2,7 @@
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
+using Cordia.Infrastructure.EntityFramework.Concurrency;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Infrastructure.Repositories;
@@ -66,9 +67,30 @@ public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttem
     /// <para>The status clause is what closes #51 anyway: the cancel worker's CAS moves the
     /// operation off <c>Finalizing</c>, and once it has, this statement matches nothing.</para>
     /// </summary>
-    public Task<int> TryMarkDispatchingAsync(
+    public async Task<int> TryMarkDispatchingAsync(
         string tenantId, string operationId, string attemptId, CancellationToken ct = default)
-        => db.WorkflowAttempts
+    {
+        // #108: the conditional write below re-asserts `status = finalizing` in the same statement,
+        // but that alone cannot make it atomic with Finalize's cancel-before-create CAS: that worker
+        // re-reads the attempt and then CASes, and this could commit between the two. Both decisions
+        // now take the same per-operation advisory lock inside their transaction, so one completes
+        // before the other reads. This method opens its own transaction when the caller has none,
+        // because an advisory xact lock outside a transaction is released at once.
+        if (db.Database.CurrentTransaction is not null)
+            return await LockAndMarkAsync(tenantId, operationId, attemptId, ct);
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var rows = await LockAndMarkAsync(tenantId, operationId, attemptId, ct);
+        await tx.CommitAsync(ct);
+        return rows;
+    }
+
+    private async Task<int> LockAndMarkAsync(
+        string tenantId, string operationId, string attemptId, CancellationToken ct)
+    {
+        await new OperationDecisionLock(db).AcquireAsync(tenantId, operationId, ct);
+
+        return await db.WorkflowAttempts
             .Where(a => a.TenantId == tenantId
                      && a.AttemptId == attemptId
                      // The attempt must belong to the operation whose status is being asserted.
@@ -85,6 +107,7 @@ public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttem
                          && o.Status == OperationStatus.Finalizing))
             .ExecuteUpdateAsync(
                 b => b.SetProperty(a => a.Outcome, AttemptOutcome.Dispatching), ct);
+    }
 
     public Task<WorkflowAttempt?> GetLatestForStepAsync(
         string tenantId,

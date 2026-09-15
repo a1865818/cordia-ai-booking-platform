@@ -1,6 +1,7 @@
 ﻿#pragma warning disable xUnit1051
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Infrastructure.EntityFramework.Concurrency;
 using Cordia.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 
@@ -191,5 +192,76 @@ public class DispatchFenceTests(PostgresFixture fixture)
 
         Assert.Equal(0, rows);
         Assert.Equal(AttemptOutcome.Planned, await ReadOutcomeAsync(tenantId, attemptId));
+    }
+
+    // ── #108: the fence and the cancel-before-create CAS cannot interleave ──────────────────────
+
+    /// <summary>
+    /// The exact interleaving #108 left open. A cancel worker takes the decision lock, re-reads the
+    /// attempt (Planned), and is about to CAS the operation out of Finalizing. The fence starting now
+    /// must WAIT for that transaction, then see the operation has left Finalizing and refuse. Before
+    /// the lock, the fence read the still-committed Finalizing status, armed the dispatch, and both
+    /// the provider call and the cancellation went ahead.
+    /// </summary>
+    [Fact]
+    public async Task TheFence_WaitsForAnInFlightCancelDecision_ThenRefuses()
+    {
+        var tenantId = $"fence-lock-{Guid.NewGuid():N}";
+        var (operationId, attemptId) = await SeedAsync(tenantId, OperationStatus.Finalizing, cancellationRequested: true);
+
+        await using var cancelCtx = fixture.CreateContext(tenantId);
+        await using var cancelTx = await cancelCtx.Database.BeginTransactionAsync();
+        await new OperationDecisionLock(cancelCtx).AcquireAsync(tenantId, operationId);
+        Assert.Equal(AttemptOutcome.Planned, (await new WorkflowAttemptRepository(cancelCtx)
+            .GetLatestForStepAsync(tenantId, operationId, "finalize"))!.Outcome);
+
+        await using var fenceCtx = fixture.CreateContext(tenantId);
+        var fence = new WorkflowAttemptRepository(fenceCtx).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
+
+        // Held off by the lock — not merely slow. A second is far beyond an uncontended UPDATE.
+        var finishedEarly = await Task.WhenAny(fence, Task.Delay(TimeSpan.FromSeconds(1))) == fence;
+        Assert.False(finishedEarly, "The dispatch fence did not wait for the in-flight cancel decision (#108).");
+
+        await cancelCtx.BookingOperations.IgnoreQueryFilters()
+            .Where(o => o.TenantId == tenantId && o.OperationId == operationId)
+            .ExecuteUpdateAsync(b => b.SetProperty(o => o.Status, OperationStatus.CompensationRequired));
+        await cancelTx.CommitAsync();
+
+        Assert.Equal(0, await fence);
+        Assert.Equal(AttemptOutcome.Planned, await ReadOutcomeAsync(tenantId, attemptId));
+    }
+
+    /// <summary>The paired negative: the lock is per operation, so an unrelated operation's fence does not wait.</summary>
+    [Fact]
+    public async Task TheFence_DoesNotWaitOnAnotherOperationsDecision()
+    {
+        var tenantId = $"fence-lock-other-{Guid.NewGuid():N}";
+        var (busyOperation, _) = await SeedAsync(tenantId, OperationStatus.Finalizing);
+        var (operationId, attemptId) = await SeedAsync(tenantId, OperationStatus.Finalizing);
+
+        await using var holderCtx = fixture.CreateContext(tenantId);
+        await using var holderTx = await holderCtx.Database.BeginTransactionAsync();
+        await new OperationDecisionLock(holderCtx).AcquireAsync(tenantId, busyOperation);
+
+        await using var fenceCtx = fixture.CreateContext(tenantId);
+        var fence = new WorkflowAttemptRepository(fenceCtx).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
+
+        var finished = await Task.WhenAny(fence, Task.Delay(TimeSpan.FromSeconds(10))) == fence;
+
+        // Release BEFORE asserting: if the fence is (wrongly) blocked, failing with the lock still
+        // held would leave its command waiting on a transaction that is only disposed after it.
+        await holderTx.RollbackAsync();
+
+        Assert.True(finished, "The dispatch fence waited on an unrelated operation's decision lock.");
+        Assert.Equal(1, await fence);
+    }
+
+    [Fact]
+    public async Task TheDecisionLock_RefusesToBeTakenOutsideATransaction()
+    {
+        await using var ctx = fixture.CreateContext("fence-lock-notx");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new OperationDecisionLock(ctx).AcquireAsync("fence-lock-notx", "op-any"));
     }
 }
