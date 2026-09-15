@@ -241,6 +241,42 @@ if (insecureDefaults.Count > 0 && !app.Environment.IsDevelopment())
         string.Join(", ", insecureDefaults));
 }
 
+// #75 (D1) — stubs still serve several ports. A flag switched off for a port with no real
+// implementation is a request this build cannot satisfy, so it is refused rather than ignored.
+var refusedStubOptOuts = Cordia.Infrastructure.Providers.StubPorts.RefusedOptOuts(app.Configuration);
+if (refusedStubOptOuts.Count > 0)
+{
+    throw new InvalidOperationException(
+        "Refusing to start: these stubs were switched off, but no real implementation exists for them yet — "
+        + string.Join(", ", refusedStubOptOuts.Select(p => $"{p.ConfigKey} ({p.Port})"))
+        + ". Remove the setting; the stub stays in service and is listed at startup.");
+}
+
+// ONE line naming every stub in service. Outside Development it is a warning, because each entry is
+// something a deployment is not really doing — bookings that never reach a provider, uploads that
+// are never scanned — and an operator must be able to find all of them by grepping startup.
+var activeStubs = Cordia.Infrastructure.Providers.StubPorts.Active(app.Configuration);
+if (activeStubs.Count > 0)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "{Count} port(s) are served by stubs ({Environment}): {Stubs}",
+            activeStubs.Count,
+            app.Environment.EnvironmentName,
+            Cordia.Infrastructure.Providers.StubPorts.Describe(activeStubs));
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "{Count} PORT(S) ARE SERVED BY STUBS OUTSIDE DEVELOPMENT ({Environment}) — these are not real "
+            + "integrations: {Stubs}",
+            activeStubs.Count,
+            app.Environment.EnvironmentName,
+            Cordia.Infrastructure.Providers.StubPorts.Describe(activeStubs));
+    }
+}
+
 // Exception handler wraps the full pipeline — must be first middleware.
 app.UseExceptionHandler();
 

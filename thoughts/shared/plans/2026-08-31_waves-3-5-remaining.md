@@ -290,3 +290,15 @@ drop one).
   honest extent of #106 today, and the spec-07 §14 bullet now says so.
 - No write API: choosing a rung is a statement about what a provider integration can do, made at
   onboarding, not an operator setting.
+
+### Phase 11
+- Confirmed the research count: six ports still stubbed. `IDepositPolicy` is real
+  (`TenantDepositPolicyProvider`) and not listed; the extractor is listed under its existing
+  `LangGraph:UseStubExtractor` flag, which defaults off because it has a real client.
+- Per-stub flags `Stubs:<Port>` default on. A flag set **false** for a port with no real
+  implementation refuses startup naming the key — it is a request this build cannot satisfy, and
+  silently keeping the stub would leave the operator believing it was off. That is not the
+  "refuse-to-boot" D1 ruled out: the default configuration always starts.
+- One startup line names every active stub with its consequence (warning outside Development).
+- Drift guard: `TheCatalogue_MatchesWhatTheContainerRegisters` inspects `AddInfrastructure`'s actual
+  descriptors, so a real adapter replacing a stub fails the test until the catalogue is updated.
