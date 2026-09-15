@@ -172,19 +172,36 @@ public sealed class OutboxPublisherHostedService(
             // publisher reclaimed it while it waited — that worker owns it now, so this one steps
             // aside instead of publishing it a second time.
             var renewedUntil = DateTimeOffset.UtcNow.AddSeconds(leaseSeconds);
-            if (await markRepo.RenewLeaseAsync([row.MessageId], _workerId, renewedUntil, ct) == 0)
+            try
             {
-                logger.LogWarning(
-                    "Outbox publisher {WorkerId}: lease on message_id={MessageId} was lost before publish "
-                    + "(reclaimed or already published); skipping it",
+                if (await markRepo.RenewLeaseAsync([row.MessageId], _workerId, renewedUntil, ct) == 0)
+                {
+                    logger.LogWarning(
+                        "Outbox publisher {WorkerId}: lease on message_id={MessageId} was lost before publish "
+                        + "(reclaimed or already published); skipping it",
+                        _workerId, row.MessageId);
+                    continue;
+                }
+
+                if (i + 1 < rows.Count)
+                {
+                    await markRepo.RenewLeaseAsync(
+                        rows.Skip(i + 1).Select(r => r.MessageId).ToList(), _workerId, renewedUntil, ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A renewal is bookkeeping, not delivery. Letting a transient database error escape
+                // would fault the whole tick and strand every row after this one until its lease
+                // expired — the per-row try/catch below exists precisely so one row cannot do that.
+                // This row is skipped instead: its claim lease is still standing, and a later tick
+                // reclaims it once that lapses, exactly as for any publish that failed here.
+                logger.LogError(
+                    ex,
+                    "Outbox publisher {WorkerId}: renewing the lease on message_id={MessageId} failed; "
+                    + "leaving it for lease-expiry reclaim",
                     _workerId, row.MessageId);
                 continue;
-            }
-
-            if (i + 1 < rows.Count)
-            {
-                await markRepo.RenewLeaseAsync(
-                    rows.Skip(i + 1).Select(r => r.MessageId).ToList(), _workerId, renewedUntil, ct);
             }
 
             var envelope = BuildEnvelope(row);

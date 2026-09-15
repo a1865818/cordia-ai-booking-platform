@@ -2,14 +2,14 @@
 using Cordia.Domain.Enums;
 using Cordia.Domain.Interfaces;
 using Cordia.Infrastructure.EntityFramework;
-using Cordia.Infrastructure.EntityFramework.Concurrency;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Infrastructure.Repositories;
 
 /// <summary>EF Core implementation of <see cref="IWorkflowAttemptRepository"/> (Inv-15: rows never deleted,
 /// AttemptNumber never reset; a single attempt's mutable fields update through its lifecycle per §6.2).</summary>
-public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttemptRepository
+public class WorkflowAttemptRepository(ApplicationDbContext db, IOperationDecisionLock decisionLock)
+    : IWorkflowAttemptRepository
 {
     public async Task AddAsync(WorkflowAttempt attempt, CancellationToken ct = default)
     {
@@ -88,7 +88,9 @@ public class WorkflowAttemptRepository(ApplicationDbContext db) : IWorkflowAttem
     private async Task<int> LockAndMarkAsync(
         string tenantId, string operationId, string attemptId, CancellationToken ct)
     {
-        await new OperationDecisionLock(db).AcquireAsync(tenantId, operationId, ct);
+        // The SAME registered lock Finalize's cancel path injects (#108) — both halves of the mutual
+        // exclusion must resolve one implementation, or a swapped registration splits them silently.
+        await decisionLock.AcquireAsync(tenantId, operationId, ct);
 
         return await db.WorkflowAttempts
             .Where(a => a.TenantId == tenantId

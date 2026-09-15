@@ -1,6 +1,7 @@
 ﻿#pragma warning disable xUnit1051
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
+using Cordia.Infrastructure.EntityFramework.Concurrency;
 using Cordia.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 
@@ -47,7 +48,7 @@ public class WorkflowAttemptUpdateTests(PostgresFixture fixture)
         // UpdateAsync: set Outcome=Succeeded, ProviderRef, StartedAt, CompletedAt
         await using (var ctx = fixture.CreateContext(tenantId))
         {
-            var repo = new WorkflowAttemptRepository(ctx);
+            var repo = new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx));
             // Load then mutate (tracked instance path)
             var attempt = await ctx.WorkflowAttempts.SingleAsync(a => a.AttemptId == attemptId);
             attempt.Outcome = AttemptOutcome.Succeeded;
@@ -123,7 +124,7 @@ public class WorkflowAttemptUpdateTests(PostgresFixture fixture)
         }
 
         await using var readCtx = fixture.CreateContext(tenantId);
-        var repo = new WorkflowAttemptRepository(readCtx);
+        var repo = new WorkflowAttemptRepository(readCtx, new OperationDecisionLock(readCtx));
         var latest = await repo.GetLatestForStepAsync(tenantId, operationId, "capacity_hold");
 
         Assert.NotNull(latest);
@@ -142,7 +143,7 @@ public class WorkflowAttemptUpdateTests(PostgresFixture fixture)
             operationId = await TestData.SeedOperationAsync(ctx, tenantId);
 
         await using var readCtx = fixture.CreateContext(tenantId);
-        var repo = new WorkflowAttemptRepository(readCtx);
+        var repo = new WorkflowAttemptRepository(readCtx, new OperationDecisionLock(readCtx));
         var latest = await repo.GetLatestForStepAsync(tenantId, operationId, "capacity_hold");
 
         Assert.Null(latest);

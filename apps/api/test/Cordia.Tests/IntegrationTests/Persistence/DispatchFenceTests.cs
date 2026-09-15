@@ -83,7 +83,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
         var (operationId, attemptId) = await SeedAsync(tenantId, OperationStatus.Finalizing);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         Assert.Equal(1, rows);
@@ -105,7 +105,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
         var (operationId, attemptId) = await SeedAsync(tenantId, status);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         Assert.Equal(0, rows);
@@ -121,7 +121,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
             tenantId, OperationStatus.Finalizing, outcome: AttemptOutcome.Dispatching);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         Assert.Equal(0, rows);
@@ -146,7 +146,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
             tenantId, OperationStatus.Finalizing, cancellationRequested: true);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         Assert.Equal(1, rows);
@@ -172,7 +172,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
         var (_, attemptB) = await SeedAsync(tenantId, OperationStatus.Finalizing);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync(tenantId, operationA, attemptB);
 
         Assert.Equal(0, rows);
@@ -187,7 +187,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
         var (operationId, attemptId) = await SeedAsync(tenantId, OperationStatus.Finalizing);
 
         await using var ctx = fixture.CreateContext(tenantId);
-        var rows = await new WorkflowAttemptRepository(ctx)
+        var rows = await new WorkflowAttemptRepository(ctx, new OperationDecisionLock(ctx))
             .TryMarkDispatchingAsync($"other-{Guid.NewGuid():N}", operationId, attemptId);
 
         Assert.Equal(0, rows);
@@ -212,11 +212,11 @@ public class DispatchFenceTests(PostgresFixture fixture)
         await using var cancelCtx = fixture.CreateContext(tenantId);
         await using var cancelTx = await cancelCtx.Database.BeginTransactionAsync();
         await new OperationDecisionLock(cancelCtx).AcquireAsync(tenantId, operationId);
-        Assert.Equal(AttemptOutcome.Planned, (await new WorkflowAttemptRepository(cancelCtx)
+        Assert.Equal(AttemptOutcome.Planned, (await new WorkflowAttemptRepository(cancelCtx, new OperationDecisionLock(cancelCtx))
             .GetLatestForStepAsync(tenantId, operationId, "finalize"))!.Outcome);
 
         await using var fenceCtx = fixture.CreateContext(tenantId);
-        var fence = new WorkflowAttemptRepository(fenceCtx).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
+        var fence = new WorkflowAttemptRepository(fenceCtx, new OperationDecisionLock(fenceCtx)).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         // Held off by the lock — not merely slow. A second is far beyond an uncontended UPDATE.
         var finishedEarly = await Task.WhenAny(fence, Task.Delay(TimeSpan.FromSeconds(1))) == fence;
@@ -244,7 +244,7 @@ public class DispatchFenceTests(PostgresFixture fixture)
         await new OperationDecisionLock(holderCtx).AcquireAsync(tenantId, busyOperation);
 
         await using var fenceCtx = fixture.CreateContext(tenantId);
-        var fence = new WorkflowAttemptRepository(fenceCtx).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
+        var fence = new WorkflowAttemptRepository(fenceCtx, new OperationDecisionLock(fenceCtx)).TryMarkDispatchingAsync(tenantId, operationId, attemptId);
 
         var finished = await Task.WhenAny(fence, Task.Delay(TimeSpan.FromSeconds(10))) == fence;
 

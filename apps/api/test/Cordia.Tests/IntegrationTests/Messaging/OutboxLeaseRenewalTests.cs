@@ -88,6 +88,27 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         Assert.Null(reclaimed.PublishedAt);
     }
 
+    /// <summary>
+    /// A renewal is bookkeeping. If the database refuses it for one row, that row is left for
+    /// lease-expiry reclaim — the tick must not fault and strand the rest of the lane.
+    /// </summary>
+    [Fact]
+    public async Task ARenewalThatFails_SkipsOnlyItsRow_AndTheLaneCarriesOn()
+    {
+        var tenantId = $"lease-renew-fail-{Guid.NewGuid():N}";
+        var baseTime = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var first = MakeMessage(tenantId, baseTime);
+        var second = MakeMessage(tenantId, baseTime.AddSeconds(1));
+        await SeedAsync(first, second);
+
+        var transport = new ProbingTransport(fixture, TimeSpan.Zero);
+        var service = BuildService(transport, tenantId, failRenewalFor: first.MessageId);
+
+        await service.PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal([second.MessageId], transport.Published);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────────
 
     private static OutboxMessage MakeMessage(string tenantId, DateTimeOffset occurredAt) =>
@@ -108,7 +129,8 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         await ctx.SaveChangesAsync();
     }
 
-    private OutboxPublisherHostedService BuildService(IMessageTransport transport, string tenantId)
+    private OutboxPublisherHostedService BuildService(
+        IMessageTransport transport, string tenantId, string? failRenewalFor = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => fixture.CreateContext("lease-worker"));
@@ -117,6 +139,15 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         services.AddTransient<IUnitOfWork, UnitOfWork>();
         services.AddSingleton(transport);
         services.ScopeOutboxClaimToTenant(tenantId);
+        if (failRenewalFor is not null)
+        {
+            // Decorates whatever the scope resolves, keeping the tenant-scoped claim above.
+            var scoped = services.Last(d => d.ServiceType == typeof(IOutboxRepository));
+            services.AddScoped<IOutboxRepository>(provider => new FailingRenewalRepository(
+                (IOutboxRepository)(scoped.ImplementationFactory?.Invoke(provider)
+                    ?? ActivatorUtilities.CreateInstance(provider, scoped.ImplementationType!)),
+                failRenewalFor));
+        }
 
         var sp = services.BuildServiceProvider();
         var options = new MessagingOptions();
@@ -154,5 +185,23 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
                 .Select(m => m.MessageId)
                 .ToListAsync(ct));
         }
+    }
+
+    /// <summary>Throws on any renewal that includes one chosen message; everything else passes through.</summary>
+    private sealed class FailingRenewalRepository(IOutboxRepository inner, string messageId) : IOutboxRepository
+    {
+        public Task AddAsync(OutboxMessage message, CancellationToken ct = default) => inner.AddAsync(message, ct);
+        public Task AddRangeAsync(IEnumerable<OutboxMessage> messages, CancellationToken ct = default) => inner.AddRangeAsync(messages, ct);
+        public Task<IReadOnlyList<OutboxMessage>> ClaimUnpublishedAsync(string tenantId, int limit, CancellationToken ct = default)
+            => inner.ClaimUnpublishedAsync(tenantId, limit, ct);
+        public Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(int limit, string leaseOwner, DateTimeOffset leaseExpiresAt, DateTimeOffset now, CancellationToken ct = default)
+            => inner.ClaimBatchAsync(limit, leaseOwner, leaseExpiresAt, now, ct);
+        public Task<int> RenewLeaseAsync(IReadOnlyCollection<string> messageIds, string leaseOwner, DateTimeOffset leaseExpiresAt, CancellationToken ct = default)
+            => messageIds.Contains(messageId)
+                ? throw new TimeoutException("simulated database timeout during renewal")
+                : inner.RenewLeaseAsync(messageIds, leaseOwner, leaseExpiresAt, ct);
+        public Task MarkPublishedAsync(string tenantId, string id, DateTimeOffset publishedAt, CancellationToken ct = default)
+            => inner.MarkPublishedAsync(tenantId, id, publishedAt, ct);
+        public Task<bool> ExistsAsync(string tenantId, string id, CancellationToken ct = default) => inner.ExistsAsync(tenantId, id, ct);
     }
 }
