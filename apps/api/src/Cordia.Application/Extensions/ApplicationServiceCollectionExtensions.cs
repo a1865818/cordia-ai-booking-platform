@@ -71,6 +71,25 @@ public static class ApplicationServiceCollectionExtensions
         services.AddOptions<Common.Authorization.AssertedActorOptions>()
             .BindConfiguration(Common.Authorization.AssertedActorOptions.SectionName);
 
+        // Verification code pepper (#71). Bound, then topped up from the variable deployments
+        // already set, then validated at startup: a host with no pepper and no explicit opt-in to
+        // the committed local one never starts, instead of 500ing on the first verification.
+        // Program.cs defaults AllowLocalPepper ON in Development only.
+        services.AddOptions<Handlers.Verification.VerificationCodeOptions>()
+            .BindConfiguration(Handlers.Verification.VerificationCodeOptions.SectionName)
+            .PostConfigure(o =>
+            {
+                if (string.IsNullOrWhiteSpace(o.CodePepper))
+                    o.CodePepper = Environment.GetEnvironmentVariable(
+                        Handlers.Verification.VerificationCodeOptions.PepperEnvironmentVariable);
+            })
+            .Validate(o => o.IsUsable,
+                $"A verification code pepper is required outside Development: set "
+                + $"{Handlers.Verification.VerificationCodeOptions.SectionName}:CodePepper or "
+                + $"{Handlers.Verification.VerificationCodeOptions.PepperEnvironmentVariable}. The committed local "
+                + $"pepper is public and is used only where {Handlers.Verification.VerificationCodeOptions.SectionName}:AllowLocalPepper is set.")
+            .ValidateOnStart();
+
         // Consumer dispatch seam (§3, OD-1): registry is a singleton catalog written once at startup;
         // dispatcher is scoped because IMediator is scoped.
         // The booking driver consumer is pre-registered for the two message types that trigger

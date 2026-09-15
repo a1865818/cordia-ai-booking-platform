@@ -5,6 +5,7 @@ using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.Verification.CheckVerification;
 
@@ -44,7 +45,8 @@ public sealed class VerifyCodeCommandHandler(
     IVerificationChallengeRepository challenges,
     IVerificationGrantRepository grants,
     IAuditEventRepository auditEvents,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    IOptions<VerificationCodeOptions> codeOptions)
     : IRequestHandler<VerifyCodeCommand, CheckVerificationResult>
 {
     private static readonly TimeSpan GrantTtl = TimeSpan.FromMinutes(15);
@@ -64,7 +66,7 @@ public sealed class VerifyCodeCommandHandler(
 
         if (!string.Equals(
                 challenge.CodeHash,
-                VerificationCode.Hash(challenge.VerificationId, request.Code),
+                VerificationCode.Hash(codeOptions.Value, challenge.VerificationId, request.Code),
                 StringComparison.Ordinal))
         {
             return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);

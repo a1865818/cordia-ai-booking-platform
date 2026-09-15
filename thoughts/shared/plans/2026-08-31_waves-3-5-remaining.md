@@ -211,3 +211,13 @@ drop one).
 - Lookups trip their own key, `(provider, "default:lookup")`. The ladder only continues past
   `NotFound`, so the final result decides health: `Created`/`AlreadyExists`/`NotFound` record a
   success, anything else a failure.
+
+### Phase 5
+- "Not literally Development ⇒ production" could not be done inside the static `VerificationCode`:
+  it read process environment variables, but the integration host sets its environment through
+  `UseEnvironment("Test")`, which never reaches them — and an unset variable means Production, so
+  every unit and integration run would have thrown. The pepper became bound options
+  (`Verification:CodePepper`, legacy `CORDIA_VERIFICATION_CODE_PEPPER` still honoured) with
+  `Verification:AllowLocalPepper` defaulted in `Program.cs` exactly like `AllowAssertedStaffRole`,
+  and validated **at startup** rather than on the first verification request.
+- `tools/scripts/export_openapi.mjs` spawns the API as Development, so the contract hook is unaffected.

@@ -4,12 +4,14 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.Verification.RequestVerification;
 
 public sealed class RequestVerificationCommandHandler(
     IVerificationChallengeRepository challenges,
-    IBookingRepository bookings)
+    IBookingRepository bookings,
+    IOptions<VerificationCodeOptions> codeOptions)
     : IRequestHandler<RequestVerificationCommand, RequestVerificationResult>
 {
     private static readonly TimeSpan ChallengeTtl = TimeSpan.FromMinutes(10);
@@ -47,7 +49,7 @@ public sealed class RequestVerificationCommandHandler(
             TargetBookingId = targetBookingId,
             Action = request.Action,
             Channel = request.Channel,
-            CodeHash = VerificationCode.Hash(verificationId, VerificationCode.DevelopmentCode),
+            CodeHash = VerificationCode.Hash(codeOptions.Value, verificationId, VerificationCode.DevelopmentCode),
             RequestedAt = now,
             ExpiresAt = now + ChallengeTtl,
         };

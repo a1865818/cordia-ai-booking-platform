@@ -53,6 +53,16 @@ var allowAssertedStaffRole = builder.Configuration.GetValue(
     builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
     o.AllowAssertedStaffRole = allowAssertedStaffRole);
+
+// The committed verification-code pepper is public, so it may hash real codes only on a developer
+// machine or where a host opts in explicitly (#71). Default ON in Development, OFF elsewhere —
+// "elsewhere" includes Staging and any misspelt environment, which the old literal
+// "Production" check silently waved through.
+var allowLocalVerificationPepper = builder.Configuration.GetValue(
+    "Verification:AllowLocalPepper",
+    builder.Environment.IsDevelopment());
+builder.Services.PostConfigure<Cordia.Application.Handlers.Verification.VerificationCodeOptions>(o =>
+    o.AllowLocalPepper = allowLocalVerificationPepper);
 // The environment is passed explicitly (never sniffed inside Infrastructure) because the
 // menu-extraction startup gates are environment-dependent: a loopback `LangGraph:Host` and an
 // absent shared secret are correct on a developer machine and refused everywhere else (#94).
@@ -304,6 +314,22 @@ else
     // A silently absent role branch looks exactly like a broken console authorization.
     app.Logger.LogInformation(
         "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
+        app.Environment.EnvironmentName);
+}
+
+// Only the dangerous combination is worth a warning: the local pepper allowed outside Development
+// AND no real pepper configured, so codes are actually being hashed under the public one. The
+// pepper itself is never logged.
+if (allowLocalVerificationPepper
+    && !app.Environment.IsDevelopment()
+    && string.IsNullOrWhiteSpace(app.Services
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<Cordia.Application.Handlers.Verification.VerificationCodeOptions>>()
+        .Value.CodePepper))
+{
+    app.Logger.LogWarning(
+        "Verification codes are hashed under the COMMITTED LOCAL PEPPER outside Development ({Environment}) "
+        + "because Verification:AllowLocalPepper was set and no pepper is configured. The pepper is public; "
+        + "set Verification:CodePepper or CORDIA_VERIFICATION_CODE_PEPPER.",
         app.Environment.EnvironmentName);
 }
 
