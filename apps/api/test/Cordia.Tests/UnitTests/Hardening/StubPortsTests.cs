@@ -54,6 +54,17 @@ public class StubPortsTests
     public void SwitchingOffTheMenuExtractorStub_IsNotRefused()
         => Assert.Empty(StubPorts.RefusedOptOuts(Config(new() { ["LangGraph:UseStubExtractor"] = "false" })));
 
+    /// <summary>The notification adapters send nothing; a deployment must be able to find that at startup.</summary>
+    [Fact]
+    public void TheNotificationAdapters_AreListedAsStubs()
+    {
+        var active = StubPorts.Active(Config(new())).Select(p => p.Implementation).ToList();
+
+        Assert.Contains(nameof(SmsNotificationAdapter), active);
+        Assert.Contains(nameof(EmailNotificationAdapter), active);
+        Assert.Contains(nameof(ChannelCallbackAdapter), active);
+    }
+
     [Fact]
     public void Describe_NamesPortImplementationAndConsequence()
     {
@@ -79,8 +90,9 @@ public class StubPortsTests
 
         foreach (var port in StubPorts.All.Append(StubPorts.MenuExtractor))
         {
-            var registration = Assert.Single(services, d => d.ServiceType.Name == port.Port);
-            Assert.Equal(port.Implementation, registration.ImplementationType?.Name);
+            // Contains, not Single: the notification port has one registration per channel.
+            Assert.Contains(services, d => d.ServiceType.Name == port.Port
+                && d.ImplementationType?.Name == port.Implementation);
         }
     }
 

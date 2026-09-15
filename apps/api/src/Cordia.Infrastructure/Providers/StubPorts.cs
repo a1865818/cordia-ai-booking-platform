@@ -51,6 +51,13 @@ public static class StubPorts
             "pre-order items are not reserved in any point-of-sale system"),
         new("IExternalInventoryAdapter", nameof(StubExternalInventoryAdapter), "Stubs:ExternalInventory",
             "external-provider inventory is simulated (not on the live booking path)"),
+        // One registration per channel under the same port, so each is listed on its own.
+        new("INotificationProviderAdapter", nameof(SmsNotificationAdapter), "Stubs:SmsNotifications",
+            "guest SMS messages are recorded as accepted but never sent"),
+        new("INotificationProviderAdapter", nameof(EmailNotificationAdapter), "Stubs:EmailNotifications",
+            "guest emails are recorded as accepted but never sent"),
+        new("INotificationProviderAdapter", nameof(ChannelCallbackAdapter), "Stubs:ChannelNotifications",
+            "channel callbacks are recorded as accepted but never delivered"),
     ];
 
     /// <summary>The menu extractor's existing flag — the one stub with a real implementation.</summary>
