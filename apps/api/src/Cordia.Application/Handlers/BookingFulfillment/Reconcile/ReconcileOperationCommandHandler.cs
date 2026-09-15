@@ -169,19 +169,32 @@ public sealed class ReconcileOperationCommandHandler(
         }
         else
         {
-            r = await adapter.LookupByIdempotencyKeyAsync(ProviderAccount, providerKey, ct);
-            via = "idempotency_key";
-
-            if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+            try
             {
-                r = await adapter.LookupByReferenceAsync(ProviderAccount, latest.ProviderRef, ct);
-                via = "reference";
+                r = await adapter.LookupByIdempotencyKeyAsync(ProviderAccount, providerKey, ct);
+                via = "idempotency_key";
+
+                if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+                {
+                    r = await adapter.LookupByReferenceAsync(ProviderAccount, latest.ProviderRef, ct);
+                    via = "reference";
+                }
+
+                if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+                {
+                    r = await adapter.GetStatusAsync(ProviderAccount, latest.ProviderRef, ct);
+                    via = "status";
+                }
             }
-
-            if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+            catch
             {
-                r = await adapter.GetStatusAsync(ProviderAccount, latest.ProviderRef, ct);
-                via = "status";
+                // A lookup that THROWS must still be recorded. When the circuit is half-open, IsOpen
+                // released exactly one probe and blocks every later caller until that probe reports
+                // back; a probe that escapes without RecordSuccess/RecordFailure keeps the lookup
+                // circuit shut until the process restarts, and every parked operation would then
+                // run out its budget without the provider ever being asked again.
+                circuitBreaker.RecordFailure(adapter.ProviderName, LookupCircuitAccount);
+                throw;
             }
 
             // The ladder only continues past NotFound, so the final result is the one that

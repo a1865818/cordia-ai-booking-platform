@@ -766,6 +766,24 @@ public class ReconcileOperationCommandHandlerTests
         _circuit.Verify(c => c.RecordFailure("stub", "default"), Times.Never);
     }
 
+    /// <summary>
+    /// A lookup that throws is still reported. A half-open circuit releases one probe and waits for
+    /// it; a probe that escapes unrecorded would keep the lookup circuit shut indefinitely.
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupThatThrows_RecordsAFailure_AndStillThrows()
+    {
+        var (tenantId, opId) = ("t-circ-throw", "op-lookup-throws");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("connection reset"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None));
+
+        _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
+    }
+
     /// <summary>NotFound is an answer — a healthy provider — and closes a half-open circuit.</summary>
     [Fact]
     public async Task Handle_LookupThatAnswers_RecordsASuccess_OnTheLookupCircuit()
