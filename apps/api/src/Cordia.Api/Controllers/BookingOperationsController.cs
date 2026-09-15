@@ -5,12 +5,14 @@ using Cordia.Application.Handlers.BookingFulfillment.ManualRecovery;
 using Cordia.Application.Handlers.BookingOperations.GetOperationStatus;
 using Cordia.Application.Handlers.Console.ListOpenWorkItems;
 using Cordia.Application.Handlers.Console.ListOperations;
+using Cordia.Application.Handlers.Notifications.ListNotifications;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Api.Controllers;
 
@@ -18,6 +20,7 @@ namespace Cordia.Api.Controllers;
 /// REST endpoints for booking operations (spec 04 §3, spec 06 §15.5, §17.4, T11a).
 ///
 /// GET  /api/booking-operations/{operationId}                    → 200 | 404
+/// GET  /api/booking-operations/{operationId}/notifications      → 200 | 403
 /// POST /api/booking-operations/{operationId}/cancel             → 202 | 404
 /// POST /api/booking-operations/{operationId}/resume             → 202 | 404 | 409
 /// POST /api/booking-operations/{operationId}/resolve            → 202 | 400 | 404 | 409
@@ -29,7 +32,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/booking-operations")]
-public class BookingOperationsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class BookingOperationsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
@@ -132,6 +139,24 @@ public class BookingOperationsController(IMediator mediator, ITenantContext tena
                 w.Assignee,
                 w.CreatedAt,
                 w.OperationStatus is null ? null : OperationStatusNames.ToWireName(w.OperationStatus.Value))).ToList()));
+    }
+
+    /// <summary>
+    /// Delivery state of the notifications raised for one operation (#83, spec 10) — the console's
+    /// read for a request that has not become a booking yet. Same contract as
+    /// <c>GET /api/Bookings/{bookingId}/notifications</c>.
+    /// </summary>
+    [HttpGet("{operationId}/notifications")]
+    [ProducesResponseType(typeof(ListNotificationsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ListNotificationsResponse>> ListNotifications(
+        string operationId,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "notification.list_read");
+
+        return Ok(await mediator.Send(new ListNotificationsQuery(tenant.TenantId, BookingId: null, operationId), ct));
     }
 
     /// <summary>Returns the current status of the given booking operation, or 404 if not found.</summary>

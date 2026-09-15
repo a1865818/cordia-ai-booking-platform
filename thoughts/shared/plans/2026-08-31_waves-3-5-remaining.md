@@ -232,3 +232,17 @@ drop one).
 - The test host opts in with `Security:AllowInsecureCommittedDefaults`; the integration suite's own
   connection string carries the committed password, so without it every host would refuse.
 - `apps/langgraph/.env.example` and every committed value are byte-identical.
+
+### Phase 8
+- Notifications carry an operation id, never a booking id, so the booking read joins through
+  `booking_operations.booking_id` (set on the create at Booked, and on every cancel/modify at
+  submission). Two routes: `GET /api/Bookings/{id}/notifications` and
+  `GET /api/booking-operations/{id}/notifications` — the drawer picks by `isBooking`.
+- Both routes sit behind `TenantGuard` + `OperatorGuard` (added to `OperatorReadGuardTests`). The
+  view omits `recipient_ref`, provider ref and idempotency key.
+- The console's "operator cannot post a receipt" criterion is proven, not assumed: a request with
+  full asserted operator headers and no webhook secret is 401 and leaves the row untouched.
+- Mutation M1 (booking join ignoring the booking id) only went red after the booking test gained a
+  same-tenant notification on an unrelated booking — the first draft could not see it.
+- Local Bun is 1.3.14 and the web suite guards on ≥1.4.0 (CI uses latest), so web tests were run with
+  `npx bun@latest test --parallel`: 725 pass.

@@ -115,4 +115,25 @@ public interface INotificationRepository
         string operationId,
         NotificationEvent expectedEvent,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The notifications raised for one operation, oldest first (#83, console read). Tenant-scoped
+    /// by the query filter AND an explicit predicate; at most <paramref name="limit"/> rows.
+    /// </summary>
+    Task<IReadOnlyList<Notification>> ListForOperationAsync(
+        string tenantId,
+        string operationId,
+        int limit,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The notifications raised for every operation that addressed a booking — the create that
+    /// produced it and any later cancel or modify — oldest first (#83). Same scoping as
+    /// <see cref="ListForOperationAsync"/>.
+    /// </summary>
+    Task<IReadOnlyList<Notification>> ListForBookingAsync(
+        string tenantId,
+        string bookingId,
+        int limit,
+        CancellationToken ct = default);
 }

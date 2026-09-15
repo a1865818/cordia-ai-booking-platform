@@ -50,6 +50,8 @@ public class OperatorReadGuardTests
     [InlineData("/api/reporting/funnel")]
     [InlineData("/api/reporting/overview")]
     [InlineData("/api/reporting/kpis")]
+    [InlineData("/api/Bookings/bk-any/notifications")]
+    [InlineData("/api/booking-operations/op-any/notifications")]
     public async Task ReadsAreRefused_WithoutAVerifiedOperatorSession(string url)
     {
         await using var host = await ProductionLikeHostAsync();

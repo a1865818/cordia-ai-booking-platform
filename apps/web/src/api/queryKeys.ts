@@ -17,6 +17,7 @@ export const queryKeys = {
     all: () => [...root(), "bookings"] as const,
     schedule: (from: string, to: string) => [...root(), "bookings", "schedule", from, to] as const,
     detail: (bookingId: string) => [...root(), "bookings", "detail", bookingId] as const,
+    notifications: (bookingId: string) => [...root(), "bookings", "notifications", bookingId] as const,
     find: (hints: Record<string, string | undefined>) =>
       [...root(), "bookings", "find", stableFilter(hints)] as const,
     availability: (from: string, to: string) =>
@@ -28,6 +29,8 @@ export const queryKeys = {
     list: (filters: Record<string, string | number | boolean | undefined>) =>
       [...root(), "operations", "list", stableFilter(filters)] as const,
     status: (operationId: string) => [...root(), "operations", "status", operationId] as const,
+    notifications: (operationId: string) =>
+      [...root(), "operations", "notifications", operationId] as const,
     /**
      * The open manual-recovery queue. A separate key from `list` because it is a separate
      * table with its own lifetime: a work item stays open until a person closes it, so it

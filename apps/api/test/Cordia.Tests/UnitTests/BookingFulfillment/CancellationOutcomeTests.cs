@@ -44,7 +44,8 @@ public class CancellationOutcomeTests
     public CancellationOutcomeTests() => _tenant.SetupGet(t => t.TenantId).Returns(TenantId);
 
     private BookingOperationsController CreateController() =>
-        new(_mediator.Object, _tenant.Object, _actor.Object);
+        new(_mediator.Object, _tenant.Object, _actor.Object,
+            Microsoft.Extensions.Options.Options.Create(new Cordia.Application.Common.Authorization.AssertedActorOptions()));
 
     private static OperationStatusView View(bool terminal) =>
         new()
