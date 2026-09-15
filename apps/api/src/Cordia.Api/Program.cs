@@ -187,7 +187,7 @@ const string CorsPolicy = "CordiaCors";
 // browser only, which no .NET test would catch — CorsPolicyTests exists to close that gap.
 //
 // Note the idempotency key is NOT here: it travels in the request body (`idempotency_key`), not a
-// header. And the provider/webhook headers the API also reads (X-Webhook-Secret, X-Provider-*) are
+// header. And the provider/webhook headers the API also reads (X-Webhook-Timestamp, X-Webhook-Signature, X-Provider-*) are
 // deliberately absent — those endpoints are §13-C, never called from a browser.
 string[] corsHeaders =
 [

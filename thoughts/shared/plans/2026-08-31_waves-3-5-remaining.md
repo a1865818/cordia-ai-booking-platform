@@ -302,3 +302,14 @@ drop one).
 - One startup line names every active stub with its consequence (warning outside Development).
 - Drift guard: `TheCatalogue_MatchesWhatTheContainerRegisters` inspects `AddInfrastructure`'s actual
   descriptors, so a real adapter replacing a stub fails the test until the catalogue is updated.
+
+### Phase 12
+- Wire format: `X-Webhook-Timestamp` (Unix seconds) + `X-Webhook-Signature: sha256=<hex>` over
+  `"{timestamp}.{tenant_id}."` + raw body, ±5 min window. The **tenant is signed** because it arrives in
+  a header — without it a captured receipt could be replayed against another tenant (mutation M3).
+- The raw-body trap is solved with an `IAsyncResourceFilter` (`[VerifyWebhookSignature]`): it runs
+  before model binding, buffers (64 KiB cap → 413), verifies, rewinds. `[FromBody]` and the documented
+  request schema are unchanged; `v1.json` only gains the 413 response.
+- The plain `X-Webhook-Secret` path is removed, not kept as a fallback; a test pins that the right
+  secret in that header now authenticates nothing. T1–T7 rewritten to sign; T8/T9 keep their subject
+  (which secret source keys the signature, and precedence).
