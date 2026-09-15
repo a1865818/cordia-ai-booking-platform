@@ -24,6 +24,12 @@ public class BookingOperationConfiguration : IEntityTypeConfiguration<BookingOpe
         builder.Property(e => e.AttributedSource)
             .HasColumnType("attributed_source_enum");
 
+        // #110 — the console's newest-activity-first scan (ConsoleReadModel.ScanAsync) orders by
+        // (updated_at DESC, operation_id DESC) and pages by keyset over exactly that order. Without
+        // this index every page sorted the tenant's whole operation set.
+        builder.HasIndex(e => new { e.TenantId, e.UpdatedAt, e.OperationId })
+            .IsDescending(false, true, true);
+
         // FK to the exact intent revision (tenant_id, intent_id, intent_revision) → revisions PK
         builder.HasOne<BookingIntentRevision>()
             .WithMany()

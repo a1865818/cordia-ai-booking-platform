@@ -113,13 +113,21 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         CancellationToken ct)
     {
         var scanned = 0;
+        // Keyset cursor (#110): the (updated_at, operation_id) of the last row handed out. Offset
+        // paging made page N produce and discard N×PageSize rows, and with no index behind the
+        // ORDER BY every page re-sorted the tenant's entire operation set — quadratic in pages.
+        // Resuming AFTER the last row reads each page as one range of the
+        // (tenant_id, updated_at DESC, operation_id DESC) index. The cursor is the full sort key, so
+        // rows sharing an updated_at are neither skipped nor repeated at a page boundary.
+        PayloadRow? last = null;
 
         while (scanned < MaxScan)
         {
-            var page = await PayloadRows(tenantId).Skip(scanned).Take(PageSize).ToListAsync(ct);
+            var page = await After(PayloadRows(tenantId), last).Take(PageSize).ToListAsync(ct);
             if (page.Count == 0) return false; // tenant exhausted — the result is complete
 
             scanned += page.Count;
+            last = page[^1];
 
             foreach (var parsed in Parse(page))
             {
@@ -138,8 +146,29 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
         //
         // One row is probed, and only in the rare ceiling case, so the ordinary path pays nothing.
         // `PayloadRows` orders by (updated_at desc, operation_id) — the same total order the paging
-        // used — so "is there anything after row MaxScan" is well defined rather than planner luck.
-        return await PayloadRows(tenantId).Skip(scanned).Take(1).AnyAsync(ct);
+        // used — so "is there anything after the last row read" is well defined rather than planner luck.
+        return await After(PayloadRows(tenantId), last).AnyAsync(ct);
+    }
+
+    /// <summary>
+    /// Rows strictly after <paramref name="last"/> in the scan order
+    /// <c>(updated_at DESC, operation_id DESC)</c>; all rows when <paramref name="last"/> is null.
+    ///
+    /// <para>Written as the row-value comparison <c>(updated_at, operation_id) &lt; (@u, @o)</c>.
+    /// The equivalent <c>updated_at &lt; @u OR (updated_at = @u AND …)</c> returns the same rows but
+    /// PostgreSQL can only apply it as a filter over an index walk from the top; a row comparison in
+    /// the index's own column order is a seek, so every page costs the same wherever it starts.</para>
+    /// </summary>
+    private static IQueryable<PayloadRow> After(IQueryable<PayloadRow> rows, PayloadRow? last)
+    {
+        if (last is null)
+            return rows;
+
+        var updatedAt = last.UpdatedAt;
+        var operationId = last.OperationId;
+        return rows.Where(r => EF.Functions.LessThan(
+            ValueTuple.Create(r.UpdatedAt, r.OperationId),
+            ValueTuple.Create(updatedAt, operationId)));
     }
 
     public async Task<IReadOnlyList<OperationSummary>> ListOperationsAsync(
@@ -858,9 +887,11 @@ public sealed class ConsoleReadModel(ApplicationDbContext db) : IConsoleReadMode
                on new { op.TenantId, op.IntentId, Revision = op.IntentRevision }
                equals new { rev.TenantId, rev.IntentId, rev.Revision }
            where op.TenantId == tenantId
-           // OperationId breaks ties: Skip/Take paging over a non-unique ORDER BY lets rows
-           // with equal UpdatedAt be skipped or returned twice between pages.
-           orderby op.UpdatedAt descending, op.OperationId
+           // OperationId breaks ties, and is the second half of the keyset cursor (#110): paging
+           // over a non-unique ORDER BY skips or repeats rows sharing an UpdatedAt. BOTH columns
+           // descend so the cursor is a single row-value comparison that the
+           // (tenant_id, updated_at DESC, operation_id DESC) index can seek to.
+           orderby op.UpdatedAt descending, op.OperationId descending
            select new PayloadRow
            {
                OperationId = op.OperationId,

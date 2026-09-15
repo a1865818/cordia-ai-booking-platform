@@ -435,6 +435,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.HasIndex("TenantId", "IntentId", "IntentRevision")
                         .HasDatabaseName("ix_booking_operations_tenant_id_intent_id_intent_revision");
 
+                    b.HasIndex("TenantId", "UpdatedAt", "OperationId")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_booking_operations_tenant_id_updated_at_operation_id");
+
                     b.ToTable("booking_operations", "public");
                 });
 

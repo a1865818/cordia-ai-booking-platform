@@ -7,7 +7,7 @@ repository: Cordia
 topic: "Waves 3–5 — the remaining backlog in one PR"
 tags: [plan, apps/api, apps/web, security, inv-1, inv-11, inv-12, inv-13, spec-08, spec-12, spec-14, spec-15]
 status: approved
-issues: [72, 80, 105, 71, 73, 106, 83, 75, 74, 102, 108]
+issues: [72, 80, 105, 71, 73, 106, 83, 75, 74, 102, 108, 110]
 research: thoughts/shared/research/2026-08-31_waves-3-5-remaining.md
 ---
 
@@ -131,6 +131,14 @@ startup warning enumerating every active stub.
 ### Phase 14 — #108: advisory lock (D3)
 `pg_advisory_xact_lock` over the dispatch fence and the cancel CAS.
 
+### Phase 15 — #110: console scan paging *(migration)* — added 2026-09-15 at the user's request
+`ConsoleReadModel.ScanAsync` pages with `Skip/Take` over `ORDER BY updated_at DESC, operation_id`,
+which no index supports, so every page re-sorts the tenant's whole operation set and page N discards
+N×500 rows. Replace offset paging with **keyset paging** on `(updated_at, operation_id)` — the existing
+tie-break is already the total order — and add the index `(tenant_id, updated_at DESC, operation_id)`.
+The ordering contract and the truncation semantics (`ConsoleScanTruncationTests`) are unchanged.
+Third migration on the branch, additive.
+
 ---
 
 ## Blast radius
@@ -163,7 +171,7 @@ startup warning enumerating every active stub.
 
 ## Package & migration notes
 
-**No new packages.** **Exactly two migrations**, in Phases 9 and 10, both additive, sequential on one
+**No new packages.** **Three migrations**, in Phases 9, 10 and 15, all additive, sequential on one
 branch so no snapshot conflict. Spec 12 owns the DDL; neither adds an enum label (PostgreSQL cannot
 drop one).
 
@@ -328,3 +336,19 @@ drop one).
 - Mutation M3 (lock keyed by tenant only) first **hung** the run instead of failing it: the paired
   negative asserted while still holding the lock, deadlocking teardown. The test now releases before
   asserting.
+
+### Phase 15
+- First cut used `updated_at < @u OR (updated_at = @u AND operation_id > @o)` with a mixed-direction
+  index. `EXPLAIN` showed Postgres could only apply that as a **filter** over an index walk from the
+  top — no sort any more, but still proportional to depth. Switching the tie-break to DESC and the
+  cursor to the row-value comparison `(updated_at, operation_id) < (@u, @o)`
+  (`EF.Functions.LessThan(ValueTuple.Create(...))`, Npgsql row-value support) makes it an **index
+  seek**: 500 rows, ~2 ms, 116 index buffers on a 20,001-row tenant at any depth, versus 80 ms plus a
+  20,000-row sort for `OFFSET 19500`. The migration was regenerated before commit (never applied
+  outside the local test database, which was cleaned).
+- The planner only chose the new index once both tables had statistics; on the polluted local test
+  database with stale stats it hash-joined instead. Production autovacuum/analyze covers this.
+- Ordering contract kept: newest activity first, a total order. Only the direction of the tie-break
+  among identical `updated_at` values changed, which no caller depends on.
+- Mutation note: an inclusive cursor (`<=`) repeats one row per page; the tie test cannot see it
+  (the schedule de-duplicates by key) but the ceiling test does (the probe then finds a row).
