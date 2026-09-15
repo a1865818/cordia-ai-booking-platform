@@ -210,6 +210,29 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// #73 — refuse to run on credentials committed to this repository outside Development. Checked
+// before anything touches the database or mints a token, so a deployment that forgot to override
+// one fails here with the setting named, instead of serving on a public password or signing key.
+// The test host opts in explicitly; the values themselves are never logged.
+var insecureDefaults = Cordia.Infrastructure.Security.InsecureCommittedDefaults.FindIn(app.Configuration);
+if (insecureDefaults.Count > 0 && !app.Environment.IsDevelopment())
+{
+    if (!app.Configuration.GetValue(Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey, false))
+    {
+        throw new InvalidOperationException(
+            $"Refusing to start in {app.Environment.EnvironmentName}: these settings still hold values committed "
+            + $"to the repository — {string.Join(", ", insecureDefaults)}. Override them with real secrets, or set "
+            + $"{Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey} for a non-deployed host.");
+    }
+
+    app.Logger.LogWarning(
+        "Running on COMMITTED CREDENTIALS outside Development ({Environment}) because {Setting} was set: {Settings}. "
+        + "Expected only in the test host.",
+        app.Environment.EnvironmentName,
+        Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey,
+        string.Join(", ", insecureDefaults));
+}
+
 // Exception handler wraps the full pipeline — must be first middleware.
 app.UseExceptionHandler();
 

@@ -221,3 +221,14 @@ drop one).
   `Verification:AllowLocalPepper` defaulted in `Program.cs` exactly like `AllowAssertedStaffRole`,
   and validated **at startup** rather than on the first verification request.
 - `tools/scripts/export_openapi.mjs` spawns the API as Development, so the contract hook is unaffected.
+
+### Phase 6
+- Implemented as a detector (`InsecureCommittedDefaults.FindIn`) called from `Program.cs` right after
+  `Build()`, rather than options validation: the committed values live across four unrelated
+  sections (connection string, signing keys, two webhook-secret keys, object-store key), and the
+  check must run before migrations or any token is minted.
+- The database password is **parsed** with `NpgsqlConnectionStringBuilder`, not substring-matched —
+  mutation M3 proved a substring check would refuse a rotated password that merely contains the word.
+- The test host opts in with `Security:AllowInsecureCommittedDefaults`; the integration suite's own
+  connection string carries the committed password, so without it every host would refuse.
+- `apps/langgraph/.env.example` and every committed value are byte-identical.
