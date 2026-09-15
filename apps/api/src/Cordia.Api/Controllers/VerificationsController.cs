@@ -26,7 +26,7 @@ public class VerificationsController(
         TenantGuard.RequireTenant(tenant);
 
         var result = await mediator.Send(new RequestVerificationCommand(tenant.TenantId, request), ct);
-        return Ok(new RequestVerificationResponse(result.Status, result.Verification));
+        return Ok(new RequestVerificationResponse(result.Status, result.Verification, result.DevelopmentCode));
     }
 
     [HttpGet("{verificationId}")]
@@ -72,9 +72,16 @@ public class VerificationsController(
     }
 }
 
+/// <param name="DevelopmentCode">
+/// The code just issued — present ONLY where <c>Verification:ExposeCodeForDevelopment</c> is on
+/// (Development and the test host), because no delivery channel exists yet (#71). Omitted from the
+/// body otherwise.
+/// </param>
 public sealed record RequestVerificationResponse(
     [property: JsonPropertyName("status")] RequestVerificationStatusEnum Status,
-    [property: JsonPropertyName("verification")] VerificationSentResult? Verification);
+    [property: JsonPropertyName("verification")] VerificationSentResult? Verification,
+    [property: JsonPropertyName("development_code"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DevelopmentCode = null);
 
 public sealed record CheckVerificationResponse(
     [property: JsonPropertyName("status")] CheckVerificationStatusEnum Status,

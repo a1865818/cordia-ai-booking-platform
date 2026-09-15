@@ -24,9 +24,15 @@ export interface VerificationState {
   error: unknown;
   /** Why the last attempt did not grant, in operator language. */
   message: string | null;
+  /**
+   * The code the API just issued, present only where the server exposes it (Development and the
+   * test host). Nothing delivers verification codes yet, so without it a local run could never
+   * complete step-up (#71). Absent in any deployed environment.
+   */
+  developmentCode?: string | null;
 }
 
-const INITIAL: VerificationState = { phase: "idle", grant: null, error: null, message: null };
+const INITIAL: VerificationState = { phase: "idle", grant: null, error: null, message: null, developmentCode: null };
 
 function randomKey(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -93,6 +99,7 @@ export function useVerification(options: {
           phase: "awaiting_code",
           grant: null,
           error: null,
+          developmentCode: response.development_code ?? null,
           // `already_sent` means the server replayed an earlier challenge rather than
           // issuing a new one — say so, instead of implying a fresh code just went out.
           message:
@@ -129,16 +136,20 @@ export function useVerification(options: {
           return;
         }
 
-        // `failed` / `expired` / `pending` are business outcomes, not transport errors.
-        setState({
+        // `failed` / `expired` / `pending` are business outcomes, not transport errors. The
+        // functional update keeps the development code on screen across a mistyped attempt.
+        setState((s) => ({
+          ...s,
           phase: response.status === "expired" ? "failed" : "awaiting_code",
           grant: null,
           error: null,
           message:
             response.status === "expired"
               ? "That code expired. Send a new one."
-              : "That code did not match. Check it and try again.",
-        });
+              // After repeated misses the server locks the challenge and answers `failed` either
+              // way, so the message covers both rather than promising another try will work.
+              : "That code did not match. Check it and try again, or start over to send a new code.",
+        }));
       } catch (error) {
         setState((s) => ({ ...s, phase: "awaiting_code", error, message: null }));
       }

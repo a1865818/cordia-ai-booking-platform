@@ -61,8 +61,16 @@ builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedA
 var allowLocalVerificationPepper = builder.Configuration.GetValue(
     "Verification:AllowLocalPepper",
     builder.Environment.IsDevelopment());
+// With no delivery channel for verification codes (spec 08 defers it to spec 10), a developer
+// machine can only complete verification if the API hands the code back. Same default shape.
+var exposeVerificationCode = builder.Configuration.GetValue(
+    "Verification:ExposeCodeForDevelopment",
+    builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Handlers.Verification.VerificationCodeOptions>(o =>
-    o.AllowLocalPepper = allowLocalVerificationPepper);
+{
+    o.AllowLocalPepper = allowLocalVerificationPepper;
+    o.ExposeCodeForDevelopment = exposeVerificationCode;
+});
 // The environment is passed explicitly (never sniffed inside Infrastructure) because the
 // menu-extraction startup gates are environment-dependent: a loopback `LangGraph:Host` and an
 // absent shared secret are correct on a developer machine and refused everywhere else (#94).
@@ -337,6 +345,17 @@ else
     // A silently absent role branch looks exactly like a broken console authorization.
     app.Logger.LogInformation(
         "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
+        app.Environment.EnvironmentName);
+}
+
+// Returning the code to whoever requested the challenge means verification proves nothing. Correct
+// on a developer machine and in the test host; anywhere else it must be findable by grepping startup.
+if (exposeVerificationCode && !app.Environment.IsDevelopment())
+{
+    app.Logger.LogWarning(
+        "Verification codes are RETURNED TO THE CALLER outside Development ({Environment}) because "
+        + "Verification:ExposeCodeForDevelopment was set explicitly. Anyone who can request a challenge "
+        + "can complete it, so step-up verification grants no assurance (Inv-11). Expected only in the test host.",
         app.Environment.EnvironmentName);
 }
 

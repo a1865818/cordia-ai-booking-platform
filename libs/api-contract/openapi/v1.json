@@ -2461,6 +2461,10 @@
       "RequestVerificationResponse": {
         "additionalProperties": false,
         "properties": {
+          "development_code": {
+            "nullable": true,
+            "type": "string"
+          },
           "status": {
             "$ref": "#/components/schemas/RequestVerificationStatusEnum"
           },

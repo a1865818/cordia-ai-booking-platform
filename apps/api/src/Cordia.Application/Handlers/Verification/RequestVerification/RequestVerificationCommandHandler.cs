@@ -40,6 +40,7 @@ public sealed class RequestVerificationCommandHandler(
 
         var now = DateTimeOffset.UtcNow;
         var verificationId = $"ver_{Guid.NewGuid():N}";
+        var code = VerificationCode.Generate();
         var challenge = new VerificationChallenge
         {
             TenantId = command.TenantId,
@@ -49,13 +50,16 @@ public sealed class RequestVerificationCommandHandler(
             TargetBookingId = targetBookingId,
             Action = request.Action,
             Channel = request.Channel,
-            CodeHash = VerificationCode.Hash(codeOptions.Value, verificationId, VerificationCode.DevelopmentCode),
+            CodeHash = VerificationCode.Hash(codeOptions.Value, verificationId, code),
             RequestedAt = now,
             ExpiresAt = now + ChallengeTtl,
         };
 
         if (await challenges.TryAddAsync(challenge, ct))
-            return new RequestVerificationResult(RequestVerificationStatusEnum.Sent, ToResult(challenge));
+            return new RequestVerificationResult(
+                RequestVerificationStatusEnum.Sent,
+                ToResult(challenge),
+                codeOptions.Value.ExposeCodeForDevelopment ? code : null);
 
         var winner = await challenges.GetByIdempotencyKeyAsync(command.TenantId, request.VerificationIdempotencyKey, ct)
             ?? throw new InvalidOperationException($"Verification idempotency key '{request.VerificationIdempotencyKey}' conflicted but winner was not found.");

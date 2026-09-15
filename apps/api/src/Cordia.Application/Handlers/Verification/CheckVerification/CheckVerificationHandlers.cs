@@ -1,4 +1,6 @@
-﻿using System.Text.Json;
+﻿using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Cordia.Application.Handlers.Verification;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
@@ -20,6 +22,11 @@ public sealed class CheckVerificationQueryHandler(IVerificationChallengeReposito
 
         if (challenge.VerifiedAt is not null && challenge.GrantId is not null)
             return new CheckVerificationResult(CheckVerificationStatusEnum.Granted, ToGrantView(challenge));
+
+        // A locked challenge will never grant, so reporting it as pending would keep a poller
+        // waiting on something that cannot happen.
+        if (challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts)
+            return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
 
         return DateTimeOffset.UtcNow >= challenge.ExpiresAt
             ? new CheckVerificationResult(CheckVerificationStatusEnum.Expired, null)
@@ -64,11 +71,21 @@ public sealed class VerifyCodeCommandHandler(
         if (challenge.VerifiedAt is not null && challenge.GrantId is not null)
             return new CheckVerificationResult(CheckVerificationStatusEnum.Granted, CheckVerificationQueryHandler.ToGrantView(challenge));
 
-        if (!string.Equals(
-                challenge.CodeHash,
-                VerificationCode.Hash(codeOptions.Value, challenge.VerificationId, request.Code),
-                StringComparison.Ordinal))
+        // #71: a challenge that has taken MaxFailedAttempts wrong codes is locked — the right code
+        // no longer verifies it either, or the limit would only slow a guesser down.
+        if (challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts)
+            return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
+
+        // Compared as fixed-length hex digests in constant time, so response timing says nothing
+        // about how much of a guess was right.
+        var submittedHash = VerificationCode.Hash(codeOptions.Value, challenge.VerificationId, request.Code);
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(challenge.CodeHash),
+                Encoding.ASCII.GetBytes(submittedHash)))
         {
+            // Atomic and bounded in SQL, so parallel guesses cannot each read "4 of 5" and all try.
+            await challenges.RecordFailedAttemptAsync(
+                request.TenantId, request.VerificationId, VerificationCode.MaxFailedAttempts, ct);
             return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
         }
 
@@ -83,6 +100,7 @@ public sealed class VerifyCodeCommandHandler(
                 grantId,
                 now,
                 grantExpiresAt,
+                VerificationCode.MaxFailedAttempts,
                 tx);
             if (marked == 0)
                 return;

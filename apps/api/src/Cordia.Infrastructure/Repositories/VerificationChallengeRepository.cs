@@ -51,17 +51,34 @@ public class VerificationChallengeRepository(ApplicationDbContext db) : IVerific
         string grantId,
         DateTimeOffset verifiedAt,
         DateTimeOffset grantExpiresAt,
+        int maxFailedAttempts,
         CancellationToken ct = default)
         => db.VerificationChallenges
             .IgnoreQueryFilters()
             .Where(c => c.TenantId == tenantId
                         && c.VerificationId == verificationId
                         && c.VerifiedAt == null
-                        && verifiedAt < c.ExpiresAt)
+                        && verifiedAt < c.ExpiresAt
+                        // Re-asserted here, not only read before: a guess that locks the
+                        // challenge concurrently must win over a right code still in flight.
+                        && c.FailedAttempts < maxFailedAttempts)
             .ExecuteUpdateAsync(
                 s => s
                     .SetProperty(c => c.VerifiedAt, verifiedAt)
                     .SetProperty(c => c.GrantId, grantId)
                     .SetProperty(c => c.ExpiresAt, grantExpiresAt),
                 ct);
+
+    public Task<int> RecordFailedAttemptAsync(
+        string tenantId,
+        string verificationId,
+        int maxFailedAttempts,
+        CancellationToken ct = default)
+        => db.VerificationChallenges
+            .IgnoreQueryFilters()
+            .Where(c => c.TenantId == tenantId
+                        && c.VerificationId == verificationId
+                        && c.VerifiedAt == null
+                        && c.FailedAttempts < maxFailedAttempts)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.FailedAttempts, c => c.FailedAttempts + 1), ct);
 }

@@ -100,3 +100,31 @@ describe("the verification idempotency key", () => {
     expect(result.current.message).toContain("already sent");
   });
 });
+
+describe("the development code (#71)", () => {
+  beforeEach(() => requestVerification.mockReset());
+
+  it("is surfaced when the API returns one", async () => {
+    requestVerification.mockResolvedValue({ ...sent("sent"), development_code: "482913" });
+    const { result } = renderHook(() => useVerification({ action: "cancel" }));
+
+    await act(async () => {
+      await result.current.start("sms");
+    });
+
+    expect(result.current.phase).toBe("awaiting_code");
+    expect(result.current.developmentCode).toBe("482913");
+  });
+
+  it("is absent when the API does not return one, as in every deployment", async () => {
+    requestVerification.mockResolvedValue(sent("sent"));
+    const { result } = renderHook(() => useVerification({ action: "cancel" }));
+
+    await act(async () => {
+      await result.current.start("sms");
+    });
+
+    expect(result.current.phase).toBe("awaiting_code");
+    expect(result.current.developmentCode ?? null).toBeNull();
+  });
+});

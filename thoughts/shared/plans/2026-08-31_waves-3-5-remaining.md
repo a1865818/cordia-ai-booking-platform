@@ -258,3 +258,21 @@ drop one).
 - The first probe checked the lease at publish *start*, which cannot fail — the current-row renewal
   happens a line earlier. The probe now runs at the end of each simulated publish across every
   unpublished row, and only then did removing waiting-row renewal go red.
+
+### Phase 9
+- The fixed code had exactly three consumers: its definition, the request handler, and one
+  integration test. Nothing in `apps/web`, `apps/langgraph`, docs or scripts depended on it; the
+  agent's `verify_identity` node only polls for a grant and never submits a code.
+- The "Development/Test-only retrieval path" is a `development_code` field on the hand-written
+  `RequestVerificationResponse` wrapper (omitted when null), behind `Verification:ExposeCodeForDevelopment`
+  defaulted like the other gates. The generated Pydantic `VerificationSentResult` is untouched, so
+  no cross-language regen. `v1.json` gained four lines — a second legitimate contract change, forced
+  by the absence of any delivery channel. The console's `VerificationGate` shows it when present.
+- Lockout returns the existing `failed` status: no enum label added (spec 08 / Pydantic own it).
+  `RecordFailedAttemptAsync` is bounded in SQL (`failed_attempts < max`) and `MarkVerifiedAsync`
+  re-asserts the same bound, so parallel guesses cannot overshoot and a lock beats an in-flight
+  right code. The digest comparison became `CryptographicOperations.FixedTimeEquals`.
+- Migration `VerificationAttemptLockout`: one additive `failed_attempts integer not null default 0`.
+  EF wrote the snapshot with CRLF on Windows; normalised to LF so the diff is the three real lines.
+- The old test's "bad" code `111111` would collide with a random code one run in a million; the
+  rewrite derives a code guaranteed to differ.

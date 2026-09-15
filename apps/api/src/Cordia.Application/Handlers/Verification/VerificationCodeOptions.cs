@@ -29,6 +29,19 @@ public sealed class VerificationCodeOptions
     /// </summary>
     public bool AllowLocalPepper { get; set; }
 
+    /// <summary>
+    /// Whether the freshly generated code is returned to the caller of <c>POST /api/verifications</c>
+    /// (#71). ON in Development, OFF elsewhere unless <c>Verification:ExposeCodeForDevelopment</c> is
+    /// set explicitly.
+    ///
+    /// <para>There is no delivery channel yet — spec 08 defers OTP delivery to spec 10, whose
+    /// adapters are stubs — so a random code nobody can read would make verification impossible on
+    /// a developer machine. Where this is on, anyone who can request a challenge can read its code,
+    /// which is to say verification proves nothing; <c>Program.cs</c> warns when it is on outside
+    /// Development.</para>
+    /// </summary>
+    public bool ExposeCodeForDevelopment { get; set; }
+
     /// <summary>True when hashing can proceed: a pepper is configured, or the local one is allowed.</summary>
     public bool IsUsable => !string.IsNullOrWhiteSpace(CodePepper) || AllowLocalPepper;
 }
