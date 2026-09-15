@@ -203,3 +203,11 @@ drop one).
   the verification middleware.
 - The replay collision is covered by a unit test on `PostgresMessageTransport`, because
   `ReplayDeadLetterTests` substitutes the transport.
+
+### Phase 4
+- An open circuit is modelled as a synthetic `Transient` result, so it flows through the existing
+  unresolved branches with no new path. That is better than the plan's "route to Wait": budget
+  exhaustion still escalates, so a long outage reaches a human instead of parking forever.
+- Lookups trip their own key, `(provider, "default:lookup")`. The ladder only continues past
+  `NotFound`, so the final result decides health: `Created`/`AlreadyExists`/`NotFound` record a
+  success, anything else a failure.
