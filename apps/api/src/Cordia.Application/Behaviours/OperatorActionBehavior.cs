@@ -2,6 +2,7 @@
 using Cordia.Application.Common.Authorization;
 using Cordia.Domain.Exceptions;
 using Cordia.Domain.Interfaces;
+using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -117,7 +118,7 @@ public sealed class OperatorActionBehavior<TRequest, TResponse>(
         // Safe for background work: no IOperatorActionRequest is also an IInboxConsumerRequest,
         // so an operator action never arrives from a queue with no request actor to prove.
         // ─────────────────────────────────────────────────────────────
-        if (string.IsNullOrEmpty(actorContext.ActorId) && !assertedActor.Value.AllowAssertedStaffRole)
+        if (!OperatorGuard.IsTrusted(actorContext, assertedActor.Value.AllowAssertedStaffRole))
         {
             using var scope = scopeFactory.CreateScope();
             var denyAudit = scope.ServiceProvider.GetRequiredService<IAuditWriter>();

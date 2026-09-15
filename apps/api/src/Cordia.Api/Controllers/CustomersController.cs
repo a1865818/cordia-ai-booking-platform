@@ -113,8 +113,9 @@ public class CustomersController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
-        OperatorGuard.RequireOperator(
-            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
+        // No OperatorGuard here: this is an IOperatorActionRequest, and OperatorActionBehavior makes
+        // the same proven-identity decision AND writes the DENY audit (spec 14 §24.5). A controller
+        // guard would refuse first and leave no audit row.
         var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var customer = await mediator.Send(

@@ -5,6 +5,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using Cordia.Tests.IntegrationTests.Acceptance;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Security;
 
@@ -26,7 +27,7 @@ namespace Cordia.Tests.IntegrationTests.Security;
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("AcceptanceApi")]
-public class OperatorReadGuardTests
+public class OperatorReadGuardTests(AcceptanceApiFixture fixture)
 {
     /// <summary>A host configured the way a deployment is: asserted identities authorize nothing.</summary>
     private static Task<IAlbaHost> ProductionLikeHostAsync()
@@ -52,6 +53,11 @@ public class OperatorReadGuardTests
     [InlineData("/api/reporting/kpis")]
     [InlineData("/api/Bookings/bk-any/notifications")]
     [InlineData("/api/booking-operations/op-any/notifications")]
+    [InlineData("/api/Bookings/schedule?from=2031-01-01T00:00:00Z&to=2031-01-08T00:00:00Z")]
+    [InlineData("/api/booking-operations")]
+    [InlineData("/api/booking-operations/work-items")]
+    [InlineData("/api/conversation-sessions")]
+    [InlineData("/api/waitlist/enrollments")]
     public async Task ReadsAreRefused_WithoutAVerifiedOperatorSession(string url)
     {
         await using var host = await ProductionLikeHostAsync();
@@ -92,6 +98,35 @@ public class OperatorReadGuardTests
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.StatusCodeShouldBeOk();
         });
+    }
+
+    /// <summary>
+    /// Mutations are NOT refused by the controller guard. They are operator actions, and
+    /// <c>OperatorActionBehavior</c> refuses them itself — writing the DENY audit row the spec-14
+    /// §24.5 trail requires. A controller guard in front of it refused first and left no record.
+    /// </summary>
+    [Fact]
+    public async Task AnUnprovenRefund_IsRefused_AndTheRefusalIsAudited()
+    {
+        await using var host = await ProductionLikeHostAsync();
+        var tenantId = $"t-opguard-refund-{Guid.NewGuid():N}";
+
+        await host.Scenario(x =>
+        {
+            x.Post.Url($"/api/deposits/dep-{Guid.NewGuid():N}/refund");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.WithRequestHeader("X-Actor", "someone");
+            x.WithRequestHeader("X-Actor-Role", "owner");
+            x.WithRequestHeader("X-Reason-Code", "customer_request");
+            x.StatusCodeShouldBe(HttpStatusCode.Forbidden);
+        });
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        var denials = await ctx.AuditEvents.AsNoTracking().IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenantId)
+            .Select(a => a.Metadata)
+            .ToListAsync();
+        Assert.Contains(denials, m => m != null && m.Contains("identity_unverified"));
     }
 
     // ── The guard itself ───────────────────────────────────────────────────────────────────

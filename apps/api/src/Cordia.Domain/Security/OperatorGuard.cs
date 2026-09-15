@@ -34,6 +34,15 @@ namespace Cordia.Domain.Security;
 public static class OperatorGuard
 {
     /// <summary>
+    /// The single definition of "this caller's identity may be acted on": a PROVEN session
+    /// (<see cref="IActorContext.ActorId"/> is bound only from a verified, non-revoked operator
+    /// session), or asserted identities explicitly permitted. Shared with
+    /// <c>OperatorActionBehavior</c> so reads and mutations can never disagree about it.
+    /// </summary>
+    public static bool IsTrusted(IActorContext actor, bool allowAsserted)
+        => !string.IsNullOrEmpty(actor.ActorId) || allowAsserted;
+
+    /// <summary>
     /// Throws <see cref="AuthorizationFailedException"/> unless the caller holds a verified
     /// operator session, or asserted identities are explicitly permitted.
     /// </summary>
@@ -44,7 +53,7 @@ public static class OperatorGuard
     /// <param name="action">Audit/action name used in the refusal message.</param>
     public static void RequireOperator(IActorContext actor, bool allowAsserted, string action)
     {
-        if (!string.IsNullOrEmpty(actor.ActorId) || allowAsserted)
+        if (IsTrusted(actor, allowAsserted))
             return;
 
         throw new AuthorizationFailedException(

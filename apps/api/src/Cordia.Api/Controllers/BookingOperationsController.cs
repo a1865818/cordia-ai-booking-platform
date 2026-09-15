@@ -60,6 +60,7 @@ public class BookingOperationsController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "operation.list_read");
 
         var requested = (status ?? [])
             .SelectMany(s => s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -126,6 +127,7 @@ public class BookingOperationsController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "operation.work_items_read");
 
         var items = await mediator.Send(
             new ListOpenWorkItemsQuery(tenant.TenantId, limit ?? DefaultListLimit), ct);

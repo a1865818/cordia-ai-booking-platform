@@ -71,6 +71,7 @@ public class BookingsController(
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "booking.schedule_read");
 
         var resolvedFrom = from ?? new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
         var resolvedTo = to ?? resolvedFrom.AddDays(7);

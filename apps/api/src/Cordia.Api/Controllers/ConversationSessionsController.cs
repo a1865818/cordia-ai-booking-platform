@@ -10,6 +10,7 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Api.Controllers;
 
@@ -22,7 +23,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/conversation-sessions")]
-public class ConversationSessionsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class ConversationSessionsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 50;
@@ -42,6 +47,7 @@ public class ConversationSessionsController(IMediator mediator, ITenantContext t
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "conversation.list_read");
 
         var sessions = await mediator.Send(
             new ListConversationSessionsQuery(tenant.TenantId, limit ?? DefaultListLimit),

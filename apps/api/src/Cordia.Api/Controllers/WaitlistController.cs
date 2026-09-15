@@ -11,6 +11,7 @@ using Cordia.Domain.Security;
 using Cordia.Domain.Waitlist;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Api.Controllers;
 
@@ -32,7 +33,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/waitlist")]
-public class WaitlistController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class WaitlistController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
@@ -76,6 +81,7 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "waitlist.enrollments_read");
 
         var enrollments = await mediator.Send(
             new ListWaitlistEnrollmentsQuery(tenant.TenantId, activeOnly ?? true, limit ?? DefaultListLimit),
