@@ -152,7 +152,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 07 T4 — primitive resolver + stub external adapter (spec 07 §13 open decision:
         // no real provider configured yet; resolver defaults every triple to FirstParty).
-        services.AddSingleton<ICapacityPrimitiveResolver, CapacityPrimitiveResolver>();
+        // Scoped, not singleton: it now reads tenant_capacity_primitives through the scoped DbContext (#106).
+        services.AddScoped<ITenantCapacityPrimitiveRepository, TenantCapacityPrimitiveRepository>();
+        services.AddScoped<ICapacityPrimitiveResolver, CapacityPrimitiveResolver>();
         services.AddSingleton<IExternalInventoryAdapter, StubExternalInventoryAdapter>();
 
         // Spec 07 T5 — capacity options bound from "Capacity" config section.

@@ -97,6 +97,8 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<TenantDepositPolicy> TenantDepositPolicies => Set<TenantDepositPolicy>();
 
+    public DbSet<TenantCapacityPrimitive> TenantCapacityPrimitives => Set<TenantCapacityPrimitive>();
+
     public DbSet<AgentGuardrails> AgentGuardrails => Set<AgentGuardrails>();
 
     public DbSet<AgentKnowledgeEntry> AgentKnowledgeEntries => Set<AgentKnowledgeEntry>();

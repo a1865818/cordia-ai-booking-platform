@@ -276,3 +276,17 @@ drop one).
   EF wrote the snapshot with CRLF on Windows; normalised to LF so the diff is the three real lines.
 - The old test's "bad" code `111111` would collide with a random code one run in a million; the
   rewrite derives a code guaranteed to differ.
+
+### Phase 10
+- `Resolve` was synchronous, so a table lookup changed the port to `ResolveAsync`; one production
+  caller (`CheckCandidateAvailabilityCommandHandler`) and one mock needed updating.
+- The rung is stored as **text with a check constraint**, not a pg-enum — spec 12 forbids inventing
+  enum labels, and a `CapacityPrimitive` enum has no spec-12 owner.
+- **The only production caller resolves for the first-party provider**, and first-party inventory
+  *is* the conditional `capacity_slots` update — it has no other rung. A row saying otherwise would
+  make a first-party hold report `confirmed` (Inv-16). So the resolver pins `first_party` to the
+  first-party rung without consulting the table, and a second check constraint refuses such a row.
+  The table therefore changes behaviour only once an external provider is wired; that is the
+  honest extent of #106 today, and the spec-07 §14 bullet now says so.
+- No write API: choosing a rung is a statement about what a provider integration can do, made at
+  onboarding, not an operator setting.

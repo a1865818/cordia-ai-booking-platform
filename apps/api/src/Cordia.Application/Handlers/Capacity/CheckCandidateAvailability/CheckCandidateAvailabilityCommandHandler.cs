@@ -37,9 +37,6 @@ public sealed class CheckCandidateAvailabilityCommandHandler(
     /// fulfillment engine's "create" hold for the same operation (spec 07 §4.4).</summary>
     internal const string AvailabilityWorkflowStep = "availability_hold";
 
-    /// <summary>Provider ladder key for first-party inventory (spec 07 §6.3).</summary>
-    private const string FirstPartyProvider = "first_party";
-
     /// <summary>Duration reported when the draft does not carry one.</summary>
     internal const int DefaultDurationMinutes = 60;
 
@@ -121,14 +118,15 @@ public sealed class CheckCandidateAvailabilityCommandHandler(
                     slotId,
                     partySize,
                     DateTimeOffset.UtcNow + ttl,
-                    FirstPartyProvider),
+                    CapacityProviders.FirstParty),
                 ct2),
             ct);
 
         switch (outcome.Status)
         {
             case ReservationStatus.Held:
-                var mode = primitives.ModeFor(primitives.Resolve(command.TenantId, FirstPartyProvider, slotId));
+                var mode = primitives.ModeFor(
+                    await primitives.ResolveAsync(command.TenantId, CapacityProviders.FirstParty, slotId, ct));
                 return Result(
                     CheckCandidateAvailabilityStatusEnum.Held,
                     mode,

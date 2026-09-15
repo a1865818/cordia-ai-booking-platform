@@ -6,24 +6,30 @@ namespace Cordia.Infrastructure.Services;
 
 /// <summary>
 /// Default implementation of <see cref="ICapacityPrimitiveResolver"/> (spec 07 §3, §6.3).
-/// <para>
-/// Open-decision §13 default: every (tenant, provider, slot-source) triple resolves to
-/// <see cref="CapacityPrimitive.FirstParty"/>. No real external provider is configured yet.
-/// When a per-(tenant, provider) lookup table is introduced (future ticket), replace the
-/// body of <see cref="Resolve"/> with a DB/config lookup and fall through to FirstParty when
-/// no match is found.
-/// </para>
+///
+/// <para>Reads the rung from <c>tenant_capacity_primitives</c> (#106). It used to ignore all three
+/// parameters and return <see cref="CapacityPrimitive.FirstParty"/>, so onboarding a provider with
+/// native holds or atomic booking meant a code change.</para>
+///
+/// <para><b>Fallbacks, both to first-party.</b> No configured row is the spec 07 §13 default. And
+/// the first-party provider is first-party by definition — its inventory is the conditional
+/// <c>capacity_slots</c> update — so a row for it is ignored rather than trusted; the schema refuses
+/// one too. <c>slotSource</c> is accepted for a future per-source override and not yet used.</para>
 /// </summary>
-public sealed class CapacityPrimitiveResolver : ICapacityPrimitiveResolver
+public sealed class CapacityPrimitiveResolver(ITenantCapacityPrimitiveRepository configured) : ICapacityPrimitiveResolver
 {
     /// <inheritdoc/>
-    /// <remarks>
-    /// Always returns <see cref="CapacityPrimitive.FirstParty"/> (spec 07 §13 open decision #1 and #2:
-    /// first-party capacity_slots is the authority; no real external provider configured).
-    /// The parameters are accepted for the future per-(tenant, provider) routing table.
-    /// </remarks>
-    public CapacityPrimitive Resolve(string tenantId, string providerName, string? slotSource)
-        => CapacityPrimitive.FirstParty;
+    public async Task<CapacityPrimitive> ResolveAsync(
+        string tenantId,
+        string providerName,
+        string? slotSource,
+        CancellationToken ct = default)
+    {
+        if (string.Equals(providerName, CapacityProviders.FirstParty, StringComparison.Ordinal))
+            return CapacityPrimitive.FirstParty;
+
+        return await configured.GetAsync(tenantId, providerName, ct) ?? CapacityPrimitive.FirstParty;
+    }
 
     /// <inheritdoc/>
     /// <remarks>
