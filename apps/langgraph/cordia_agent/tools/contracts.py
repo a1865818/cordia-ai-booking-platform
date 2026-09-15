@@ -64,6 +64,22 @@ class ToolResultEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class HoursDay(BaseModel):
+    """One weekday of the venue's opening hours (spec 03 §4.3).
+
+    Mirrors the ``hours_json`` row the operator console already writes, field for
+    field, so the console and the agent read the same seven objects rather than
+    two shapes of the same fact.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    d: str = Field(description="Weekday name, Monday first, e.g. 'Tuesday'.")
+    open: str = Field(description="Local opening time as 'HH:MM'.")
+    close: str = Field(description="Local closing time as 'HH:MM'.")
+    on: bool = Field(description="False when the venue is shut that day.")
+
+
 class TenantContextView(BaseModel):
     """Output payload for get_tenant_context (spec 03 §4.3)."""
 
@@ -81,6 +97,14 @@ class TenantContextView(BaseModel):
         description="Feature-flag capability names active for this tenant."
     )
     currency: str = Field(description="ISO 4217 currency code, e.g. 'AUD'.")
+    # "What time do you close tonight?" is one of the two questions every venue is
+    # rung about, and the agent had no way to answer it: the hours lived in the
+    # tenant profile and nothing carried them across this boundary, so the caller
+    # got a generic redirect to a human for a fact printed on the front door.
+    hours: list[HoursDay] | None = Field(
+        default=None,
+        description="Seven-day opening hours in the venue's zone, or None when unknown.",
+    )
 
 
 class CustomerContextView(BaseModel):
@@ -124,7 +148,20 @@ class CatalogItem(BaseModel):
         description="Price in the currency's minor unit (e.g. cents for AUD)."
     )
     currency: str = Field(description="ISO 4217 currency code for price_minor.")
-    catalog_version: str = Field(description="Catalog version this item was read from.")
+    # Spec 03 §4.3 lists catalog_version on every search hit, but the .NET search
+    # projection (CatalogController.Search) does not emit it — and with extra="forbid"
+    # a REQUIRED field the API never sends makes every real response a validation
+    # error.  Nothing caught that because nothing had ever parsed a live catalog
+    # response.  Optional here so the agent matches what the API actually returns;
+    # reconciling the two is an API-side decision, not a parser workaround.
+    catalog_version: str | None = Field(
+        default=None, description="Catalog version this item was read from, when sent."
+    )
+    # Emitted by the search AND detail endpoints; absent from the §4.3 shape. It is
+    # how the agent answers "anything vegetarian?" without reading the whole menu.
+    category: str | None = Field(
+        default=None, description="Catalog category, e.g. 'entree' | 'main'."
+    )
     duration_minutes: int | None = Field(
         default=None, description="Optional service duration in minutes."
     )

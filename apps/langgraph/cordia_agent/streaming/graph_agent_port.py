@@ -108,6 +108,14 @@ class AgentSessionContext:
         correlation_id: Correlation id begun at ingress (§25.1).
         channel: Origin channel for ``SourceInfo``.
         language: BCP-47 language tag for ``SourceInfo``.
+        caller_phone_e164: The caller's own number (ANI on a phone call), when
+            the channel knows it.  A booking made by voice used to end up with
+            no guest attached and no notification destination, because no
+            channel driver ever passed ``customer`` in the graph input, so
+            ``AgentInputState.customer`` was always None.  This is the missing
+            hint.  It is a CONTACT hint only: the number is caller-mutable, so
+            it must never influence which tenant is resolved (Inv-13), which
+            stays the job of the signed context above.
         recursion_limit: LangGraph recursion budget per turn.
     """
 
@@ -115,6 +123,7 @@ class AgentSessionContext:
     session_id: str
     tenant_id: str
     correlation_id: str
+    caller_phone_e164: str | None = None
     channel: str = "voice"
     language: str = "en-AU"
     recursion_limit: int = 50
@@ -299,7 +308,7 @@ class GraphAgentPort:
     def _graph_input(self, frame: TranscriptFinalFrame) -> dict[str, Any]:
         """Map a committed transcript onto ``AgentInputState``."""
         session = self._session
-        return {
+        payload: dict[str, Any] = {
             "signed_tenant_context": session.signed_tenant_context,
             "session_id": session.session_id,
             "source": {"channel": session.channel, "language": session.language},
@@ -307,6 +316,15 @@ class GraphAgentPort:
             "transcript_is_final": True,
             "current_turn_id": frame.turn_id,
         }
+        # The caller's number rides in as a CustomerRef so identify_intent can
+        # copy it onto the draft: without it a voice booking was created with no
+        # guest attached, so a phone lookup answered "none" and there was no
+        # destination to notify.  Omitted entirely when the channel has no ANI
+        # (a browser demo, say), because an explicit customer of all-None hints
+        # is no better than no customer at all.
+        if session.caller_phone_e164:
+            payload["customer"] = {"phone_e164": session.caller_phone_e164}
+        return payload
 
     # -- frame builders -------------------------------------------------------
 

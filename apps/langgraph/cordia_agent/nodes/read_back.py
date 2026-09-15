@@ -107,7 +107,7 @@ async def read_back(state: AgentState) -> dict:
             revision_changed = True
 
     # ------------------------------------------------------------------ render
-    result = render_read_back(draft, mode)
+    result = render_read_back(draft, mode, state.tenant_timezone)
 
     # §5.5/§14: the read-back IS a disclosure — it presents the booking's
     # material terms, and when availability is only informational it also
@@ -131,8 +131,25 @@ async def read_back(state: AgentState) -> dict:
         else state.current_turn_id
     )
 
+    # Say it ONLY when it is new to the customer.
+    #
+    # read_back re-renders on every turn that reaches it, including the turn the
+    # customer confirms on — so an unchanged read-back was spoken a second time,
+    # immediately before the acknowledgement: "...shall I book it in for you?
+    # Got it, that's gone through."  Nobody reads the whole booking back and then
+    # says "got it" to themselves.
+    #
+    # ``read_back_version`` is exactly the right test: it is a hash over the
+    # material terms plus the spoken labels, so it changes iff the customer has
+    # something new to hear.  Suppressed only in the state UPDATE, which is what
+    # agent_reply reads — the previous turn's text stays on the accumulated
+    # state, so drivers that report final state are unaffected.
+    already_heard = (
+        state.read_back_version == result.read_back_version
+        and state.read_back_first_presented_turn_id is not None
+    )
+
     update: dict = {
-        "read_back_text": result.text,
         "read_back_version": result.read_back_version,
         "read_back_first_presented_turn_id": first_presented_turn_id,
         "current_revision": current_rev.model_dump(mode="json"),
@@ -142,6 +159,9 @@ async def read_back(state: AgentState) -> dict:
             state.disclosures_presented, *presented
         ),
     }
+
+    if not already_heard:
+        update["read_back_text"] = result.text
 
     # Persist the projection, so every later node reads the same request this revision was hashed
     # from rather than re-deriving it (or not deriving it at all).

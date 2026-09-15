@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, Field, PositiveInt, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, PositiveInt
 
 from cordia_agent.contracts.preorder import PreorderDraft, PreorderReference
 from cordia_agent.tools.status_codes import AvailabilityMode
@@ -167,8 +167,26 @@ class BookingRequest(BaseModel):
         default=None, description="Optimistic-concurrency version of the target."
     )
 
-    @model_validator(mode="after")
-    def _require_target_for_mutations(self) -> BookingRequest:  # DQ4=B
+    def require_target_for_mutations(self) -> None:  # DQ4=B
+        """Raise when a modify/cancel/reschedule payload carries no target booking.
+
+        This used to be an ``@model_validator(mode="after")``, and that is what
+        made "I need to cancel my booking" a dead end.  A caller states the
+        operation BEFORE they state which booking, so the first draft of a
+        mutation legitimately has no target yet; with the rule on construction,
+        ``identify_intent`` could not build the draft at all, ``capture_fields``
+        had nothing to capture into, ``clarify`` had nothing to ask about, and
+        the caller heard the "sorry, I did not catch that" fallback forever.
+
+        The target is still mandatory — but at SUBMISSION, where it is actually
+        needed, not at construction, where it cannot possibly be known yet.
+        ``submit_intent`` calls this on the canonical payload before anything is
+        sent, so no mutation can reach the platform without a target.
+
+        Raises:
+            ValueError: when the operation is a mutation and ``target_booking_id``
+                is not a string.
+        """
         mutations = {
             OperationType.modify,
             OperationType.cancel,
@@ -178,7 +196,6 @@ class BookingRequest(BaseModel):
             raise ValueError(
                 f"target_booking_id is required for {self.operation.value}"
             )
-        return self
 
 
 class FieldProvenance(BaseModel):
@@ -250,6 +267,16 @@ class BookingDraft(BaseModel):
         default=None, description="Customer reference, if known."
     )
     request: BookingRequest = Field(description="The booking request.")
+    # Display names for the identifier fields the slot resolver resolved, keyed by the field name
+    # on ``request`` (e.g. ``{"location_id": "Fitzroy dining room"}``).  The resolver trades a
+    # spoken name for an identifier the tenant declared, and until this existed it threw the name
+    # away — so read-back had nothing to say but ``Location: fitzroy``, which is what a caller
+    # actually heard.  Foreground-only: the identifier is the material term, the name is how it is
+    # said out loud, and only the identifier is submitted.
+    resolved_names: dict[str, str] = Field(
+        default_factory=dict,
+        description="Human names for resolved id fields; stripped on submit.",
+    )
     # Pre-order (spec 11 §4.3): the MUTABLE in-dialog draft the agent assembles from the published
     # catalog. Frozen into request.preorder (immutable PreorderReference) at confirmation via
     # PreorderDraft.to_reference(...). Foreground state only — stripped from the canonical projection
@@ -267,12 +294,15 @@ class BookingDraft(BaseModel):
     def to_canonical(self) -> CanonicalBookingDraft:  # DQ2=B
         """Project to the canonical payload, dropping internal-only fields.
 
-        Strips ``field_provenance`` and the foreground-only ``preorder_draft`` (the immutable
-        ``request.preorder`` reference is what is canonical); the TriState distinction is already
-        inline on each request field (DQ1=A), so absent/unknown/declined survive.
+        Strips ``field_provenance``, ``resolved_names`` and the foreground-only ``preorder_draft``
+        (the immutable ``request.preorder`` reference is what is canonical); the TriState
+        distinction is already inline on each request field (DQ1=A), so absent/unknown/declined
+        survive.
         """
         return CanonicalBookingDraft.model_validate(
-            self.model_dump(exclude={"field_provenance", "preorder_draft"})
+            self.model_dump(
+                exclude={"field_provenance", "preorder_draft", "resolved_names"}
+            )
         )
 
 
@@ -432,6 +462,43 @@ class AgentState(BaseModel):
             "keyed by BookingRequest field name (§8.5)."
         ),
     )
+    # What answer_inquiry told the caller.  Kept on its own channel rather than
+    # reusing pending_clarify_prompt: clarify's prompt drives the escalation
+    # ladder and the attempt counters, and an informational answer is neither a
+    # clarification nor an attempt at one.
+    # The venue's opening hours, from get_tenant_context: seven day objects of
+    # {"d","open","close","on"}.  Lets answer_inquiry say when the venue closes
+    # and lets clarify say "we're not open then" instead of asking for a room.
+    tenant_hours: list[dict] | None = Field(
+        default=None,
+        description="Venue opening hours by weekday, or None when unknown.",
+    )
+    # The venue's own reason for refusing the current draft: too many people,
+    # we're shut then, nothing served then.  Written by capture_fields every turn
+    # (None when the draft is fine) so a refusal never outlives the turn that
+    # earned it.  clarify speaks it instead of asking the next form field.
+    policy_block_message: str | None = Field(
+        default=None,
+        description="Customer-facing reason the venue cannot take this draft.",
+    )
+    # The venue's wall clock, from get_tenant_context.  A booking agent that does
+    # not know this cannot mean anything by "seven pm": the extractor reports the
+    # spoken wall clock, and something has to say which zone it was spoken in.
+    tenant_timezone: str | None = Field(
+        default=None,
+        description="IANA timezone the venue runs on, e.g. 'Australia/Melbourne'.",
+    )
+    # True when THIS turn's transcript moved the draft on.  Reset per turn by
+    # capture_fields; read by clarify to decide whether the customer failed to
+    # answer or simply answered something else.
+    draft_advanced: bool = Field(
+        default=False,
+        description="Whether this turn's capture changed the booking request.",
+    )
+    pending_inquiry_answer: str | None = Field(
+        default=None,
+        description="Customer-facing answer to an informational question.",
+    )
     pending_clarify_action: str | None = Field(
         default=None,
         description=(
@@ -549,6 +616,29 @@ class AgentState(BaseModel):
     # Stored as plain types (str/dict) to avoid circular imports.
     verification_id: str | None = None
     verification_outcome: str | None = None
+    # What verify_identity says to the caller: the "I have sent you a code" line
+    # and the re-ask after a wrong one.  verify_identity had no customer-facing
+    # channel at all, so a turn that requested a code produced no reply and the
+    # caller heard the generic fallback (or dead air) while waiting for an SMS
+    # nobody had told them about.  agent_reply.REPLY_TEXT_KEYS maps this key.
+    pending_verification_prompt: str | None = Field(
+        default=None,
+        description="Internal: what verify_identity says to the caller this turn (§8.6).",
+    )
+    # How many codes the caller has got wrong.  Bounded: a caller who cannot
+    # read the code back belongs with a human, and an unbounded re-ask is a
+    # loop dressed up as patience (§8.6 / Inv-11).
+    verification_attempts: int = Field(
+        default=0,
+        description="Internal: wrong/absent verification codes submitted so far.",
+    )
+    # Whether the caller's own number has already been used to look their
+    # booking up.  The lookup is a read, but it is a read per turn if nothing
+    # records that it happened and it found nothing.
+    target_lookup_attempted: bool = Field(
+        default=False,
+        description="Internal: whether caller-ID booking discovery has already run.",
+    )
     handoff_reason_code: str | None = None
     handoff_package: dict | None = None
     handoff_result: dict | None = None

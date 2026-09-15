@@ -11,6 +11,7 @@ directions, and no orphaned tasks.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any
@@ -66,6 +67,30 @@ def delta(text: str) -> dict[str, Any]:
 def utterance(transcript: str) -> list[dict[str, Any]]:
     """The full verified frame sequence for one spoken utterance."""
     return [SPEECH_STARTED, SPEECH_STOPPED, completed(transcript)]
+
+
+@dataclasses.dataclass(slots=True)
+class Quiet:
+    """A scripted gap in which the service sends nothing at all."""
+
+    seconds: float
+
+
+class PausingRealtimeSocket(FakeRealtimeSocket):
+    """A fake socket whose script may contain :class:`Quiet` gaps.
+
+    The shared fake hands its frames out as fast as they are asked for, which
+    cannot express "the caller said nothing for a while and then spoke".  The
+    provider's deadlines are about exactly that, so the tests for them need a
+    service that can be quiet without being dead.
+    """
+
+    async def recv(self) -> str:
+        """Honour any leading scripted gap, then behave like the shared fake."""
+        while self._queue and isinstance(self._queue[0], Quiet):
+            gap: Quiet = self._queue.pop(0)  # type: ignore[assignment]
+            await asyncio.sleep(gap.seconds)
+        return await super().recv()
 
 
 async def parked_source() -> Any:
@@ -547,23 +572,114 @@ async def test_the_drain_window_bounds_a_transcription_that_never_arrives(
     assert elapsed >= realtime_settings.base_timeout_seconds
 
 
+async def never_ending() -> Any:
+    """A live line that keeps sending audio and never ends.
+
+    Neither the audio running out nor the socket closing can end a stream over
+    this source, so whichever deadline the provider picks is the only thing
+    that can.
+    """
+    while True:
+        yield speech(1)
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.unit
-async def test_a_silent_service_while_audio_flows_raises_timeout_error(
+async def test_a_runaway_utterance_is_bounded_by_max_utterance_seconds(
     realtime_settings: AzureAudioSettings,
 ) -> None:
+    # Speech onset with no completion ever: the caller started talking and the
+    # service never endpointed, which is exactly what max_utterance_seconds is
+    # named for.
     settings = dataclasses.replace(realtime_settings, max_utterance_seconds=0.05)
-    socket = FakeRealtimeSocket(when_drained="hang")
-
-    async def never_ending() -> Any:
-        while True:
-            yield speech(1)
-            await asyncio.sleep(0.01)
+    socket = FakeRealtimeSocket([SPEECH_STARTED], when_drained="hang")
 
     provider = AzureRealtimeSTTProvider(settings, connect=make_realtime_connect(socket))
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError, match="utterance"):
         async for _ in provider.transcribe(never_ending()):
             pass
+
+
+@pytest.mark.unit
+async def test_a_silent_caller_is_not_an_error_before_any_speech(
+    realtime_settings: AzureAudioSettings,
+) -> None:
+    """Silence on a phone call is a normal state, not a fault.
+
+    The provider used to apply ``max_utterance_seconds`` to a line where no
+    speech had started, so a caller who simply said nothing had the stream
+    killed with TimeoutError, taking the pre-warmed session down with it.  Here
+    the idle wait outlasts that cap by an order of magnitude and the stream is
+    still healthy: the utterance that eventually arrives is transcribed.
+    """
+    settings = dataclasses.replace(realtime_settings, max_utterance_seconds=0.02)
+    # Nothing at all for well over max_utterance_seconds, and only then speech.
+    socket = PausingRealtimeSocket(
+        [Quiet(0.3), *utterance("sorry, i'm back")], when_drained="hang"
+    )
+
+    provider = AzureRealtimeSTTProvider(settings, connect=make_realtime_connect(socket))
+
+    events: list[STTProviderEvent] = []
+    # aclosing because this consumer stops early, exactly as STTAdapter does;
+    # the module docstring calls that the one case the generator shape cannot
+    # tear down deterministically on its own.
+    async with contextlib.aclosing(provider.transcribe(never_ending())) as stream:
+        async for event in stream:
+            events.append(event)
+            if isinstance(event, STTFinalEvent):
+                break
+
+    assert [type(event) for event in events] == [STTPartialEvent, STTFinalEvent]
+    assert events[-1].text == "sorry, i'm back"  # type: ignore[union-attr]
+
+
+@pytest.mark.unit
+async def test_idle_timeout_seconds_bounds_the_idle_wait_when_it_is_set(
+    realtime_settings: AzureAudioSettings,
+) -> None:
+    # An operator who does want a ceiling on a quiet line opts into one, and it
+    # is reported as its own failure, not as an utterance overrun.
+    settings = dataclasses.replace(
+        realtime_settings, max_utterance_seconds=30.0, idle_timeout_seconds=0.05
+    )
+    socket = FakeRealtimeSocket(when_drained="hang")
+
+    provider = AzureRealtimeSTTProvider(settings, connect=make_realtime_connect(socket))
+
+    with pytest.raises(TimeoutError, match="idle timeout"):
+        async for _ in provider.transcribe(never_ending()):
+            pass
+
+
+@pytest.mark.unit
+async def test_the_utterance_bound_is_released_once_a_transcript_completes(
+    realtime_settings: AzureAudioSettings,
+) -> None:
+    """A completed utterance returns the line to the unbounded idle state.
+
+    Without the reset, the first utterance of a stream would arm
+    ``max_utterance_seconds`` for the rest of it and the silence that follows
+    a turn would fail.
+    """
+    settings = dataclasses.replace(realtime_settings, max_utterance_seconds=0.05)
+    socket = PausingRealtimeSocket(
+        [*utterance("table for four"), Quiet(0.3), *utterance("at seven")],
+        when_drained="hang",
+    )
+
+    provider = AzureRealtimeSTTProvider(settings, connect=make_realtime_connect(socket))
+
+    finals: list[str] = []
+    async with contextlib.aclosing(provider.transcribe(never_ending())) as stream:
+        async for event in stream:
+            if isinstance(event, STTFinalEvent):
+                finals.append(event.text)
+                if len(finals) == 2:
+                    break
+
+    assert finals == ["table for four", "at seven"]
 
 
 @pytest.mark.unit

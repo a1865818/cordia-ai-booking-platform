@@ -179,7 +179,15 @@ class AzureAudioSettings:
             buffered utterance, so the first phoneme is not clipped.
         max_utterance_seconds: Hard cap on buffered speech.  A caller who never
             pauses (or a stuck-open line) is force-endpointed rather than
-            buffered without bound.
+            buffered without bound.  It bounds an utterance that has already
+            STARTED; it is not a bound on how long a caller may stay quiet.
+        idle_timeout_seconds: How long a stream may sit with no speech in
+            progress before it is treated as a dead line.  ``None``, the
+            default, means wait indefinitely: silence on a phone call is a
+            normal state, not a fault, and a realtime stream that killed itself
+            after a quiet caller tore down the pre-warmed session and made the
+            next thing the caller said pay the handshake again.  Set it only
+            where a hard ceiling on an idle line is genuinely wanted.
         fallback_asr_confidence: Confidence reported when the transcription
             response carries no per-segment log-probabilities.
         base_timeout_seconds: First-attempt deadline for either audio call.
@@ -205,6 +213,7 @@ class AzureAudioSettings:
     vad_hangover_frames: int = 25
     vad_preroll_frames: int = 5
     max_utterance_seconds: float = 30.0
+    idle_timeout_seconds: float | None = None
     fallback_asr_confidence: float = 0.9
     base_timeout_seconds: float = DEFAULT_AUDIO_BASE_TIMEOUT_SECONDS
 
@@ -244,6 +253,15 @@ class AzureAudioSettings:
         for name, value in positives:
             if value <= 0:
                 raise AudioNotConfigured(f"{name} must be > 0 (got {value!r})")
+
+        if self.idle_timeout_seconds is not None and self.idle_timeout_seconds <= 0:
+            # Unset is spelled None (wait forever).  A zero or negative bound
+            # would mean "time out immediately", which is never what anyone
+            # wants and is how a configuration typo would present.
+            raise AudioNotConfigured(
+                "idle_timeout_seconds must be > 0 or unset "
+                f"(got {self.idle_timeout_seconds!r})"
+            )
 
         if self.vad_preroll_frames < 0:
             raise AudioNotConfigured(
@@ -341,6 +359,30 @@ def _as_float(name: str, raw: str | None, default: float) -> float:
     """
     if raw is None:
         return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise AudioNotConfigured(f"{name} must be a number, got {raw!r}") from exc
+
+
+def _as_optional_float(name: str, raw: str | None) -> float | None:
+    """Parse *raw* as a float, treating absence as "unset" rather than a value.
+
+    Distinct from :func:`_as_float` because the knobs that use it have no
+    numeric default: absent means "no bound at all", which no number can spell.
+
+    Args:
+        name: Environment variable name, used only in the error message.
+        raw: The raw string value, or ``None`` when the variable is absent.
+
+    Returns:
+        The parsed float, or ``None`` when the variable is absent.
+
+    Raises:
+        AudioNotConfigured: if *raw* is present but not a number.
+    """
+    if raw is None:
+        return None
     try:
         return float(raw)
     except ValueError as exc:
@@ -474,6 +516,10 @@ def audio_settings_from_env(role: str | None = None) -> AzureAudioSettings:
             "CORDIA_AUDIO_MAX_UTTERANCE_SECONDS",
             read("CORDIA_AUDIO_MAX_UTTERANCE_SECONDS"),
             30.0,
+        ),
+        idle_timeout_seconds=_as_optional_float(
+            "CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS",
+            read("CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS"),
         ),
         fallback_asr_confidence=_as_float(
             "CORDIA_AUDIO_FALLBACK_ASR_CONFIDENCE",

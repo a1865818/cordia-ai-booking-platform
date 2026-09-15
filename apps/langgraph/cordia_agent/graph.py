@@ -6,14 +6,15 @@ slot extractor).
 
 The per-turn boundary
     One customer utterance is one graph invocation, and the graph ENDs when the
-    agent has said something and needs an answer.  There are four such points:
+    agent has said something and needs an answer.  There are five such points:
 
     - ``consent_gate`` → END while the recording notice is unanswered;
     - ``clarify`` → END, having asked for a field or offered another time;
     - ``await_confirmation`` → END when the read-back was not confirmed on
       THIS turn;
     - ``verify_identity`` → END when the grant expired and a fresh code has to
-      come from the customer.
+      come from the customer;
+    - ``answer_inquiry`` → END, having answered an informational question.
 
     The §8.3 drawing had none of these: clarify looped to ``capture_fields``,
     an unconfirmed read-back looped to ``capture_fields``, and a zero-candidate
@@ -33,6 +34,7 @@ from typing import TYPE_CHECKING
 from langgraph.graph import END, START, StateGraph
 
 from cordia_agent.nodes import (
+    answer_inquiry,
     await_confirmation,
     capture_fields,
     check_candidates,
@@ -45,6 +47,7 @@ from cordia_agent.nodes import (
     route_after_await_confirmation,
     route_after_capture_fields,
     route_after_check_candidates,
+    route_after_identify_intent,
     route_after_submit_intent,
     route_after_verify_identity,
     submit_intent,
@@ -113,6 +116,7 @@ def build_agent_graph(checkpointer: BaseCheckpointSaver | None = None) -> StateG
     builder.add_node("consent_gate", consent_gate)
     builder.add_node("load_context", load_context)
     builder.add_node("identify_intent", identify_intent)
+    builder.add_node("answer_inquiry", answer_inquiry)
     builder.add_node("capture_fields", capture_fields)
     builder.add_node("clarify", clarify)
     builder.add_node("verify_identity", verify_identity)
@@ -127,7 +131,9 @@ def build_agent_graph(checkpointer: BaseCheckpointSaver | None = None) -> StateG
     # Consent gate (spec 14 §5.1) runs before any transcript-bearing node.
     builder.add_edge("resolve_tenant", "consent_gate")
     builder.add_edge("load_context", "identify_intent")
-    builder.add_edge("identify_intent", "capture_fields")
+    # answer_inquiry ENDs the turn — a fifth per-turn boundary, and the same
+    # reason as the other four: the agent has answered and is waiting.
+    builder.add_edge("answer_inquiry", END)
     # clarify ENDs the turn — see the per-turn boundary note above.  The §8.3
     # drawing had clarify → capture_fields; that edge was a cycle, because
     # capture_fields re-ran the extractor over the transcript that had just
@@ -145,6 +151,18 @@ def build_agent_graph(checkpointer: BaseCheckpointSaver | None = None) -> StateG
         {
             "load_context": "load_context",
             END: END,
+        },
+    )
+    # identify_intent -> capture_fields used to be unconditional, which sent an
+    # informational utterance into the capture loop with no draft and dead-ended
+    # it (see nodes/answer_inquiry.py).  Booking intents still take that edge.
+    builder.add_conditional_edges(
+        "identify_intent",
+        route_after_identify_intent,
+        {
+            "answer_inquiry": "answer_inquiry",
+            "capture_fields": "capture_fields",
+            "verify_identity": "verify_identity",
         },
     )
     builder.add_conditional_edges(

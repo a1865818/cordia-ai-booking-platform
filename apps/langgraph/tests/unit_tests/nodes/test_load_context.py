@@ -23,7 +23,15 @@ import pytest
 
 from cordia_agent.nodes.load_context import load_context
 from cordia_agent.safety.tenant_context import TenantContext
-from cordia_agent.state import AgentState, Channel
+from cordia_agent.state import (
+    AgentState,
+    BookingDraft,
+    BookingRequest,
+    Channel,
+    CustomerRef,
+    OperationType,
+    SourceInfo,
+)
 from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 
 
@@ -232,3 +240,75 @@ async def test_load_context_continues_on_customer_error() -> None:
     assert result.get("tenant_policy_version") == "v2-lc"
     # Customer context not present due to error
     assert "customer_context" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests — which phone the discovery lookup is keyed on
+# ---------------------------------------------------------------------------
+
+
+def _make_recording_client(seen: list[dict[str, str]]) -> ToolClient:
+    """A happy client that records the query params of each discovery call."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/customers/context":
+            seen.append(dict(request.url.params))
+        return _make_happy_handler(request)
+
+    return _make_client(handler)
+
+
+@pytest.mark.unit
+async def test_load_context_looks_the_caller_up_by_the_channel_phone() -> None:
+    """On turn one there is no draft yet, so the channel's CustomerRef is it.
+
+    Deriving the phone from ``draft.customer`` alone meant discovery always ran
+    with None, which is why a voice booking came back with no guest attached.
+    """
+    seen: list[dict[str, str]] = []
+    set_tool_client(_make_recording_client(seen))
+    state = AgentState(
+        tenant_id="tenant_lc_test",
+        session_id="session_lc_1",
+        customer=CustomerRef(phone_e164="+61411111111"),
+    )
+
+    await load_context(state)
+
+    assert seen == [{"phone_e164": "+61411111111"}]
+
+
+@pytest.mark.unit
+async def test_load_context_falls_back_to_the_draft_phone() -> None:
+    """What the customer volunteered mid-dialog still works when there is no ANI."""
+    seen: list[dict[str, str]] = []
+    set_tool_client(_make_recording_client(seen))
+    state = AgentState(
+        tenant_id="tenant_lc_test",
+        session_id="session_lc_1",
+        draft=BookingDraft(
+            tenant_id="tenant_lc_test",
+            session_id="session_lc_1",
+            schema_version="v1",
+            source=SourceInfo(channel=Channel.voice, language="en-AU"),
+            tenant_policy_version="v2-lc",
+            customer=CustomerRef(phone_e164="+61422222222"),
+            request=BookingRequest(operation=OperationType.create),
+        ),
+    )
+
+    await load_context(state)
+
+    assert seen == [{"phone_e164": "+61422222222"}]
+
+
+@pytest.mark.unit
+async def test_load_context_sends_no_phone_when_the_channel_gave_none() -> None:
+    """An anonymous session still discovers, just without a lookup key."""
+    seen: list[dict[str, str]] = []
+    set_tool_client(_make_recording_client(seen))
+    state = AgentState(tenant_id="tenant_lc_test", session_id="session_lc_1")
+
+    await load_context(state)
+
+    assert seen == [{}]

@@ -13,17 +13,23 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from cordia_agent.nodes.clarify import (
+    ASK_PROMPTS,
     ESCALATION_LADDER,
     ClarifyAction,
     clarify,
     decide_clarify_action,
+    field_label,
+    is_options_request,
     render_datetime_spell_back,
 )
+from cordia_agent.safety.tenant_context import TenantContext
 from cordia_agent.slots.capture import (
     SlotCapture,
     capture_slots,
@@ -39,11 +45,97 @@ from cordia_agent.state import (
     OperationType,
     SourceInfo,
 )
+from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+#: What the seeded tenant declares.  clarify now LISTS these instead of asking
+#: the caller to guess at a vocabulary only the venue knows, so the node needs a
+#: ToolClient in every test that reaches a resource field.
+_DECLARED: dict[str, list[dict]] = {
+    "service": [
+        {
+            "resource_id": "breakfast",
+            "kind": "service",
+            "name": "Breakfast",
+            "aliases": [],
+        },
+        {
+            "resource_id": "lunch",
+            "kind": "service",
+            "name": "Lunch sitting",
+            "aliases": [],
+        },
+        {
+            "resource_id": "dinner",
+            "kind": "service",
+            "name": "Dinner sitting",
+            "aliases": [],
+        },
+    ],
+    "location": [
+        {
+            "resource_id": "fitzroy",
+            "kind": "location",
+            "name": "Fitzroy dining room",
+            "aliases": [],
+        },
+        {
+            "resource_id": "rooftop",
+            "kind": "location",
+            "name": "Rooftop terrace",
+            "aliases": [],
+        },
+    ],
+}
+
+_TENANT_CONTEXT = TenantContext(
+    tenant_id="tenant_a",
+    channel=Channel.voice,
+    channel_endpoint_id="ep_1",
+    configuration_version="v1",
+    correlation_id="corr_1",
+    session_id="session_1",
+    allowed_agent_policy_ids=["p"],
+    allowed_tool_policy_ids=["p"],
+    issued_at="2026-07-25T00:00:00Z",
+    expires_at="2026-07-25T01:00:00Z",
+)
+
+
+def install_resources_client(*, fail: bool = False) -> None:
+    """Install a ToolClient that lists _DECLARED, or fails when *fail*."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if fail:
+            return httpx.Response(503, content=b'{"status":"unavailable"}')
+        kind = request.url.params.get("kind") or "service"
+        matches = _DECLARED.get(kind, [])
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {"status": "listed", "matches": matches, "resolved": None}
+            ).encode(),
+        )
+
+    set_tool_client(
+        ToolClient(
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(handle), base_url="http://test"
+            ),
+            tenant_context=_TENANT_CONTEXT,
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def _resources_client() -> None:
+    install_resources_client()
+    yield
+    reset_tool_client()
 
 
 def _make_draft(
@@ -60,6 +152,20 @@ def _make_draft(
         tenant_policy_version="v2",
         request=BookingRequest(operation=operation, **request_kwargs),
         source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+
+
+def _only_service_missing() -> BookingDraft:
+    """A draft whose sole gap is the sitting, so clarify targets ``service_id``.
+
+    The ask order is when, how many, where, service — so anything vaguer than
+    this lands on an earlier field.
+    """
+    return _make_draft(
+        operation=OperationType.create,
+        starts_at=datetime(2026, 9, 20, 19, 0, tzinfo=UTC),
+        party_size=4,
+        location_id="fitzroy",
     )
 
 
@@ -375,23 +481,32 @@ async def test_clarify_increments_attempt_count() -> None:
 
 @pytest.mark.unit
 async def test_clarify_escalates_action_on_second_attempt() -> None:
-    """Second clarify on the same field escalates the action one rung."""
-    draft = _make_draft(operation=OperationType.create)
+    """Second clarify on the same field escalates the action one rung.
 
-    # First call: attempt 0 → ASK_AGAIN
+    ``service_id`` is a RESOURCE field, so its ladder is offer, offer, human —
+    a keypad rung for a value like "dinner" was never usable.
+    """
+    draft = _only_service_missing()
+
+    # First call: attempt 0 → OFFER_OPTIONS (the tenant's set is closed)
     state1 = _make_state(draft=draft)
     result1 = await clarify(state1)
-    assert result1["pending_clarify_action"] == ClarifyAction.ASK_AGAIN.value
+    assert result1["pending_clarify_action"] == ClarifyAction.OFFER_OPTIONS.value
 
     field = result1["pending_clarify_field"]
 
-    # Second call: attempt 1 → SPELL_BACK
+    # Second call: attempt 1 → offer once more before involving a human
     state2 = _make_state(
         draft=draft,
         clarification_attempts={field: 1},
     )
     result2 = await clarify(state2)
-    assert result2["pending_clarify_action"] == ClarifyAction.SPELL_BACK.value
+    assert result2["pending_clarify_action"] == ClarifyAction.OFFER_OPTIONS.value
+
+    # Third call: attempt 2 → a human, NOT a keypad
+    state3 = _make_state(draft=draft, clarification_attempts={field: 2})
+    result3 = await clarify(state3)
+    assert result3["pending_clarify_action"] == ClarifyAction.ESCALATE_HANDOFF.value
 
 
 @pytest.mark.unit
@@ -532,3 +647,329 @@ def test_clarify_ends_the_turn() -> None:
     assert ("clarify", "human_handoff") not in edges, (
         "clarify → human_handoff edge must NOT exist (§8.3 topology frozen)"
     )
+
+
+# ---------------------------------------------------------------------------
+# What the caller is actually asked for
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field,label",
+    [
+        ("location_id", "location"),
+        ("service_id", "service"),
+        ("starts_at", "date and time"),
+        ("party_size", "number of people"),
+    ],
+)
+def test_field_label_is_speakable(field: str, label: str) -> None:
+    """The default underscore-strip asks the caller for "the location id" — a
+    column name read down a phone line."""
+    assert field_label(field) == label
+
+
+@pytest.mark.unit
+def test_an_unmapped_field_still_gets_a_label() -> None:
+    assert field_label("some_new_field") == "some new field"
+
+
+@pytest.mark.unit
+async def test_clarify_never_says_id_to_the_caller() -> None:
+    """Guards every rung, not just the first: SPELL_BACK and DTMF interpolate the
+    same label, and both were reachable with "location id" in them."""
+    draft = _make_draft(
+        service_id="dinner",
+        starts_at=datetime(2026, 9, 20, 19, 0, tzinfo=UTC),
+        party_size=2,
+    )
+
+    for attempt in range(4):
+        state = _make_state(draft, clarification_attempts={"location_id": attempt})
+        prompt = (await clarify(state))["pending_clarify_prompt"]
+        # The invariant is the absence of the column name, not the presence of a
+        # label: the natural ask ("And whereabouts would you like to sit?")
+        # rightly never says "location" at all.
+        assert " id" not in prompt
+        assert "location_id" not in prompt
+
+
+@pytest.mark.unit
+async def test_the_first_question_is_not_which_room() -> None:
+    """Alphabetical order put location_id first, so an empty draft opened with
+    "could you tell me the location?" before asking what or when. Asking for the
+    service first was also wrong once the sitting became derivable from the time:
+    the first thing to establish is WHEN."""
+    state = _make_state(_make_draft())
+
+    result = await clarify(state)
+
+    assert result["pending_clarify_field"] == "starts_at"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "present,expected",
+    [
+        ({}, "starts_at"),
+        ({"starts_at": datetime(2026, 9, 20, tzinfo=UTC)}, "party_size"),
+        (
+            {"starts_at": datetime(2026, 9, 20, tzinfo=UTC), "party_size": 4},
+            "location_id",
+        ),
+        (
+            {
+                "starts_at": datetime(2026, 9, 20, tzinfo=UTC),
+                "party_size": 4,
+                "location_id": "fitzroy",
+            },
+            "service_id",
+        ),
+    ],
+)
+async def test_required_fields_are_asked_when_how_many_where_then_service(
+    present: dict, expected: str
+) -> None:
+    """The order a person takes a reservation in — and the service last, because
+    by then the time usually settles it without asking."""
+    state = _make_state(_make_draft(**present))
+
+    assert (await clarify(state))["pending_clarify_field"] == expected
+
+
+# ---------------------------------------------------------------------------
+# The reported call: "what kind of service do you have?" -> keypad
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_the_first_ask_for_a_service_lists_the_services() -> None:
+    """The caller cannot guess a vocabulary only the venue knows. The tenant's
+    set is closed and published, so read it out."""
+    state = _make_state(draft=_only_service_missing())
+
+    prompt = (await clarify(state))["pending_clarify_prompt"]
+
+    assert "Breakfast" in prompt
+    assert "Lunch sitting" in prompt
+    assert "Dinner sitting" in prompt
+
+
+@pytest.mark.unit
+async def test_a_named_resource_is_never_asked_for_by_keypad() -> None:
+    """You cannot type "dinner" on a number pad. Every rung, both resource
+    fields — this is the line the reported call actually ended on."""
+    for field, present in (
+        (
+            "service_id",
+            {
+                "party_size": 2,
+                "location_id": "fitzroy",
+                "starts_at": datetime(2026, 9, 20, 19, 0, tzinfo=UTC),
+            },
+        ),
+        (
+            "location_id",
+            {
+                "service_id": "dinner",
+                "party_size": 2,
+                "starts_at": datetime(2026, 9, 20, 19, 0, tzinfo=UTC),
+            },
+        ),
+    ):
+        for attempt in range(5):
+            state = _make_state(
+                draft=_make_draft(operation=OperationType.create, **present),
+                clarification_attempts={field: attempt},
+            )
+            result = await clarify(state)
+            assert result["pending_clarify_action"] != ClarifyAction.DTMF.value
+            assert "keypad" not in result["pending_clarify_prompt"]
+            assert " id" not in result["pending_clarify_prompt"]
+
+
+@pytest.mark.unit
+async def test_asking_what_the_options_are_is_not_a_failed_attempt() -> None:
+    """The reported spiral: three reasonable questions, three escalations. A
+    question answers nothing but fails at nothing."""
+    state = _make_state(
+        draft=_only_service_missing(),
+        transcript_text="What kind of service do you have?",
+        clarification_attempts={"service_id": 0},
+    )
+
+    result = await clarify(state)
+
+    assert result["clarification_attempts"]["service_id"] == 0
+
+
+@pytest.mark.unit
+async def test_a_real_non_answer_still_escalates() -> None:
+    """The counter must still move for an actual failure to answer, or the
+    ladder never reaches a human."""
+    state = _make_state(
+        draft=_only_service_missing(),
+        transcript_text="mmm",
+        clarification_attempts={"service_id": 1},
+    )
+
+    result = await clarify(state)
+
+    assert result["clarification_attempts"]["service_id"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "What kind of service do you have?",
+        "Can you list? Because I don't know any service.",
+        "what are my options",
+        "like what?",
+    ],
+)
+def test_options_requests_are_recognised(text: str) -> None:
+    assert is_options_request(text) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["dinner please", "seven pm", "four people"])
+def test_a_plain_answer_is_not_an_options_request(text: str) -> None:
+    assert is_options_request(text) is False
+
+
+@pytest.mark.unit
+async def test_an_unreachable_tenant_list_asks_openly_rather_than_inventing() -> None:
+    """Naming a service the tenant never declared is the same fabrication the
+    resolver exists to prevent."""
+    install_resources_client(fail=True)
+    state = _make_state(draft=_only_service_missing())
+
+    result = await clarify(state)
+
+    assert result["pending_clarify_prompt"] == ASK_PROMPTS["service_id"]
+    assert "Breakfast" not in result["pending_clarify_prompt"]
+
+
+@pytest.mark.unit
+async def test_a_keypad_field_still_offers_the_keypad() -> None:
+    """Party size IS expressible on a keypad; the rung stays for fields that can
+    use it."""
+    state = _make_state(
+        draft=_make_draft(
+            operation=OperationType.create,
+            service_id="dinner",
+            location_id="fitzroy",
+            starts_at=datetime(2026, 9, 20, 19, 0, tzinfo=UTC),
+        ),
+        clarification_attempts={"party_size": 2},
+    )
+
+    result = await clarify(state)
+
+    assert result["pending_clarify_field"] == "party_size"
+    assert result["pending_clarify_action"] == ClarifyAction.DTMF.value
+
+
+# ---------------------------------------------------------------------------
+# Listening, not counting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_answering_a_different_question_is_not_a_failed_attempt() -> None:
+    """The caller was asked for a time and said "there'll be six of us". That is
+    progress. Counting it as a failure is how the next line became "tap the date
+    and time in on your keypad"."""
+    state = _make_state(
+        draft=_make_draft(operation=OperationType.create, party_size=6),
+        transcript_text="There'll be six of us",
+        draft_advanced=True,
+        clarification_attempts={"starts_at": 2},
+    )
+
+    result = await clarify(state)
+
+    assert result["pending_clarify_field"] == "starts_at"
+    assert result["clarification_attempts"]["starts_at"] == 2
+    assert result["pending_clarify_action"] == ClarifyAction.ASK_AGAIN.value
+
+
+@pytest.mark.unit
+async def test_saying_nothing_usable_still_escalates() -> None:
+    """The ladder must still reach a human, or a stuck call never gets one."""
+    state = _make_state(
+        draft=_make_draft(operation=OperationType.create),
+        transcript_text="mmm",
+        draft_advanced=False,
+        clarification_attempts={"starts_at": 2},
+    )
+
+    result = await clarify(state)
+
+    assert result["clarification_attempts"]["starts_at"] == 3
+
+
+@pytest.mark.unit
+async def test_a_date_is_never_asked_for_on_a_keypad() -> None:
+    """There is no format the caller could guess, and nobody has ever said this
+    to someone booking a table."""
+    for attempt in range(5):
+        state = _make_state(
+            draft=_make_draft(operation=OperationType.create),
+            clarification_attempts={"starts_at": attempt},
+        )
+        result = await clarify(state)
+
+        assert result["pending_clarify_action"] != ClarifyAction.DTMF.value
+        assert "keypad" not in result["pending_clarify_prompt"]
+
+
+@pytest.mark.unit
+async def test_a_date_is_never_asked_to_be_spelled_when_none_was_captured() -> None:
+    """Spell-back reads a CAPTURED value back. With nothing captured there is
+    nothing to spell, and "spell the date and time out" is unanswerable."""
+    state = _make_state(
+        draft=_make_draft(operation=OperationType.create),
+        clarification_attempts={"starts_at": 1},
+    )
+
+    prompt = (await clarify(state))["pending_clarify_prompt"]
+
+    assert "spell" not in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Defect 1 — a mutation with no target asks for the booking reference
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_cancel_without_a_target_asks_for_the_reference() -> None:
+    """ "I need to cancel my booking" has to become a question, not a dead end.
+
+    target_booking_id was in neither operation's REQUIRED_CANDIDATE_FIELDS, so
+    the capture gate passed with no target and clarify was never asked to
+    produce this question.
+    """
+    draft = BookingDraft(
+        tenant_id="tenant_clarify_target",
+        session_id="sess_clarify_target",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(operation=OperationType.cancel),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+    state = AgentState(
+        tenant_id="tenant_clarify_target",
+        session_id="sess_clarify_target",
+        draft=draft,
+        operation=OperationType.cancel,
+        transcript_text="I need to cancel my booking",
+    )
+
+    result = await clarify(state)
+
+    assert result["pending_clarify_field"] == "target_booking_id"
+    assert result["pending_clarify_prompt"] == ASK_PROMPTS["target_booking_id"]

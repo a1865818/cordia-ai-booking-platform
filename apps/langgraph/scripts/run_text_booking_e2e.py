@@ -59,6 +59,14 @@ except ImportError:  # pragma: no cover - dotenv is a dev convenience only
 
 DEFAULT_API_BASE_URL = "http://localhost:8000"
 DEFAULT_DID = "+61400000001"
+#: The caller's own number, posted to the telephony ingress as `from` and then
+#: carried into the graph input as the customer's phone.  It is the same number
+#: in both places on purpose: the ingress deliberately ignores `from` when it
+#: resolves the tenant (Inv-13, caller-mutable), so if the runner did not also
+#: hand it to the graph the booking would be created with no guest attached and
+#: `GET /api/bookings?phone_e164=...` would answer "none".
+CALLER_PHONE_E164 = "+61411111111"
+
 
 # Turn 1 opens the session: the consent gate resolves the jurisdiction policy,
 # emits the recording notice and ENDs the turn awaiting a reply (§5.1).
@@ -128,7 +136,11 @@ async def mint_tenant_context(base_url: str, did: str) -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=base_url, timeout=15.0) as http:
         response = await http.post(
             "/api/channels/telephony",
-            json={"to": did, "from": "+61411111111", "caller_name": "E2E Runner"},
+            json={
+                "to": did,
+                "from": CALLER_PHONE_E164,
+                "caller_name": "E2E Runner",
+            },
         )
     if response.status_code != 200:
         raise RuntimeError(
@@ -235,6 +247,9 @@ async def main() -> int:
         "signed_tenant_context": minted["tenant_context"],
         "session_id": claims["session_id"],
         "source": {"channel": "voice", "language": "en-AU"},
+        # The number the ingress was told about, handed to the graph as the
+        # customer so the booking ends up with a guest and a place to notify.
+        "customer": {"phone_e164": CALLER_PHONE_E164},
         "transcript_is_final": True,
     }
 

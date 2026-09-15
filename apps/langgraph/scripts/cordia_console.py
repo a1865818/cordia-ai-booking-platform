@@ -54,6 +54,8 @@ except ImportError:  # pragma: no cover - dotenv is a dev convenience only
 
 
 DEFAULT_API_BASE_URL = "http://localhost:8000"
+#: The console has no real ANI; this stands in as the caller's contact number.
+CALLER_PHONE_E164 = "+61411111111"
 DEFAULT_DID = "+61400000001"
 
 # A different voice for "you" than the agent's, so a recording of a session has
@@ -111,7 +113,11 @@ class Console:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=15.0) as http:
             response = await http.post(
                 "/api/channels/telephony",
-                json={"to": self.did, "from": "+61411111111", "caller_name": "Console"},
+                json={
+                    "to": self.did,
+                    "from": CALLER_PHONE_E164,
+                    "caller_name": "Console",
+                },
             )
         if response.status_code != 200:
             raise RuntimeError(
@@ -127,6 +133,10 @@ class Console:
         self.agent = GraphAgentPort(
             self.graph,
             session=AgentSessionContext(
+                # The console's synthetic caller.  A booking with no guest cannot
+                # be found by phone or notified; this is a contact hint only and
+                # never resolves the tenant (Inv-13).
+                caller_phone_e164=CALLER_PHONE_E164,
                 signed_tenant_context=minted["tenant_context"],
                 session_id=self.session_id,
                 tenant_id=self.claims["tenant_id"],

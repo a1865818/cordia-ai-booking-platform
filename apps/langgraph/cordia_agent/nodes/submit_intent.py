@@ -38,13 +38,19 @@ from cordia_agent.recovery import (
     mint_idempotency_key,
     mint_operation_id,
 )
-from cordia_agent.state import AgentState  # noqa: TC001
+from cordia_agent.state import AgentState, OperationType
 from cordia_agent.tools.client_binding import (
     get_operation_status_call,
     parse_operation_status,
+    submit_cancellation_call,
     submit_intent_call,
+    submit_modification_call,
 )
-from cordia_agent.tools.contracts import SubmitConfirmedIntentInput
+from cordia_agent.tools.contracts import (
+    SubmitCancellationInput,
+    SubmitConfirmedIntentInput,
+    SubmitModificationInput,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -66,6 +72,9 @@ _CAPTURE_FIELDS_STATUSES: frozenset[str] = frozenset(
         # rejections and spec 03 §4.3 classifies them as recoverable.
         "request_error",
         "conflict",
+        # The booking changed under us (spec 08 §9.4.8).  Re-reading the target
+        # and re-confirming is the fix, not a human.
+        "stale_version",
     }
 )
 
@@ -136,6 +145,22 @@ async def submit_intent(state: AgentState) -> dict:
             "submission_status": "confirmation_invalid",
         }
 
+    # The target gate, moved here from BookingRequest's constructor.  Requiring a
+    # target at construction meant a mutation draft could not exist before the
+    # caller had named the booking, which is the wrong end of the conversation
+    # (see BookingRequest.require_target_for_mutations).  This is the point where
+    # it genuinely matters: nothing leaves for the platform without one.
+    try:
+        rev.canonical_payload.require_target_for_mutations()
+    except ValueError:
+        _log.warning(
+            "submit_intent: %s has no target_booking_id — refusing to submit",
+            rev.canonical_payload.operation,
+        )
+        return {
+            "submission_status": "validation_failed",
+        }
+
     if not confirmation_binds_revision(conf, rev):
         _log.warning(
             "submit_intent: §8.8 guard — confirmation does not bind revision "
@@ -193,6 +218,7 @@ async def submit_intent(state: AgentState) -> dict:
             idem_key=idem_key,
             rev=rev,
             conf=conf,
+            grant_id=state.verification_grant_id,
         )
 
     # ------------------------------------------------------------------
@@ -238,7 +264,100 @@ async def submit_intent(state: AgentState) -> dict:
         idem_key=idem_key,
         rev=rev,
         conf=conf,
+        grant_id=state.verification_grant_id,
     )
+
+
+def _sender_for(
+    *,
+    op_id: str,
+    idem_key: str,
+    rev: IntentRevision,
+    conf: Confirmation,
+    grant_id: str | None,
+):
+    """Return the coroutine factory that submits *rev* to the RIGHT endpoint.
+
+    Returns a node-outcome dict instead when the mutation cannot lawfully be
+    sent: a mutation with no grant is Inv-11 bypassed, and fails closed to a
+    human rather than being posted anywhere.  A missing booking version is
+    recoverable (re-read the target), so that routes back to capture_fields.
+    """
+    payload = rev.canonical_payload
+    operation = payload.operation
+
+    if operation is OperationType.create:
+        inp = SubmitConfirmedIntentInput(
+            operation_id=op_id,
+            idempotency_key=idem_key,
+            intent_id=rev.intent_id,
+            intent_revision=rev.revision,
+            intent_payload_hash=rev.payload_hash,
+            revision=rev,
+            confirmation=conf,
+        )
+
+        async def _create():
+            return await submit_intent_call(inp)
+
+        return _create
+
+    # Every other operation acts on an existing booking and needs a grant.
+    if not grant_id:
+        _log.error(
+            "submit_intent: %s reached submission with no verification grant (Inv-11); refusing",
+            operation.value,
+        )
+        return {
+            "operation_id": op_id,
+            "idempotency_key": idem_key,
+            "submission_status": "nonrecoverable",
+            "terminal_state": "human_handoff",
+        }
+    target_id = payload.target_booking_id
+    version = payload.target_booking_version
+    if not target_id or version is None:
+        _log.warning(
+            "submit_intent: %s has no target id/version; back to capture",
+            operation.value,
+        )
+        return {
+            "operation_id": op_id,
+            "idempotency_key": idem_key,
+            "submission_status": "validation_failed",
+        }
+
+    if operation is OperationType.cancel:
+        cancel_inp = SubmitCancellationInput(
+            target_booking_id=target_id,
+            expected_booking_version=version,
+            operation_id=op_id,
+            cancellation_idempotency_key=idem_key,
+            reason_code="customer_request",
+            grant_id=grant_id,
+            confirmation=conf,
+        )
+
+        async def _cancel():
+            return await submit_cancellation_call(cancel_inp)
+
+        return _cancel
+
+    modify_inp = SubmitModificationInput(
+        target_booking_id=target_id,
+        expected_booking_version=version,
+        operation_id=op_id,
+        modification_idempotency_key=idem_key,
+        intent_revision=rev.revision,
+        intent_payload_hash=rev.payload_hash,
+        confirmation=conf,
+        grant_id=grant_id,
+    )
+
+    async def _modify():
+        return await submit_modification_call(modify_inp)
+
+    return _modify
 
 
 async def _do_submit(
@@ -247,6 +366,7 @@ async def _do_submit(
     idem_key: str,
     rev: IntentRevision,
     conf: Confirmation,
+    grant_id: str | None = None,
 ) -> dict:
     """Issue the actual submit call (single-flight) and map the result.
 
@@ -256,18 +376,19 @@ async def _do_submit(
     On lost response (non-ok envelope): attempts get_operation_status;
     if found → recover; if not → resubmit once with same ids (API dedups → one op).
     """
-    inp = SubmitConfirmedIntentInput(
-        operation_id=op_id,
-        idempotency_key=idem_key,
-        intent_id=rev.intent_id,
-        intent_revision=rev.revision,
-        intent_payload_hash=rev.payload_hash,
-        revision=rev,
-        confirmation=conf,
+    # Which endpoint a confirmed intent goes to is decided by its OPERATION.
+    # Everything used to go to the create endpoint, so a confirmed cancellation
+    # was recorded by the API as operation_type=cancel with status=booked: a new
+    # table, and the old one untouched.  The dedicated tools existed the whole
+    # time; nothing called them.
+    send = _sender_for(
+        op_id=op_id, idem_key=idem_key, rev=rev, conf=conf, grant_id=grant_id
     )
+    if isinstance(send, dict):
+        return send  # a refusal, already shaped as a node outcome
 
     async def _factory():
-        return await submit_intent_call(inp)
+        return await send()
 
     env = await get_single_flight().run(op_id, _factory)
 
@@ -294,12 +415,22 @@ async def _do_submit(
             "submit_intent: post-submit recovery not_found — resubmitting same op_id=%s",
             op_id,
         )
-        env = await submit_intent_call(inp)
+        env = await send()
 
     # Map the submission envelope status to an outcome dict
     status_code = env.status
 
     # accepted / duplicate_accepted → submitted terminal (Inv-16)
+    if status_code == "already_cancelled":
+        _log.info("submit_intent: booking was already cancelled — op_id=%s", op_id)
+        return {
+            "operation_id": op_id,
+            "idempotency_key": idem_key,
+            "submission_status": status_code,
+            "terminal_state": "submitted",
+            "submission_message": "That one's already been cancelled, so there's nothing more to do.",
+        }
+
     if status_code in ("accepted", "duplicate_accepted"):
         _log.info("submit_intent: accepted — op_id=%s status=%s", op_id, status_code)
         return {

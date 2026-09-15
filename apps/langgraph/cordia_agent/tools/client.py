@@ -306,7 +306,21 @@ class ToolClient:
             except Exception:
                 body = None
 
-            body_dict: dict[str, Any] | None = body if isinstance(body, dict) else None
+            # A 2xx JSON ARRAY is a successful result, not an absent one.  The
+            # envelope's ``data`` is typed ``dict | None``, so an array body used
+            # to fall straight through to None and every caller saw "ok, nothing
+            # found" — GET /api/catalog/items returns a bare array, which made a
+            # fully-stocked menu indistinguishable from an empty one.  Nothing
+            # caught it because no node had ever called a list-returning tool.
+            # Wrapping under "items" matches the §4.3 Out shape the tool contracts
+            # already declare (``CatalogSearchResult.items``).
+            body_dict: dict[str, Any] | None
+            if isinstance(body, dict):
+                body_dict = body
+            elif isinstance(body, list):
+                body_dict = {"items": body}
+            else:
+                body_dict = None
 
             return ToolResultEnvelope(
                 ok=True,

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from langgraph.graph import END
 
-from cordia_agent.state import AgentState  # noqa: TC001
+from cordia_agent.state import AgentState, OperationType
 
 
 # ---------------------------------------------------------------------------
@@ -64,20 +64,36 @@ _NEGATIONS: frozenset[str] = frozenset(
 _WORD_RE = re.compile(r"[a-z']+")
 
 
-def is_explicit_confirmation(text: str) -> bool:
+#: Negation tokens that are the NAME of an operation.  "cancel" is a decline
+#: when the read-back is for a new table ("no, cancel that") and an affirmation
+#: when the read-back IS a cancellation ("yes, cancel it please").  Treating it
+#: as a negation regardless meant a caller who had just been verified and asked
+#: "shall I go ahead and cancel it?" could not say yes in the obvious words.
+_OPERATION_WORDS: dict[OperationType, frozenset[str]] = {
+    OperationType.cancel: frozenset({"cancel"}),
+}
+
+
+def is_explicit_confirmation(text: str, operation: OperationType | None = None) -> bool:
     """Return True iff ``text`` is an unambiguous affirmation (Inv-1).
 
     Deterministic — no LLM. Rejects any utterance containing a negation token
     (so "not correct" / "don't go ahead" / "no" never confirm) and matches
     affirmatives on WORD boundaries (so "incorrect" never matches "correct").
+
+    Args:
+        text: The caller's utterance.
+        operation: The operation being confirmed.  A word that names that very
+            operation ("cancel" on a cancellation) is not a negation of it.
     """
     lowered = text.lower().strip()
     if not lowered:
         return False
 
+    negations = _NEGATIONS - _OPERATION_WORDS.get(operation, frozenset())
     tokens = set(_WORD_RE.findall(lowered))
     # Reject negated/ambiguous utterances outright.
-    if tokens & _NEGATIONS or any("n't" in tok for tok in tokens):
+    if tokens & negations or any("n't" in tok for tok in tokens):
         return False
 
     # Word-boundary match for each affirmative phrase (avoids substring false
@@ -146,7 +162,8 @@ async def await_confirmation(state: AgentState) -> dict:
         return {}
 
     # Must have an explicit confirmation utterance
-    if not is_explicit_confirmation(state.transcript_text or ""):
+    operation = state.draft.request.operation if state.draft else None
+    if not is_explicit_confirmation(state.transcript_text or "", operation):
         return {}
 
     # §5.5 / §14 consent gate: refuse to record without disclosures

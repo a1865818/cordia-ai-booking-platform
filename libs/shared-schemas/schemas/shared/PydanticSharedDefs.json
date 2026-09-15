@@ -874,6 +874,14 @@
           "$ref": "#/$defs/BookingRequest",
           "description": "The booking request."
         },
+        "resolved_names": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Human names for resolved id fields; stripped on submit.",
+          "title": "Resolved Names",
+          "type": "object"
+        },
         "preorder_draft": {
           "anyOf": [
             {

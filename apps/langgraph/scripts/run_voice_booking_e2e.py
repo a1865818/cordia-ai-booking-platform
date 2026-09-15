@@ -55,6 +55,15 @@ Prerequisites (see docs/end-to-end-handoff.md):
     # API on http://localhost:8000 with Development migrations applied
     docker exec -i cordia-postgres psql -U cordia -d Cordia_API \
         < apps/api/scripts/seed-dev-tenant.sql
+    docker exec -i cordia-postgres psql -U cordia -d Cordia_API \
+        < apps/api/scripts/seed-dev-venue.sql
+
+    The venue seed is NOT optional on voice.  It is the only thing that populates
+    `tenant_resources`, which is the closed set `resolve_tenant_resources` matches
+    a spoken name against — without it "a table in the Fitzroy room" resolves to
+    nothing, no location is ever captured, and the call loops on the same question.
+    It also supplies the names read-back speaks, and speakable service ids that
+    survive a recogniser (`svc_001` comes back as "SVC zero zero one").
 
     export CORDIA_API_BASE_URL=http://localhost:8000
     # plus apps/langgraph/.env (Azure + CORDIA_TENANT_CONTEXT_SIGNING_KEYS)
@@ -87,6 +96,14 @@ except ImportError:  # pragma: no cover - dotenv is a dev convenience only
 
 DEFAULT_API_BASE_URL = "http://localhost:8000"
 DEFAULT_DID = "+61400000001"
+#: The caller's own number, posted to the telephony ingress as `from` and then
+#: carried into the graph input as the customer's phone.  It is the same number
+#: in both places on purpose: the ingress deliberately ignores `from` when it
+#: resolves the tenant (Inv-13, caller-mutable), so if the runner did not also
+#: hand it to the graph the booking would be created with no guest attached and
+#: `GET /api/bookings?phone_e164=...` would answer "none".
+CALLER_PHONE_E164 = "+61411111111"
+
 
 # The same three turns the text runner uses, so a discrepancy between the
 # channels is a channel difference and not a script difference.
@@ -158,7 +175,11 @@ async def mint_tenant_context(base_url: str, did: str) -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=base_url, timeout=15.0) as http:
         response = await http.post(
             "/api/channels/telephony",
-            json={"to": did, "from": "+61411111111", "caller_name": "Voice E2E"},
+            json={
+                "to": did,
+                "from": CALLER_PHONE_E164,
+                "caller_name": "Voice E2E",
+            },
         )
     if response.status_code != 200:
         raise RuntimeError(
@@ -397,6 +418,10 @@ async def main() -> int:
             session_id=session_id,
             tenant_id=claims["tenant_id"],
             correlation_id=claims["correlation_id"],
+            # The number the ingress was told about, handed to the graph as the
+            # customer so the booking ends up with a guest and a place to
+            # notify.  Contact hint only: the tenant came from the called DID.
+            caller_phone_e164=CALLER_PHONE_E164,
             channel="voice",
             language="en-AU",
         ),

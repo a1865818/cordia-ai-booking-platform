@@ -133,6 +133,38 @@ async def test_transcript_maps_onto_agent_input_state() -> None:
 
 
 @pytest.mark.unit
+async def test_the_callers_number_rides_in_as_the_customer() -> None:
+    """Without this the booking gets no guest and no notification destination."""
+    graph = ScriptedGraph([])
+    session = AgentSessionContext(
+        signed_tenant_context="header.payload.signature",
+        session_id="sess-1",
+        tenant_id="tenant-1",
+        correlation_id="corr-1",
+        caller_phone_e164="+61411111111",
+    )
+    port = GraphAgentPort(graph, session=session)
+
+    await drain(port, transcript())
+
+    assert graph.inputs[0]["customer"] == {"phone_e164": "+61411111111"}
+    # Inv-13: the number is a contact hint, never a tenant signal, so the signed
+    # context is still the only thing identifying the tenant in the input.
+    assert graph.inputs[0]["signed_tenant_context"] == "header.payload.signature"
+
+
+@pytest.mark.unit
+async def test_a_channel_without_an_ani_sends_no_customer() -> None:
+    """An all-None CustomerRef is no better than none, so it is left out."""
+    graph = ScriptedGraph([])
+    port = GraphAgentPort(graph, session=SESSION)
+
+    await drain(port, transcript())
+
+    assert graph.inputs[0].get("customer") is None
+
+
+@pytest.mark.unit
 async def test_the_session_id_is_the_checkpointer_thread() -> None:
     """A call is one thread; that is what carries the draft between turns."""
     graph = ScriptedGraph([])
@@ -230,7 +262,9 @@ async def test_a_turn_that_says_nothing_falls_back_rather_than_going_silent() ->
     frames = await drain(port, transcript())
 
     final = next(f for f in frames if isinstance(f, AgentTextFinalFrame))
-    assert final.text == "Sorry, could you say that again?"
+    from cordia_agent.streaming.agent_reply import DEFAULT_FALLBACK
+
+    assert final.text == DEFAULT_FALLBACK
 
 
 @pytest.mark.unit
@@ -407,3 +441,19 @@ def test_reply_text_joins_in_node_order() -> None:
 @pytest.mark.unit
 def test_reply_text_returns_none_when_told_to_stay_silent() -> None:
     assert reply_text([], fallback=None) is None
+
+
+@pytest.mark.unit
+def test_an_inquiry_answer_is_spoken() -> None:
+    """answer_inquiry writes its own state key, so without a REPLY_TEXT_KEYS entry
+    the node runs, answers correctly, and the caller hears the fallback line."""
+    from cordia_agent.streaming.agent_reply import segment_for
+
+    segment = segment_for(
+        "answer_inquiry",
+        {
+            "pending_inquiry_answer": "On the menu we have Burnt Honey Tart, 18.50 dollars."
+        },
+    )
+
+    assert segment == "On the menu we have Burnt Honey Tart, 18.50 dollars."

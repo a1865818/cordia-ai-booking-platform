@@ -34,7 +34,12 @@ from __future__ import annotations
 #: tool — neither addresses the customer).
 REPLY_TEXT_KEYS: dict[str, str] = {
     "consent_gate": "pending_consent_notice",
+    "answer_inquiry": "pending_inquiry_answer",
     "clarify": "pending_clarify_prompt",
+    # verify_identity had no entry here, which is why the "I've sent you a code"
+    # turn was silent: the node ENDs the turn, so if it says nothing the caller
+    # gets the generic fallback and no idea an SMS is on its way.
+    "verify_identity": "pending_verification_prompt",
     "read_back": "read_back_text",
     "submit_intent": "submission_message",
 }
@@ -42,13 +47,13 @@ REPLY_TEXT_KEYS: dict[str, str] = {
 #: Said when ``human_handoff`` runs.  The node itself records no customer text —
 #: it packages context for a human — but a caller cannot be left on a silent
 #: line while that happens.
-HANDOFF_TEXT = "Let me put you through to a team member who can help with that."
+HANDOFF_TEXT = "Let me pass you over to one of the team who can help with that."
 
 #: Said when a turn produced no customer-facing text at all.  On a text channel
 #: an empty reply is merely odd; on a live call it is dead air, and the caller
 #: will start talking over the next thing the agent says.  Callers that would
 #: rather emit nothing pass ``fallback=None`` to :func:`reply_text`.
-DEFAULT_FALLBACK = "Sorry, could you say that again?"
+DEFAULT_FALLBACK = "Sorry, I didn't quite catch that. Could you say it again?"
 
 
 def segment_for(node: str, update: object) -> str | None:

@@ -33,8 +33,9 @@ async def load_context(state: AgentState) -> dict:
     Steps:
     1. Calls ``client_binding.load_tenant_context()`` → sets
        ``tenant_policy_version`` on state when not already present.
-    2. Derives customer lookup args from ``state.draft.customer`` (when present)
-       and calls ``client_binding.discover_customer_context()``.
+    2. Derives customer lookup args from ``state.customer`` (the channel's
+       caller hint), falling back to ``state.draft.customer``, and calls
+       ``client_binding.discover_customer_context()``.
     3. Maps the ``CustomerContextView`` (already minimized by the 03 contract)
        to a ``state.CustomerContext``; ``recent_booking_summaries`` is always
        empty here (§9.2 — sensitive history only with a verification grant).
@@ -42,7 +43,8 @@ async def load_context(state: AgentState) -> dict:
        rather than crashing the graph.
 
     Args:
-        state: Current ``AgentState``; ``draft.customer`` provides lookup hints.
+        state: Current ``AgentState``; ``customer`` and ``draft.customer``
+            provide lookup hints.
 
     Returns:
         A partial ``AgentState`` update dict containing zero or more of:
@@ -69,6 +71,17 @@ async def load_context(state: AgentState) -> dict:
         # Only update if not already stamped (resolve_tenant may have set it).
         if not state.tenant_policy_version:
             result["tenant_policy_version"] = tenant_view.policy_version
+        # The venue's zone is what makes a spoken time an instant.  Carried on
+        # state rather than re-fetched: capture_fields needs it every turn, and a
+        # second lookup per turn buys nothing on a call with a latency budget.
+        result["tenant_timezone"] = tenant_view.timezone
+        # Opening hours ride along for the same reason: answer_inquiry needs
+        # them to say when we close, and clarify needs them to say we're shut.
+        result["tenant_hours"] = (
+            [h.model_dump(mode="json") for h in tenant_view.hours]
+            if tenant_view.hours
+            else None
+        )
     else:
         _log.warning(
             "load_context: tenant context unavailable (status=%s); "
@@ -77,13 +90,20 @@ async def load_context(state: AgentState) -> dict:
         )
 
     # ------------------------------------------------------------------
-    # 2. Customer context — derive lookup args from the draft if available.
+    # 2. Customer context — the channel's caller hint first, the draft second.
     # ------------------------------------------------------------------
-    customer_ref = state.draft.customer if state.draft else None
+    # This node runs on the FIRST turn, before identify_intent has built a
+    # draft, so deriving the phone from state.draft.customer alone meant
+    # discovery always ran with None and never recognised a returning caller.
+    # state.customer is the channel-supplied CustomerRef (telephony ANI) and is
+    # populated from turn one, so it is the primary source; the draft is kept as
+    # a fallback for whatever the customer volunteered later in the dialog.
+    phone_e164: str | None = state.customer.phone_e164 if state.customer else None
 
-    phone_e164: str | None = None
-    if customer_ref is not None:
-        phone_e164 = customer_ref.phone_e164
+    if phone_e164 is None and state.draft is not None:
+        draft_customer = state.draft.customer
+        if draft_customer is not None:
+            phone_e164 = draft_customer.phone_e164
 
     customer_env = await discover_customer_context(phone_e164=phone_e164)
     customer_view = parse_customer_context(customer_env)

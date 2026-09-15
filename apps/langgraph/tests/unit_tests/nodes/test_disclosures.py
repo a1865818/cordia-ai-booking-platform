@@ -294,3 +294,55 @@ async def test_consent_gate_plus_read_back_satisfy_the_confirmation_gate() -> No
         BOOKING_TERMS,
         AVAILABILITY_ADVISORY,
     }
+
+
+@pytest.mark.unit
+async def test_an_unchanged_read_back_is_not_said_twice() -> None:
+    """read_back re-renders on the turn the customer confirms on, so the whole
+    booking was read out again immediately before the acknowledgement:
+    "...shall I book it in for you? Got it, that's gone through." Nobody reads a
+    booking back to themselves and then says "got it"."""
+    draft = _draft()
+    first = await read_back(
+        AgentState(draft=draft, availability_mode=AvailabilityMode.HELD)
+    )
+
+    assert "read_back_text" in first
+
+    heard = AgentState(
+        draft=draft,
+        availability_mode=AvailabilityMode.HELD,
+        read_back_version=first["read_back_version"],
+        read_back_first_presented_turn_id="turn_001",
+        current_turn_id="turn_002",
+    )
+    second = await read_back(heard)
+
+    assert "read_back_text" not in second
+    assert second["read_back_version"] == first["read_back_version"]
+
+
+@pytest.mark.unit
+async def test_a_changed_read_back_is_said_again() -> None:
+    """Suppression is keyed on the version, so a customer who changes something
+    hears the new terms — which is the whole point of reading them back."""
+    first = await read_back(
+        AgentState(draft=_draft(), availability_mode=AvailabilityMode.HELD)
+    )
+
+    changed = _draft()
+    changed = changed.model_copy(
+        update={"request": changed.request.model_copy(update={"party_size": 6})}
+    )
+    second = await read_back(
+        AgentState(
+            draft=changed,
+            availability_mode=AvailabilityMode.HELD,
+            read_back_version=first["read_back_version"],
+            read_back_first_presented_turn_id="turn_001",
+            current_turn_id="turn_002",
+        )
+    )
+
+    assert "read_back_text" in second
+    assert "six people" in second["read_back_text"]

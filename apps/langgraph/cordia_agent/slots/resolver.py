@@ -55,7 +55,8 @@ async def resolve_resource_names(captures: list[SlotCapture]) -> list[SlotCaptur
 
     Returns:
         A new list with every name capture removed, plus an id capture for each
-        name that resolved to exactly one declared resource.  An explicit
+        name that resolved to exactly one declared resource, each carrying the
+        declared resource's ``name`` on ``resolved_name`` for read-back.  An explicit
         identifier the customer actually spoke always wins: it is left untouched
         and its name counterpart is discarded unresolved.
     """
@@ -100,6 +101,11 @@ async def resolve_resource_names(captures: list[SlotCapture]) -> list[SlotCaptur
                     "field": id_field,
                     "value": view.resolved.resource_id,
                     "normalized_value": view.resolved.resource_id,
+                    # The identifier is the material term; the name is how it is
+                    # said out loud.  Keeping it is the whole difference between
+                    # a read-back that says "Fitzroy dining room" and one that
+                    # says "fitzroy".
+                    "resolved_name": view.resolved.name,
                 }
             )
         )

@@ -410,9 +410,11 @@ class AzureRealtimeSTTProvider:
             AudioProviderError: on a rejected handshake, or on an ``error``
                 frame.  Carries the operation and the code only, never a body.
             TimeoutError: if the session could not be opened within any
-                attempt's budget, or if the service fell silent for longer than
-                ``settings.max_utterance_seconds`` while audio was still being
-                sent.
+                attempt's budget, if an utterance that had already started ran
+                longer than ``settings.max_utterance_seconds``, or if a line
+                with no speech in progress stayed quiet longer than
+                ``settings.idle_timeout_seconds`` (unset by default: a quiet
+                caller is not an error).
         """
         socket, owned = await self._acquire()
         exhausted = asyncio.Event()
@@ -576,14 +578,27 @@ class AzureRealtimeSTTProvider:
 
         Waiting is done on the socket AND on *exhausted* together, so the
         receiver reacts to the producer finishing without waiting out a
-        timeout.  Two deadlines bound every wait:
+        timeout.  Which deadline bounds a wait depends on what the stream is
+        doing, and getting that wrong is the bug this shape exists to fix:
 
-        - while audio is still flowing, ``max_utterance_seconds`` — the service
-          is legitimately silent during caller silence, so this is a
-          dead-socket watchdog, not an endpointing deadline;
         - once audio is exhausted, ``base_timeout_seconds`` as a drain window
           for a transcription still in flight, after which the stream ends
-          rather than hanging.
+          rather than hanging;
+        - while an utterance is IN PROGRESS — the service has reported speech
+          onset (or is emitting deltas) and has not yet completed the
+          transcription — ``max_utterance_seconds``, which is exactly what its
+          name claims: the longest a single utterance may run;
+        - while the line is IDLE, with no speech in progress,
+          ``idle_timeout_seconds``, which is unset by default and so waits
+          indefinitely.  Only a real event or the producer finishing ends an
+          idle wait.
+
+        The idle case used to be bounded by ``max_utterance_seconds`` too,
+        which meant a caller who simply said nothing for 30 s had the stream
+        killed with TimeoutError.  Silence on a phone call is a normal state,
+        not a fault, and the kill was doubly expensive: it tore down the
+        pre-warmed session (see "Session reuse" above), so the next thing the
+        caller said paid the ~1.5 s handshake again and its front arrived late.
 
         Args:
             socket: The configured session socket.
@@ -594,11 +609,17 @@ class AzureRealtimeSTTProvider:
 
         Raises:
             AudioProviderError: on an ``error`` frame.
-            TimeoutError: if the service produced no frame for longer than the
-                watchdog while audio was still being sent.
+            TimeoutError: if an utterance already under way exceeded
+                ``max_utterance_seconds``, or if an idle line exceeded a
+                configured ``idle_timeout_seconds``.
         """
         settings = self._settings
         pending = False
+        # Whether an utterance is under way for the purposes of the deadline
+        # above.  Tracked separately from `pending` because `pending` also
+        # drives the drain policy, and because a delta-only model reaches
+        # "speaking" without ever sending a speech_started frame.
+        speaking = False
         recv_task: asyncio.Task[str | bytes] | None = None
         exhausted_task = asyncio.create_task(
             exhausted.wait(), name="azure-realtime-stt-exhausted"
@@ -618,13 +639,20 @@ class AzureRealtimeSTTProvider:
                 if not draining:
                     waiters.add(exhausted_task)
 
+                if draining:
+                    timeout = settings.base_timeout_seconds
+                elif speaking:
+                    timeout = settings.max_utterance_seconds
+                else:
+                    # None waits forever, and that is deliberate: `waiters`
+                    # still carries `exhausted_task` whenever the stream is not
+                    # draining, so a producer that finishes while the line is
+                    # quiet still wakes this wait immediately.
+                    timeout = settings.idle_timeout_seconds
+
                 done, _ = await asyncio.wait(
                     waiters,
-                    timeout=(
-                        settings.base_timeout_seconds
-                        if draining
-                        else settings.max_utterance_seconds
-                    ),
+                    timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
@@ -635,9 +663,15 @@ class AzureRealtimeSTTProvider:
                             "outstanding; ending the stream"
                         )
                         return
+                    if speaking:
+                        raise TimeoutError(
+                            "azure realtime transcription did not complete an "
+                            f"utterance within {settings.max_utterance_seconds}s"
+                        )
                     raise TimeoutError(
-                        "azure realtime transcription produced no event within "
-                        f"{settings.max_utterance_seconds}s"
+                        "azure realtime transcription saw no speech within the "
+                        f"configured idle timeout of "
+                        f"{settings.idle_timeout_seconds}s"
                     )
 
                 if recv_task not in done:
@@ -656,6 +690,7 @@ class AzureRealtimeSTTProvider:
                 payload = _decode(raw)
                 if payload is None:
                     continue
+                speaking = _speaking_after(payload, speaking)
                 for event, still_pending in self._translate(payload, pending):
                     pending = still_pending
                     if event is not None:
@@ -845,6 +880,42 @@ def _append_frame(pcm: bytes) -> str:
             "audio": base64.b64encode(pcm).decode("ascii"),
         }
     )
+
+
+def _speaking_after(payload: Mapping[str, Any], speaking: bool) -> bool:
+    """Return whether an utterance is under way once *payload* is applied.
+
+    This is what selects between the idle deadline and
+    ``max_utterance_seconds`` in :meth:`AzureRealtimeSTTProvider._receive_events`,
+    so it tracks the utterance rather than the transcription:
+
+    - ``speech_started`` is the service saying the caller began talking, and a
+      non-empty ``...transcription.delta`` is the same statement made by a
+      model that reports interim text without an onset frame.  Either starts
+      the utterance.
+    - ``speech_stopped`` does NOT end it.  The transcript has not arrived yet,
+      and that wait is part of the utterance the cap is meant to bound.
+    - ``...transcription.completed`` ends it, whether or not a final was
+      emitted for it — an empty transcript (a cough) is still the end of the
+      utterance, and leaving the flag set there would apply an utterance cap to
+      a line that has gone back to being quiet.
+
+    Args:
+        payload: The parsed server frame.
+        speaking: Whether an utterance was under way before this frame.
+
+    Returns:
+        The updated flag.
+    """
+    message_type = payload.get("type")
+    if message_type == SPEECH_STARTED_EVENT:
+        return True
+    if message_type == TRANSCRIPTION_DELTA_EVENT:
+        delta = payload.get("delta")
+        return True if isinstance(delta, str) and delta else speaking
+    if message_type == TRANSCRIPTION_COMPLETED_EVENT:
+        return False
+    return speaking
 
 
 def _decode(raw: str | bytes) -> dict[str, Any] | None:
