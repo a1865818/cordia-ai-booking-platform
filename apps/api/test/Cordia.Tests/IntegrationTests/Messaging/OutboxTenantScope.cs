@@ -79,6 +79,12 @@ internal sealed class TenantScopedOutboxRepository(
     public Task<bool> ExistsAsync(string requestedTenantId, string messageId, CancellationToken ct = default)
         => inner.ExistsAsync(requestedTenantId, messageId, ct);
 
+    // Renewal only touches rows this worker already claimed, and the claim above is what scopes
+    // those to the tenant — so delegating cannot reach a foreign row.
+    public Task<int> RenewLeaseAsync(
+        IReadOnlyCollection<string> messageIds, string leaseOwner, DateTimeOffset leaseExpiresAt, CancellationToken ct = default)
+        => inner.RenewLeaseAsync(messageIds, leaseOwner, leaseExpiresAt, ct);
+
     /// <summary>
     /// The production claim (<c>OutboxRepository.ClaimBatchAsync</c>) with one extra predicate:
     /// <c>tenant_id = {0}</c>. Same short transaction, same lease/attempt bookkeeping, same

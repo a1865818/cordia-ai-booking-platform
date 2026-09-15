@@ -37,6 +37,18 @@ public interface IOutboxRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Extends the lease on rows this worker still owns and has not published (spec 05 OD-3
+    /// renewal, #102). A row another worker has reclaimed — or that is already published — is left
+    /// untouched and not counted, so a return below the number of ids asked for means ownership was
+    /// lost on the difference.
+    /// </summary>
+    Task<int> RenewLeaseAsync(
+        IReadOnlyCollection<string> messageIds,
+        string leaseOwner,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Marks a message as published (§5.1 mark phase): sets published_at, clears the lease.
     /// Uses ExecuteUpdateAsync (no tracked entity needed) — runs in its own implicit transaction.
     /// </summary>

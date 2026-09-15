@@ -246,3 +246,15 @@ drop one).
   same-tenant notification on an unrelated booking — the first draft could not see it.
 - Local Bun is 1.3.14 and the web suite guards on ≥1.4.0 (CI uses latest), so web tests were run with
   `npx bun@latest test --parallel`: 725 pass.
+
+### Phase 13 *(committed before 9 and 10 — no dependency on either)*
+- The research note was right that renewing *between* rows cannot help the row inside the opaque
+  transport call — but that row does not need it: `LeaseSeconds` is already sized for one slow row.
+  The rows at risk are the ones **waiting**. So before each transport call the lane renews the
+  current row and every row still queued behind it; the budget becomes per-row.
+- The current row is renewed on its own so a zero is unambiguous: another publisher reclaimed it,
+  and this worker skips it rather than publishing twice. `lease_owner = me` in the update is what
+  stops renewal stealing a reclaimed row back (mutation M3).
+- The first probe checked the lease at publish *start*, which cannot fail — the current-row renewal
+  happens a line earlier. The probe now runs at the end of each simulated publish across every
+  unpublished row, and only then did removing waiting-row renewal go red.

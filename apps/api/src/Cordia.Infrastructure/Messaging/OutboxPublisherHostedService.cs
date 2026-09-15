@@ -46,9 +46,8 @@ public sealed class OutboxPublisherHostedService(
     {
         var pub = _options.Publisher;
         var now = DateTimeOffset.UtcNow;
-        // ONE lease for the whole batch, stamped at claim time and never renewed. See
-        // OutboxPublisherOptions.LeaseSeconds for why that is deliberate, and for what it
-        // does NOT guarantee once a single lane holds several slow rows.
+        // The claim stamps one lease on the whole batch. PublishLaneAsync renews it before every
+        // transport call (#102), so a row waiting behind slow rows in its lane never outlives it.
         var leaseExpiresAt = now.AddSeconds(pub.LeaseSeconds);
 
         // ── Claim phase ─────────────────────────────────────────────────────────────
@@ -133,7 +132,7 @@ public sealed class OutboxPublisherHostedService(
         // Concurrency is bounded by the number of distinct logical queues in the batch (≤ 9), not
         // by BatchSize, so this cannot open an unbounded number of scopes/connections.
         var laneCounts = await Task.WhenAll(
-            lanes.Select(lane => PublishLaneAsync(lane.Key, lane.Value, maxAttempts, ct)));
+            lanes.Select(lane => PublishLaneAsync(lane.Key, lane.Value, maxAttempts, pub.LeaseSeconds, ct)));
 
         return laneCounts.Sum();
     }
@@ -146,16 +145,47 @@ public sealed class OutboxPublisherHostedService(
         LogicalQueue queue,
         IReadOnlyList<ClaimedRow> rows,
         int maxAttempts,
+        int leaseSeconds,
         CancellationToken ct)
     {
         var published = 0;
 
-        foreach (var row in rows)
+        for (var i = 0; i < rows.Count; i++)
         {
+            var row = rows[i];
             await using var scope = scopeFactory.CreateAsyncScope();
 
             var transport = scope.ServiceProvider.GetRequiredService<IMessageTransport>();
             var markRepo = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();
+
+            // ── Lease renewal (#102, spec 05 OD-3) ──────────────────────────────────────
+            // The claim's lease is sized for ONE slow row (LeaseSeconds ≈ 2.5× an extraction),
+            // but rows in a lane publish one after another, so the third 120 s row used to start
+            // after its lease had already expired. Another publisher would reclaim it, burn a
+            // publish_attempts increment on a healthy row, and block on the inbox lock.
+            //
+            // Renewing every row still waiting in this lane, immediately before each transport
+            // call, keeps the budget per-row: whatever is running now has LeaseSeconds of cover,
+            // and so does everything queued behind it.
+            //
+            // The current row is renewed on its own so its answer is unambiguous. Zero means a
+            // publisher reclaimed it while it waited — that worker owns it now, so this one steps
+            // aside instead of publishing it a second time.
+            var renewedUntil = DateTimeOffset.UtcNow.AddSeconds(leaseSeconds);
+            if (await markRepo.RenewLeaseAsync([row.MessageId], _workerId, renewedUntil, ct) == 0)
+            {
+                logger.LogWarning(
+                    "Outbox publisher {WorkerId}: lease on message_id={MessageId} was lost before publish "
+                    + "(reclaimed or already published); skipping it",
+                    _workerId, row.MessageId);
+                continue;
+            }
+
+            if (i + 1 < rows.Count)
+            {
+                await markRepo.RenewLeaseAsync(
+                    rows.Skip(i + 1).Select(r => r.MessageId).ToList(), _workerId, renewedUntil, ct);
+            }
 
             var envelope = BuildEnvelope(row);
 

@@ -97,6 +97,26 @@ public class OutboxRepository(ApplicationDbContext db) : IOutboxRepository
         return rows;
     }
 
+    public Task<int> RenewLeaseAsync(
+        IReadOnlyCollection<string> messageIds,
+        string leaseOwner,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken ct = default)
+    {
+        if (messageIds.Count == 0)
+            return Task.FromResult(0);
+
+        // Cross-tenant like the claim: the lease owner is this worker's unique id, so owner +
+        // message id identifies exactly the rows this worker claimed. `lease_owner = me` is the
+        // guard that matters — renewing a row someone else has reclaimed would steal it back.
+        return db.Set<OutboxMessage>()
+            .IgnoreQueryFilters()
+            .Where(m => messageIds.Contains(m.MessageId)
+                && m.LeaseOwner == leaseOwner
+                && m.PublishedAt == null)
+            .ExecuteUpdateAsync(b => b.SetProperty(m => m.LeaseExpiresAt, leaseExpiresAt), ct);
+    }
+
     public Task MarkPublishedAsync(
         string tenantId,
         string messageId,
