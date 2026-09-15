@@ -30,6 +30,9 @@
 
 BEGIN;
 
+-- The venue's wall clock. Every sitting hour below is local to this.
+\set VENUE_TZ '\'Australia/Melbourne\''
+
 -- ---------------------------------------------------------------------------
 -- The venue
 -- ---------------------------------------------------------------------------
@@ -56,6 +59,20 @@ ON CONFLICT (tenant_id) DO UPDATE SET display_name = EXCLUDED.display_name,
 -- .NET writes `yyyy-MM-ddTHH:mm:ss.fffffffzzz` — seven fractional digits and an
 -- explicit offset — and a draft carrying a different offset derives a different
 -- key and falls back to the informational path. Reproduced exactly below.
+--
+-- SITTING HOURS ARE VENUE-LOCAL, AND SAID SO EXPLICITLY.
+--
+-- The earlier version of this block built `timestamp WITHOUT time zone` values
+-- (`now() AT TIME ZONE 'UTC'` returns one) and inserted them into `starts_at`,
+-- which is `timestamptz`. Postgres resolves that cast using the SESSION
+-- timezone, so the rows depended on who ran the seed and from where: run inside
+-- the container you got 08:00 UTC, run from a host in Australia/Adelaide you got
+-- 22:30 UTC the previous day. The comment claimed UTC either way. A venue's
+-- breakfast is 8am where the venue is, so the timezone is now named once, and
+-- `... AT TIME ZONE :VENUE_TZ` converts local wall-clock to an instant with DST
+-- handled. Iterating days x hours also replaces the old
+-- generate_series-every-hour-then-filter, whose WHERE clause read the hour back
+-- in session time and so carried the same bug a second time.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO public.capacity_slots (
@@ -65,10 +82,10 @@ INSERT INTO public.capacity_slots (
 SELECT
     'tenant_dev_001',
     sitting.service_id || '|' ||
-        to_char(slot_time AT TIME ZONE 'UTC',
+        to_char(slot_ts AT TIME ZONE 'UTC',
                 'YYYY-MM-DD"T"HH24:MI:SS') || '.0000000+00:00',
     sitting.service_id,
-    slot_time,
+    slot_ts,
     sitting.covers,
     0,
     0,
@@ -79,17 +96,61 @@ FROM (
         ('lunch',     12, 14, 40),
         ('dinner',    17, 21, 60)
 ) AS sitting(service_id, first_hour, last_hour, covers)
+CROSS JOIN generate_series(0, 60) AS d(day_offset)
+CROSS JOIN generate_series(sitting.first_hour, sitting.last_hour) AS h(hour_of_day)
 CROSS JOIN LATERAL (
-    SELECT generate_series(
-        date_trunc('day', now() AT TIME ZONE 'UTC') + make_interval(hours => sitting.first_hour),
-        date_trunc('day', now() AT TIME ZONE 'UTC') + interval '60 days'
-            + make_interval(hours => sitting.last_hour),
-        interval '1 hour'
-    ) AS slot_time
-) AS slots
--- generate_series walks every hour of every day; keep only this sitting's hours.
-WHERE EXTRACT(hour FROM slot_time) BETWEEN sitting.first_hour AND sitting.last_hour
+    SELECT (
+        date_trunc('day', now() AT TIME ZONE :VENUE_TZ)
+            + make_interval(days => d.day_offset, hours => h.hour_of_day)
+    ) AT TIME ZONE :VENUE_TZ AS slot_ts
+) AS s
 ON CONFLICT (tenant_id, slot_id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- The venue as the AGENT reads it
+--
+-- `GET /api/tenant-context` serves this row to `get_tenant_context`, which
+-- `load_context` calls on every turn. Two tenants existed side by side and only
+-- one had a profile: the console seeds `demo` (business_type 'salon', which this
+-- restaurant is not), while every phone call runs as `tenant_dev_001`, which had
+-- no profile row at all. So the agent fell back to defaults for the one venue it
+-- actually answers for.
+--
+-- `timezone` is the field that matters most. Without it a spoken "seven pm" was
+-- recorded as 19:00Z — 5am in Melbourne — so the booking fell outside every
+-- sitting and the read-back confirmed a time nobody had said. The sitting hours
+-- above are local to exactly this zone.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO public.tenant_profiles (
+    tenant_id, business_type, waitlist_auto_book, timezone, currency,
+    hours_json, created_at, updated_at
+) VALUES (
+    'tenant_dev_001',
+    'restaurant',
+    false,
+    'Australia/Melbourne',
+    'AUD',
+    -- Open across all three sittings; closed Monday, as restaurants are.
+    '[
+        {"d":"Monday","open":"08:00","close":"22:00","on":false},
+        {"d":"Tuesday","open":"08:00","close":"22:00","on":true},
+        {"d":"Wednesday","open":"08:00","close":"22:00","on":true},
+        {"d":"Thursday","open":"08:00","close":"22:00","on":true},
+        {"d":"Friday","open":"08:00","close":"22:00","on":true},
+        {"d":"Saturday","open":"08:00","close":"22:00","on":true},
+        {"d":"Sunday","open":"08:00","close":"22:00","on":true}
+    ]'::jsonb,
+    now(),
+    now()
+)
+ON CONFLICT (tenant_id) DO UPDATE SET
+    business_type      = EXCLUDED.business_type,
+    waitlist_auto_book = EXCLUDED.waitlist_auto_book,
+    timezone           = EXCLUDED.timezone,
+    currency           = EXCLUDED.currency,
+    hours_json         = EXCLUDED.hours_json,
+    updated_at         = now();
 
 -- ---------------------------------------------------------------------------
 -- The menu
@@ -233,17 +294,27 @@ VALUES
      ARRAY['lunchtime', 'midday', 'lunch service'], true),
     ('tenant_dev_001', 'service', 'dinner', 'Dinner sitting',
      ARRAY['evening', 'supper', 'dinner service', 'evening sitting'], true),
-    -- Kept so the existing runners and docs keep working verbatim.
+    -- INACTIVE on purpose. Its capacity rows (seed-dev-tenant.sql, every hour for
+    -- 60 days) stay, so the runners and docs that speak `svc_001` outright keep
+    -- working — they capture the identifier directly and never go through name
+    -- resolution. But an always-open catch-all service must not be a BOOKABLE
+    -- one: the repository filters on `active`, so listing it offered callers a
+    -- meaningless "General booking" choice, and because it has capacity at every
+    -- hour it also made the sitting ambiguous at every hour, which is the one
+    -- thing that stops the agent deriving dinner from 7pm on its own.
     ('tenant_dev_001', 'service', 'svc_001', 'General booking',
-     ARRAY['general', 'standard booking'], true),
+     ARRAY['general', 'standard booking'], false),
 
     ('tenant_dev_001', 'location', 'fitzroy', 'Fitzroy dining room',
      ARRAY['fitzroy room', 'the fitzroy', 'dining room', 'main dining room',
            'downstairs'], true),
     ('tenant_dev_001', 'location', 'rooftop', 'Rooftop terrace',
      ARRAY['roof', 'the roof', 'terrace', 'upstairs', 'rooftop bar'], true),
+    -- INACTIVE for the same reason as svc_001 above: a placeholder kept so older
+    -- runners that speak `loc_001` outright keep working, but offered to callers
+    -- it reads as a third room the venue does not have.
     ('tenant_dev_001', 'location', 'loc_001', 'Main venue',
-     ARRAY['main venue'], true)
+     ARRAY['main venue'], false)
 ON CONFLICT (tenant_id, kind, resource_id) DO UPDATE
     SET name    = EXCLUDED.name,
         aliases = EXCLUDED.aliases,
@@ -276,6 +347,10 @@ ORDER BY category;
 
 SELECT kind, string_agg(resource_id, ', ' ORDER BY resource_id) AS resources
 FROM public.tenant_resources
-WHERE tenant_id = 'tenant_dev_001'
+WHERE tenant_id = 'tenant_dev_001' AND active
 GROUP BY kind
 ORDER BY kind;
+
+SELECT tenant_id, business_type, timezone, currency
+FROM public.tenant_profiles
+WHERE tenant_id = 'tenant_dev_001';

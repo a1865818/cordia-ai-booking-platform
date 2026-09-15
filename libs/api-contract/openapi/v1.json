@@ -256,6 +256,13 @@
           "request": {
             "$ref": "#/components/schemas/BookingRequest"
           },
+          "resolved_names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "object"
+          },
           "schema_version": {
             "nullable": true,
             "type": "string"
@@ -3047,6 +3054,49 @@
         },
         "type": "object"
       },
+      "TenantContextResult": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "currency": {
+            "nullable": true,
+            "type": "string"
+          },
+          "hours": {
+            "items": {
+              "$ref": "#/components/schemas/OperatingHoursDay"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "policy_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "supported_operations": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "timezone": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "TenantDisplayNameResult": {
         "additionalProperties": false,
         "properties": {
@@ -3229,6 +3279,52 @@
           "capacity_unavailable",
           "policy_failed",
           "stale_version",
+          "valid"
+        ],
+        "type": "string"
+      },
+      "ValidateBookingDraftResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ValidateBookingDraftStatusEnum"
+          },
+          "customer_message": {
+            "nullable": true,
+            "type": "string"
+          },
+          "policy_version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "recoverable_fields": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ValidateBookingDraftStatusEnum"
+          },
+          "suggested_action": {
+            "nullable": true,
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ValidateBookingDraftStatusEnum": {
+        "enum": [
+          "field_ambiguous",
+          "field_missing",
+          "minimum_notice_not_met",
+          "outside_operating_hours",
+          "party_size_unsupported",
+          "service_ineligible",
           "valid"
         ],
         "type": "string"
@@ -4401,6 +4497,74 @@
         },
         "tags": [
           "Availability"
+        ]
+      }
+    },
+    "/api/booking-drafts/validate": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingDraft"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingDraft"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingDraft"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingDraftResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingDraftResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateBookingDraftResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "BookingDrafts"
         ]
       }
     },
@@ -10154,6 +10318,55 @@
         ]
       }
     },
+    "/api/tenant-context": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResult"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantContextResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "TenantContext"
+        ]
+      }
+    },
     "/api/tenant-profile": {
       "get": {
         "responses": {
@@ -11375,6 +11588,9 @@
       "name": "Availability"
     },
     {
+      "name": "BookingDrafts"
+    },
+    {
       "name": "BookingOperations"
     },
     {
@@ -11442,6 +11658,9 @@
     },
     {
       "name": "TelephonyWebhook"
+    },
+    {
+      "name": "TenantContext"
     },
     {
       "name": "TenantProfile"

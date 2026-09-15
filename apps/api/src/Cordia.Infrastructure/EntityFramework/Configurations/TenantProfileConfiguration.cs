@@ -16,6 +16,8 @@ public class TenantProfileConfiguration : IEntityTypeConfiguration<TenantProfile
         builder.Property(e => e.TenantId).IsRequired();
         builder.Property(e => e.BusinessType).HasMaxLength(32);
         builder.Property(e => e.WaitlistAutoBook).HasDefaultValue(false);
+        builder.Property(e => e.Timezone).HasMaxLength(64);
+        builder.Property(e => e.Currency).HasMaxLength(3);
         builder.Property(e => e.HoursJson).HasColumnType("jsonb");
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
