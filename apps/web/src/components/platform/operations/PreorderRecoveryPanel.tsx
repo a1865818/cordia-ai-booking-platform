@@ -112,8 +112,8 @@ export function PreorderRecoveryPanel() {
     <Panel style={{ marginBottom: 18, padding: '15px' }}>
       <div className="flex items-start gap-[11px] mb-[13px]">
         <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center shrink-0"
-          style={{ background: '#FBF3DF' }}>
-          <Icon name="takeover" size={17} strokeWidth={2.1} color="#C98A09" />
+          style={{ background: '#F1F1EE' }}>
+          <Icon name="takeover" size={17} strokeWidth={2.1} color="#0A0A0A" />
         </span>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold text-ink">Resolve a parked pre-order</div>

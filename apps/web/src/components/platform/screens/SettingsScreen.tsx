@@ -348,15 +348,15 @@ export function SettingsScreen({ device }: SettingsScreenProps) {
         )}
         {hours.map((h, i) => (
           <div key={h.d}
-            className="flex items-center justify-between gap-3 py-[11px]"
+            className="flex items-center gap-3 py-[11px]"
             style={{ borderBottom: i < hours.length - 1 ? "1px solid #EFEFEF" : "none" }}>
-            <span className="text-[13.5px] text-ink font-medium w-[42px] shrink-0">{h.d}</span>
+            <span className="text-[13.5px] text-ink font-medium w-[90px] shrink-0">{h.d}</span>
             <Toggle
               on={h.on}
               onClick={() => setHoursDraft(prev => (prev ?? hours).map((row, idx) => idx === i ? { ...row, on: !row.on } : row))}
             />
             {h.on ? (
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center gap-2 min-w-0" style={{ marginLeft: "auto" }}>
                 <input
                   type="time"
                   value={toHHmm(parseTime(h.open))}
@@ -377,11 +377,12 @@ export function SettingsScreen({ device }: SettingsScreenProps) {
                 </span>
               </div>
             ) : (
-              <span className="text-[12px] text-t3">Closed</span>
+              <span className="text-[12px] text-t3" style={{ marginLeft: "auto" }}>Closed</span>
             )}
           </div>
         ))}
         {hours.length > 0 && (
+          <div style={{ padding: "12px 0" }}>
           <button
             type="button"
             disabled={hoursMut.isPending}
@@ -390,11 +391,12 @@ export function SettingsScreen({ device }: SettingsScreenProps) {
               open: toHHmm(parseTime(h.open)),
               close: toHHmm(parseTime(h.close)),
             })))}
-            className="text-[12.5px] font-semibold text-white bg-ink px-4 py-[7px] rounded-[8px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40 mt-3"
+            className="text-[12.5px] font-semibold text-white bg-ink px-4 py-[7px] rounded-[8px] border-none cursor-pointer hover:brightness-110 transition-all disabled:opacity-40"
             style={{ fontFamily: "'Inter Tight', system-ui, sans-serif" }}
           >
             {hoursMut.isPending ? "Saving…" : "Save hours"}
           </button>
+          </div>
         )}
       </Panel>
 
