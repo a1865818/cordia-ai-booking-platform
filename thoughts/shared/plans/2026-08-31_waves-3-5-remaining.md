@@ -352,3 +352,34 @@ drop one).
   among identical `updated_at` values changed, which no caller depends on.
 - Mutation note: an inclusive cursor (`<=`) repeats one row per page; the tie test cannot see it
   (the schedule de-duplicates by key) but the ceiling test does (the probe then finds a row).
+
+---
+
+## Code review (xhigh, Sonnet subagents) — 2026-09-15
+
+15 findings, each verified against the code before acting.
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | Webhook HMAC checked against the resolved tenant context — empty outside Development, so no genuine receipt could verify | **Fixed** `996786c`: sign the raw `X-Tenant-Id`; a verified signature establishes the tenant |
+| 7 | Whitespace store secret hid the legacy key and was accepted as an HMAC key | **Fixed** `996786c` |
+| 10 | `.`-separated signed message let bytes shift between tenant and body | **Fixed** `996786c`: tenant length-prefixed |
+| 2 | A reconcile lookup that throws left a half-open probe unrecorded → lookup circuit shut until restart | **Fixed** `293ba14` |
+| 3 | Controller `OperatorGuard` on refund/notes mutations refused before the behaviour, so no DENY audit | **Fixed** `acff69c`: guards removed from mutations |
+| 4 | Schedule, operations list, work items, conversation list, waitlist enrollments still tenant-only | **Fixed** `acff69c` |
+| 14 | Proven-identity predicate duplicated in behaviour and guard | **Fixed** `acff69c`: `OperatorGuard.IsTrusted` |
+| 5 | Lease renewal outside the per-row try/catch → one DB error stranded the lane | **Fixed** `5ba1b25` |
+| 13 | Fence built its own lock instead of the registered `IOperationDecisionLock` | **Fixed** `5ba1b25` |
+| 6 | Notification adapters (stubs) missing from the startup stub list | **Fixed** `511c241` |
+| 9 | Notification read capped oldest-first, dropping the newest state | **Fixed** `5a964a1` |
+| 8 | Verification cannot complete in deployments (no delivery channel) | **Accepted, not a code fix** — the fixed "000000" was the vulnerability; delivery channel is a follow-up |
+| 11 | `CREATE INDEX` (not `CONCURRENTLY`) on `booking_operations` blocks writes during the build | **Open — needs a decision**: requires editing the branch-only Phase 15 migration, which the migration-immutability hook blocks without `SKIP` |
+| 12 | Two renewal UPDATEs per row | **Not changed** — negligible next to the consumer transaction each publish runs; the per-row renewal is what makes lost-lease detection exact |
+| 15 | `tenant_capacity_primitives` not read on any live path | **Not changed** — recorded in Phase 10 discoveries; intended until an external provider is wired |
+
+Found while verifying: the agent calls `GET /api/customers/context`, which no controller implements
+(404 before this branch, 403 in production now). Filed as a follow-up, not a regression of working
+behaviour.
+
+Gates after fixes: unit 1932, integration 759 passed / 1 pre-existing skip, lint clean; every fix
+mutation-tested against its own test.
