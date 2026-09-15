@@ -354,7 +354,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         await using var sp2 = BuildContainer(tenantId);
         using var scope = sp2.CreateScope();
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
         await mediator.Send(new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Waitlist));
 
@@ -401,7 +401,7 @@ public class StateMachineCapstoneTests(PostgresFixture fixture)
         await using var sp2 = BuildContainer(tenantId);
         using var scope = sp2.CreateScope();
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
         await mediator.Send(new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline));
 

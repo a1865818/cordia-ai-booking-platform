@@ -174,3 +174,32 @@ drop one).
    a shared backend.
 3. Real implementations for the five stub ports.
 4. `MenuController`'s stale "open 08/14 decision" comment — the decision closed on 2026-07-11.
+
+---
+
+## Discoveries and notable information (filled during implementation)
+
+### Phase 1
+- The provenance gate had teeth immediately: `ManualRecoveryTests` dispatches operator commands
+  straight through MediatR with no session and builds its own container, so it needed
+  `Authorization:AllowAssertedStaffRole = true` explicitly. Six tests went red without it.
+
+### Phase 2
+- **The plan's mechanism was wrong.** `IOperatorActionRequest` mandates a non-empty `X-Reason-Code`,
+  and the console's reads call `fetchApi` with no actor options — adopting it would 403 every
+  customers/deposits/payouts/reporting screen. `OperatorGuard` (beside `TenantGuard`) checks only a
+  proven `ActorId`, on the same `AllowAssertedStaffRole` switch.
+- `GET /api/reporting/funnel` hand-rolled its own tenant check instead of `TenantGuard`; the sweep
+  initially missed it for exactly that reason. Normalised.
+
+### Phase 3
+- `SetTenant` refuses a blank tenant as well as a different one. Three test fixtures
+  (`PostgresFixture`, `AcceptanceApiFixture`, `TenantResolutionApiFixture`) legitimately build an
+  *unscoped* context with tenant `""` to read tenant-not-resolved audits; they now use the unstamped
+  constructor for that case.
+- The DI registration became a factory (`_ => new TenantContext()`) so the new `(string)` constructor
+  can never be considered by activator selection.
+- `ActorContext` was left byte-identical: #80 concerns the tenant, and the actor is only bound by
+  the verification middleware.
+- The replay collision is covered by a unit test on `PostgresMessageTransport`, because
+  `ReplayDeadLetterTests` substitutes the transport.

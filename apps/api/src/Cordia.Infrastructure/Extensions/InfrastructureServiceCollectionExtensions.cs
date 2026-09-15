@@ -98,7 +98,7 @@ public static class InfrastructureServiceCollectionExtensions
         // (tenant resolution, spec 15) resolves the concrete TenantContext from the same
         // scope and sets TenantId; both registrations return the SAME scoped instance so
         // the setter is observed by the DbContext's global query filter.
-        services.AddScoped<ITenantContext, TenantContext>();
+        services.AddScoped<ITenantContext>(_ => new TenantContext());
         services.AddScoped<TenantContext>(sp => (TenantContext)sp.GetRequiredService<ITenantContext>());
 
         services.AddScoped<IActorContext, ActorContext>();

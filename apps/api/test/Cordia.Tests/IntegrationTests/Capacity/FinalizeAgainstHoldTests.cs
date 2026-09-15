@@ -416,7 +416,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         {
             using var scope = sp.CreateScope();
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantId;
+            tenantCtx.SetTenant(tenantId);
 
             var mediator = scope.ServiceProvider.GetRequiredService<MediatR.IMediator>();
             // Drive Advance which dispatches Finalize for the Finalizing op.
@@ -643,7 +643,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         await using (var sp = BuildContainer(tenantId, fakeAdapter))
         {
             using var scope = sp.CreateScope();
-            scope.ServiceProvider.GetRequiredService<TenantContext>().TenantId = tenantId;
+            scope.ServiceProvider.GetRequiredService<TenantContext>().SetTenant(tenantId);
 
             outcome = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
                 new ReconcileOperationCommand(tenantId, operationId), CancellationToken.None);
@@ -716,7 +716,7 @@ public class FinalizeAgainstHoldTests(PostgresFixture fixture)
         await using (var sp = BuildContainer(tenantId, fakeAdapter))
         {
             using var scope = sp.CreateScope();
-            scope.ServiceProvider.GetRequiredService<TenantContext>().TenantId = tenantId;
+            scope.ServiceProvider.GetRequiredService<TenantContext>().SetTenant(tenantId);
 
             outcome = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
                 new ReconcileOperationCommand(tenantId, operationId), CancellationToken.None);

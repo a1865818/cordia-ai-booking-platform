@@ -68,7 +68,7 @@ public sealed class ReconcileNotificationsHostedService(
             // Background scopes have no HTTP middleware, so TenantContext.TenantId is empty
             // unless set here — mirroring what SlaEvaluatorHostedService does per operation.
             var tenantContext = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantContext.TenantId = snap.TenantId;
+            tenantContext.SetTenant(snap.TenantId);
 
             var reconciler = scope.ServiceProvider.GetRequiredService<INotificationReconciler>();
 

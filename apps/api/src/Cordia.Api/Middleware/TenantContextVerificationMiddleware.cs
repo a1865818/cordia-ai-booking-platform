@@ -71,7 +71,7 @@ public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
         ICorrelationContext correlation)
     {
         var claims = signer.Verify(jws);
-        tenantContext.TenantId = claims.TenantId;
+        tenantContext.SetTenant(claims.TenantId);
         correlation.Set(correlation.Current with { TenantId = claims.TenantId });
     }
 
@@ -87,7 +87,7 @@ public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
         var claims = signer.Verify(jws);
 
         // Set tenant BEFORE the session lookup so the EF query filter matches the claim.
-        tenantContext.TenantId = claims.TenantId;
+        tenantContext.SetTenant(claims.TenantId);
         correlation.Set(correlation.Current with { TenantId = claims.TenantId });
 
         // Skip DB revocation on logout so a second POST /api/auth/logout of a revoked-but-unexpired

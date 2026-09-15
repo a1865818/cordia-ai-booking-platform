@@ -776,7 +776,7 @@ public class CompensationAndCancellationTests(PostgresFixture fixture)
         // matches (GetAsync uses it without IgnoreQueryFilters).
         using var scope = sp.CreateScope();
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         // First call on non-terminal op → true (flag newly set).

@@ -122,7 +122,7 @@ public class NotificationReconcileTests(PostgresFixture fixture)
         await using (var scope = sp.CreateAsyncScope())
         {
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantId;
+            tenantCtx.SetTenant(tenantId);
             var reconciler = scope.ServiceProvider.GetRequiredService<INotificationReconciler>();
             await reconciler.ReconcileAsync(tenantId, notifId, CancellationToken.None);
         }

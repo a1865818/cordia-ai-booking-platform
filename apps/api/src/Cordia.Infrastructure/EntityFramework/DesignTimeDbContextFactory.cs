@@ -63,6 +63,6 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
 
         return new ApplicationDbContext(
             optionsBuilder.Options,
-            new TenantContext { TenantId = "design-time" });
+            new TenantContext("design-time"));
     }
 }

@@ -235,7 +235,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         // Must set TenantContext before direct mediator.Send calls so the global EF query
         // filter (e.TenantId == tenantCtx.TenantId) finds the seeded rows.
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -336,7 +336,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -421,7 +421,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx2 = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx2.TenantId = tenantId;
+        tenantCtx2.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -488,7 +488,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx3 = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx3.TenantId = tenantId;
+        tenantCtx3.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -514,7 +514,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx4 = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx4.TenantId = tenantId;
+        tenantCtx4.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -563,7 +563,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx5 = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx5.TenantId = tenantId;
+        tenantCtx5.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         await mediator.Send(new ResumeWorkflowStepCommand(tenantId, operationId, replayCommandId, "ops", "rc_test", "operator"));
@@ -611,7 +611,7 @@ public class ManualRecoveryTests(PostgresFixture fixture)
             using var sp = BuildContainer(fakeAdapter, tenantId);
             using var scope = sp.CreateScope();
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantId;
+            tenantCtx.SetTenant(tenantId);
 
             var escalator = scope.ServiceProvider.GetRequiredService<ManualReviewEscalator>();
             var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();

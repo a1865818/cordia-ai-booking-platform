@@ -71,7 +71,7 @@ public class AlternativesResponseTests(PostgresFixture fixture)
 
         // Must set TenantContext so the global EF query filter finds the seeded rows.
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
         await mediator.Send(new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Waitlist));
@@ -128,7 +128,7 @@ public class AlternativesResponseTests(PostgresFixture fixture)
 
         // Must set TenantContext so the global EF query filter finds the seeded rows.
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
         await mediator.Send(new RespondToAlternativesCommand(tenantId, operationId, AlternativesResponse.Decline));
@@ -185,7 +185,7 @@ public class AlternativesResponseTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -205,7 +205,7 @@ public class AlternativesResponseTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
 
         var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-        tenantCtx.TenantId = tenantId;
+        tenantCtx.SetTenant(tenantId);
 
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 

@@ -182,7 +182,7 @@ public class MissingNotificationAuditTests(PostgresFixture fixture)
         await using (var scope = sp.CreateAsyncScope())
         {
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantId;
+            tenantCtx.SetTenant(tenantId);
             var auditor = scope.ServiceProvider.GetRequiredService<IMissingNotificationAuditor>();
             await auditor.AuditAsync(tenantId, operationId, Cordia.Domain.Enums.OperationStatus.Booked, CancellationToken.None);
         }

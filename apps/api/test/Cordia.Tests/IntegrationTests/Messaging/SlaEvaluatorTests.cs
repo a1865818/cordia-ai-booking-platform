@@ -65,7 +65,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         using var scope = sp.CreateScope();
         // Set tenant context
         var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-        tenantContext.TenantId = tenantId;
+        tenantContext.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
@@ -98,7 +98,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         await using var sp = BuildContainer();
         using var scope = sp.CreateScope();
         var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-        tenantContext.TenantId = tenantId;
+        tenantContext.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
@@ -130,7 +130,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         await using var sp = BuildContainer();
         using var scope = sp.CreateScope();
         var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-        tenantContext.TenantId = tenantId;
+        tenantContext.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
@@ -159,7 +159,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         await using var sp = BuildContainer();
         using var scope = sp.CreateScope();
         var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-        tenantContext.TenantId = tenantId;
+        tenantContext.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
@@ -227,7 +227,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         await using var sp = BuildContainer();
         using var scope = sp.CreateScope();
         var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-        tenantContext.TenantId = tenantId;
+        tenantContext.SetTenant(tenantId);
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         // The outer read now sees Booked → IsTerminal → returns immediately.
@@ -262,7 +262,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         using (var scope = sp.CreateScope())
         {
             var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-            tenantContext.TenantId = tenantId;
+            tenantContext.SetTenant(tenantId);
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
             await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
         }
@@ -271,7 +271,7 @@ public class SlaEvaluatorTests(PostgresFixture fixture)
         using (var scope = sp.CreateScope())
         {
             var tenantContext = scope.ServiceProvider.GetRequiredService<Cordia.Infrastructure.Services.TenantContext>();
-            tenantContext.TenantId = tenantId;
+            tenantContext.SetTenant(tenantId);
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
             await mediator.Send(new EvaluateOperationSlaCommand(tenantId, operationId));
         }
