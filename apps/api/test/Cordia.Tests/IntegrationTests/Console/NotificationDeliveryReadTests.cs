@@ -131,6 +131,33 @@ public class NotificationDeliveryReadTests(AcceptanceApiFixture fixture)
         Assert.Empty(await ReadAsync($"/api/Bookings/{bookingId}/notifications", tenantId));
     }
 
+    /// <summary>
+    /// Past the cap the read keeps the NEWEST rows, so the latest delivery state is never the part
+    /// that gets cut off, and still presents them oldest first.
+    /// </summary>
+    [Fact]
+    public async Task PastTheCap_TheNewestRowsAreKept_InOldestFirstOrder()
+    {
+        var tenantId = $"t-notif-cap-{Guid.NewGuid():N}";
+        var op = await SeedOperationForBookingAsync(tenantId, bookingId: null);
+        var t0 = DateTimeOffset.UtcNow.AddHours(-3);
+
+        var ids = new List<string>();
+        for (var i = 0; i < 101; i++)
+        {
+            ids.Add(await SeedNotificationAsync(
+                tenantId, op, NotificationEvent.StillPending,
+                i == 100 ? NotificationState.FailedPermanent : NotificationState.Sending,
+                createdAt: t0.AddMinutes(i)));
+        }
+
+        var rows = await ReadAsync($"/api/booking-operations/{op}/notifications", tenantId);
+
+        Assert.Equal(100, rows.Count);
+        Assert.Equal(ids.Skip(1), rows.Select(r => r.GetProperty("notification_id").GetString()));
+        Assert.Equal("failed_permanent", rows[^1].GetProperty("state").GetString());
+    }
+
     [Fact]
     public async Task AnOperationsRead_ShowsOnlyThatOperation()
     {

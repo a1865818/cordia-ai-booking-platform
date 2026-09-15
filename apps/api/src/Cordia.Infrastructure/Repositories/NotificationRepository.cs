@@ -237,13 +237,13 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
         string operationId,
         int limit,
         CancellationToken ct = default)
-        => await db.Notifications
+        => NewestOldestFirst(await db.Notifications
             .AsNoTracking()
             .Where(n => n.TenantId == tenantId && n.OperationId == operationId)
-            .OrderBy(n => n.CreatedAt)
-            .ThenBy(n => n.NotificationId)
+            .OrderByDescending(n => n.CreatedAt)
+            .ThenByDescending(n => n.NotificationId)
             .Take(limit)
-            .ToListAsync(ct);
+            .ToListAsync(ct));
 
     /// <inheritdoc/>
     public async Task<IReadOnlyList<Notification>> ListForBookingAsync(
@@ -259,12 +259,24 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
             .Where(o => o.TenantId == tenantId && o.BookingId == bookingId)
             .Select(o => o.OperationId);
 
-        return await db.Notifications
+        return NewestOldestFirst(await db.Notifications
             .AsNoTracking()
             .Where(n => n.TenantId == tenantId && n.OperationId != null && operationIds.Contains(n.OperationId))
-            .OrderBy(n => n.CreatedAt)
-            .ThenBy(n => n.NotificationId)
+            .OrderByDescending(n => n.CreatedAt)
+            .ThenByDescending(n => n.NotificationId)
             .Take(limit)
-            .ToListAsync(ct);
+            .ToListAsync(ct));
+    }
+
+    /// <summary>
+    /// The cap keeps the NEWEST rows, then presents them oldest first. Capping oldest-first — the
+    /// first version — dropped exactly the rows an operator opens the drawer for: after a retry
+    /// storm the latest confirmation or failure fell past the limit and the list showed stale
+    /// "queued" entries as if that were the whole story.
+    /// </summary>
+    private static IReadOnlyList<Notification> NewestOldestFirst(List<Notification> newestFirst)
+    {
+        newestFirst.Reverse();
+        return newestFirst;
     }
 }

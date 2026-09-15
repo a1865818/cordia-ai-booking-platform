@@ -117,8 +117,9 @@ public interface INotificationRepository
         CancellationToken ct = default);
 
     /// <summary>
-    /// The notifications raised for one operation, oldest first (#83, console read). Tenant-scoped
-    /// by the query filter AND an explicit predicate; at most <paramref name="limit"/> rows.
+    /// The notifications raised for one operation (#83, console read): the newest
+    /// <paramref name="limit"/> rows, returned oldest first. Tenant-scoped by the query filter AND an
+    /// explicit predicate.
     /// </summary>
     Task<IReadOnlyList<Notification>> ListForOperationAsync(
         string tenantId,
@@ -128,7 +129,7 @@ public interface INotificationRepository
 
     /// <summary>
     /// The notifications raised for every operation that addressed a booking — the create that
-    /// produced it and any later cancel or modify — oldest first (#83). Same scoping as
+    /// produced it and any later cancel or modify — newest rows kept, oldest first (#83). Same scoping as
     /// <see cref="ListForOperationAsync"/>.
     /// </summary>
     Task<IReadOnlyList<Notification>> ListForBookingAsync(
