@@ -24,6 +24,18 @@ public class BookingOperationConfiguration : IEntityTypeConfiguration<BookingOpe
         builder.Property(e => e.AttributedSource)
             .HasColumnType("attributed_source_enum");
 
+        // #110 — the console's newest-activity-first scan (ConsoleReadModel.ScanAsync) orders by
+        // (updated_at DESC, operation_id DESC) and pages by keyset over exactly that order. Without
+        // this index every page sorted the tenant's whole operation set.
+        builder.HasIndex(e => new { e.TenantId, e.UpdatedAt, e.OperationId })
+            .IsDescending(false, true, true);
+
+        // #83 — the booking drawer's notification read reaches a booking's notifications through
+        // booking_operations.booking_id (create at Booked, every cancel/modify). No index covered
+        // that column, so every drawer open scanned the tenant's operations. notifications already
+        // has (tenant_id, operation_id) for the second hop.
+        builder.HasIndex(e => new { e.TenantId, e.BookingId });
+
         // FK to the exact intent revision (tenant_id, intent_id, intent_revision) → revisions PK
         builder.HasOne<BookingIntentRevision>()
             .WithMany()

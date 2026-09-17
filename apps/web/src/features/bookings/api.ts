@@ -26,6 +26,11 @@ export type BookingDetailsResponse =
 export type OperationStatusView =
   paths["/api/booking-operations/{operationId}"]["get"]["responses"][200]["content"]["application/json"];
 
+export type NotificationDeliveryResponse =
+  paths["/api/Bookings/{bookingId}/notifications"]["get"]["responses"][200]["content"]["application/json"];
+
+export type NotificationDelivery = NonNullable<NotificationDeliveryResponse["notifications"]>[number];
+
 export interface ScheduleWindow {
   from: string;
   to: string;
@@ -56,6 +61,26 @@ export function getBookingDetails(bookingId: string, grantId?: string, signal?: 
 export function getOperationStatus(operationId: string, signal?: AbortSignal) {
   return fetchApi<OperationStatusView>(
     `/api/booking-operations/${encodeURIComponent(operationId)}`,
+    { signal }
+  );
+}
+
+/**
+ * Delivery state of every notification raised for a booking (#83). Read-only by design: receipts
+ * reach the platform only through the provider webhook, which the console never calls and whose
+ * secret it never holds.
+ */
+export function getBookingNotifications(bookingId: string, signal?: AbortSignal) {
+  return fetchApi<NotificationDeliveryResponse>(
+    `/api/Bookings/${encodeURIComponent(bookingId)}/notifications`,
+    { signal }
+  );
+}
+
+/** The same read for a request that has not become a booking yet. */
+export function getOperationNotifications(operationId: string, signal?: AbortSignal) {
+  return fetchApi<NotificationDeliveryResponse>(
+    `/api/booking-operations/${encodeURIComponent(operationId)}/notifications`,
     { signal }
   );
 }

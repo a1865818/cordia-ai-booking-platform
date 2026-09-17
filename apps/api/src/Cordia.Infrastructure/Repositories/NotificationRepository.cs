@@ -230,4 +230,53 @@ public class NotificationRepository(ApplicationDbContext db) : INotificationRepo
                 n.EventType == expectedEvent &&
                 (n.State == NotificationState.Accepted || n.State == NotificationState.Delivered),
                 ct);
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<Notification>> ListForOperationAsync(
+        string tenantId,
+        string operationId,
+        int limit,
+        CancellationToken ct = default)
+        => NewestOldestFirst(await db.Notifications
+            .AsNoTracking()
+            .Where(n => n.TenantId == tenantId && n.OperationId == operationId)
+            .OrderByDescending(n => n.CreatedAt)
+            .ThenByDescending(n => n.NotificationId)
+            .Take(limit)
+            .ToListAsync(ct));
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<Notification>> ListForBookingAsync(
+        string tenantId,
+        string bookingId,
+        int limit,
+        CancellationToken ct = default)
+    {
+        // Notifications carry an operation id, never a booking id, so the booking is reached
+        // through booking_operations.booking_id — set on the create when it reaches Booked and on
+        // every cancel/modify at submission.
+        var operationIds = db.BookingOperations
+            .Where(o => o.TenantId == tenantId && o.BookingId == bookingId)
+            .Select(o => o.OperationId);
+
+        return NewestOldestFirst(await db.Notifications
+            .AsNoTracking()
+            .Where(n => n.TenantId == tenantId && n.OperationId != null && operationIds.Contains(n.OperationId))
+            .OrderByDescending(n => n.CreatedAt)
+            .ThenByDescending(n => n.NotificationId)
+            .Take(limit)
+            .ToListAsync(ct));
+    }
+
+    /// <summary>
+    /// The cap keeps the NEWEST rows, then presents them oldest first. Capping oldest-first — the
+    /// first version — dropped exactly the rows an operator opens the drawer for: after a retry
+    /// storm the latest confirmation or failure fell past the limit and the list showed stale
+    /// "queued" entries as if that were the whole story.
+    /// </summary>
+    private static IReadOnlyList<Notification> NewestOldestFirst(List<Notification> newestFirst)
+    {
+        newestFirst.Reverse();
+        return newestFirst;
+    }
 }

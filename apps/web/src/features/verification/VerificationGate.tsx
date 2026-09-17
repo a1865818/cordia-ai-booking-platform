@@ -68,6 +68,13 @@ export function VerificationGate({
         </div>
       </div>
 
+      {verification.developmentCode && (
+        // Only ever present where the API is configured to return it — never in a deployment.
+        <div className="text-[12px] mt-[10px] font-mono" style={{ color: '#55554F' }} role="note">
+          Development code: {verification.developmentCode}
+        </div>
+      )}
+
       {verification.message && (
         <div className="text-[12px] mt-[10px]" style={{ color: '#8A6400' }} role="status">
           {verification.message}

@@ -98,7 +98,7 @@ public static class InfrastructureServiceCollectionExtensions
         // (tenant resolution, spec 15) resolves the concrete TenantContext from the same
         // scope and sets TenantId; both registrations return the SAME scoped instance so
         // the setter is observed by the DbContext's global query filter.
-        services.AddScoped<ITenantContext, TenantContext>();
+        services.AddScoped<ITenantContext>(_ => new TenantContext());
         services.AddScoped<TenantContext>(sp => (TenantContext)sp.GetRequiredService<ITenantContext>());
 
         services.AddScoped<IActorContext, ActorContext>();
@@ -152,7 +152,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Spec 07 T4 — primitive resolver + stub external adapter (spec 07 §13 open decision:
         // no real provider configured yet; resolver defaults every triple to FirstParty).
-        services.AddSingleton<ICapacityPrimitiveResolver, CapacityPrimitiveResolver>();
+        // Scoped, not singleton: it now reads tenant_capacity_primitives through the scoped DbContext (#106).
+        services.AddScoped<ITenantCapacityPrimitiveRepository, TenantCapacityPrimitiveRepository>();
+        services.AddScoped<ICapacityPrimitiveResolver, CapacityPrimitiveResolver>();
         services.AddSingleton<IExternalInventoryAdapter, StubExternalInventoryAdapter>();
 
         // Spec 07 T5 — capacity options bound from "Capacity" config section.
@@ -202,6 +204,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<RetryClassifier>();
         services.AddSingleton<IRetryPolicy, FullJitterRetryPolicy>();
         services.AddSingleton<IProviderCircuitBreaker, InMemoryProviderCircuitBreaker>();
+        // #108 — per-operation advisory lock shared by the dispatch fence and the cancel CAS.
+        services.AddScoped<IOperationDecisionLock, Cordia.Infrastructure.EntityFramework.Concurrency.OperationDecisionLock>();
         services.AddSingleton<IBookingProviderAdapter, StubBookingProviderAdapter>();
 
         // Spec 06 T7 deposit + verification seams — singletons (stateless stubs; spec 09 / spec 08 replace).

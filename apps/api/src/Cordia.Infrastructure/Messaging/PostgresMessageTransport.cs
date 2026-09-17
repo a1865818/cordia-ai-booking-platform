@@ -27,7 +27,7 @@ public sealed class PostgresMessageTransport(
         // so ITenantContext.TenantId would be empty and any consumer that reads through the
         // tenant-filtered ApplicationDbContext (e.g. via repositories) would query tenant "" and
         // find nothing. The envelope's tenant_id is authoritative for the message it carries.
-        tenantContext.TenantId = envelope.TenantId;
+        tenantContext.SetTenant(envelope.TenantId);
 
         var result = await dispatcher.DispatchAsync(envelope, queue, ct);
 

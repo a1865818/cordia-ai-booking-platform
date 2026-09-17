@@ -87,7 +87,7 @@ public class QueueConsumerTenantIsolationTests(PostgresFixture fixture)
         await using (var scope = sp.CreateAsyncScope())
         {
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantA;
+            tenantCtx.SetTenant(tenantA);
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
             await mediator.Send(new RetryNotificationCommand(tenantA, notifId, messageId));
         }

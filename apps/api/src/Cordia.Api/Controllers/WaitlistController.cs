@@ -11,6 +11,7 @@ using Cordia.Domain.Security;
 using Cordia.Domain.Waitlist;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Api.Controllers;
 
@@ -28,11 +29,21 @@ namespace Cordia.Api.Controllers;
 ///
 /// Every mutation is an operator action (spec 14 §24.5, GD-1): it requires X-Actor, X-Actor-Role
 /// (operator or owner) and X-Reason-Code, and `OperatorActionBehavior` deny-audits and 403s
-/// without them. The reads are not gated — an operator needs the list to work from.
+/// without them.
+///
+/// The enrollment LIST (<c>GET /api/waitlist/enrollments</c>) is a console read, not a customer one:
+/// it carries every waitlisted guest's <c>customer_ref</c>. It is not an operator action (no role or
+/// reason code — an operator needs the list to work from), but outside Development it requires a
+/// signed-in operator session via <c>OperatorGuard</c> (#72) and answers 403 without one.
+/// <c>GET /api/waitlist/locations</c> carries no guest data and stays tenant-scoped only.
 /// </summary>
 [ApiController]
 [Route("api/waitlist")]
-public class WaitlistController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class WaitlistController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultListLimit = 100;
@@ -70,12 +81,14 @@ public class WaitlistController(IMediator mediator, ITenantContext tenant, IActo
     [HttpGet("enrollments")]
     [ProducesResponseType(typeof(ListWaitlistEnrollmentsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListWaitlistEnrollmentsResponse>> ListEnrollments(
         [FromQuery(Name = "active_only")] bool? activeOnly,
         [FromQuery(Name = "limit")] int? limit,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "waitlist.enrollments_read");
 
         var enrollments = await mediator.Send(
             new ListWaitlistEnrollmentsQuery(tenant.TenantId, activeOnly ?? true, limit ?? DefaultListLimit),

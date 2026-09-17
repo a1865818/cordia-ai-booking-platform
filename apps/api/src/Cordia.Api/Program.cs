@@ -53,6 +53,24 @@ var allowAssertedStaffRole = builder.Configuration.GetValue(
     builder.Environment.IsDevelopment());
 builder.Services.PostConfigure<Cordia.Application.Common.Authorization.AssertedActorOptions>(o =>
     o.AllowAssertedStaffRole = allowAssertedStaffRole);
+
+// The committed verification-code pepper is public, so it may hash real codes only on a developer
+// machine or where a host opts in explicitly (#71). Default ON in Development, OFF elsewhere —
+// "elsewhere" includes Staging and any misspelt environment, which the old literal
+// "Production" check silently waved through.
+var allowLocalVerificationPepper = builder.Configuration.GetValue(
+    "Verification:AllowLocalPepper",
+    builder.Environment.IsDevelopment());
+// With no delivery channel for verification codes (spec 08 defers it to spec 10), a developer
+// machine can only complete verification if the API hands the code back. Same default shape.
+var exposeVerificationCode = builder.Configuration.GetValue(
+    "Verification:ExposeCodeForDevelopment",
+    builder.Environment.IsDevelopment());
+builder.Services.PostConfigure<Cordia.Application.Handlers.Verification.VerificationCodeOptions>(o =>
+{
+    o.AllowLocalPepper = allowLocalVerificationPepper;
+    o.ExposeCodeForDevelopment = exposeVerificationCode;
+});
 // The environment is passed explicitly (never sniffed inside Infrastructure) because the
 // menu-extraction startup gates are environment-dependent: a loopback `LangGraph:Host` and an
 // absent shared secret are correct on a developer machine and refused everywhere else (#94).
@@ -169,7 +187,7 @@ const string CorsPolicy = "CordiaCors";
 // browser only, which no .NET test would catch — CorsPolicyTests exists to close that gap.
 //
 // Note the idempotency key is NOT here: it travels in the request body (`idempotency_key`), not a
-// header. And the provider/webhook headers the API also reads (X-Webhook-Secret, X-Provider-*) are
+// header. And the provider/webhook headers the API also reads (X-Webhook-Timestamp, X-Webhook-Signature, X-Provider-*) are
 // deliberately absent — those endpoints are §13-C, never called from a browser.
 string[] corsHeaders =
 [
@@ -199,6 +217,65 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// #73 — refuse to run on credentials committed to this repository outside Development. Checked
+// before anything touches the database or mints a token, so a deployment that forgot to override
+// one fails here with the setting named, instead of serving on a public password or signing key.
+// The test host opts in explicitly; the values themselves are never logged.
+var insecureDefaults = Cordia.Infrastructure.Security.InsecureCommittedDefaults.FindIn(app.Configuration);
+if (insecureDefaults.Count > 0 && !app.Environment.IsDevelopment())
+{
+    if (!app.Configuration.GetValue(Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey, false))
+    {
+        throw new InvalidOperationException(
+            $"Refusing to start in {app.Environment.EnvironmentName}: these settings still hold values committed "
+            + $"to the repository — {string.Join(", ", insecureDefaults)}. Override them with real secrets, or set "
+            + $"{Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey} for a non-deployed host.");
+    }
+
+    app.Logger.LogWarning(
+        "Running on COMMITTED CREDENTIALS outside Development ({Environment}) because {Setting} was set: {Settings}. "
+        + "Expected only in the test host.",
+        app.Environment.EnvironmentName,
+        Cordia.Infrastructure.Security.InsecureCommittedDefaults.AllowSettingKey,
+        string.Join(", ", insecureDefaults));
+}
+
+// #75 (D1) — stubs still serve several ports. A flag switched off for a port with no real
+// implementation is a request this build cannot satisfy, so it is refused rather than ignored.
+var refusedStubOptOuts = Cordia.Infrastructure.Providers.StubPorts.RefusedOptOuts(app.Configuration);
+if (refusedStubOptOuts.Count > 0)
+{
+    throw new InvalidOperationException(
+        "Refusing to start: these stubs were switched off, but no real implementation exists for them yet — "
+        + string.Join(", ", refusedStubOptOuts.Select(p => $"{p.ConfigKey} ({p.Port})"))
+        + ". Remove the setting; the stub stays in service and is listed at startup.");
+}
+
+// ONE line naming every stub in service. Outside Development it is a warning, because each entry is
+// something a deployment is not really doing — bookings that never reach a provider, uploads that
+// are never scanned — and an operator must be able to find all of them by grepping startup.
+var activeStubs = Cordia.Infrastructure.Providers.StubPorts.Active(app.Configuration);
+if (activeStubs.Count > 0)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "{Count} port(s) are served by stubs ({Environment}): {Stubs}",
+            activeStubs.Count,
+            app.Environment.EnvironmentName,
+            Cordia.Infrastructure.Providers.StubPorts.Describe(activeStubs));
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "{Count} PORT(S) ARE SERVED BY STUBS OUTSIDE DEVELOPMENT ({Environment}) — these are not real "
+            + "integrations: {Stubs}",
+            activeStubs.Count,
+            app.Environment.EnvironmentName,
+            Cordia.Infrastructure.Providers.StubPorts.Describe(activeStubs));
+    }
+}
 
 // Exception handler wraps the full pipeline — must be first middleware.
 app.UseExceptionHandler();
@@ -304,6 +381,33 @@ else
     // A silently absent role branch looks exactly like a broken console authorization.
     app.Logger.LogInformation(
         "Asserted X-Actor-Role authorization is disabled ({Environment}); mutations require a server-issued verification grant.",
+        app.Environment.EnvironmentName);
+}
+
+// Returning the code to whoever requested the challenge means verification proves nothing. Correct
+// on a developer machine and in the test host; anywhere else it must be findable by grepping startup.
+if (exposeVerificationCode && !app.Environment.IsDevelopment())
+{
+    app.Logger.LogWarning(
+        "Verification codes are RETURNED TO THE CALLER outside Development ({Environment}) because "
+        + "Verification:ExposeCodeForDevelopment was set explicitly. Anyone who can request a challenge "
+        + "can complete it, so step-up verification grants no assurance (Inv-11). Expected only in the test host.",
+        app.Environment.EnvironmentName);
+}
+
+// Only the dangerous combination is worth a warning: the local pepper allowed outside Development
+// AND no real pepper configured, so codes are actually being hashed under the public one. The
+// pepper itself is never logged.
+if (allowLocalVerificationPepper
+    && !app.Environment.IsDevelopment()
+    && string.IsNullOrWhiteSpace(app.Services
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<Cordia.Application.Handlers.Verification.VerificationCodeOptions>>()
+        .Value.CodePepper))
+{
+    app.Logger.LogWarning(
+        "Verification codes are hashed under the COMMITTED LOCAL PEPPER outside Development ({Environment}) "
+        + "because Verification:AllowLocalPepper was set and no pepper is configured. The pepper is public; "
+        + "set Verification:CodePepper or CORDIA_VERIFICATION_CODE_PEPPER.",
         app.Environment.EnvironmentName);
 }
 

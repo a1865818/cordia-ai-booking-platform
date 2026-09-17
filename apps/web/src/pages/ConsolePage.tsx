@@ -42,8 +42,7 @@ import { SENSITIVE_READ_PURPOSES, type SensitiveReadPurpose } from "../features/
 import { getActor } from "../api/config";
 import { queryKeys } from "../api/queryKeys";
 import { isApiVerificationRequiredError } from "../api/problem";
-import { clearSession } from "../api/session";
-import { logout } from "../features/auth/api";
+import { signOut } from "../features/auth/sessionTransition";
 import { setTenantProfile } from "../features/settings/profile";
 import { dayBoundsFromHours } from "../features/settings/hours";
 import { toConsoleCampaign } from "../features/campaigns/api";
@@ -172,14 +171,11 @@ export function ConsolePage() {
     if (isDesktop && screen === 'more') setScreen('today');
   }, [isDesktop, screen]);
 
-  // Sign-out revokes the server session when it can, then always drops the local one.
+  // Sign-out revokes the server session when it can, then always drops the local one AND the
+  // query cache — keys are tenant-rooted, so another operator of this tenant would otherwise see
+  // this operator's cached reads.
   async function handleSignOut() {
-    try {
-      await logout();
-    } catch {
-      // A failed revoke must not trap the operator in a console they asked to leave.
-    }
-    clearSession();
+    await signOut(queryClient);
     navigate("/login");
   }
 

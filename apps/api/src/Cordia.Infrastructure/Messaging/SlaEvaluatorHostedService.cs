@@ -67,7 +67,7 @@ public sealed class SlaEvaluatorHostedService(
             // Background scopes have no HTTP middleware, so TenantContext.TenantId is empty
             // unless set here — mirroring what PostgresMessageTransport does per envelope.
             var tenantContext = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantContext.TenantId = snap.TenantId;
+            tenantContext.SetTenant(snap.TenantId);
 
             var evaluator = scope.ServiceProvider.GetRequiredService<ISlaEvaluator>();
 

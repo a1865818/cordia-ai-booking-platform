@@ -196,6 +196,38 @@ public class TenantContextVerificationMiddlewareTests
         Assert.Null(actorContext.ActorId);
     }
 
+    /// <summary>
+    /// A verified context whose tenant claim is blank is refused as a verification failure (401) —
+    /// it used to reach <c>SetTenant</c>, throw an unmapped <see cref="ArgumentException"/> and 500.
+    /// Both binding paths.
+    /// </summary>
+    [Theory]
+    [InlineData("tenantctx+jws", "")]
+    [InlineData("tenantctx+jws", "   ")]
+    [InlineData("opctx+jws", "")]
+    [InlineData("opctx+jws", "   ")]
+    public async Task AVerifiedContextWithABlankTenant_IsAVerificationFailure(string typ, string blankTenant)
+    {
+        var tenantSigner = new Mock<ITenantContextSigner>();
+        tenantSigner.Setup(s => s.Verify(It.IsAny<string>())).Returns(new TenantContextClaims(
+            blankTenant, TenantChannel.Web, "ep-1", "cfg-v1", "corr-1", "sess-1",
+            [], [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5)));
+        var opSigner = new Mock<IOperatorSessionSigner>();
+        opSigner.Setup(s => s.Verify(It.IsAny<string>())).Returns(new OperatorSessionClaims(
+            blankTenant, "opr-1", "owner", "opsess-1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(8)));
+
+        var tenantContext = new TenantContext();
+        var middleware = new TenantContextVerificationMiddleware(_ => Task.CompletedTask);
+        var http = new DefaultHttpContext();
+        http.Request.Headers[TenantContextVerificationMiddleware.HeaderName] = FakeJws(typ);
+
+        await Assert.ThrowsAsync<TenantContextVerificationException>(() => middleware.InvokeAsync(
+            http, tenantSigner.Object, opSigner.Object, new Mock<IOperatorSessionRepository>().Object,
+            tenantContext, new ActorContext(), MockCorrelation().Object));
+
+        Assert.Equal(string.Empty, tenantContext.TenantId);
+    }
+
     private static Mock<ICorrelationContext> MockCorrelation()
     {
         var mock = new Mock<ICorrelationContext>();

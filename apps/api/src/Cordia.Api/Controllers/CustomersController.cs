@@ -1,4 +1,5 @@
-﻿using System.Text.Json.Serialization;
+﻿using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
 using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Console.GetCustomer;
 using Cordia.Application.Handlers.Console.ListCustomers;
@@ -46,7 +47,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/customers")]
-public class CustomersController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class CustomersController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Default page size when the caller does not specify one.</summary>
     public const int DefaultLimit = 50;
@@ -58,12 +63,15 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
     [HttpGet]
     [ProducesResponseType(typeof(ListCustomersResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListCustomersResponse>> List(
         [FromQuery(Name = "query")] string? query,
         [FromQuery(Name = "limit")] int? limit,
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
 
         var result = await mediator.Send(
             new ListCustomersQuery(tenant.TenantId, query, limit ?? DefaultLimit),
@@ -82,9 +90,12 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
     [ProducesResponseType(typeof(CustomerView), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<CustomerView>> Get(string customerRef, CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "customer.list_read");
 
         var customer = await mediator.Send(new GetCustomerQuery(tenant.TenantId, customerRef), ct);
         return customer is null ? NotFound() : Ok(ToView(customer));
@@ -104,6 +115,9 @@ public class CustomersController(IMediator mediator, ITenantContext tenant, IAct
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        // No OperatorGuard here: this is an IOperatorActionRequest, and OperatorActionBehavior makes
+        // the same proven-identity decision AND writes the DENY audit (spec 14 §24.5). A controller
+        // guard would refuse first and leave no audit row.
         var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var customer = await mediator.Send(

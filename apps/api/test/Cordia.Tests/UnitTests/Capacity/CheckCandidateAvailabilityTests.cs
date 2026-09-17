@@ -29,8 +29,8 @@ public class CheckCandidateAvailabilityTests
     public CheckCandidateAvailabilityTests()
     {
         _primitives
-            .Setup(p => p.Resolve(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns(CapacityPrimitive.FirstParty);
+            .Setup(p => p.ResolveAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CapacityPrimitive.FirstParty);
         _primitives
             .Setup(p => p.ModeFor(CapacityPrimitive.FirstParty))
             .Returns(AvailabilityModeEnum.Held);

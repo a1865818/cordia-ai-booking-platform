@@ -1,6 +1,7 @@
 import { FormEvent, useId, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { setSession } from "../api/session";
+import { useQueryClient } from "@tanstack/react-query";
+import { beginSession } from "../features/auth/sessionTransition";
 import { login } from "../features/auth/api";
 import { PrimaryButton } from "../components/ui/Button";
 import { ErrorState } from "../components/ui/ErrorState";
@@ -12,6 +13,7 @@ const labelClass = "font-mono text-[10px] tracking-[0.14em] uppercase text-t3 bl
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const emailId = useId();
   const passwordId = useId();
   const [email, setEmail] = useState("");
@@ -25,7 +27,7 @@ export function LoginPage() {
     setBusy(true);
     try {
       const session = await login(email.trim(), password);
-      setSession(session);
+      beginSession(queryClient, session);
       navigate("/dashboard");
     } catch (caught) {
       setError(caught);

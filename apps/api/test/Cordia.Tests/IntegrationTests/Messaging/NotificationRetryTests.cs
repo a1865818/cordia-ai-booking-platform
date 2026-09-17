@@ -105,7 +105,7 @@ public class NotificationRetryTests(PostgresFixture fixture)
         await using (var scope = sp.CreateAsyncScope())
         {
             var tenantCtx = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantCtx.TenantId = tenantId;
+            tenantCtx.SetTenant(tenantId);
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
             await mediator.Send(new RetryNotificationCommand(tenantId, notifId, messageId));
         }

@@ -5,22 +5,32 @@ namespace Cordia.Application.Handlers.Verification;
 
 internal static class VerificationCode
 {
-    public const string DevelopmentCode = "000000";
-    private const string PepperEnvironmentVariable = "CORDIA_VERIFICATION_CODE_PEPPER";
     private const string LocalDevelopmentPepper = "cordia-local-verification-code-pepper";
 
-    public static string Hash(string verificationId, string code)
-    {
-        var pepper = Environment.GetEnvironmentVariable(PepperEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(pepper) && IsProduction())
-            throw new InvalidOperationException($"{PepperEnvironmentVariable} must be set in production.");
+    /// <summary>
+    /// Wrong codes a challenge tolerates before it locks (#71). A six-digit code guessed at five
+    /// tries per challenge is a 1-in-200,000 chance, and each new challenge is itself a new code.
+    /// </summary>
+    public const int MaxFailedAttempts = 5;
 
-        var key = Encoding.UTF8.GetBytes(string.IsNullOrWhiteSpace(pepper) ? LocalDevelopmentPepper : pepper);
-        var bytes = HMACSHA256.HashData(key, Encoding.UTF8.GetBytes($"{verificationId}:{code}"));
+    /// <summary>
+    /// A uniformly random six-digit code from the OS CSPRNG. Replaces a fixed <c>"000000"</c> that
+    /// every challenge for every tenant was hashed under — anyone who knew a verification id could
+    /// verify it (#71).
+    /// </summary>
+    public static string Generate() => RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+
+    public static string Hash(VerificationCodeOptions options, string verificationId, string code)
+    {
+        // Startup validation refuses a host with neither, so reaching this means the options were
+        // built outside the host (a bare container). Still fail closed rather than fall back.
+        if (!options.IsUsable)
+            throw new InvalidOperationException(
+                $"No verification code pepper is configured. Set {VerificationCodeOptions.SectionName}:CodePepper "
+                + $"or {VerificationCodeOptions.PepperEnvironmentVariable}.");
+
+        var pepper = string.IsNullOrWhiteSpace(options.CodePepper) ? LocalDevelopmentPepper : options.CodePepper;
+        var bytes = HMACSHA256.HashData(Encoding.UTF8.GetBytes(pepper), Encoding.UTF8.GetBytes($"{verificationId}:{code}"));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
-
-    private static bool IsProduction()
-        => string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Production", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT"), "Production", StringComparison.OrdinalIgnoreCase);
 }

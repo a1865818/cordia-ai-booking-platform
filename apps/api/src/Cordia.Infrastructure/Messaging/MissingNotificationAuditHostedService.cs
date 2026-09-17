@@ -71,7 +71,7 @@ public sealed class MissingNotificationAuditHostedService(
             // Background scopes have no HTTP middleware, so TenantContext.TenantId is empty
             // unless set here — mirroring SlaEvaluatorHostedService / ReconcileNotificationsHostedService.
             var tenantContext = scope.ServiceProvider.GetRequiredService<TenantContext>();
-            tenantContext.TenantId = opRef.TenantId;
+            tenantContext.SetTenant(opRef.TenantId);
 
             var auditor = scope.ServiceProvider.GetRequiredService<IMissingNotificationAuditor>();
 

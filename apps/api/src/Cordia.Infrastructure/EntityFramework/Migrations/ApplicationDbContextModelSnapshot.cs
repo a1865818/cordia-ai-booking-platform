@@ -432,8 +432,15 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.HasKey("TenantId", "OperationId")
                         .HasName("pk_booking_operations");
 
+                    b.HasIndex("TenantId", "BookingId")
+                        .HasDatabaseName("ix_booking_operations_tenant_id_booking_id");
+
                     b.HasIndex("TenantId", "IntentId", "IntentRevision")
                         .HasDatabaseName("ix_booking_operations_tenant_id_intent_id_intent_revision");
+
+                    b.HasIndex("TenantId", "UpdatedAt", "OperationId")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_booking_operations_tenant_id_updated_at_operation_id");
 
                     b.ToTable("booking_operations", "public");
                 });
@@ -1726,6 +1733,46 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.ToTable("staff_resources", "public");
                 });
 
+            modelBuilder.Entity("Cordia.Domain.Entities.TenantCapacityPrimitive", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ProviderName")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("provider_name");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Primitive")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("primitive");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("TenantId", "ProviderName")
+                        .HasName("pk_tenant_capacity_primitives");
+
+                    b.ToTable("tenant_capacity_primitives", "public", t =>
+                        {
+                            t.HasCheckConstraint("ck_tenant_capacity_primitives_first_party_rung", "provider_name <> 'first_party' OR primitive = 'first_party'");
+
+                            t.HasCheckConstraint("ck_tenant_capacity_primitives_primitive", "primitive IN ('first_party', 'native_hold', 'idempotent_pending', 'atomic_book', 'check_then_create')");
+                        });
+                });
+
             modelBuilder.Entity("Cordia.Domain.Entities.TenantChannelEndpoint", b =>
                 {
                     b.Property<string>("TenantId")
@@ -2127,6 +2174,10 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_attempts");
 
                     b.Property<string>("GrantId")
                         .HasColumnType("text")

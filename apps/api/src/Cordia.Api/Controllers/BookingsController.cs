@@ -8,12 +8,14 @@ using Cordia.Application.Handlers.ManageBooking.RecordAttendance;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingCancellation;
 using Cordia.Application.Handlers.ManageBooking.SubmitBookingModification;
 using Cordia.Application.Handlers.ManageBooking.ValidateBookingChange;
+using Cordia.Application.Handlers.Notifications.ListNotifications;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Api.Controllers;
 
@@ -23,7 +25,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
-public class BookingsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class BookingsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>Finds minimized, non-sensitive booking candidates for Manage Booking.</summary>
     [HttpGet]
@@ -58,6 +64,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant, IActo
     [HttpGet("schedule")]
     [ProducesResponseType(typeof(BookingScheduleResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<BookingScheduleResponse>> GetSchedule(
         [FromQuery(Name = "from")] DateTimeOffset? from,
         [FromQuery(Name = "to")] DateTimeOffset? to,
@@ -65,6 +72,7 @@ public class BookingsController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "booking.schedule_read");
 
         var resolvedFrom = from ?? new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
         var resolvedTo = to ?? resolvedFrom.AddDays(7);
@@ -99,6 +107,25 @@ public class BookingsController(IMediator mediator, ITenantContext tenant, IActo
 
     /// <summary>Default schedule page size when the caller does not specify one.</summary>
     public const int DefaultScheduleLimit = 200;
+
+    /// <summary>
+    /// Delivery state of every notification raised for this booking — the create that produced it
+    /// and any later cancel or modify (#83, spec 10). Read-only: receipts arrive only through the
+    /// provider webhook, which the console never calls. An empty list means nothing was recorded,
+    /// not that something was sent.
+    /// </summary>
+    [HttpGet("{bookingId}/notifications")]
+    [ProducesResponseType(typeof(ListNotificationsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ListNotificationsResponse>> ListNotifications(
+        string bookingId,
+        CancellationToken ct)
+    {
+        TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(actorContext, assertedActor.Value.AllowAssertedStaffRole, "notification.list_read");
+
+        return Ok(await mediator.Send(new ListNotificationsQuery(tenant.TenantId, bookingId, OperationId: null), ct));
+    }
 
     /// <summary>Returns a verification-leveled booking projection.</summary>
     [HttpGet("{bookingId}")]

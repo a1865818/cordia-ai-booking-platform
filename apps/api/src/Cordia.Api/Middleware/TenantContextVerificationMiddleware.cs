@@ -71,8 +71,22 @@ public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
         ICorrelationContext correlation)
     {
         var claims = signer.Verify(jws);
-        tenantContext.TenantId = claims.TenantId;
+        StampTenant(tenantContext, claims.TenantId);
         correlation.Set(correlation.Current with { TenantId = claims.TenantId });
+    }
+
+    /// <summary>
+    /// A signature proves who issued a context, not that its claims are usable. A blank tenant
+    /// would make <see cref="TenantContext.SetTenant"/> throw <see cref="ArgumentException"/>, which
+    /// nothing maps, so the caller got a 500 for what is a context that cannot be honoured. It is
+    /// refused as a verification failure — the same 401 as any other unusable context.
+    /// </summary>
+    private static void StampTenant(TenantContext tenantContext, string? tenantId)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new TenantContextVerificationException("Signed context carries no tenant.");
+
+        tenantContext.SetTenant(tenantId);
     }
 
     private static async Task BindOperatorSessionAsync(
@@ -87,7 +101,7 @@ public sealed class TenantContextVerificationMiddleware(RequestDelegate next)
         var claims = signer.Verify(jws);
 
         // Set tenant BEFORE the session lookup so the EF query filter matches the claim.
-        tenantContext.TenantId = claims.TenantId;
+        StampTenant(tenantContext, claims.TenantId);
         correlation.Set(correlation.Current with { TenantId = claims.TenantId });
 
         // Skip DB revocation on logout so a second POST /api/auth/logout of a revoked-but-unexpired

@@ -29,4 +29,10 @@ public class VerificationChallenge : ITenantScoped
     public DateTimeOffset? VerifiedAt { get; set; }
 
     public string? GrantId { get; set; }
+
+    /// <summary>
+    /// Wrong codes submitted against this challenge (#71). At <c>MaxFailedAttempts</c> the challenge
+    /// is locked: even the right code no longer verifies, and a new challenge must be requested.
+    /// </summary>
+    public int FailedAttempts { get; set; }
 }

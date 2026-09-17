@@ -44,11 +44,11 @@ public class ConsoleScanTruncationTests(PostgresFixture fixture)
     /// a full page. That keeps this test about the ceiling and nothing else.</para>
     /// </summary>
     private static async Task SeedOperationsAsync(
-        ApplicationDbContext ctx, string tenantId, int fromIndex, int toIndex)
+        ApplicationDbContext ctx, string tenantId, int fromIndex, int toIndex, string payload = "{}")
     {
         // Passed as a PARAMETER rather than written inline: a literal `{}` inside an interpolated
         // raw string would have to be brace-escaped, and the escape is easy to get subtly wrong.
-        const string emptyPayload = "{}";
+        var emptyPayload = payload;
 
         await ctx.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO public.booking_intents (tenant_id, intent_id, operation_type)
@@ -102,10 +102,12 @@ public class ConsoleScanTruncationTests(PostgresFixture fixture)
     /// is the ceiling's <i>semantics</i>: at the boundary, complete; one row past it, truncated.
     /// Those must not depend on how busy the runner is.</para>
     ///
-    /// <para>The paging cost is still worth removing and is filed separately — 40 pages each
-    /// re-materialising and re-sorting the tenant's whole operation set is quadratic in page
-    /// count. The measurement above says the fix is keyset paging <i>together with</i> an index;
-    /// neither alone moves this plan.</para>
+    /// <para><b>Since #110 the paging cost itself is gone.</b> The index above did nothing for
+    /// <c>OFFSET</c> paging, as measured; it is what keyset paging needed. Each page now resumes
+    /// with <c>(updated_at, operation_id) &lt; (last row)</c> over
+    /// <c>(tenant_id, updated_at DESC, operation_id DESC)</c> — an index seek of 500 rows, ~2 ms on
+    /// the same seeded tenant, however deep the page. The timeout stays because the SEEDING of
+    /// 20,000 rows still competes for the runner.</para>
     /// </summary>
     private const int CommandTimeoutSeconds = 180;
 
@@ -144,5 +146,35 @@ public class ConsoleScanTruncationTests(PostgresFixture fixture)
             pastCeiling.Truncated,
             "One row beyond the ceiling really is unexamined, and silently presenting that as a " +
             "complete list is the failure the ceiling exists to disclose.");
+    }
+
+    /// <summary>
+    /// #110 — keyset paging must neither skip nor repeat rows at a page boundary.
+    ///
+    /// <para>This is the case keyset paging gets wrong when the cursor is not the whole sort key.
+    /// Every seeded row is inserted by one statement, so all of them share a single
+    /// <c>updated_at</c>: a cursor on <c>updated_at</c> alone would stop after the first page (every
+    /// remaining row compares equal, none "older"), and a cursor that treated equality as "after"
+    /// would repeat rows. 1,250 rows is two full pages of 500 and a partial third, so two boundaries
+    /// fall inside one tie.</para>
+    /// </summary>
+    [Fact]
+    public async Task EveryRow_IsSeenExactlyOnce_AcrossPageBoundariesInsideATie()
+    {
+        const int rows = 1_250;
+        var tenantId = $"t-scan-keyset-{Guid.NewGuid():N}";
+
+        await using var ctx = fixture.CreateContext(tenantId);
+        ctx.Database.SetCommandTimeout(CommandTimeoutSeconds);
+
+        await SeedOperationsAsync(ctx, tenantId, 1, rows, payload: """{"starts_at":"2031-03-04T10:00:00Z"}""");
+
+        var from = new DateTimeOffset(2031, 3, 4, 0, 0, 0, TimeSpan.Zero);
+        var schedule = await new ConsoleReadModel(ctx).ListScheduleAsync(tenantId, from, from.AddDays(1), limit: 5_000);
+
+        Assert.False(schedule.Truncated);
+        var ids = schedule.Bookings.Select(b => b.OperationId).ToList();
+        Assert.Equal(rows, ids.Count);
+        Assert.Equal(rows, ids.Distinct(StringComparer.Ordinal).Count());
     }
 }

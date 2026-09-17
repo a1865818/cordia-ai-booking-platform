@@ -92,7 +92,7 @@ public class PostgresMessageTransportTests
     [Fact]
     public async Task PublishAsync_SetsScopedTenantFromEnvelope_BeforeDispatch()
     {
-        var tenantContext = new TenantContext { TenantId = "" }; // background scope: no tenant set
+        var tenantContext = new TenantContext(); // background scope: no tenant set
         string? tenantSeenByDispatcher = null;
 
         var dispatcherMock = new Mock<IQueueConsumerDispatcher>();
@@ -112,6 +112,53 @@ public class PostgresMessageTransportTests
 
         Assert.Equal("tenant_from_envelope", tenantSeenByDispatcher);
         Assert.Equal("tenant_from_envelope", tenantContext.TenantId);
+    }
+
+    /// <summary>
+    /// Dead-letter replay (#80): the request scope is already stamped by the verification middleware,
+    /// and the transport stamps the same tenant again. That must dispatch, not throw.
+    /// </summary>
+    [Fact]
+    public async Task PublishAsync_InAScopeAlreadyStampedWithTheSameTenant_Dispatches()
+    {
+        var tenantContext = new TenantContext("tenant_from_envelope");
+        var dispatcherMock = new Mock<IQueueConsumerDispatcher>();
+        dispatcherMock
+            .Setup(d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DispatchResult.Dispatched);
+
+        var transport = new PostgresMessageTransport(
+            dispatcherMock.Object, tenantContext, NullLogger<PostgresMessageTransport>.Instance);
+
+        await transport.PublishAsync(
+            BuildEnvelope() with { TenantId = "tenant_from_envelope" },
+            LogicalQueue.BookingCommands,
+            CancellationToken.None);
+
+        dispatcherMock.Verify(
+            d => d.DispatchAsync(It.IsAny<JobEnvelope>(), It.IsAny<LogicalQueue>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// An envelope for another tenant must never be dispatched inside a scope that belongs to a
+    /// different one — the consumer would read and write under the wrong query filter (Inv-13).
+    /// </summary>
+    [Fact]
+    public async Task PublishAsync_InAScopeStampedWithAnotherTenant_RefusesBeforeDispatch()
+    {
+        var tenantContext = new TenantContext("tenant_a");
+        var dispatcherMock = new Mock<IQueueConsumerDispatcher>(MockBehavior.Strict);
+
+        var transport = new PostgresMessageTransport(
+            dispatcherMock.Object, tenantContext, NullLogger<PostgresMessageTransport>.Instance);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => transport.PublishAsync(
+            BuildEnvelope() with { TenantId = "tenant_b" },
+            LogicalQueue.BookingCommands,
+            CancellationToken.None));
+
+        Assert.Equal("tenant_a", tenantContext.TenantId);
     }
 
     [Fact]

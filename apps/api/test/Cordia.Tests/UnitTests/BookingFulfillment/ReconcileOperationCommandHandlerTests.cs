@@ -33,6 +33,9 @@ public class ReconcileOperationCommandHandlerTests
     private readonly Mock<IBookingRepository> _bookingRepo = new();
     private readonly Mock<IBookingIntentRepository> _intentRepo = new();
 
+    // Loose mock: IsOpen defaults to false, so every existing test runs with a closed circuit.
+    private readonly Mock<IProviderCircuitBreaker> _circuit = new();
+
     // ManualReviewEscalator is a sealed class; wire it with a sub-set of mocked repos.
     private ManualReviewEscalator CreateEscalator() =>
         new(_opRepo.Object, new Mock<IOperationWorkItemRepository>().Object,
@@ -43,7 +46,7 @@ public class ReconcileOperationCommandHandlerTests
             _outboxRepo.Object, _auditRepo.Object, _adapter.Object,
             _retryPolicy.Object, CreateEscalator(), _uow.Object,
             _capacityReservation.Object, _bookingRepo.Object, _intentRepo.Object,
-            new Metrics());
+            _circuit.Object, new Metrics());
 
     private static BookingOperation MakeOp(
         string tenantId,
@@ -648,6 +651,192 @@ public class ReconcileOperationCommandHandlerTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // ── #105: the §16.2 ladder must respect an open circuit ─────────────────────────────────
+
+    /// <summary>Arranges a create operation parked in Reconciling whose ladder would answer NotFound.</summary>
+    private string ArrangeParkedCreate(string tenantId, string opId)
+    {
+        var providerKey = ProviderIdempotencyKey.Derive(opId, "finalize", 1);
+
+        _opRepo.Setup(r => r.GetAsync(opId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeOp(tenantId, opId, OperationStatus.Reconciling, version: 3));
+        _stepRepo.Setup(r => r.GetByOperationAndTypeAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WorkflowStep?)null);
+        _attemptRepo.Setup(r => r.GetLatestForStepAsync(tenantId, opId, "finalize", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeAttempt(tenantId, opId, AttemptOutcome.Ambiguous, providerRef: null, providerKey: providerKey));
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.NotFound));
+        _opRepo.Setup(r => r.TryTransitionStatusAsync(
+                tenantId, opId, It.IsAny<long>(),
+                OperationStatus.Reconciling, It.IsAny<OperationStatus>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+
+        return providerKey;
+    }
+
+    private void VerifyNoLookups()
+    {
+        _adapter.Verify(a => a.LookupByIdempotencyKeyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.LookupByReferenceAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adapter.Verify(a => a.GetStatusAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// An open lookup circuit means the question cannot be asked. No provider call, no transition:
+    /// the operation stays parked and the sweeper re-drives it later. In particular it must NOT
+    /// fall through to re-create, which would be reading "could not ask" as "no booking".
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupCircuitOpen_WithBudgetRemaining_AsksNothing_AndStaysParked()
+    {
+        var (tenantId, opId) = ("t-circ", "op-circuit-open");
+        ArrangeParkedCreate(tenantId, opId);
+        _circuit.Setup(c => c.IsOpen("stub", "default:lookup")).Returns(true);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+        VerifyNoLookups();
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<OperationStatus>(), It.IsAny<OperationStatus>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A long outage must still reach a human. The open circuit is the unresolved case, so budget
+    /// exhaustion escalates exactly as a failing lookup would.
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupCircuitOpen_WithBudgetExhausted_StillEscalatesToAHuman()
+    {
+        var (tenantId, opId) = ("t-circ-exh", "op-circuit-open-exhausted");
+        ArrangeParkedCreate(tenantId, opId);
+        _circuit.Setup(c => c.IsOpen("stub", "default:lookup")).Returns(true);
+        _retryPolicy.Setup(r => r.NextEligibleAt(
+                It.IsAny<StepRetryBudget>(), It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>()))
+            .Returns((DateTimeOffset?)null);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Wait, result);
+        VerifyNoLookups();
+        _opRepo.Verify(r => r.TryTransitionStatusAsync(
+            tenantId, opId, It.IsAny<long>(),
+            OperationStatus.Reconciling, OperationStatus.ManualReview,
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// The paired negative: Finalize's create circuit is a different key. "Creates are failing"
+    /// must not suppress the reads that would prove whether a create landed.
+    /// </summary>
+    [Fact]
+    public async Task Handle_CreateCircuitOpen_DoesNotSuppressTheLookups()
+    {
+        var (tenantId, opId) = ("t-circ-create", "op-create-circuit-open");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _circuit.Setup(c => c.IsOpen("stub", "default")).Returns(true);
+
+        var result = await CreateHandler().Handle(
+            new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        // Ladder ran, proved absence, and re-created as before.
+        Assert.Equal(StepOutcome.Continue, result);
+        _adapter.Verify(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>The lookup circuit must be fed, or it can never open.</summary>
+    [Fact]
+    public async Task Handle_LookupThatFailsToAnswer_RecordsAFailure_OnTheLookupCircuit()
+    {
+        var (tenantId, opId) = ("t-circ-fail", "op-lookup-transient");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProviderResult(ProviderResultKind.Transient));
+
+        await CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
+        _circuit.Verify(c => c.RecordSuccess(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _circuit.Verify(c => c.RecordFailure("stub", "default"), Times.Never);
+    }
+
+    /// <summary>
+    /// A lookup that throws is still reported. A half-open circuit releases one probe and waits for
+    /// it; a probe that escapes unrecorded would keep the lookup circuit shut indefinitely.
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupThatThrows_RecordsAFailure_AndStillThrows()
+    {
+        var (tenantId, opId) = ("t-circ-throw", "op-lookup-throws");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("connection reset"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None));
+
+        _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
+    }
+
+    /// <summary>
+    /// Our own cancellation (worker shutdown) is not a provider failure. Recording it would let
+    /// repeated shutdowns open the lookup circuit for everyone.
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupCancelledByOurOwnToken_DoesNotRecordAFailure()
+    {
+        var (tenantId, opId) = ("t-circ-cancel", "op-lookup-cancelled");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        using var cts = new CancellationTokenSource();
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromException<ProviderResult>(new OperationCanceledException(cts.Token));
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), cts.Token));
+
+        _circuit.Verify(c => c.RecordFailure(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The paired negative: a provider TIMEOUT arrives as a cancellation too, but with our token still
+    /// live. That is the provider failing to answer, and it must count.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ProviderTimeout_WithOurTokenLive_RecordsAFailure()
+    {
+        var (tenantId, opId) = ("t-circ-timeout", "op-lookup-timeout");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"));
+
+        await Assert.ThrowsAsync<TaskCanceledException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None));
+
+        _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
+    }
+
+    /// <summary>NotFound is an answer — a healthy provider — and closes a half-open circuit.</summary>
+    [Fact]
+    public async Task Handle_LookupThatAnswers_RecordsASuccess_OnTheLookupCircuit()
+    {
+        var (tenantId, opId) = ("t-circ-ok", "op-lookup-answers");
+        ArrangeParkedCreate(tenantId, opId);
+
+        await CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None);
+
+        _circuit.Verify(c => c.RecordSuccess("stub", "default:lookup"), Times.Once);
+        _circuit.Verify(c => c.RecordFailure(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
 
     // ── #59: reconcile must settle first-party capacity before claiming Booked ──────────────
 

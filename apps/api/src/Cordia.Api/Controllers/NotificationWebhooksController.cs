@@ -1,5 +1,4 @@
-﻿using System.Security.Cryptography;
-using System.Text;
+﻿using Cordia.Api.Security;
 using Cordia.Application.Handlers.Notifications.RecordDeliveryReceipt;
 using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
@@ -15,10 +14,11 @@ namespace Cordia.Api.Controllers;
 ///
 /// Auth:
 ///   - X-Tenant-Id header is required (resolved by TenantResolutionMiddleware, validated here).
-///   - X-Webhook-Secret header must match the shared secret resolved from the spec-14 secret
-///     custody seam (<c>ISecretStore</c>, key <c>NotificationsWebhookSecret</c>), falling back to
-///     the legacy <c>Notifications:WebhookSecret</c> config key during migration.
-///     Production HMAC signature verification is deferred (§31 open decisions).
+///   - X-Webhook-Timestamp + X-Webhook-Signature: an HMAC-SHA256 over the timestamp, tenant and
+///     raw body, keyed by the shared secret from the spec-14 custody seam (<c>ISecretStore</c>, key
+///     <c>NotificationsWebhookSecret</c>, legacy <c>Notifications:WebhookSecret</c> fallback), inside a
+///     five-minute window (#74). See <see cref="WebhookSignature"/>. The plain X-Webhook-Secret
+///     header is no longer accepted.
 ///
 /// Outcome mapping:
 ///   NotFound          → 404
@@ -31,9 +31,7 @@ namespace Cordia.Api.Controllers;
 [Route("api/notification-webhooks")]
 public class NotificationWebhooksController(
     IMediator mediator,
-    ITenantContext tenant,
-    ISecretStore secrets,
-    IConfiguration config) : ControllerBase
+    ITenantContext tenant) : ControllerBase
 {
     /// <summary>
     /// Records a delivery receipt from the notification provider.
@@ -41,47 +39,19 @@ public class NotificationWebhooksController(
     /// Idempotent on (notification_id, provider_message_id).
     /// </summary>
     [HttpPost("delivery-receipts")]
+    [VerifyWebhookSignature]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> RecordDeliveryReceipt(
         [FromBody] DeliveryReceiptRequest body,
         CancellationToken ct)
     {
-        // Auth: tenant header required.
+        // Auth: the HMAC signature and timestamp were verified by [VerifyWebhookSignature] before
+        // this body was bound. The tenant it was signed for is the one required here.
         TenantGuard.RequireTenant(tenant);
-
-        // Auth: webhook secret — constant-time comparison to prevent timing-based secret oracle.
-        // Spec 14 §24.4: the secret comes from the ISecretStore custody seam
-        // (Secrets:NotificationsWebhookSecret); the legacy Notifications:WebhookSecret config key
-        // is the migration fallback. The value is compared here only — never logged or serialized.
-        // TODO(#74, §31): replace this shared-secret check with full HMAC signature
-        // verification. A shared secret proves the caller knows a value; an HMAC proves the
-        // MESSAGE was not altered, which is what a delivery receipt actually needs.
-        var configuredSecret = secrets.GetSecret("NotificationsWebhookSecret")
-            ?? config["Notifications:WebhookSecret"];
-        if (string.IsNullOrEmpty(configuredSecret))
-            return Unauthorized();
-
-        var providedSecret = Request.Headers["X-Webhook-Secret"].ToString();
-        if (string.IsNullOrEmpty(providedSecret))
-            return Unauthorized();
-
-        // FixedTimeEquals requires equal-length spans. We compare the UTF-8 byte representations;
-        // if the lengths differ we still perform a dummy fixed-time compare against the configured
-        // secret bytes to avoid leaking length information via a detectable early-return, then
-        // always return 401 for the length-mismatch case.
-        var configuredBytes = Encoding.UTF8.GetBytes(configuredSecret);
-        var providedBytes = Encoding.UTF8.GetBytes(providedSecret);
-        var lengthMatch = configuredBytes.Length == providedBytes.Length;
-        // Always call FixedTimeEquals: on length mismatch compare configured against itself
-        // (result is irrelevant; we discard it) so the call site does not short-circuit.
-        var contentMatch = CryptographicOperations.FixedTimeEquals(
-            configuredBytes,
-            lengthMatch ? providedBytes : configuredBytes);
-        if (!lengthMatch || !contentMatch)
-            return Unauthorized();
 
         // Map status string (case-insensitive) → enum.
         DeliveryReceiptStatus status;

@@ -54,11 +54,18 @@ public sealed class ReconcileOperationCommandHandler(
     ICapacityReservation capacityReservation,
     IBookingRepository bookingRepo,
     IBookingIntentRepository intentRepo,
+    IProviderCircuitBreaker circuitBreaker,
     Metrics metrics)
     : IRequestHandler<ReconcileOperationCommand, StepOutcome>
 {
     private const string StepType = "finalize";
     private const string ProviderAccount = "default";
+
+    /// <summary>
+    /// Circuit key for the §16.2 lookups — distinct from the <c>(provider, account)</c> key
+    /// Finalize's creates trip, so a create outage cannot suppress the reads that resolve it (#105).
+    /// </summary>
+    private const string LookupCircuitAccount = ProviderAccount + ":lookup";
 
     /// <summary>
     /// The workflow step first-party capacity holds are keyed by — <c>"create"</c>, NOT
@@ -141,19 +148,69 @@ public sealed class ReconcileOperationCommandHandler(
         // §16.2 Lookup order (load-bearing — Inv-7):
         //   1. idempotency key  2. reference (if key NotFound + ref known)  3. status (if ref NotFound)
         // ─────────────────────────────────────────────────────────────
-        var r = await adapter.LookupByIdempotencyKeyAsync(ProviderAccount, providerKey, ct);
-        var via = "idempotency_key";
+        ProviderResult r;
+        string via;
 
-        if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+        // #105: do not flood an unhealthy provider (spec 06 §15.4). IsOpen had exactly one caller —
+        // Finalize — so an operation parked in Reconciling was re-driven by the sweeper straight
+        // into three lookups per pass against a provider already known to be failing.
+        //
+        // An open circuit is "the question could not be asked", which is the unresolved case, not
+        // an answer. Standing in a Transient result routes it through the existing branches below
+        // with no new path: budget remaining → stay in Reconciling and Wait; budget exhausted →
+        // the FM#11 escalation, so a long outage still reaches a human instead of parking forever.
+        //
+        // Lookups trip their OWN circuit. Sharing Finalize's key would let "creates are failing"
+        // suppress the very reads that could prove whether a create landed.
+        if (circuitBreaker.IsOpen(adapter.ProviderName, LookupCircuitAccount))
         {
-            r = await adapter.LookupByReferenceAsync(ProviderAccount, latest.ProviderRef, ct);
-            via = "reference";
+            r = new ProviderResult(ProviderResultKind.Transient, ErrorCode: "circuit_open");
+            via = "circuit_open";
         }
-
-        if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+        else
         {
-            r = await adapter.GetStatusAsync(ProviderAccount, latest.ProviderRef, ct);
-            via = "status";
+            try
+            {
+                r = await adapter.LookupByIdempotencyKeyAsync(ProviderAccount, providerKey, ct);
+                via = "idempotency_key";
+
+                if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+                {
+                    r = await adapter.LookupByReferenceAsync(ProviderAccount, latest.ProviderRef, ct);
+                    via = "reference";
+                }
+
+                if (r.Kind == ProviderResultKind.NotFound && latest?.ProviderRef is not null)
+                {
+                    r = await adapter.GetStatusAsync(ProviderAccount, latest.ProviderRef, ct);
+                    via = "status";
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // A lookup that THROWS must still be recorded. When the circuit is half-open, IsOpen
+                // released exactly one probe and blocks every later caller until that probe reports
+                // back; a probe that escapes without RecordSuccess/RecordFailure keeps the lookup
+                // circuit shut until the process restarts, and every parked operation would then
+                // run out its budget without the provider ever being asked again.
+                //
+                // Except when OUR token was cancelled. That says nothing about the provider: `ct` here
+                // is the worker's stopping token (nothing else links or times it out), so counting it
+                // as a failure would let repeated shutdowns open the lookup circuit and suppress
+                // unrelated reconciliations for a cooldown. Nothing is lost by not recording it — the
+                // breaker is in-process state that ends with the process being stopped. A provider
+                // TIMEOUT still counts: HttpClient surfaces it as a TaskCanceledException while this
+                // token is still live, so the filter lets it through.
+                circuitBreaker.RecordFailure(adapter.ProviderName, LookupCircuitAccount);
+                throw;
+            }
+
+            // The ladder only continues past NotFound, so the final result is the one that
+            // decides health: an answer either way is a healthy provider, anything else is not.
+            if (r.Kind is ProviderResultKind.Created or ProviderResultKind.AlreadyExists or ProviderResultKind.NotFound)
+                circuitBreaker.RecordSuccess(adapter.ProviderName, LookupCircuitAccount);
+            else
+                circuitBreaker.RecordFailure(adapter.ProviderName, LookupCircuitAccount);
         }
 
         var effectProven = r.Kind is ProviderResultKind.Created or ProviderResultKind.AlreadyExists

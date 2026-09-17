@@ -4,12 +4,14 @@ using Cordia.Domain.Exceptions;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.Verification.RequestVerification;
 
 public sealed class RequestVerificationCommandHandler(
     IVerificationChallengeRepository challenges,
-    IBookingRepository bookings)
+    IBookingRepository bookings,
+    IOptions<VerificationCodeOptions> codeOptions)
     : IRequestHandler<RequestVerificationCommand, RequestVerificationResult>
 {
     private static readonly TimeSpan ChallengeTtl = TimeSpan.FromMinutes(10);
@@ -38,6 +40,7 @@ public sealed class RequestVerificationCommandHandler(
 
         var now = DateTimeOffset.UtcNow;
         var verificationId = $"ver_{Guid.NewGuid():N}";
+        var code = VerificationCode.Generate();
         var challenge = new VerificationChallenge
         {
             TenantId = command.TenantId,
@@ -47,13 +50,16 @@ public sealed class RequestVerificationCommandHandler(
             TargetBookingId = targetBookingId,
             Action = request.Action,
             Channel = request.Channel,
-            CodeHash = VerificationCode.Hash(verificationId, VerificationCode.DevelopmentCode),
+            CodeHash = VerificationCode.Hash(codeOptions.Value, verificationId, code),
             RequestedAt = now,
             ExpiresAt = now + ChallengeTtl,
         };
 
         if (await challenges.TryAddAsync(challenge, ct))
-            return new RequestVerificationResult(RequestVerificationStatusEnum.Sent, ToResult(challenge));
+            return new RequestVerificationResult(
+                RequestVerificationStatusEnum.Sent,
+                ToResult(challenge),
+                codeOptions.Value.ExposeCodeForDevelopment ? code : null);
 
         var winner = await challenges.GetByIdempotencyKeyAsync(command.TenantId, request.VerificationIdempotencyKey, ct)
             ?? throw new InvalidOperationException($"Verification idempotency key '{request.VerificationIdempotencyKey}' conflicted but winner was not found.");

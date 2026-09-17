@@ -8,6 +8,55 @@ import { DepTag, ProvTag } from "../../ui/StatusTags";
 import { PrimaryButton, GhostButton } from "../../ui/Button";
 import { Icon } from "../../ui/Icon";
 import { useRecordAttendance } from "../../../features/bookings/mutations";
+import {
+  deliveryLabel,
+  eventLabel,
+  useNotificationDelivery,
+  type DeliveryTone,
+} from "../../../features/bookings/notificationDelivery";
+
+const TONE_COLOR: Record<DeliveryTone, string> = {
+  good: '#1F7A4D',
+  pending: '#8A6A12',
+  bad: '#B82C22',
+  muted: '#6B6B6B',
+};
+
+/**
+ * What the platform recorded about messages to the guest (#83). Rows are shown exactly as stored:
+ * nothing recorded reads as "No messages recorded", never as "sent".
+ */
+function GuestMessages({ id, isBooking, open }: { id: string; isBooking: boolean; open: boolean }) {
+  const delivery = useNotificationDelivery(id, isBooking, open);
+
+  let body: ReactNode;
+  if (delivery.isPending) {
+    body = <div className="text-[12.5px] text-t2 py-[11px]">Loading…</div>;
+  } else if (delivery.isError) {
+    body = <div className="text-[12.5px] text-t2 py-[11px]" role="status">Delivery status is unavailable right now.</div>;
+  } else if (delivery.data.length === 0) {
+    body = <div className="text-[12.5px] text-t2 py-[11px]">No messages recorded.</div>;
+  } else {
+    body = delivery.data.map((n) => {
+      const label = deliveryLabel(n.state);
+      return (
+        <MetaRow key={n.notification_id ?? `${n.event_type}-${n.created_at}`} label={eventLabel(n.event_type)} top>
+          <span style={{ color: TONE_COLOR[label.tone] }}>{label.text}</span>
+          {n.failure_category && (
+            <div className="text-[11px] text-t2 font-normal">{n.failure_category.replace(/_/g, ' ')}</div>
+          )}
+        </MetaRow>
+      );
+    });
+  }
+
+  return (
+    <section aria-label="Guest messages" className="rounded-[13px] p-[4px_14px] mb-[14px]" style={{ background: '#FBFBFA', border: '1px solid #EFEFEF' }}>
+      <div className="text-[11px] uppercase tracking-[0.06em] text-t2 pt-[10px]">Guest messages</div>
+      {body}
+    </section>
+  );
+}
 
 function useRetained<T>(val: T | null, open: boolean): T | null {
   const ref = useRef<T | null>(val);
@@ -148,6 +197,8 @@ export function BookingDetailDrawer({
             and the schedule projection does not return one. An invented technical fact is
             worse than a missing one: it is the field an engineer would quote in an incident. */}
       </div>
+
+      <GuestMessages id={b.id} isBooking={isRealBooking} open={open} />
 
       {isRealBooking && (
         <div className="flex gap-2 mb-[14px]">

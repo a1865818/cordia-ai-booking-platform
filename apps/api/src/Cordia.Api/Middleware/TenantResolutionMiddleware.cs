@@ -36,7 +36,7 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
         {
             var tenantId = values.ToString();
             if (!string.IsNullOrWhiteSpace(tenantId))
-                tenantContext.TenantId = tenantId;
+                tenantContext.SetTenant(tenantId);
         }
 
         await next(context);   // does NOT hard-fail when absent; endpoints that require a tenant validate it

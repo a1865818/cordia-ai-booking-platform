@@ -216,31 +216,22 @@ public sealed class OutboxPublisherOptions
     /// transaction. 300 s is 2.5× that: enough for ONE worst-case extraction to finish inside the
     /// lease covering it.</para>
     ///
-    /// <para><b>It is not enough for a backed-up lane, and no fixed number would be.</b>
-    /// <c>leaseExpiresAt</c> is computed once per TICK and stamped on every row the claim returns,
-    /// while rows within a lane publish strictly sequentially — so N same-lane rows share one
-    /// lease and the Nth finishes at roughly N × 120 s. Three slow <c>menu.commands</c> rows in
-    /// one batch reach ~360 s against a 300 s lease, and nothing bounds N below
-    /// <see cref="BatchSize"/>. Sizing for that worst case instead (50 × 120 s) would park rows
-    /// for 100 minutes after a genuine crash, which is worse. Only renewal closes a multiplier,
-    /// and renewal — OD-3's other half — is deliberately NOT implemented here. <b>This is a sized
-    /// lease, not a renewable one, and OD-3 stays open.</b></para>
+    /// <para><b>A sized lease is renewed as the lane runs (#102).</b> The claim stamps one expiry on
+    /// the whole batch, while rows within a lane publish strictly sequentially — so without renewal
+    /// N same-lane rows shared one lease: three 120 s <c>menu.commands</c> rows run 0–120, 120–240 and
+    /// 240–360 s, so the third outruns a 300 s lease and a fourth would start after it expired.
+    /// <c>OutboxPublisherHostedService.PublishLaneAsync</c> renews the current row and every row queued
+    /// behind it whenever the lane's lease falls to half of this value — a bounded heartbeat, so this
+    /// number stays a per-row budget however many rows queue, and a fast lane writes nothing. That is
+    /// OD-3's renewal half; a crashed worker still releases its rows within one
+    /// <c>LeaseSeconds</c>.</para>
     ///
-    /// <para><b>Why that is tolerable: the lease was never the correctness boundary.</b> Spec 05
-    /// §12.5 is explicit that leases "prevent <i>simultaneous</i> processing only; they do not
-    /// replace ... inbox dedup", and the §8 crash-window matrix already names this exact row —
-    /// "lease expired but original worker still alive (zombie) → two claimants possible" — with
-    /// that second layer, not the lease, as the recovery. It holds here: a reclaiming publisher's
-    /// <c>TryAdmitAsync</c> INSERT blocks on the first worker's uncommitted inbox row, then finds
-    /// the committed key and suppresses the duplicate. The handler never runs twice and no second
-    /// extraction is issued.</para>
-    ///
-    /// <para><b>The residual cost, recorded rather than hidden.</b> A spurious reclaim still
-    /// burns a <c>publish_attempts</c> increment against <see cref="MaxPublishAttempts"/> with no
-    /// way to tell "this attempt failed" from "this attempt was still succeeding on another
-    /// worker", and the reclaiming thread blocks on that inbox lock for the remainder of the
-    /// first extraction. Both are bounded; neither loses nor duplicates work. Raising this
-    /// number does not fix either — it only moves the row count at which they start.</para>
+    /// <para><b>The lease was never the correctness boundary.</b> Spec 05 §12.5: leases "prevent
+    /// <i>simultaneous</i> processing only; they do not replace ... inbox dedup". A single extraction
+    /// that outruns its own lease is still recovered by that second layer — a reclaiming
+    /// publisher's <c>TryAdmitAsync</c> INSERT blocks on the first worker's uncommitted inbox row,
+    /// then suppresses the duplicate. Renewal removes the routine case in which that happened to
+    /// healthy rows, and with it the spurious <c>publish_attempts</c> increments.</para>
     ///
     /// <para><b>There are two <c>LeaseSeconds</c> in this file and they are not the same knob.</b>
     /// This one is the outbox publisher's, at 300 s.

@@ -1,4 +1,5 @@
-﻿using Cordia.Application.Common.Authorization;
+﻿using Microsoft.Extensions.Options;
+using Cordia.Application.Common.Authorization;
 using Cordia.Application.Handlers.Deposits.ListDeposits;
 using Cordia.Application.Handlers.Deposits.RefundDeposit;
 using Cordia.Domain.Interfaces;
@@ -16,7 +17,11 @@ namespace Cordia.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/deposits")]
-public class DepositsController(IMediator mediator, ITenantContext tenant, IActorContext actorContext) : ControllerBase
+public class DepositsController(
+    IMediator mediator,
+    ITenantContext tenant,
+    IActorContext actorContext,
+    IOptions<AssertedActorOptions> assertedActor) : ControllerBase
 {
     /// <summary>
     /// Lists recent deposit sessions. Filter <c>status</c> is the console vocabulary
@@ -25,6 +30,7 @@ public class DepositsController(IMediator mediator, ITenantContext tenant, IActo
     [HttpGet]
     [ProducesResponseType(typeof(DepositListResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<DepositListResult>> List(
         [FromQuery] string? status,
         [FromQuery] DateTimeOffset? from,
@@ -33,6 +39,8 @@ public class DepositsController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        OperatorGuard.RequireOperator(
+            actorContext, assertedActor.Value.AllowAssertedStaffRole, "deposit.list_read");
         return Ok(await mediator.Send(
             new ListDepositsQuery(
                 tenant.TenantId,
@@ -60,6 +68,9 @@ public class DepositsController(IMediator mediator, ITenantContext tenant, IActo
         CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
+        // No OperatorGuard here: this is an IOperatorActionRequest, and OperatorActionBehavior makes
+        // the same proven-identity decision AND writes the DENY audit (spec 14 §24.5). A controller
+        // guard would refuse first and leave no audit row.
         var (resolvedActor, resolvedRole) = ActorBinder.Resolve(actorContext, actor, actorRole);
 
         var result = await mediator.Send(

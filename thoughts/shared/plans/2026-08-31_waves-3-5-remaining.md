@@ -1,0 +1,419 @@
+---
+date: 2026-08-31
+planner: Claude (spec-loop Stage 2)
+branch: feat/waves-3-5-remaining
+base: main @ 855e73d
+repository: Cordia
+topic: "Waves 3–5 — the remaining backlog in one PR"
+tags: [plan, apps/api, apps/web, security, inv-1, inv-11, inv-12, inv-13, spec-08, spec-12, spec-14, spec-15]
+status: approved
+issues: [72, 80, 105, 71, 73, 106, 83, 75, 74, 102, 108, 110]
+research: thoughts/shared/research/2026-08-31_waves-3-5-remaining.md
+---
+
+# Plan — Waves 3–5
+
+Fifteen phases, one commit each, on one branch (Phase 15 was added at the user's request on 2026-09-15). Ordered **security-first**, so the highest-severity
+item lands first and the wave degrades gracefully if it is stopped early.
+
+## What research changed before a line was written
+
+| Issue | The plan does NOT do what the issue asks, because |
+|---|---|
+| **#72** | It is **mostly already built** — login, JWS sessions, DB revocation, actor precedence and a role matrix over ~35 handlers exist. No ASP.NET auth stack is added, no `[Authorize]` rollout, no breaking change. The real gap is that the role check never verifies the identity behind it. |
+| **#80** | The filed remedy (write-once setter that throws) **breaks production**: dead-letter replay re-stamps the tenant inside an already-stamped request scope. Same-value tolerance instead. |
+| **#75** | An environment-keyed gate breaks ~20 integration tests, and five of six ports have no real implementation. Config-flag opt-in with a loud startup warning instead (**decision D1**). |
+| **#71** | Worse than filed: `IsProduction()` is a literal string match, so Staging uses the public pepper. And there is no delivery channel at all, so a naive fix breaks verification for everyone. |
+| **#73** | Blind deletion crashes the host (`JwsTenantContextSigner` throws on a missing key, and it is a singleton) and breaks a byte-coupling with `apps/langgraph/.env.example`. Startup validation instead of deletion. |
+| **#74** | The comparison is already constant-time. The real gap is replay, and HMAC-over-body needs raw bytes `[FromBody]` consumes (**decision D2**). |
+| **#108** | The version-bump option touches **49** call sites, not the ~20 the issue (which I wrote) claimed, and false collisions would be silent. Advisory lock instead (**decision D3**). |
+| **#84** | **Out of scope — genuinely blocked.** The artifact metadata table is owned by no spec (`docs/specs/README.md:208-209`) and spec 12 owns all DDL; `EncryptedFileObjectStore` is single-node by its own comments. |
+
+## Decisions taken at the approval gate
+
+| # | Decision |
+|---|---|
+| **D1** | **#75** — config-flag opt-in per stub, defaulting to stub-on so nothing breaks, with a loud startup warning outside Development listing every active stub. Not refuse-to-boot. |
+| **D2** | **#74** — `X-Signature` HMAC over the raw body with request buffering, plus a timestamp window for replay. Rewrites tests T1–T7. |
+| **D3** | **#108** — `pg_advisory_xact_lock` over the two decision points. No schema change. |
+| **D4** | Scope — Tier A + B + the decided Tier C. #84 excluded. |
+
+## How this maps onto Cordia
+
+| New concept | Existing artifact it extends | Consequence |
+|---|---|---|
+| "Was this actor proven?" | `IActorContext.ActorId` (set only from a verified `opctx+jws`) + `AssertedActorOptions` | `OperatorActionBehavior` consults the gate that already exists for exactly this — it is wired, not invented |
+| Gating ungated reads | `IOperatorActionRequest` + `OperatorActionBehavior` | Four queries adopt the existing interface; no new mechanism |
+| Tenant mutation discipline | `ITenantContext` get-only interface already in place | A `SetTenant` that tolerates a same-value repeat; the interface keeps doing the rest |
+| Stub visibility | `LangGraph:UseStubExtractor` + `ValidateOnStart` | Same shape per port; the pattern is copied, not designed |
+| Insecure-default refusal | `InfrastructureServiceCollectionExtensions` `.ValidateOnStart()` (today only `LangGraphOptions`) | Extended to the DB password, webhook secret, signing keys |
+| Webhook integrity | `JwsTenantContextSigner`'s canonicalisation discipline | Signature shape is a webhook header, not a JWS token — deliberate divergence |
+| Reconcile circuit guard | `IProviderCircuitBreaker` (registered, dependency-free) + the `Wait` branch from Wave 2 #55 | One ctor param and a guard routing into a branch that exists |
+| Dispatch/cancel mutual exclusion | `IUnitOfWork` transactions already wrapping both sites | `pg_advisory_xact_lock` inside them; no schema |
+
+## Spec ownership & frozen decisions
+
+| Contract | Owner | This wave |
+|---|---|---|
+| `verification_action` enum, grants | **spec 08** | Referenced. No enum label added. |
+| Operator-action role matrix (GD-1/GD-2) | **spec 14 §24.5** | Referenced — enforcement is wired, the matrix is unchanged |
+| Tenant resolution / `TenantContext` | **spec 15** | Referenced |
+| All DDL / pg-enums | **spec 12** | **Two additive migrations** (verification attempt counter; capacity-primitive table). No enum labels. |
+| Notification state enum | **spec 10** | Referenced — read-only exposure |
+| Artifact metadata table | **unowned** | **Why #84 is out of scope** |
+
+**Invariants in play:** Inv-11 (mutations require server-verified authorization — Phase 1 is the
+direct fix), Inv-13 (tenant scope), Inv-12 (no card data in logs — the startup warning must not print
+secret values), Inv-1 (no side effect from unverified assertion).
+
+---
+
+## Phases
+
+Each is one commit. Automated verification per phase: `bun nx test api` + `bun nx lint api` green,
+and every guard **mutation-tested** — broken on purpose, must red exactly its own test, with a paired
+negative test staying green.
+
+### Phase 1 — #72a: `OperatorActionBehavior` must require a proven identity
+
+`ActorBinder` returns raw `X-Actor*` headers when no session exists, and the behaviour never asks
+whether the identity was proven. Inject `IActorContext` + `IOptions<AssertedActorOptions>`; when the
+actor is unproven and `AllowAssertedStaffRole` is false, deny with the existing 403 + DENY audit.
+**Highest severity in the backlog.**
+
+### Phase 2 — #72b: gate the four ungated reads
+`GetCustomerQuery`, `ListCustomersQuery`, `ListDepositsQuery`, and the `Reporting`/`Payouts` queries
+adopt `IOperatorActionRequest`. Controllers thread actor/role/reason as their gated siblings do.
+
+### Phase 3 — #80: encapsulate tenant mutation
+`SetTenant(...)` that **tolerates a same-value repeat**; remove the public setter. Rewrite the ~20
+test assignment sites mechanically. `PostgresMessageTransport`'s re-stamp must keep working.
+
+### Phase 4 — #105: circuit guard on the §16.2 ladder
+Inject `IProviderCircuitBreaker`; an open circuit routes into the existing "unresolved, stay in
+`Reconciling`, return `Wait`" branch. Use a **distinct circuit key suffix for lookups**, so "cannot
+create" does not suppress the reads that would resolve it.
+
+### Phase 5 — #71a: fail closed on the pepper
+`IsProduction()` becomes "not literally Development ⇒ treat as production". Staging stops using the
+committed pepper.
+
+### Phase 6 — #73a: refuse insecure defaults at startup
+Extend the existing `ValidateOnStart` pattern to the DB connection string, webhook secret and signing
+keys: outside Development, a known-insecure committed default fails startup. **Never log the value.**
+
+### Phase 7 — #106a: the stale spec-07 clause
+One clause at `docs/specs/07-capacity-and-holds.md:365`.
+
+### Phase 8 — #83: notification delivery state
+Repository list-by-operation, MediatR query + DTO, `GET` route, drawer rendering. **Regenerates
+`v1.json`** — the only phase that legitimately does.
+
+### Phase 9 — #71b: real codes + attempt counter *(migration)*
+CSPRNG code; a Development/Test-only retrieval path gated exactly like `AllowHeaderShim`; attempt
+counter + lockout on `verification_challenges`. `VerificationEndpointTests` is rewritten to read the
+generated code rather than assume `"000000"`.
+
+### Phase 10 — #106b: capacity-primitive table *(migration)*
+Per-`(tenant, provider)` table modelled on `TenantDepositPolicy`; resolver becomes scoped.
+`CapacityPrimitiveResolverTests` is **rewritten** — it currently asserts the gap.
+
+### Phase 11 — #75: per-stub config flags + loud warning (D1)
+Each remaining stub behind its own flag, defaulting to stub-on. Outside Development, a single loud
+startup warning enumerating every active stub.
+
+### Phase 12 — #74: webhook HMAC + replay window (D2)
+`X-Signature` over the raw body with buffering enabled, plus a timestamp tolerance. T1–T7 rewritten.
+
+### Phase 13 — #102: outbox lease renewal
+`RenewLeaseAsync` (no migration — `lease_expires_at` exists), renewed around the transport call.
+
+### Phase 14 — #108: advisory lock (D3)
+`pg_advisory_xact_lock` over the dispatch fence and the cancel CAS.
+
+### Phase 15 — #110: console scan paging *(migration)* — added 2026-09-15 at the user's request
+`ConsoleReadModel.ScanAsync` pages with `Skip/Take` over `ORDER BY updated_at DESC, operation_id`,
+which no index supports, so every page re-sorts the tenant's whole operation set and page N discards
+N×500 rows. Replace offset paging with **keyset paging** on `(updated_at, operation_id)` — the existing
+tie-break is already the total order — and add the index `(tenant_id, updated_at DESC, operation_id)`.
+The ordering contract and the truncation semantics (`ConsoleScanTruncationTests`) are unchanged.
+Third migration on the branch, additive.
+
+---
+
+## Blast radius
+
+| Artefact | Phase | Intentional or byte-identical |
+|---|---|---|
+| `OperatorActionBehavior` | 1 | **Intentional** — +2 ctor deps |
+| `ActorBinder` | none | **Byte-identical** — precedence is already correct |
+| `StaffRole`, the GD-1 matrix | none | **Byte-identical** |
+| Customers/Payouts/Reporting/Deposits queries | 2 | **Intentional**, additive interface |
+| `TenantContext` / `ActorContext` | 3 | **Intentional**; `ITenantContext` unchanged |
+| `PostgresMessageTransport` | 3 | Must keep re-stamping successfully |
+| `ReconcileOperationCommandHandler` | 4 | **Intentional**, +1 ctor dep |
+| `VerificationCode`, challenge repo | 5, 9 | **Intentional** |
+| `NotificationWebhooksController` | 12 | **Intentional**, wire-format change |
+| `libs/api-contract/openapi/v1.json` | **8 only** | Byte-identical in every other phase |
+| Pydantic contracts | none | **Untouched** |
+
+## What we're NOT doing
+
+- **#84** — blocked on an unowned spec-12 table and a single-node object store.
+- **No ASP.NET auth stack, no `[Authorize]` rollout** — the dual-plane controllers make per-action
+  gating the only correct shape, and it already exists.
+- **No operator provisioning endpoint** — not needed, because this wave does not make login
+  mandatory. Filed separately.
+- **No real adapters for the five stub ports** (D1) — visibility, not replacement.
+- **No secret deletion** (#73) — validation instead, because deletion breaks the host and the
+  cross-language coupling.
+- **No enum labels**, no changes to referenced contracts.
+
+## Package & migration notes
+
+**No new packages.** **Three migrations**, in Phases 9, 10 and 15, all additive, sequential on one
+branch so no snapshot conflict. Spec 12 owns the DDL; neither adds an enum label (PostgreSQL cannot
+drop one).
+
+## Follow-ups this wave will file
+
+1. Operator provisioning path — required before login can ever be made mandatory.
+2. #84's two blockers: the artifact metadata table needs a spec-12 owner, and the object store needs
+   a shared backend.
+3. Real implementations for the five stub ports.
+4. `MenuController`'s stale "open 08/14 decision" comment — the decision closed on 2026-07-11.
+
+---
+
+## Discoveries and notable information (filled during implementation)
+
+### Phase 1
+- The provenance gate had teeth immediately: `ManualRecoveryTests` dispatches operator commands
+  straight through MediatR with no session and builds its own container, so it needed
+  `Authorization:AllowAssertedStaffRole = true` explicitly. Six tests went red without it.
+
+### Phase 2
+- **The plan's mechanism was wrong.** `IOperatorActionRequest` mandates a non-empty `X-Reason-Code`,
+  and the console's reads call `fetchApi` with no actor options — adopting it would 403 every
+  customers/deposits/payouts/reporting screen. `OperatorGuard` (beside `TenantGuard`) checks only a
+  proven `ActorId`, on the same `AllowAssertedStaffRole` switch.
+- `GET /api/reporting/funnel` hand-rolled its own tenant check instead of `TenantGuard`; the sweep
+  initially missed it for exactly that reason. Normalised.
+
+### Phase 3
+- `SetTenant` refuses a blank tenant as well as a different one. Three test fixtures
+  (`PostgresFixture`, `AcceptanceApiFixture`, `TenantResolutionApiFixture`) legitimately build an
+  *unscoped* context with tenant `""` to read tenant-not-resolved audits; they now use the unstamped
+  constructor for that case.
+- The DI registration became a factory (`_ => new TenantContext()`) so the new `(string)` constructor
+  can never be considered by activator selection.
+- `ActorContext` was left byte-identical: #80 concerns the tenant, and the actor is only bound by
+  the verification middleware.
+- The replay collision is covered by a unit test on `PostgresMessageTransport`, because
+  `ReplayDeadLetterTests` substitutes the transport.
+
+### Phase 4
+- An open circuit is modelled as a synthetic `Transient` result, so it flows through the existing
+  unresolved branches with no new path. That is better than the plan's "route to Wait": budget
+  exhaustion still escalates, so a long outage reaches a human instead of parking forever.
+- Lookups trip their own key, `(provider, "default:lookup")`. The ladder only continues past
+  `NotFound`, so the final result decides health: `Created`/`AlreadyExists`/`NotFound` record a
+  success, anything else a failure.
+
+### Phase 5
+- "Not literally Development ⇒ production" could not be done inside the static `VerificationCode`:
+  it read process environment variables, but the integration host sets its environment through
+  `UseEnvironment("Test")`, which never reaches them — and an unset variable means Production, so
+  every unit and integration run would have thrown. The pepper became bound options
+  (`Verification:CodePepper`, legacy `CORDIA_VERIFICATION_CODE_PEPPER` still honoured) with
+  `Verification:AllowLocalPepper` defaulted in `Program.cs` exactly like `AllowAssertedStaffRole`,
+  and validated **at startup** rather than on the first verification request.
+- `tools/scripts/export_openapi.mjs` spawns the API as Development, so the contract hook is unaffected.
+
+### Phase 6
+- Implemented as a detector (`InsecureCommittedDefaults.FindIn`) called from `Program.cs` right after
+  `Build()`, rather than options validation: the committed values live across four unrelated
+  sections (connection string, signing keys, two webhook-secret keys, object-store key), and the
+  check must run before migrations or any token is minted.
+- The database password is **parsed** with `NpgsqlConnectionStringBuilder`, not substring-matched —
+  mutation M3 proved a substring check would refuse a rotated password that merely contains the word.
+- The test host opts in with `Security:AllowInsecureCommittedDefaults`; the integration suite's own
+  connection string carries the committed password, so without it every host would refuse.
+- `apps/langgraph/.env.example` and every committed value are byte-identical.
+
+### Phase 8
+- Notifications carry an operation id, never a booking id, so the booking read joins through
+  `booking_operations.booking_id` (set on the create at Booked, and on every cancel/modify at
+  submission). Two routes: `GET /api/Bookings/{id}/notifications` and
+  `GET /api/booking-operations/{id}/notifications` — the drawer picks by `isBooking`.
+- Both routes sit behind `TenantGuard` + `OperatorGuard` (added to `OperatorReadGuardTests`). The
+  view omits `recipient_ref`, provider ref and idempotency key.
+- The console's "operator cannot post a receipt" criterion is proven, not assumed: a request with
+  full asserted operator headers and no webhook secret is 401 and leaves the row untouched.
+- Mutation M1 (booking join ignoring the booking id) only went red after the booking test gained a
+  same-tenant notification on an unrelated booking — the first draft could not see it.
+- Local Bun is 1.3.14 and the web suite guards on ≥1.4.0 (CI uses latest), so web tests were run with
+  `npx bun@latest test --parallel`: 725 pass.
+
+### Phase 13 *(committed before 9 and 10 — no dependency on either)*
+- The research note was right that renewing *between* rows cannot help the row inside the opaque
+  transport call — but that row does not need it: `LeaseSeconds` is already sized for one slow row.
+  The rows at risk are the ones **waiting**. So before each transport call the lane renews the
+  current row and every row still queued behind it; the budget becomes per-row.
+- The current row is renewed on its own so a zero is unambiguous: another publisher reclaimed it,
+  and this worker skips it rather than publishing twice. `lease_owner = me` in the update is what
+  stops renewal stealing a reclaimed row back (mutation M3).
+- The first probe checked the lease at publish *start*, which cannot fail — the current-row renewal
+  happens a line earlier. The probe now runs at the end of each simulated publish across every
+  unpublished row, and only then did removing waiting-row renewal go red.
+
+### Phase 9
+- The fixed code had exactly three consumers: its definition, the request handler, and one
+  integration test. Nothing in `apps/web`, `apps/langgraph`, docs or scripts depended on it; the
+  agent's `verify_identity` node only polls for a grant and never submits a code.
+- The "Development/Test-only retrieval path" is a `development_code` field on the hand-written
+  `RequestVerificationResponse` wrapper (omitted when null), behind `Verification:ExposeCodeForDevelopment`
+  defaulted like the other gates. The generated Pydantic `VerificationSentResult` is untouched, so
+  no cross-language regen. `v1.json` gained four lines — a second legitimate contract change, forced
+  by the absence of any delivery channel. The console's `VerificationGate` shows it when present.
+- Lockout returns the existing `failed` status: no enum label added (spec 08 / Pydantic own it).
+  `RecordFailedAttemptAsync` is bounded in SQL (`failed_attempts < max`) and `MarkVerifiedAsync`
+  re-asserts the same bound, so parallel guesses cannot overshoot and a lock beats an in-flight
+  right code. The digest comparison became `CryptographicOperations.FixedTimeEquals`.
+- Migration `VerificationAttemptLockout`: one additive `failed_attempts integer not null default 0`.
+  EF wrote the snapshot with CRLF on Windows; normalised to LF so the diff is the three real lines.
+- The old test's "bad" code `111111` would collide with a random code one run in a million; the
+  rewrite derives a code guaranteed to differ.
+
+### Phase 10
+- `Resolve` was synchronous, so a table lookup changed the port to `ResolveAsync`; one production
+  caller (`CheckCandidateAvailabilityCommandHandler`) and one mock needed updating.
+- The rung is stored as **text with a check constraint**, not a pg-enum — spec 12 forbids inventing
+  enum labels, and a `CapacityPrimitive` enum has no spec-12 owner.
+- **The only production caller resolves for the first-party provider**, and first-party inventory
+  *is* the conditional `capacity_slots` update — it has no other rung. A row saying otherwise would
+  make a first-party hold report `confirmed` (Inv-16). So the resolver pins `first_party` to the
+  first-party rung without consulting the table, and a second check constraint refuses such a row.
+  The table therefore changes behaviour only once an external provider is wired; that is the
+  honest extent of #106 today, and the spec-07 §14 bullet now says so.
+- No write API: choosing a rung is a statement about what a provider integration can do, made at
+  onboarding, not an operator setting.
+
+### Phase 11
+- Confirmed the research count: six ports still stubbed. `IDepositPolicy` is real
+  (`TenantDepositPolicyProvider`) and not listed; the extractor is listed under its existing
+  `LangGraph:UseStubExtractor` flag, which defaults off because it has a real client.
+- Per-stub flags `Stubs:<Port>` default on. A flag set **false** for a port with no real
+  implementation refuses startup naming the key — it is a request this build cannot satisfy, and
+  silently keeping the stub would leave the operator believing it was off. That is not the
+  "refuse-to-boot" D1 ruled out: the default configuration always starts.
+- One startup line names every active stub with its consequence (warning outside Development).
+- Drift guard: `TheCatalogue_MatchesWhatTheContainerRegisters` inspects `AddInfrastructure`'s actual
+  descriptors, so a real adapter replacing a stub fails the test until the catalogue is updated.
+
+### Phase 12
+- Wire format: `X-Webhook-Timestamp` (Unix seconds) + `X-Webhook-Signature: sha256=<hex>` over
+  `"{timestamp}.{tenant_byte_len}:{tenant_id}."` + raw body (the length prefix was added by review fix
+  `996786c`; `tenant_byte_len` is the UTF-8 byte length of the `X-Tenant-Id` value), ±5 min window. The **tenant is signed** because it arrives in
+  a header — without it a captured receipt could be replayed against another tenant (mutation M3).
+- The raw-body trap is solved with an `IAsyncResourceFilter` (`[VerifyWebhookSignature]`): it runs
+  before model binding, buffers (64 KiB cap → 413), verifies, rewinds. `[FromBody]` and the documented
+  request schema are unchanged; `v1.json` only gains the 413 response.
+- The plain `X-Webhook-Secret` path is removed, not kept as a fallback; a test pins that the right
+  secret in that header now authenticates nothing. T1–T7 rewritten to sign; T8/T9 keep their subject
+  (which secret source keys the signature, and precedence).
+
+### Phase 14
+- The two decision points are the dispatch fence (`WorkflowAttemptRepository.TryMarkDispatchingAsync`)
+  and Finalize's **cancel-before-create** transaction (FM#13) — not Compensate: the fence requires
+  `Finalizing`, so it can never race a `CompensationRequired` operation.
+- `pg_advisory_xact_lock(108051, hashtext(tenant:operation))` — the two-int form, so it cannot meet the
+  test suite's single-bigint schema lock. `IOperationDecisionLock` throws outside a transaction,
+  because an xact lock taken in an implicit statement transaction serialises nothing.
+- The fence was a bare `ExecuteUpdateAsync`; it now opens its own transaction when none is ambient.
+  The FM#13 lock is taken **before** the in-transaction attempt re-read — a unit test pins the order.
+- The race test drives the exact interleaving against real Postgres: cancel worker locks and re-reads,
+  the fence must still be waiting a second later, the CAS commits, and the fence then returns 0.
+- Mutation M3 (lock keyed by tenant only) first **hung** the run instead of failing it: the paired
+  negative asserted while still holding the lock, deadlocking teardown. The test now releases before
+  asserting.
+
+### Phase 15
+- First cut used `updated_at < @u OR (updated_at = @u AND operation_id > @o)` with a mixed-direction
+  index. `EXPLAIN` showed Postgres could only apply that as a **filter** over an index walk from the
+  top — no sort any more, but still proportional to depth. Switching the tie-break to DESC and the
+  cursor to the row-value comparison `(updated_at, operation_id) < (@u, @o)`
+  (`EF.Functions.LessThan(ValueTuple.Create(...))`, Npgsql row-value support) makes it an **index
+  seek**: 500 rows, ~2 ms, 116 index buffers on a 20,001-row tenant at any depth, versus 80 ms plus a
+  20,000-row sort for `OFFSET 19500`. The migration was regenerated before commit (never applied
+  outside the local test database, which was cleaned).
+- The planner only chose the new index once both tables had statistics; on the polluted local test
+  database with stale stats it hash-joined instead. Production autovacuum/analyze covers this.
+- Ordering contract kept: newest activity first, a total order. Only the direction of the tie-break
+  among identical `updated_at` values changed, which no caller depends on.
+- Mutation note: an inclusive cursor (`<=`) repeats one row per page; the tie test cannot see it
+  (the schedule de-duplicates by key) but the ceiling test does (the probe then finds a row).
+
+---
+
+## Code review (xhigh, Sonnet subagents) — 2026-09-15
+
+15 findings, each verified against the code before acting.
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | Webhook HMAC checked against the resolved tenant context — empty outside Development, so no genuine receipt could verify | **Fixed** `996786c`: sign the raw `X-Tenant-Id`; a verified signature establishes the tenant |
+| 7 | Whitespace store secret hid the legacy key and was accepted as an HMAC key | **Fixed** `996786c` |
+| 10 | `.`-separated signed message let bytes shift between tenant and body | **Fixed** `996786c`: tenant length-prefixed |
+| 2 | A reconcile lookup that throws left a half-open probe unrecorded → lookup circuit shut until restart | **Fixed** `293ba14` |
+| 3 | Controller `OperatorGuard` on refund/notes mutations refused before the behaviour, so no DENY audit | **Fixed** `acff69c`: guards removed from mutations |
+| 4 | Schedule, operations list, work items, conversation list, waitlist enrollments still tenant-only | **Fixed** `acff69c` |
+| 14 | Proven-identity predicate duplicated in behaviour and guard | **Fixed** `acff69c`: `OperatorGuard.IsTrusted` |
+| 5 | Lease renewal outside the per-row try/catch → one DB error stranded the lane | **Fixed** `5ba1b25` |
+| 13 | Fence built its own lock instead of the registered `IOperationDecisionLock` | **Fixed** `5ba1b25` |
+| 6 | Notification adapters (stubs) missing from the startup stub list | **Fixed** `511c241` |
+| 9 | Notification read capped oldest-first, dropping the newest state | **Fixed** `5a964a1` |
+| 8 | Verification cannot complete in deployments (no delivery channel) | **Accepted, not a code fix** — the fixed "000000" was the vulnerability; delivery channel is a follow-up |
+| 11 | `CREATE INDEX` (not `CONCURRENTLY`) on `booking_operations` blocks writes during the build | **Accepted, migration unchanged** (user decision 2026-09-15): Cordia is not deployed, so there is no production traffic or large `booking_operations` table for the build lock to affect. Revisit for any later index on a hot table once live |
+| 12 | Two renewal UPDATEs per row | **Not changed** — negligible next to the consumer transaction each publish runs; the per-row renewal is what makes lost-lease detection exact |
+| 15 | `tenant_capacity_primitives` not read on any live path | **Not changed** — recorded in Phase 10 discoveries; intended until an external provider is wired |
+
+Found while verifying: the agent calls `GET /api/customers/context`, which no controller implements
+(404 before this branch, 403 in production now). Filed as a follow-up, not a regression of working
+behaviour.
+
+Gates after fixes: unit 1932, integration 759 passed / 1 pre-existing skip, lint clean; every fix
+mutation-tested against its own test.
+
+---
+
+## PR review round 2 (`docs/local/fix-prompt.md`) — 2026-09-17
+
+22 items (20 findings plus 2 restatements), each verified against the code. All valid; one partly.
+
+| Finding | Outcome |
+|---|---|
+| Plan says "Fourteen phases"; Phase 12 wire format missing the tenant length prefix | **Fixed** `91fde01` |
+| Research claims `v1.json` regenerates byte-identical outside #83 | **Fixed** `91fde01` — it also changed for #71, #74 and #72 |
+| PR description: "the pepper is refused" reads as "no pepper needed" | **Fixed** `91fde01` — the *committed* pepper is refused |
+| `RecordFailedAttemptAsync` zero documented as "locked" only | **Fixed** `91fde01` — zero = no eligible row |
+| `GET /api/deposits`, `/api/payouts/summary` do not declare 403 | **Fixed** `e910ddb` — all 14 guarded reads declare 403; test pins it |
+| Blank tenant claim in a verified context → unmapped `ArgumentException` → 500 | **Fixed** `3dbcaa5` — 401 on both binding paths |
+| Locked-then-expired challenge: GET `failed`, POST `expired` | **Fixed** `3dbcaa5` — GET checks expiry first |
+| Waitlist enrollment guard contradicts controller doc and `TheEnrollmentListIsNotGated` | **Fixed** `3dbcaa5` — guard kept (list carries `customer_ref`); doc and test updated |
+| `OperatorGuard.IsTrusted` accepts a whitespace actor id | **Fixed** `3dbcaa5` |
+| Webhook: signature over empty `X-Tenant-Id` accepted when a signed context resolved a tenant | **Fixed** `3dbcaa5` — signed tenant required (400) |
+| Outbox renewal quadratic write load | **Fixed** `b7e5ee6` — bounded heartbeat at half-lease; a fast lane writes nothing |
+| Queued-row renewal failure skips the current row (reported twice) | **Fixed** `b7e5ee6` — separate handling |
+| `LeaseSeconds` doc arithmetic ("third row started after expiry") | **Fixed** `b7e5ee6` |
+| Reconcile catch records a circuit failure on our own cancellation (reported twice) | **Fixed** `eb1587a` — filtered on `ct.IsCancellationRequested`; provider timeouts still count |
+| Notification reads have no supporting index | **Partly valid, fixed** `4a95d37` — `notifications (tenant_id, operation_id)` already existed; added `booking_operations (tenant_id, booking_id)` (4th migration) |
+| Notification cache key is tenant-only → second operator sees first's cached reads | **Fixed** `2fcaf8b` — cache cleared at sign-out AND sign-in (covers every cached read, not only notifications) |
+| Verification exposure test only proves the explicit opt-out | **Fixed** `e2da854` — Staging host asserts the default |
+
+Discoveries:
+- The first mutation of the queued-row catch stayed green because the mutation text did not match
+  the source (`+ "failed…"`); re-applied with an asserting script, it reds exactly its test.
+- The heartbeat changes the reclaim test's premise: a reclaim can only follow lease expiry, so the
+  test now lets the first publish outrun half the lease before the second row is taken.
+- Gates: unit 1938, integration 780 / 1 pre-existing skip, web 730, lint clean, web build clean.

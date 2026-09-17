@@ -98,7 +98,7 @@ public class TenantResolutionApiFixture : IAsyncLifetime
 
         return new ApplicationDbContext(
             optionsBuilder.Options,
-            new TenantContext { TenantId = tenantId });
+            string.IsNullOrEmpty(tenantId) ? new TenantContext() : new TenantContext(tenantId));
     }
 
     private static async Task EnsureTestDatabaseExistsAsync()

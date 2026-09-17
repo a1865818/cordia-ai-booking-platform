@@ -1,10 +1,13 @@
-﻿using System.Text.Json;
+﻿using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Cordia.Application.Handlers.Verification;
 using Cordia.Domain.Entities;
 using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Options;
 
 namespace Cordia.Application.Handlers.Verification.CheckVerification;
 
@@ -20,8 +23,16 @@ public sealed class CheckVerificationQueryHandler(IVerificationChallengeReposito
         if (challenge.VerifiedAt is not null && challenge.GrantId is not null)
             return new CheckVerificationResult(CheckVerificationStatusEnum.Granted, ToGrantView(challenge));
 
-        return DateTimeOffset.UtcNow >= challenge.ExpiresAt
-            ? new CheckVerificationResult(CheckVerificationStatusEnum.Expired, null)
+        // Expiry is checked BEFORE the lock, in the same order VerifyCodeCommandHandler uses, so a
+        // challenge that was locked and has since expired reads "expired" on GET and on POST /verify
+        // alike rather than "failed" on one and "expired" on the other.
+        if (DateTimeOffset.UtcNow >= challenge.ExpiresAt)
+            return new CheckVerificationResult(CheckVerificationStatusEnum.Expired, null);
+
+        // A locked challenge will never grant, so reporting it as pending would keep a poller
+        // waiting on something that cannot happen.
+        return challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts
+            ? new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null)
             : new CheckVerificationResult(CheckVerificationStatusEnum.Pending, null);
     }
 
@@ -44,7 +55,8 @@ public sealed class VerifyCodeCommandHandler(
     IVerificationChallengeRepository challenges,
     IVerificationGrantRepository grants,
     IAuditEventRepository auditEvents,
-    IUnitOfWork uow)
+    IUnitOfWork uow,
+    IOptions<VerificationCodeOptions> codeOptions)
     : IRequestHandler<VerifyCodeCommand, CheckVerificationResult>
 {
     private static readonly TimeSpan GrantTtl = TimeSpan.FromMinutes(15);
@@ -62,11 +74,21 @@ public sealed class VerifyCodeCommandHandler(
         if (challenge.VerifiedAt is not null && challenge.GrantId is not null)
             return new CheckVerificationResult(CheckVerificationStatusEnum.Granted, CheckVerificationQueryHandler.ToGrantView(challenge));
 
-        if (!string.Equals(
-                challenge.CodeHash,
-                VerificationCode.Hash(challenge.VerificationId, request.Code),
-                StringComparison.Ordinal))
+        // #71: a challenge that has taken MaxFailedAttempts wrong codes is locked — the right code
+        // no longer verifies it either, or the limit would only slow a guesser down.
+        if (challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts)
+            return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
+
+        // Compared as fixed-length hex digests in constant time, so response timing says nothing
+        // about how much of a guess was right.
+        var submittedHash = VerificationCode.Hash(codeOptions.Value, challenge.VerificationId, request.Code);
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(challenge.CodeHash),
+                Encoding.ASCII.GetBytes(submittedHash)))
         {
+            // Atomic and bounded in SQL, so parallel guesses cannot each read "4 of 5" and all try.
+            await challenges.RecordFailedAttemptAsync(
+                request.TenantId, request.VerificationId, VerificationCode.MaxFailedAttempts, ct);
             return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
         }
 
@@ -81,6 +103,7 @@ public sealed class VerifyCodeCommandHandler(
                 grantId,
                 now,
                 grantExpiresAt,
+                VerificationCode.MaxFailedAttempts,
                 tx);
             if (marked == 0)
                 return;
