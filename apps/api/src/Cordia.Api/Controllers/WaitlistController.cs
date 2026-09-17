@@ -75,6 +75,7 @@ public class WaitlistController(
     [HttpGet("enrollments")]
     [ProducesResponseType(typeof(ListWaitlistEnrollmentsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListWaitlistEnrollmentsResponse>> ListEnrollments(
         [FromQuery(Name = "active_only")] bool? activeOnly,
         [FromQuery(Name = "limit")] int? limit,

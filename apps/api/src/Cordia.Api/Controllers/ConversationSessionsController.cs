@@ -42,6 +42,7 @@ public class ConversationSessionsController(
     [HttpGet]
     [ProducesResponseType(typeof(ListConversationSessionsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListConversationSessionsResponse>> List(
         [FromQuery(Name = "limit")] int? limit,
         CancellationToken ct)

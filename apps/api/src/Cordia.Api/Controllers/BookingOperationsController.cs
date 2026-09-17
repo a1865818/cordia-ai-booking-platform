@@ -53,6 +53,7 @@ public class BookingOperationsController(
     [HttpGet]
     [ProducesResponseType(typeof(ListOperationsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListOperationsResponse>> List(
         [FromQuery(Name = "status")] string[]? status,
         [FromQuery(Name = "needs_attention")] bool? needsAttention,
@@ -122,6 +123,7 @@ public class BookingOperationsController(
     [HttpGet("work-items")]
     [ProducesResponseType(typeof(ListWorkItemsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListWorkItemsResponse>> ListWorkItems(
         [FromQuery(Name = "limit")] int? limit,
         CancellationToken ct)

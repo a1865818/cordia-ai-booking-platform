@@ -30,6 +30,7 @@ public class DepositsController(
     [HttpGet]
     [ProducesResponseType(typeof(DepositListResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<DepositListResult>> List(
         [FromQuery] string? status,
         [FromQuery] DateTimeOffset? from,

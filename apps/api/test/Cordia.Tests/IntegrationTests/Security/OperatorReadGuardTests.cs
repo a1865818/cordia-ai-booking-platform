@@ -5,6 +5,8 @@ using Cordia.Domain.Interfaces;
 using Cordia.Domain.Security;
 using Cordia.Tests.IntegrationTests.Acceptance;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cordia.Tests.IntegrationTests.Security;
@@ -127,6 +129,39 @@ public class OperatorReadGuardTests(AcceptanceApiFixture fixture)
             .Select(a => a.Metadata)
             .ToListAsync();
         Assert.Contains(denials, m => m != null && m.Contains("identity_unverified"));
+    }
+
+    /// <summary>
+    /// Every guarded read must ADVERTISE the 403 it can return, or the generated OpenAPI contract
+    /// (and the typed web client built from it) tells consumers the refusal cannot happen.
+    /// </summary>
+    [Theory]
+    [InlineData("api/customers")]
+    [InlineData("api/customers/{customerRef}")]
+    [InlineData("api/deposits")]
+    [InlineData("api/payouts/summary")]
+    [InlineData("api/reporting/funnel")]
+    [InlineData("api/reporting/overview")]
+    [InlineData("api/reporting/kpis")]
+    [InlineData("api/Bookings/schedule")]
+    [InlineData("api/Bookings/{bookingId}/notifications")]
+    [InlineData("api/booking-operations")]
+    [InlineData("api/booking-operations/work-items")]
+    [InlineData("api/booking-operations/{operationId}/notifications")]
+    [InlineData("api/conversation-sessions")]
+    [InlineData("api/waitlist/enrollments")]
+    public async Task EveryGuardedRead_DeclaresTheForbiddenResponse(string route)
+    {
+        await using var host = await ProductionLikeHostAsync();
+        var descriptions = host.Services
+            .GetRequiredService<Microsoft.AspNetCore.Mvc.ApiExplorer.IApiDescriptionGroupCollectionProvider>()
+            .ApiDescriptionGroups.Items.SelectMany(g => g.Items)
+            .Where(d => string.Equals(d.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(d.RelativePath, route, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var description = Assert.Single(descriptions);
+        Assert.Contains(description.SupportedResponseTypes, r => r.StatusCode == StatusCodes.Status403Forbidden);
     }
 
     // ── The guard itself ───────────────────────────────────────────────────────────────────

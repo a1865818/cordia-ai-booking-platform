@@ -64,6 +64,7 @@ public class BookingsController(
     [HttpGet("schedule")]
     [ProducesResponseType(typeof(BookingScheduleResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<BookingScheduleResponse>> GetSchedule(
         [FromQuery(Name = "from")] DateTimeOffset? from,
         [FromQuery(Name = "to")] DateTimeOffset? to,

@@ -41,6 +41,7 @@ public class ReportingController(
     [HttpGet("funnel")]
     [ProducesResponseType(typeof(BookingFunnelView), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<BookingFunnelView>> GetFunnel(
         [FromQuery] DateTimeOffset? from,
         [FromQuery] DateTimeOffset? to,
@@ -79,6 +80,7 @@ public class ReportingController(
     [HttpGet("overview")]
     [ProducesResponseType(typeof(BookingOverviewResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<BookingOverviewResponse>> GetOverview(
         [FromQuery] DateTimeOffset? from,
         [FromQuery] DateTimeOffset? to,
@@ -122,6 +124,7 @@ public class ReportingController(
     [HttpGet("kpis")]
     [ProducesResponseType(typeof(KpisView), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<KpisView>> GetKpis(
         [FromQuery] DateTimeOffset? from,
         [FromQuery] DateTimeOffset? to,

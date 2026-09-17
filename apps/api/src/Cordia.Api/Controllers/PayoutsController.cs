@@ -25,6 +25,7 @@ public class PayoutsController(
     [HttpGet("summary")]
     [ProducesResponseType(typeof(PayoutSummaryResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<PayoutSummaryResult>> Summary(CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);

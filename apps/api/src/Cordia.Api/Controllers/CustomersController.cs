@@ -63,6 +63,7 @@ public class CustomersController(
     [HttpGet]
     [ProducesResponseType(typeof(ListCustomersResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(Microsoft.AspNetCore.Mvc.ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ListCustomersResponse>> List(
         [FromQuery(Name = "query")] string? query,
         [FromQuery(Name = "limit")] int? limit,
@@ -89,6 +90,7 @@ public class CustomersController(
     [ProducesResponseType(typeof(CustomerView), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<CustomerView>> Get(string customerRef, CancellationToken ct)
     {
         TenantGuard.RequireTenant(tenant);
