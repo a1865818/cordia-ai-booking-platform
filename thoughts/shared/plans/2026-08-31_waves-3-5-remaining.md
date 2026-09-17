@@ -384,3 +384,36 @@ behaviour.
 
 Gates after fixes: unit 1932, integration 759 passed / 1 pre-existing skip, lint clean; every fix
 mutation-tested against its own test.
+
+---
+
+## PR review round 2 (`docs/local/fix-prompt.md`) — 2026-09-17
+
+22 items (20 findings plus 2 restatements), each verified against the code. All valid; one partly.
+
+| Finding | Outcome |
+|---|---|
+| Plan says "Fourteen phases"; Phase 12 wire format missing the tenant length prefix | **Fixed** `91fde01` |
+| Research claims `v1.json` regenerates byte-identical outside #83 | **Fixed** `91fde01` — it also changed for #71, #74 and #72 |
+| PR description: "the pepper is refused" reads as "no pepper needed" | **Fixed** `91fde01` — the *committed* pepper is refused |
+| `RecordFailedAttemptAsync` zero documented as "locked" only | **Fixed** `91fde01` — zero = no eligible row |
+| `GET /api/deposits`, `/api/payouts/summary` do not declare 403 | **Fixed** `e910ddb` — all 14 guarded reads declare 403; test pins it |
+| Blank tenant claim in a verified context → unmapped `ArgumentException` → 500 | **Fixed** `3dbcaa5` — 401 on both binding paths |
+| Locked-then-expired challenge: GET `failed`, POST `expired` | **Fixed** `3dbcaa5` — GET checks expiry first |
+| Waitlist enrollment guard contradicts controller doc and `TheEnrollmentListIsNotGated` | **Fixed** `3dbcaa5` — guard kept (list carries `customer_ref`); doc and test updated |
+| `OperatorGuard.IsTrusted` accepts a whitespace actor id | **Fixed** `3dbcaa5` |
+| Webhook: signature over empty `X-Tenant-Id` accepted when a signed context resolved a tenant | **Fixed** `3dbcaa5` — signed tenant required (400) |
+| Outbox renewal quadratic write load | **Fixed** `b7e5ee6` — bounded heartbeat at half-lease; a fast lane writes nothing |
+| Queued-row renewal failure skips the current row (reported twice) | **Fixed** `b7e5ee6` — separate handling |
+| `LeaseSeconds` doc arithmetic ("third row started after expiry") | **Fixed** `b7e5ee6` |
+| Reconcile catch records a circuit failure on our own cancellation (reported twice) | **Fixed** `eb1587a` — filtered on `ct.IsCancellationRequested`; provider timeouts still count |
+| Notification reads have no supporting index | **Partly valid, fixed** `4a95d37` — `notifications (tenant_id, operation_id)` already existed; added `booking_operations (tenant_id, booking_id)` (4th migration) |
+| Notification cache key is tenant-only → second operator sees first's cached reads | **Fixed** `2fcaf8b` — cache cleared at sign-out AND sign-in (covers every cached read, not only notifications) |
+| Verification exposure test only proves the explicit opt-out | **Fixed** `e2da854` — Staging host asserts the default |
+
+Discoveries:
+- The first mutation of the queued-row catch stayed green because the mutation text did not match
+  the source (`+ "failed…"`); re-applied with an asserting script, it reds exactly its test.
+- The heartbeat changes the reclaim test's premise: a reclaim can only follow lease expiry, so the
+  test now lets the first publish outrun half the lease before the second row is taken.
+- Gates: unit 1938, integration 780 / 1 pre-existing skip, web 730, lint clean, web build clean.

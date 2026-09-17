@@ -30,11 +30,21 @@ Research changed several fixes before any code was written, because the remedy f
 
 ### Code review (xhigh, Sonnet subagents)
 
-15 findings, each checked against the code: 11 fixed, 4 accepted with reasons. The full table is at the end of the plan doc. The main fixes:
+**Round 1:** 15 findings, each checked against the code: 11 fixed, 4 accepted with reasons. The main fixes:
 - the webhook signature now covers the raw tenant header, which it must because outside Development the tenant header shim is off and the resolved tenant is empty;
 - a reconcile lookup that throws no longer leaves the circuit stuck closed;
 - five more console reads are guarded;
 - a failed lease renewal can no longer abort the lane.
+
+**Round 2** (PR review): 20 findings plus 2 restatements, all fixed after verification. Highlights:
+- every guarded console read now declares its 403, and a test pins the contract;
+- a signed receipt must name its tenant, a blank tenant claim is a 401 (not a 500), and a whitespace actor id is not a session;
+- outbox renewal is a bounded heartbeat — a fast lane writes nothing — and a failed queued-row renewal no longer skips the current row;
+- the lookup circuit ignores our own cancellation but still counts provider timeouts;
+- the web client clears its query cache at sign-out and sign-in, so a second operator on the same tab never sees the first operator's cached reads;
+- a `booking_operations (tenant_id, booking_id)` index backs the notification drawer read.
+
+Both review tables are at the end of the plan doc.
 
 ### ⚠️ Deployment and contract changes
 
@@ -45,21 +55,21 @@ Research changed several fixes before any code was written, because the remedy f
 | Pepper required outside Development | Set `Verification:CodePepper` (or `CORDIA_VERIFICATION_CODE_PEPPER`) |
 | Operator reads/actions need a verified session outside Development | Console must be signed in |
 | Verification codes are random | Real step-up verification can't be completed in a deployment until a delivery channel exists |
-| 3 additive migrations | `VerificationAttemptLockout`, `TenantCapacityPrimitives`, `ConsoleScanKeysetIndex`. The last one is a plain `CREATE INDEX`, accepted because Cordia isn't deployed |
-| OpenAPI additions | 2 notification GET routes, `development_code` on `POST /api/verifications`, 413 on the webhook |
+| 4 additive migrations | `VerificationAttemptLockout`, `TenantCapacityPrimitives`, `ConsoleScanKeysetIndex`, `BookingOperationsBookingIdIndex`. The index migrations are plain `CREATE INDEX`, accepted because Cordia isn't deployed |
+| OpenAPI additions | 2 notification GET routes, `development_code` on `POST /api/verifications`, 413 and a required signed `X-Tenant-Id` on the webhook, 403 on every operator-guarded console read |
 
 ### Not in this PR
 
 - **#84** (menu artifact upload): blocked. Its table has no spec-12 owner, and the object store only works on one machine.
-- Follow-ups to file: operator provisioning (needed before login can be mandatory); a verification code delivery channel; real implementations of the stubbed ports; the missing `GET /api/customers/context` that the agent calls; the stale `MenuController` comment about the 08/14 decision.
+- Follow-ups: operator provisioning (#113) and mandatory login (#114) are filed; still to file: a verification code delivery channel; real implementations of the stubbed ports; the missing `GET /api/customers/context` that the agent calls; the stale `MenuController` comment about the 08/14 decision.
 
 ### Verification
 
-- `bun nx test api`: 1932 passed
-- `bun nx test-integration api`: 759 passed, 1 skipped (already skipped before this PR)
+- `bun nx test api`: 1938 passed
+- `bun nx test-integration api`: 780 passed, 1 skipped (already skipped before this PR)
 - `bun nx lint api` clean · `bun nx lint web` clean · `bun nx typecheck web` clean · `bun nx build web` passes
-- Web tests: 727 passed. Run with `npx bun@latest test --parallel`, because local Bun 1.3.14 is below the suite's required 1.4.0; CI uses the latest Bun.
-- Local dev database migrated to `20260915094059_ConsoleScanKeysetIndex`.
+- Web tests: 730 passed. Run with `npx bun@latest test --parallel`, because local Bun 1.3.14 is below the suite's required 1.4.0; CI uses the latest Bun.
+- Local dev database migrated to the latest migration, `BookingOperationsBookingIdIndex`.
 
 Closes #71
 Closes #72
