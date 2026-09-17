@@ -33,8 +33,9 @@ public interface IVerificationChallengeRepository
 
     /// <summary>
     /// Records one wrong code atomically, and only while the challenge is unverified and below
-    /// <paramref name="maxFailedAttempts"/>. Returns rows affected — zero means it was already
-    /// locked (or verified), so concurrent guesses cannot push past the limit.
+    /// <paramref name="maxFailedAttempts"/>, so concurrent guesses cannot push past the limit.
+    /// Returns rows affected. Zero means no eligible row matched: the challenge is locked, already
+    /// verified, does not exist, or belongs to another tenant — callers must not read it as "locked".
     /// </summary>
     Task<int> RecordFailedAttemptAsync(
         string tenantId,

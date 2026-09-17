@@ -266,5 +266,8 @@ Baseline at `855e73d`: **1869 unit**, **704 integration / 0 failed / 1 pre-exist
 - **#83** adds a new route ⇒ `libs/api-contract/openapi/v1.json` regenerates, consumed by web.
 - **#84** would add the API's **first** `multipart/form-data` body — a content type the exporter has
   never emitted from this codebase.
-- Everything else is internal: no Pydantic contract and no controller signature changes, so
-  `v1.json` must regenerate **byte-identical**.
+- Everything else was expected to be internal at research time. **Implementation proved that wrong
+  — correction (2026-09-17):** `v1.json` also changes for #71 (`POST /api/verifications` gains a
+  nullable `development_code`), #74 (the receipt webhook gains a `413` response) and #72 (guarded
+  console reads declare `403`). No Pydantic contract changes; web consumers regenerate from the
+  committed `v1.json`.

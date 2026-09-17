@@ -13,7 +13,7 @@ research: thoughts/shared/research/2026-08-31_waves-3-5-remaining.md
 
 # Plan — Waves 3–5
 
-Fourteen phases, one commit each, on one branch. Ordered **security-first**, so the highest-severity
+Fifteen phases, one commit each, on one branch (Phase 15 was added at the user's request on 2026-09-15). Ordered **security-first**, so the highest-severity
 item lands first and the wave degrades gracefully if it is stopped early.
 
 ## What research changed before a line was written
@@ -313,7 +313,8 @@ drop one).
 
 ### Phase 12
 - Wire format: `X-Webhook-Timestamp` (Unix seconds) + `X-Webhook-Signature: sha256=<hex>` over
-  `"{timestamp}.{tenant_id}."` + raw body, ±5 min window. The **tenant is signed** because it arrives in
+  `"{timestamp}.{tenant_byte_len}:{tenant_id}."` + raw body (the length prefix was added by review fix
+  `996786c`; `tenant_byte_len` is the UTF-8 byte length of the `X-Tenant-Id` value), ±5 min window. The **tenant is signed** because it arrives in
   a header — without it a captured receipt could be replayed against another tenant (mutation M3).
 - The raw-body trap is solved with an `IAsyncResourceFilter` (`[VerifyWebhookSignature]`): it runs
   before model binding, buffers (64 KiB cap → 413), verifies, rewinds. `[FromBody]` and the documented
