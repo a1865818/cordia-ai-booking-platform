@@ -102,7 +102,14 @@ repos:
   hooks:
   - id: bandit
     name: Security scan (Python)
-    args: ['-c', 'apps/langgraph/pyproject.toml']
+    # The thresholds MUST be passed as flags. bandit reads severity/confidence
+    # from the CLI only -- the `severity`/`confidence` keys under
+    # `[tool.bandit]` in apps/langgraph/pyproject.toml are not config keys it
+    # honours, so they sat there inert and the gate really ran at all/all.
+    # That surfaced as a push blocked by a low-severity `assert` and by a
+    # low-confidence B113 on an httpx client that does pass a timeout.
+    args: ['-c', 'apps/langgraph/pyproject.toml',
+           '--severity-level', 'medium', '--confidence-level', 'medium']
     additional_dependencies: ['bandit[toml]']
     files: ^apps/langgraph/cordia_agent/
     stages: [pre-push]
