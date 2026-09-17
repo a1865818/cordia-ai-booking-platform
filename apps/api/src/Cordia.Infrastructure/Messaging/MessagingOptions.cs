@@ -216,13 +216,15 @@ public sealed class OutboxPublisherOptions
     /// transaction. 300 s is 2.5× that: enough for ONE worst-case extraction to finish inside the
     /// lease covering it.</para>
     ///
-    /// <para><b>A sized lease is renewed per row (#102).</b> The claim stamps one expiry on the whole
-    /// batch, while rows within a lane publish strictly sequentially — so without renewal N
-    /// same-lane rows shared one lease and the third slow <c>menu.commands</c> row started after
-    /// it had expired. <c>OutboxPublisherHostedService.PublishLaneAsync</c> now extends the lease on
-    /// every row still waiting in the lane immediately before each transport call, which keeps this
-    /// number a per-row budget however many rows queue behind it. That is OD-3's renewal half;
-    /// a crashed worker still releases its rows within one <c>LeaseSeconds</c>.</para>
+    /// <para><b>A sized lease is renewed as the lane runs (#102).</b> The claim stamps one expiry on
+    /// the whole batch, while rows within a lane publish strictly sequentially — so without renewal
+    /// N same-lane rows shared one lease: three 120 s <c>menu.commands</c> rows run 0–120, 120–240 and
+    /// 240–360 s, so the third outruns a 300 s lease and a fourth would start after it expired.
+    /// <c>OutboxPublisherHostedService.PublishLaneAsync</c> renews the current row and every row queued
+    /// behind it whenever the lane's lease falls to half of this value — a bounded heartbeat, so this
+    /// number stays a per-row budget however many rows queue, and a fast lane writes nothing. That is
+    /// OD-3's renewal half; a crashed worker still releases its rows within one
+    /// <c>LeaseSeconds</c>.</para>
     ///
     /// <para><b>The lease was never the correctness boundary.</b> Spec 05 §12.5: leases "prevent
     /// <i>simultaneous</i> processing only; they do not replace ... inbox dedup". A single extraction

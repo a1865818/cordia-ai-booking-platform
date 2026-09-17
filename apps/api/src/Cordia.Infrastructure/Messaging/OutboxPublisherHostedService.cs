@@ -46,8 +46,8 @@ public sealed class OutboxPublisherHostedService(
     {
         var pub = _options.Publisher;
         var now = DateTimeOffset.UtcNow;
-        // The claim stamps one lease on the whole batch. PublishLaneAsync renews it before every
-        // transport call (#102), so a row waiting behind slow rows in its lane never outlives it.
+        // The claim stamps one lease on the whole batch. PublishLaneAsync renews it as the lane runs
+        // (#102), so a row waiting behind slow rows in its lane never outlives it.
         var leaseExpiresAt = now.AddSeconds(pub.LeaseSeconds);
 
         // ── Claim phase ─────────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ public sealed class OutboxPublisherHostedService(
         // Concurrency is bounded by the number of distinct logical queues in the batch (≤ 9), not
         // by BatchSize, so this cannot open an unbounded number of scopes/connections.
         var laneCounts = await Task.WhenAll(
-            lanes.Select(lane => PublishLaneAsync(lane.Key, lane.Value, maxAttempts, pub.LeaseSeconds, ct)));
+            lanes.Select(lane => PublishLaneAsync(lane.Key, lane.Value, maxAttempts, pub.LeaseSeconds, leaseExpiresAt, ct)));
 
         return laneCounts.Sum();
     }
@@ -146,9 +146,14 @@ public sealed class OutboxPublisherHostedService(
         IReadOnlyList<ClaimedRow> rows,
         int maxAttempts,
         int leaseSeconds,
+        DateTimeOffset claimedLeaseExpiresAt,
         CancellationToken ct)
     {
         var published = 0;
+
+        // Every row in the lane shares the lease the claim stamped; this tracks how far it reaches.
+        var laneLeaseExpiresAt = claimedLeaseExpiresAt;
+        var renewalThreshold = TimeSpan.FromSeconds(leaseSeconds / 2.0);
 
         for (var i = 0; i < rows.Count; i++)
         {
@@ -158,50 +163,78 @@ public sealed class OutboxPublisherHostedService(
             var transport = scope.ServiceProvider.GetRequiredService<IMessageTransport>();
             var markRepo = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();
 
-            // ── Lease renewal (#102, spec 05 OD-3) ──────────────────────────────────────
-            // The claim's lease is sized for ONE slow row (LeaseSeconds ≈ 2.5× an extraction),
-            // but rows in a lane publish one after another, so the third 120 s row used to start
-            // after its lease had already expired. Another publisher would reclaim it, burn a
-            // publish_attempts increment on a healthy row, and block on the inbox lock.
+            // ── Lease renewal (#102, spec 05 OD-3) — a bounded heartbeat ──────────────────
+            // The claim's lease is sized for ONE slow row (LeaseSeconds ≈ 2.5× an extraction), but
+            // rows in a lane publish one after another: with three 120 s rows against a 300 s lease
+            // the third starts at 240 s and runs past expiry, and a fourth would start after it.
+            // Another publisher could then reclaim a healthy row, burn a publish_attempts increment
+            // and block on the inbox lock.
             //
-            // Renewing every row still waiting in this lane, immediately before each transport
-            // call, keeps the budget per-row: whatever is running now has LeaseSeconds of cover,
-            // and so does everything queued behind it.
+            // Renewal is a HEARTBEAT, not a per-row write. While the lane's lease still has more than
+            // half of LeaseSeconds left, nothing is written: that remainder already outlasts the
+            // longest single publish, so the row about to run and every row queued behind it stay
+            // covered. Only once it drops to half does the lane renew. A fast lane therefore renews
+            // nothing, and a slow one renews at most once per half-lease — renewing every waiting row
+            // before every publish made a 50-row lane issue ~100 UPDATEs over ~1,225 row versions.
             //
-            // The current row is renewed on its own so its answer is unambiguous. Zero means a
-            // publisher reclaimed it while it waited — that worker owns it now, so this one steps
-            // aside instead of publishing it a second time.
-            var renewedUntil = DateTimeOffset.UtcNow.AddSeconds(leaseSeconds);
-            try
+            // Skipping the check is also safe for ownership: another publisher can reclaim a row only
+            // after its lease EXPIRES, and expiry lies inside the renewal window, where the current
+            // row's own renewal count detects the loss below.
+            if (laneLeaseExpiresAt - DateTimeOffset.UtcNow <= renewalThreshold)
             {
-                if (await markRepo.RenewLeaseAsync([row.MessageId], _workerId, renewedUntil, ct) == 0)
+                var renewedUntil = DateTimeOffset.UtcNow.AddSeconds(leaseSeconds);
+
+                // The current row is renewed on its own so its answer is unambiguous: zero means a
+                // publisher reclaimed it (or it was already published), so this worker steps aside.
+                try
                 {
-                    logger.LogWarning(
-                        "Outbox publisher {WorkerId}: lease on message_id={MessageId} was lost before publish "
-                        + "(reclaimed or already published); skipping it",
+                    if (await markRepo.RenewLeaseAsync([row.MessageId], _workerId, renewedUntil, ct) == 0)
+                    {
+                        logger.LogWarning(
+                            "Outbox publisher {WorkerId}: lease on message_id={MessageId} was lost before publish "
+                            + "(reclaimed or already published); skipping it",
+                            _workerId, row.MessageId);
+                        continue;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // A renewal is bookkeeping, not delivery. Letting a database error escape would
+                    // fault the tick and strand the rest of the lane. This row is skipped — its claim
+                    // lease still stands, and a later tick reclaims it once that lapses.
+                    logger.LogError(
+                        ex,
+                        "Outbox publisher {WorkerId}: renewing the lease on message_id={MessageId} failed; "
+                        + "leaving it for lease-expiry reclaim",
                         _workerId, row.MessageId);
                     continue;
                 }
 
+                // Rows queued behind are renewed best-effort and SEPARATELY: the current row is
+                // already safely renewed, so a failure here must not skip it. The queued rows keep
+                // their existing lease, and the lane tries again at the next row because
+                // laneLeaseExpiresAt only advances on success.
                 if (i + 1 < rows.Count)
                 {
-                    await markRepo.RenewLeaseAsync(
-                        rows.Skip(i + 1).Select(r => r.MessageId).ToList(), _workerId, renewedUntil, ct);
+                    try
+                    {
+                        await markRepo.RenewLeaseAsync(
+                            rows.Skip(i + 1).Select(r => r.MessageId).ToList(), _workerId, renewedUntil, ct);
+                        laneLeaseExpiresAt = renewedUntil;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogError(
+                            ex,
+                            "Outbox publisher {WorkerId}: renewing leases queued behind message_id={MessageId} "
+                            + "failed; publishing it and retrying the renewal at the next row",
+                            _workerId, row.MessageId);
+                    }
                 }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // A renewal is bookkeeping, not delivery. Letting a transient database error escape
-                // would fault the whole tick and strand every row after this one until its lease
-                // expired — the per-row try/catch below exists precisely so one row cannot do that.
-                // This row is skipped instead: its claim lease is still standing, and a later tick
-                // reclaims it once that lapses, exactly as for any publish that failed here.
-                logger.LogError(
-                    ex,
-                    "Outbox publisher {WorkerId}: renewing the lease on message_id={MessageId} failed; "
-                    + "leaving it for lease-expiry reclaim",
-                    _workerId, row.MessageId);
-                continue;
+                else
+                {
+                    laneLeaseExpiresAt = renewedUntil;
+                }
             }
 
             var envelope = BuildEnvelope(row);

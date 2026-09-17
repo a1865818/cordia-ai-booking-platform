@@ -50,8 +50,10 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
     }
 
     /// <summary>
-    /// The paired negative: renewal must not steal a row back. If another publisher reclaimed a row
-    /// while it waited, that publisher owns it — this one skips it rather than publishing twice.
+    /// The paired negative: renewal must not steal a row back. A publisher can reclaim a row only
+    /// after its lease expires, so the first row here outlasts half the lease, the second row's lease
+    /// is taken by another worker meanwhile, and the heartbeat at the second row must see that its
+    /// renewal matched nothing and step aside rather than publish it twice.
     /// </summary>
     [Fact]
     public async Task ARowReclaimedByAnotherPublisher_IsNotPublishedAgain_NorTakenBack()
@@ -62,7 +64,7 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         var second = MakeMessage(tenantId, baseTime.AddSeconds(1));
         await SeedAsync(first, second);
 
-        var transport = new ProbingTransport(fixture, TimeSpan.Zero)
+        var transport = new ProbingTransport(fixture, TimeSpan.FromMilliseconds(1100))
         {
             // While the first row is in flight, another worker takes the second.
             OnPublish = async messageId =>
@@ -89,8 +91,9 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
     }
 
     /// <summary>
-    /// A renewal is bookkeeping. If the database refuses it for one row, that row is left for
-    /// lease-expiry reclaim — the tick must not fault and strand the rest of the lane.
+    /// A renewal is bookkeeping. If the database refuses the current row's renewal, that row is left
+    /// for lease-expiry reclaim — the tick must not fault and strand the rest of the lane. (A zero
+    /// lease makes the heartbeat renew at every row, so the failure is actually reached.)
     /// </summary>
     [Fact]
     public async Task ARenewalThatFails_SkipsOnlyItsRow_AndTheLaneCarriesOn()
@@ -102,11 +105,55 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         await SeedAsync(first, second);
 
         var transport = new ProbingTransport(fixture, TimeSpan.Zero);
-        var service = BuildService(transport, tenantId, failRenewalFor: first.MessageId);
+        var spy = new RenewalSpy { FailWhenRenewing = first.MessageId };
 
-        await service.PublishPendingBatchAsync(CancellationToken.None);
+        await BuildService(transport, tenantId, spy, leaseSeconds: 0).PublishPendingBatchAsync(CancellationToken.None);
 
         Assert.Equal([second.MessageId], transport.Published);
+    }
+
+    /// <summary>
+    /// When renewing the rows QUEUED behind fails after the current row's own renewal succeeded, the
+    /// current row is still published: only the rows whose renewal failed are deferred.
+    /// </summary>
+    [Fact]
+    public async Task AFailedRenewalOfQueuedRows_DoesNotSkipTheCurrentRow()
+    {
+        var tenantId = $"lease-renew-tail-{Guid.NewGuid():N}";
+        var baseTime = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var first = MakeMessage(tenantId, baseTime);
+        var second = MakeMessage(tenantId, baseTime.AddSeconds(1));
+        await SeedAsync(first, second);
+
+        var transport = new ProbingTransport(fixture, TimeSpan.Zero);
+        // Every renewal that includes the second row fails: first as the queued tail behind the
+        // first row, then as the current row itself.
+        var spy = new RenewalSpy { FailWhenRenewing = second.MessageId };
+
+        await BuildService(transport, tenantId, spy, leaseSeconds: 0).PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal([first.MessageId], transport.Published);
+    }
+
+    /// <summary>
+    /// The heartbeat bounds write load. A lane that finishes well inside half its lease renews
+    /// nothing — renewing every waiting row before every publish cost a full lane ~2 UPDATEs per row.
+    /// </summary>
+    [Fact]
+    public async Task AFastLane_WritesNoRenewals()
+    {
+        var tenantId = $"lease-renew-fast-{Guid.NewGuid():N}";
+        var baseTime = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var rows = Enumerable.Range(0, 10).Select(i => MakeMessage(tenantId, baseTime.AddSeconds(i))).ToArray();
+        await SeedAsync(rows);
+
+        var transport = new ProbingTransport(fixture, TimeSpan.Zero);
+        var spy = new RenewalSpy();
+
+        await BuildService(transport, tenantId, spy, leaseSeconds: 300).PublishPendingBatchAsync(CancellationToken.None);
+
+        Assert.Equal(rows.Select(r => r.MessageId), transport.Published);
+        Assert.Equal(0, spy.Calls);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -130,7 +177,7 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
     }
 
     private OutboxPublisherHostedService BuildService(
-        IMessageTransport transport, string tenantId, string? failRenewalFor = null)
+        IMessageTransport transport, string tenantId, RenewalSpy? spy = null, int leaseSeconds = LeaseSeconds)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => fixture.CreateContext("lease-worker"));
@@ -139,19 +186,19 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         services.AddTransient<IUnitOfWork, UnitOfWork>();
         services.AddSingleton(transport);
         services.ScopeOutboxClaimToTenant(tenantId);
-        if (failRenewalFor is not null)
+        if (spy is not null)
         {
             // Decorates whatever the scope resolves, keeping the tenant-scoped claim above.
             var scoped = services.Last(d => d.ServiceType == typeof(IOutboxRepository));
-            services.AddScoped<IOutboxRepository>(provider => new FailingRenewalRepository(
+            services.AddScoped<IOutboxRepository>(provider => new SpyingRenewalRepository(
                 (IOutboxRepository)(scoped.ImplementationFactory?.Invoke(provider)
                     ?? ActivatorUtilities.CreateInstance(provider, scoped.ImplementationType!)),
-                failRenewalFor));
+                spy));
         }
 
         var sp = services.BuildServiceProvider();
         var options = new MessagingOptions();
-        options.Publisher.LeaseSeconds = LeaseSeconds;
+        options.Publisher.LeaseSeconds = leaseSeconds;
         return new OutboxPublisherHostedService(
             sp.GetRequiredService<IServiceScopeFactory>(),
             Options.Create(options),
@@ -187,8 +234,14 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         }
     }
 
-    /// <summary>Throws on any renewal that includes one chosen message; everything else passes through.</summary>
-    private sealed class FailingRenewalRepository(IOutboxRepository inner, string messageId) : IOutboxRepository
+    /// <summary>Counts renewal calls, and optionally fails any renewal that includes one message.</summary>
+    private sealed class RenewalSpy
+    {
+        public int Calls;
+        public string? FailWhenRenewing { get; init; }
+    }
+
+    private sealed class SpyingRenewalRepository(IOutboxRepository inner, RenewalSpy spy) : IOutboxRepository
     {
         public Task AddAsync(OutboxMessage message, CancellationToken ct = default) => inner.AddAsync(message, ct);
         public Task AddRangeAsync(IEnumerable<OutboxMessage> messages, CancellationToken ct = default) => inner.AddRangeAsync(messages, ct);
@@ -197,9 +250,12 @@ public class OutboxLeaseRenewalTests(PostgresFixture fixture)
         public Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(int limit, string leaseOwner, DateTimeOffset leaseExpiresAt, DateTimeOffset now, CancellationToken ct = default)
             => inner.ClaimBatchAsync(limit, leaseOwner, leaseExpiresAt, now, ct);
         public Task<int> RenewLeaseAsync(IReadOnlyCollection<string> messageIds, string leaseOwner, DateTimeOffset leaseExpiresAt, CancellationToken ct = default)
-            => messageIds.Contains(messageId)
+        {
+            Interlocked.Increment(ref spy.Calls);
+            return spy.FailWhenRenewing is not null && messageIds.Contains(spy.FailWhenRenewing)
                 ? throw new TimeoutException("simulated database timeout during renewal")
                 : inner.RenewLeaseAsync(messageIds, leaseOwner, leaseExpiresAt, ct);
+        }
         public Task MarkPublishedAsync(string tenantId, string id, DateTimeOffset publishedAt, CancellationToken ct = default)
             => inner.MarkPublishedAsync(tenantId, id, publishedAt, ct);
         public Task<bool> ExistsAsync(string tenantId, string id, CancellationToken ct = default) => inner.ExistsAsync(tenantId, id, ct);
