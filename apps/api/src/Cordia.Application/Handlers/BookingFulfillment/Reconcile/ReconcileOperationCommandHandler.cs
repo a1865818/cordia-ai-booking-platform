@@ -186,13 +186,21 @@ public sealed class ReconcileOperationCommandHandler(
                     via = "status";
                 }
             }
-            catch
+            catch (Exception) when (!ct.IsCancellationRequested)
             {
                 // A lookup that THROWS must still be recorded. When the circuit is half-open, IsOpen
                 // released exactly one probe and blocks every later caller until that probe reports
                 // back; a probe that escapes without RecordSuccess/RecordFailure keeps the lookup
                 // circuit shut until the process restarts, and every parked operation would then
                 // run out its budget without the provider ever being asked again.
+                //
+                // Except when OUR token was cancelled. That says nothing about the provider: `ct` here
+                // is the worker's stopping token (nothing else links or times it out), so counting it
+                // as a failure would let repeated shutdowns open the lookup circuit and suppress
+                // unrelated reconciliations for a cooldown. Nothing is lost by not recording it — the
+                // breaker is in-process state that ends with the process being stopped. A provider
+                // TIMEOUT still counts: HttpClient surfaces it as a TaskCanceledException while this
+                // token is still live, so the filter lets it through.
                 circuitBreaker.RecordFailure(adapter.ProviderName, LookupCircuitAccount);
                 throw;
             }

@@ -784,6 +784,47 @@ public class ReconcileOperationCommandHandlerTests
         _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
     }
 
+    /// <summary>
+    /// Our own cancellation (worker shutdown) is not a provider failure. Recording it would let
+    /// repeated shutdowns open the lookup circuit for everyone.
+    /// </summary>
+    [Fact]
+    public async Task Handle_LookupCancelledByOurOwnToken_DoesNotRecordAFailure()
+    {
+        var (tenantId, opId) = ("t-circ-cancel", "op-lookup-cancelled");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        using var cts = new CancellationTokenSource();
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromException<ProviderResult>(new OperationCanceledException(cts.Token));
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), cts.Token));
+
+        _circuit.Verify(c => c.RecordFailure(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The paired negative: a provider TIMEOUT arrives as a cancellation too, but with our token still
+    /// live. That is the provider failing to answer, and it must count.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ProviderTimeout_WithOurTokenLive_RecordsAFailure()
+    {
+        var (tenantId, opId) = ("t-circ-timeout", "op-lookup-timeout");
+        var providerKey = ArrangeParkedCreate(tenantId, opId);
+        _adapter.Setup(a => a.LookupByIdempotencyKeyAsync("default", providerKey, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"));
+
+        await Assert.ThrowsAsync<TaskCanceledException>(
+            () => CreateHandler().Handle(new ReconcileOperationCommand(tenantId, opId), CancellationToken.None));
+
+        _circuit.Verify(c => c.RecordFailure("stub", "default:lookup"), Times.Once);
+    }
+
     /// <summary>NotFound is an answer — a healthy provider — and closes a half-open circuit.</summary>
     [Fact]
     public async Task Handle_LookupThatAnswers_RecordsASuccess_OnTheLookupCircuit()
