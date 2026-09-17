@@ -188,9 +188,12 @@ public class OperatorReadGuardTests(AcceptanceApiFixture fixture)
     /// An empty string is not a session. `IActorContext.ActorId` is bound from a JWS claim, and a
     /// claim that decoded to blank must not read as proof.
     /// </summary>
-    [Fact]
-    public void RequireOperator_TreatsAnEmptyActorIdAsUnproven()
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("	")]
+    public void RequireOperator_TreatsABlankActorIdAsUnproven(string blank)
         => Assert.Throws<Cordia.Domain.Exceptions.AuthorizationFailedException>(
             () => OperatorGuard.RequireOperator(
-                new Actor(string.Empty, "owner"), allowAsserted: false, "test.read"));
+                new Actor(blank, "owner"), allowAsserted: false, "test.read"));
 }

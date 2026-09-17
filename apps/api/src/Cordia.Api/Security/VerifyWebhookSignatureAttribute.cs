@@ -80,19 +80,32 @@ public sealed class VerifyWebhookSignatureAttribute : Attribute, IAsyncResourceF
             return;
         }
 
-        // Establish the tenant the signature vouches for. Where a tenant was already resolved (the
-        // shim, in Development) it must be the same one — SetTenant refuses a different tenant.
-        if (!string.IsNullOrWhiteSpace(signedTenant))
+        // The signed tenant is REQUIRED. A signature over an empty X-Tenant-Id binds the receipt to
+        // no tenant at all, yet a tenant can already be resolved from another source (a valid
+        // X-Tenant-Context, or the shim) — without this check the receipt would then be applied to
+        // THAT tenant, which the signature never covered.
+        if (string.IsNullOrWhiteSpace(signedTenant))
         {
-            try
+            context.Result = new BadRequestObjectResult(new ProblemDetails
             {
-                services.GetRequiredService<TenantContext>().SetTenant(signedTenant);
-            }
-            catch (InvalidOperationException)
-            {
-                context.Result = new UnauthorizedResult();
-                return;
-            }
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Missing tenant",
+                Detail = "X-Tenant-Id is required on delivery receipts and must be covered by the signature.",
+            });
+            return;
+        }
+
+        // Establish the tenant the signature vouches for. Where a tenant was already resolved (a
+        // signed context, or the shim in Development) it must be the same one — SetTenant refuses a
+        // different tenant.
+        try
+        {
+            services.GetRequiredService<TenantContext>().SetTenant(signedTenant);
+        }
+        catch (InvalidOperationException)
+        {
+            context.Result = new UnauthorizedResult();
+            return;
         }
 
         await next();

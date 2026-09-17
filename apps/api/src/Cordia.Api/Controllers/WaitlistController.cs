@@ -29,7 +29,13 @@ namespace Cordia.Api.Controllers;
 ///
 /// Every mutation is an operator action (spec 14 §24.5, GD-1): it requires X-Actor, X-Actor-Role
 /// (operator or owner) and X-Reason-Code, and `OperatorActionBehavior` deny-audits and 403s
-/// without them. The reads are not gated — an operator needs the list to work from.
+/// without them.
+///
+/// The enrollment LIST (<c>GET /api/waitlist/enrollments</c>) is a console read, not a customer one:
+/// it carries every waitlisted guest's <c>customer_ref</c>. It is not an operator action (no role or
+/// reason code — an operator needs the list to work from), but outside Development it requires a
+/// signed-in operator session via <c>OperatorGuard</c> (#72) and answers 403 without one.
+/// <c>GET /api/waitlist/locations</c> carries no guest data and stays tenant-scoped only.
 /// </summary>
 [ApiController]
 [Route("api/waitlist")]

@@ -23,13 +23,16 @@ public sealed class CheckVerificationQueryHandler(IVerificationChallengeReposito
         if (challenge.VerifiedAt is not null && challenge.GrantId is not null)
             return new CheckVerificationResult(CheckVerificationStatusEnum.Granted, ToGrantView(challenge));
 
+        // Expiry is checked BEFORE the lock, in the same order VerifyCodeCommandHandler uses, so a
+        // challenge that was locked and has since expired reads "expired" on GET and on POST /verify
+        // alike rather than "failed" on one and "expired" on the other.
+        if (DateTimeOffset.UtcNow >= challenge.ExpiresAt)
+            return new CheckVerificationResult(CheckVerificationStatusEnum.Expired, null);
+
         // A locked challenge will never grant, so reporting it as pending would keep a poller
         // waiting on something that cannot happen.
-        if (challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts)
-            return new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null);
-
-        return DateTimeOffset.UtcNow >= challenge.ExpiresAt
-            ? new CheckVerificationResult(CheckVerificationStatusEnum.Expired, null)
+        return challenge.FailedAttempts >= VerificationCode.MaxFailedAttempts
+            ? new CheckVerificationResult(CheckVerificationStatusEnum.Failed, null)
             : new CheckVerificationResult(CheckVerificationStatusEnum.Pending, null);
     }
 

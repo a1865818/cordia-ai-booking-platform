@@ -40,7 +40,7 @@ public static class OperatorGuard
     /// <c>OperatorActionBehavior</c> so reads and mutations can never disagree about it.
     /// </summary>
     public static bool IsTrusted(IActorContext actor, bool allowAsserted)
-        => !string.IsNullOrEmpty(actor.ActorId) || allowAsserted;
+        => !string.IsNullOrWhiteSpace(actor.ActorId) || allowAsserted;
 
     /// <summary>
     /// Throws <see cref="AuthorizationFailedException"/> unless the caller holds a verified

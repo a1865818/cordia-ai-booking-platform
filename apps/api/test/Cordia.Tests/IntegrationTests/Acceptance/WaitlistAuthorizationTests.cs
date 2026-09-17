@@ -178,12 +178,14 @@ public class WaitlistAuthorizationTests(AcceptanceApiFixture fixture)
     }
 
     /// <summary>
-    /// The READS stay open to any tenant-scoped caller: an operator needs the list to work from,
-    /// and gating it would break the waitlist screen for no security gain — the mutations are
-    /// where the exposure was.
+    /// The list is NOT an operator action: it needs no role and no reason code, because an operator
+    /// needs it to work from. It IS an operator read (#72) — it carries every guest's customer_ref —
+    /// so outside Development it requires a signed-in session. This host permits asserted identities,
+    /// so a bare tenant-scoped GET still succeeds here; the refusal without a session is pinned by
+    /// <c>OperatorReadGuardTests.ReadsAreRefused_WithoutAVerifiedOperatorSession</c>.
     /// </summary>
     [Fact]
-    public async Task TheEnrollmentListIsNotGated()
+    public async Task TheEnrollmentList_NeedsNoRoleOrReasonCode()
     {
         var tenantId = TestIds.New("wl-authz-read");
 

@@ -187,6 +187,38 @@ public class VerificationEndpointTests(AcceptanceApiFixture fixture)
         Assert.Null(row.VerifiedAt);
     }
 
+    /// <summary>
+    /// A challenge that was locked and has since expired reports the same terminal status on both
+    /// endpoints. GET used to check the lock first and answer "failed" while POST /verify checked
+    /// expiry first and answered "expired".
+    /// </summary>
+    [Fact]
+    public async Task ALockedChallengeThatHasExpired_ReadsExpired_OnBothEndpoints()
+    {
+        var tenantId = $"t8-ver-lockexp-{Guid.NewGuid():N}";
+        var (verificationId, code) = await RequestChallengeAsync(tenantId, $"lockexp-{Guid.NewGuid():N}");
+        for (var i = 0; i < 5; i++)
+            await VerifyAsync(tenantId, verificationId, WrongCode(code));
+
+        await using (var ctx = fixture.CreateContext(tenantId))
+        {
+            await ctx.VerificationChallenges
+                .Where(c => c.TenantId == tenantId && c.VerificationId == verificationId)
+                .ExecuteUpdateAsync(u => u.SetProperty(c => c.ExpiresAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
+        }
+
+        var check = await fixture.Host.Scenario(x =>
+        {
+            x.Get.Url($"/api/verifications/{verificationId}");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+        using var checkDoc = JsonDocument.Parse(await check.ReadAsTextAsync());
+
+        Assert.Equal("expired", checkDoc.RootElement.GetProperty("status").GetString());
+        Assert.Equal("expired", await VerifyAsync(tenantId, verificationId, code));
+    }
+
     /// <summary>The paired negative: wrong guesses below the limit do not cost the guest their code.</summary>
     [Fact]
     public async Task FourWrongCodes_StillLeaveTheRightCodeWorking()

@@ -11,6 +11,7 @@ using Cordia.Domain.Enums;
 using Cordia.Tests.IntegrationTests.Persistence;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Cordia.Tests.IntegrationTests.Acceptance;
 
@@ -427,5 +428,40 @@ public class NotificationWebhookTests(AcceptanceApiFixture fixture)
         var body = BuildBody(notificationId, "pmsg_test", "delivered");
         await PostSignedAsync(host, body, tenantId, "   ", HttpStatusCode.Unauthorized);
         await PostSignedAsync(host, body, tenantId, WebhookSecret, HttpStatusCode.Accepted);
+    }
+
+    /// <summary>
+    /// A tenant resolved from somewhere else — here a valid signed <c>X-Tenant-Context</c> — must not
+    /// stand in for the tenant the signature covers. A receipt signed over an empty X-Tenant-Id is
+    /// refused, and the notification under the context's tenant is left untouched.
+    /// </summary>
+    [Fact]
+    public async Task Post_SignedOverAnEmptyTenant_IsRefused_EvenWithAResolvedTenantContext()
+    {
+        var tenantId = $"wh-t18-{Guid.NewGuid():N}";
+        var notificationId = $"notif-{Guid.NewGuid():N}";
+        await SeedNotificationAsync(fixture, tenantId, notificationId);
+
+        await using var host = await BuildHostAsync();
+        var now = DateTimeOffset.UtcNow;
+        var signedContext = host.Services
+            .GetRequiredService<Cordia.Domain.TenantResolution.ITenantContextSigner>()
+            .Sign(new Cordia.Domain.TenantResolution.TenantContextClaims(
+                tenantId, TenantChannel.Web, "ep-wh", "cfg-v1", "corr-wh", "sess-wh",
+                [], [], now, now.AddMinutes(5)));
+
+        var body = BuildBody(notificationId, "pmsg_test", "delivered");
+        var ts = Now();
+        await host.Scenario(x =>
+        {
+            x.Post.RawJson(body).ToUrl(Url);
+            x.WithRequestHeader("X-Tenant-Context", signedContext);
+            x.WithRequestHeader(WebhookSignature.TimestampHeader, ts);
+            x.WithRequestHeader(WebhookSignature.SignatureHeader,
+                WebhookSignature.Compute(WebhookSecret, ts, string.Empty, Encoding.UTF8.GetBytes(body)));
+            x.StatusCodeShouldBe(HttpStatusCode.BadRequest);
+        });
+
+        Assert.Equal(NotificationState.Accepted, (await ReadAsync(tenantId, notificationId))!.State);
     }
 }
