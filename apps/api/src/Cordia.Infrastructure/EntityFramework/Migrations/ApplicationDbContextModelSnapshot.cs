@@ -432,6 +432,9 @@ namespace Cordia.Infrastructure.EntityFramework.Migrations
                     b.HasKey("TenantId", "OperationId")
                         .HasName("pk_booking_operations");
 
+                    b.HasIndex("TenantId", "BookingId")
+                        .HasDatabaseName("ix_booking_operations_tenant_id_booking_id");
+
                     b.HasIndex("TenantId", "IntentId", "IntentRevision")
                         .HasDatabaseName("ix_booking_operations_tenant_id_intent_id_intent_revision");
 
