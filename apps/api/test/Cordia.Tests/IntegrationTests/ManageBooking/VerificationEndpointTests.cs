@@ -8,6 +8,7 @@ using Cordia.Domain.Generated;
 using Cordia.Tests.IntegrationTests.Acceptance;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 namespace Cordia.Tests.IntegrationTests.ManageBooking;
 
@@ -249,6 +250,53 @@ public class VerificationEndpointTests(AcceptanceApiFixture fixture)
         var response = await host.Scenario(x =>
         {
             x.Post.RawJson(RequestBody("idem-hidden", "cust-hidden", "bk-hidden", "cancel")).ToUrl("/api/verifications");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBe(HttpStatusCode.OK);
+        });
+
+        using var doc = JsonDocument.Parse(await response.ReadAsTextAsync());
+        Assert.Equal("sent", doc.RootElement.GetProperty("status").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("development_code", out _));
+    }
+
+    /// <summary>
+    /// The security-relevant DEFAULT: outside Development, with nobody setting
+    /// <c>Verification:ExposeCodeForDevelopment</c>, the code is not returned. The test above only
+    /// proves the explicit opt-out, because the "Test" environment loads a settings file that turns
+    /// exposure on — so a regression that inverted the default outside Development would pass it.
+    ///
+    /// <para>This host runs as "Staging", which loads no environment settings file. It is given
+    /// every test-host setting it needs to start (connection, committed test keys, the local pepper,
+    /// the stub extractor, the tenant shim) EXCEPT the exposure flag, so the value it resolves is
+    /// <c>Program.cs</c>'s own environment-derived default.</para>
+    /// </summary>
+    [Fact]
+    public async Task OutsideDevelopment_TheCodeIsNotReturned_ByDefault()
+    {
+        var tenantId = $"t8-ver-default-{Guid.NewGuid():N}";
+        await SeedBookingAsync(tenantId, "bk-default", "cust-default");
+
+        var testSettings = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.Test.json"), optional: false)
+            .Build()
+            .AsEnumerable()
+            .Where(kv => kv.Value is not null
+                && !kv.Key.EndsWith("_comment", StringComparison.Ordinal)
+                && !string.Equals(kv.Key, "Verification:ExposeCodeForDevelopment", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.DoesNotContain(testSettings, kv => kv.Key.Contains("ExposeCodeForDevelopment", StringComparison.OrdinalIgnoreCase));
+
+        await using var host = await AlbaHost.For<Program>(builder =>
+        {
+            builder.UseEnvironment("Staging");
+            foreach (var (key, value) in testSettings)
+                builder.UseSetting(key, value);
+            builder.UseSetting("ConnectionStrings:CordiaDBConnection", AcceptanceApiFixture.TestConnStr);
+        });
+
+        var response = await host.Scenario(x =>
+        {
+            x.Post.RawJson(RequestBody("idem-default", "cust-default", "bk-default", "cancel")).ToUrl("/api/verifications");
             x.WithRequestHeader("X-Tenant-Id", tenantId);
             x.StatusCodeShouldBe(HttpStatusCode.OK);
         });
