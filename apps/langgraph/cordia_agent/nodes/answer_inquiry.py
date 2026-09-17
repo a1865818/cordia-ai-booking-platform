@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 # get_type_hints() on every router to infer its input schema, and a
 # string annotation it cannot resolve raises NameError at graph build.
 from cordia_agent.nodes.identify_intent import awaiting_verification_code
+from cordia_agent.readback.renderer import join_with_conjunction
 from cordia_agent.state import AgentState, DialogIntent
 from cordia_agent.tools.client_binding import parse_catalog_search, search_catalog_call
 
@@ -298,9 +299,7 @@ def open_summary(hours: list[dict]) -> str:
         indexes = [hours.index(d) for d in open_days]
         contiguous = all(b == a + 1 for a, b in pairwise(indexes))
         phrase = (
-            f"{names[0]} to {names[-1]}"
-            if contiguous
-            else ", ".join(names[:-1]) + f", and {names[-1]}"
+            f"{names[0]} to {names[-1]}" if contiguous else join_with_conjunction(names)
         )
 
     first = open_days[0]
@@ -427,10 +426,7 @@ def render_menu_answer(items: list[CatalogItem], category: str | None) -> str:
     spoken = items[:MAX_SPOKEN_ITEMS]
     phrases = [f"{i.name}, {render_price(i.price_minor, i.currency)}" for i in spoken]
 
-    if len(phrases) == 1:
-        listed = phrases[0]
-    else:
-        listed = ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
+    listed = join_with_conjunction(phrases)
 
     lead = "We've got" if category is None else f"For {category}, we've got"
     answer = f"{lead} {listed}."

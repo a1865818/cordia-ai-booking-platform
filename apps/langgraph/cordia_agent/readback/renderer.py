@@ -56,12 +56,19 @@ def _starts_at_str(draft: BookingDraft, timezone: str | None) -> str:
     except (ZoneInfoNotFoundError, ValueError):
         return str(value)
     # "Wednesday 16 September at 7pm" — a date a person would say, not an
-    # ISO-8601 stamp with an offset the caller cannot hear.  On the hour drops
-    # the minutes entirely: nobody says "seven oh clock zero zero".
+    # ISO-8601 stamp with an offset the caller cannot hear.
+    return f"{local:%A %-d %B} at {format_clock(local)}"
+
+
+def format_clock(local: datetime) -> str:
+    """Render a local ``datetime``'s clock face as a person would say it.
+
+    "7pm", not "seven oh clock zero zero" — on the hour drops the minutes
+    entirely, since nobody says the double zero.
+    """
     hour = local.strftime("%I").lstrip("0") or "12"
     meridiem = local.strftime("%p").lower()
-    clock = f"{hour}{meridiem}" if local.minute == 0 else f"{hour}:{local:%M}{meridiem}"
-    return f"{local:%A %-d %B} at {clock}"
+    return f"{hour}{meridiem}" if local.minute == 0 else f"{hour}:{local:%M}{meridiem}"
 
 
 def _resource_str(draft: BookingDraft, field: str) -> str:
@@ -140,6 +147,18 @@ def _spoken_count(value: object) -> str | None:
         return None
     word = _SPOKEN_NUMBERS.get(value, str(value))
     return f"{word} {'person' if value == 1 else 'people'}"
+
+
+def join_with_conjunction(items: list[str], conjunction: str = "and") -> str:
+    """Join *items* the way a person reads a short list aloud: "a, b, and c".
+
+    A comma-separated dump ("a, b, c") is a form field, not a sentence read down
+    a phone. Assumes ``len(items) >= 1``; call sites handle the single-item case
+    themselves since the phrasing around it varies.
+    """
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + f", {conjunction} {items[-1]}"
 
 
 def _said(label: str) -> bool:

@@ -1,6 +1,5 @@
 ﻿using System.Globalization;
 using Cordia.Domain.Bookings;
-using Cordia.Domain.Enums;
 using Cordia.Domain.Generated;
 using Cordia.Domain.Interfaces;
 using FluentValidation;
@@ -73,17 +72,15 @@ internal static class ManageBookingMapper
 {
     /// <summary>
     /// Lifecycle states in which a guest can still do something to the booking. The candidate
-    /// carries the status as a string projected from <see cref="BookingLifecycleStatus"/>, so
-    /// the comparison accepts both the enum name and its snake_case wire form.
+    /// carries the status as the same wire label <see cref="BookingLifecycleProjection"/> emits.
     /// </summary>
     public static bool IsManageable(string? lifecycleStatus)
     {
         if (string.IsNullOrWhiteSpace(lifecycleStatus))
             return true; // unknown is not evidence of cancellation; do not hide a booking on a blank
 
-        var normalized = lifecycleStatus.Replace("_", string.Empty, StringComparison.Ordinal);
-        return !normalized.Equals(nameof(BookingLifecycleStatus.Cancelled), StringComparison.OrdinalIgnoreCase)
-            && !normalized.Equals(nameof(BookingLifecycleStatus.CancellationPending), StringComparison.OrdinalIgnoreCase);
+        return !lifecycleStatus.Equals(BookingLifecycleProjection.Cancelled, StringComparison.OrdinalIgnoreCase)
+            && !lifecycleStatus.Equals(BookingLifecycleProjection.CancellationPending, StringComparison.OrdinalIgnoreCase);
     }
 
     public static ManageableBooking ToContract(ManageBookingCandidate candidate)

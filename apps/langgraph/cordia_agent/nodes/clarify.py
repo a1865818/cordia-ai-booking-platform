@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from cordia_agent.state import AgentState
 
+from cordia_agent.readback.renderer import join_with_conjunction
 from cordia_agent.slots.capture import (
     CAPTURABLE_FIELDS,
     REQUIRED_CANDIDATE_FIELDS,
@@ -475,10 +476,7 @@ async def _offer_options_prompt(field: str) -> str | None:
         return None
 
     names = [m.name for m in view.matches[:MAX_SPOKEN_OPTIONS]]
-    if len(names) == 1:
-        listed = names[0]
-    else:
-        listed = ", ".join(names[:-1]) + f", or {names[-1]}"
+    listed = join_with_conjunction(names, conjunction="or")
 
     tail = (
         " Those are the popular ones, anyway."

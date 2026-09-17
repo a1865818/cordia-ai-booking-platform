@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from cordia_agent.checkpoint import get_session_checkpointer
+from cordia_agent.readback.renderer import join_with_conjunction
 from cordia_agent.slots.capture import (
     capture_slots,
     get_slot_extractor,
@@ -34,13 +35,9 @@ from cordia_agent.tools.client_binding import parse_policy_validation, validate_
 
 
 #: State key carrying the venue's own reason for refusing this draft, so the
-#: reply layer can say it instead of asking the next form field.
-#:
-#: Read through :func:`policy_block_message` rather than as an attribute:
-#: ``AgentState`` gains the field in the same change that teaches ``clarify`` to
-#: speak it, and both files are owned elsewhere.  Until they land LangGraph drops
-#: the unknown channel with a warning and this reads ``None``, which is exactly
-#: today's behaviour.  Once they land, make it a plain attribute read.
+#: reply layer can say it instead of asking the next form field.  Matches
+#: ``AgentState.policy_block_message``, which ``clarify`` reads as a plain
+#: attribute.
 POLICY_BLOCK_KEY = "policy_block_message"
 
 #: Said when the venue is open but no sitting covers the requested time.  The
@@ -54,18 +51,6 @@ NOT_SERVING_TEMPLATE = (
 NOT_SERVING_UNKNOWN = (
     "We're not serving at that time, sorry. What time were you thinking?"
 )
-
-
-def policy_block_message(state: AgentState) -> str | None:
-    """Return the venue's refusal message for the current draft, if any."""
-    return state.policy_block_message
-
-
-def _spoken_list(names: tuple[str, ...]) -> str:
-    """Join *names* the way someone reads a short list aloud."""
-    if len(names) == 1:
-        return names[0]
-    return ", ".join(names[:-1]) + f", and {names[-1]}"
 
 
 def _has_policy_inputs(draft: BookingDraft) -> bool:
@@ -211,7 +196,9 @@ async def capture_fields(state: AgentState) -> dict:
             # the opening-hours refusal above, and distinct from a failed probe,
             # which says nothing and leaves clarify to ask as it always did.
             blocked = (
-                NOT_SERVING_TEMPLATE.format(options=_spoken_list(sitting.service_names))
+                NOT_SERVING_TEMPLATE.format(
+                    options=join_with_conjunction(list(sitting.service_names))
+                )
                 if sitting.service_names
                 else NOT_SERVING_UNKNOWN
             )
@@ -268,7 +255,7 @@ def route_after_capture_fields(state: AgentState) -> str:
     # A draft the venue has already refused must not go on to be priced, held and
     # read back: every required field is present for "a table for 400 at 7pm", so
     # without this it routed to the availability check and on towards a booking.
-    if policy_block_message(state):
+    if state.policy_block_message:
         return "clarify"
 
     if state.draft is None or not required_candidate_fields_present(state.draft):

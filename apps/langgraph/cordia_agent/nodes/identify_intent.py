@@ -36,6 +36,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
+from cordia_agent.readback.renderer import _SPOKEN_NUMBERS, format_clock
 from cordia_agent.state import (
     AgentState,
     BookingDraft,
@@ -239,7 +240,7 @@ def _describe_booking(candidate: ManageableBooking, timezone: str | None) -> str
     readback.renderer so a cancellation and a booking sound like the same
     person said them.
     """
-    party = _SPOKEN.get(candidate.party_size, str(candidate.party_size))
+    party = _SPOKEN_NUMBERS.get(candidate.party_size, str(candidate.party_size))
     who = f"your table for {party}"
     try:
         when_utc = datetime.fromisoformat(
@@ -248,26 +249,7 @@ def _describe_booking(candidate: ManageableBooking, timezone: str | None) -> str
     except ValueError:
         return who
     local = when_utc.astimezone(ZoneInfo(timezone)) if timezone else when_utc
-    hour = local.strftime("%I").lstrip("0") or "12"
-    meridiem = local.strftime("%p").lower()
-    clock = f"{hour}{meridiem}" if local.minute == 0 else f"{hour}:{local:%M}{meridiem}"
-    return f"{who} on {local:%A %-d %B} at {clock}"
-
-
-_SPOKEN: dict[int, str] = {
-    1: "one",
-    2: "two",
-    3: "three",
-    4: "four",
-    5: "five",
-    6: "six",
-    7: "seven",
-    8: "eight",
-    9: "nine",
-    10: "ten",
-    11: "eleven",
-    12: "twelve",
-}
+    return f"{who} on {local:%A %-d %B} at {format_clock(local)}"
 
 
 def _with_target(draft: BookingDraft, target: dict) -> BookingDraft:
