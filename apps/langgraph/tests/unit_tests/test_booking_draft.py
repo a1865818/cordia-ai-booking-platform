@@ -120,9 +120,28 @@ def test_target_optional_for_create() -> None:  # AC4 / DQ4
 
 
 @pytest.mark.unit
-def test_target_required_for_cancel() -> None:  # AC4 / DQ4
-    with pytest.raises(ValidationError):
-        BookingRequest(operation=OperationType.cancel)
+def test_cancel_is_draftable_before_the_target_is_known() -> None:  # AC4 / DQ4
+    """A caller says "cancel my booking" before they say WHICH booking.
+
+    Constructing the request used to raise, so identify_intent could not build
+    a draft for a cancellation at all and the dialog had nowhere to put the
+    reference once the caller gave it.
+    """
+    req = BookingRequest(operation=OperationType.cancel)
+    assert req.target_booking_id is None
+
+
+@pytest.mark.unit
+def test_target_required_for_cancel_at_submission() -> None:  # AC4 / DQ4
+    """The rule still holds where it matters: nothing is submitted without a target."""
+    with pytest.raises(ValueError, match="target_booking_id is required for cancel"):
+        BookingRequest(operation=OperationType.cancel).require_target_for_mutations()
+
+    # A target makes it pass, and create never needed one.
+    BookingRequest(
+        operation=OperationType.cancel, target_booking_id="bk_001"
+    ).require_target_for_mutations()
+    BookingRequest(operation=OperationType.create).require_target_for_mutations()
 
 
 @pytest.mark.unit

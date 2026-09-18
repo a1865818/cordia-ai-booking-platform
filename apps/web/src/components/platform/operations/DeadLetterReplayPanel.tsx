@@ -90,8 +90,8 @@ export function DeadLetterReplayPanel() {
     <Panel style={{ marginBottom: 18, padding: '15px' }}>
       <div className="flex items-start gap-[11px] mb-[13px]">
         <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center shrink-0"
-          style={{ background: '#FDF2F2' }}>
-          <Icon name="alert" size={17} strokeWidth={2.1} color="#C0392B" />
+          style={{ background: '#F1F1EE' }}>
+          <Icon name="alert" size={17} strokeWidth={2.1} color="#0A0A0A" />
         </span>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold text-ink">Replay a dead-lettered message</div>

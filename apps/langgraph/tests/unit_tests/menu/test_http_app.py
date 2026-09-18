@@ -563,9 +563,7 @@ async def test_no_key_and_no_opt_out_refuses_to_serve(
     register(model)
 
     async with client() as http:
-        response = await http.post(
-            EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT}
-        )
+        response = await http.post(EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT})
 
     assert response.status_code == 503
     assert response.json() == {"error": "auth_not_configured"}
@@ -606,9 +604,7 @@ async def test_a_configured_key_ignores_the_anonymous_opt_out(
     register(model)
 
     async with client() as http:
-        response = await http.post(
-            EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT}
-        )
+        response = await http.post(EXTRACT_PATH, json={"menu_text": SECRET_MENU_TEXT})
 
     assert response.status_code == 401
     assert model.last_content is None

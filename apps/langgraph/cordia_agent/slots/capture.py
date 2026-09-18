@@ -55,18 +55,31 @@ CAPTURABLE_FIELDS: frozenset[str] = frozenset(
 # Required candidate-search fields (§6.4 / §8.4)
 # ---------------------------------------------------------------------------
 
-#: Minimum concrete fields required to initiate a candidate search, keyed by
-#: ``OperationType``.  ``modify`` and ``cancel`` do not require a candidate
-#: search (they operate on a known target), so they map to an empty set.
+#: Minimum concrete fields required before the dialog can move past capture,
+#: keyed by ``OperationType``.  ``modify`` and ``cancel`` need no candidate
+#: search — they act on a booking that already exists — but they DO need to know
+#: which booking that is.
+#:
+#: They both mapped to the empty set, so "cancel my booking" sailed through the
+#: capture gate with no target, clarify was never asked for a reference, and the
+#: dialog had no way of ever acquiring one.  ``target_booking_id`` is required
+#: for all three mutations now, which is what makes clarify ask for the booking
+#: reference (see ASK_PROMPTS) when caller-ID discovery did not find exactly one.
 REQUIRED_CANDIDATE_FIELDS: dict[OperationType, frozenset[str]] = {
     OperationType.create: frozenset(
         {"service_id", "location_id", "starts_at", "party_size"}
     ),
     OperationType.reschedule: frozenset(
-        {"service_id", "location_id", "starts_at", "party_size"}
+        {
+            "service_id",
+            "location_id",
+            "starts_at",
+            "party_size",
+            "target_booking_id",
+        }
     ),
-    OperationType.modify: frozenset(),
-    OperationType.cancel: frozenset(),
+    OperationType.modify: frozenset({"target_booking_id"}),
+    OperationType.cancel: frozenset({"target_booking_id"}),
 }
 
 
@@ -107,6 +120,15 @@ class SlotCapture(BaseModel):
     )
     normalized_value: str | None = Field(
         default=None, description="Normalized string form of the captured value."
+    )
+    resolved_name: str | None = Field(
+        default=None,
+        description=(
+            "Human name for an identifier the slot resolver resolved, e.g. "
+            "'Fitzroy dining room' for location_id 'fitzroy'.  Set ONLY by "
+            "cordia_agent.slots.resolver, from the tenant's own declared "
+            "resources; never by the extractor, which may not invent one."
+        ),
     )
 
 
@@ -189,8 +211,23 @@ def capture_slots(
             normalized_value=capture.normalized_value,
         )
 
+    # Carry display names forward so read-back can say what it booked.  A capture
+    # WITHOUT a resolved name clears any stale one: re-capturing location_id from a
+    # spoken identifier after a resolved one would otherwise leave the old venue's
+    # name attached to the new id, and read-back would confidently say the wrong room.
+    new_names = dict(draft.resolved_names)
+    for capture in captures:
+        if capture.resolved_name:
+            new_names[capture.field] = capture.resolved_name
+        else:
+            new_names.pop(capture.field, None)
+
     return draft.model_copy(
-        update={"request": new_request, "field_provenance": new_provenance}
+        update={
+            "request": new_request,
+            "field_provenance": new_provenance,
+            "resolved_names": new_names,
+        }
     )
 
 
@@ -211,12 +248,12 @@ def required_candidate_fields_present(draft: BookingDraft) -> bool:
 
     Returns:
         ``True`` if all required fields for ``draft.request.operation`` are
-        concrete; ``False`` otherwise (including when the operation has no
-        required fields — modify/cancel always return ``True``).
+        concrete; ``False`` otherwise.  An operation with no required fields
+        always returns ``True``.
     """
     required = REQUIRED_CANDIDATE_FIELDS.get(draft.request.operation, frozenset())
     if not required:
-        # modify/cancel: no candidate search needed; gate passes.
+        # An operation with nothing required: the gate passes.
         return True
 
     request = draft.request

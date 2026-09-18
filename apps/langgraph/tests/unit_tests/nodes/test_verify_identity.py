@@ -25,13 +25,23 @@ import pytest
 from langgraph.graph import END
 
 from cordia_agent.nodes.verify_identity import (
+    MAX_VERIFICATION_ATTEMPTS,
     GrantOutcome,
+    extract_verification_code,
     route_after_verify_identity,
     validate_grant,
     verify_identity,
 )
 from cordia_agent.safety.tenant_context import TenantContext
-from cordia_agent.state import AgentState, Channel, OperationType
+from cordia_agent.state import (
+    AgentState,
+    BookingDraft,
+    BookingRequest,
+    Channel,
+    OperationType,
+    SourceInfo,
+)
+from cordia_agent.streaming.agent_reply import REPLY_TEXT_KEYS, segment_for
 from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 from cordia_agent.tools.contracts import VerificationGrantView
 from cordia_agent.tools.status_codes import VerificationAction
@@ -456,8 +466,12 @@ async def test_inv11_wrong_action_routes_handoff() -> None:
 
 @pytest.mark.unit
 async def test_inv11_caller_id_alone_never_advances() -> None:
-    """Inv-11 caller-id-alone: check_verification returns failed/non-ok
-    → route human_handoff, grant not set."""
+    """Inv-11 caller-id-alone: no grant back → the turn ends, nothing advances.
+
+    The caller gets another go at reading the code (bounded — see
+    test_verification_attempts_are_bounded), but "another go" must never mean
+    capture_fields: without a grant the mutation does not move an inch.
+    """
     handler = RecordingHandler(verify_body=_failed_body(), verify_status=400)
     set_tool_client(_make_client(handler))
 
@@ -470,13 +484,12 @@ async def test_inv11_caller_id_alone_never_advances() -> None:
 
     result = await verify_identity(state)
 
-    assert result["verification_outcome"] == "invalid"
-    assert result.get("terminal_state") == "human_handoff"
+    assert result["verification_outcome"] == "code_retry"
     assert "verification_grant_id" not in result
     assert handler.submit_call_count() == 0
 
     updated_state = AgentState(**{**state.model_dump(), **result})
-    assert route_after_verify_identity(updated_state) == "human_handoff"
+    assert route_after_verify_identity(updated_state) == END
 
 
 @pytest.mark.unit
@@ -604,3 +617,292 @@ async def test_reschedule_with_modify_grant_advances() -> None:
 
     assert result["verification_outcome"] == "valid"
     assert result["verification_grant_id"] == "grant_001"
+
+
+# ---------------------------------------------------------------------------
+# Spoken-code capture
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        ("the code is 481502", "481502"),
+        ("four eight one five oh two", "481502"),
+        ("it's 48 15 02", "481502"),
+        ("4 8 1 um 5 0 2", "481502"),
+        ("sure, 4815", "4815"),
+        ("there'll be four of us", None),
+        ("I haven't got it yet", None),
+        ("", None),
+    ],
+)
+def test_extract_verification_code(said: str, expected: str | None) -> None:
+    """Digits come back exactly, or not at all — never approximately."""
+    assert extract_verification_code(said) == expected
+
+
+@pytest.mark.unit
+def test_extract_verification_code_does_not_glue_separate_numbers() -> None:
+    """A number later in the turn must not be concatenated onto the code."""
+    assert extract_verification_code("481502, and make it 6 people") == "481502"
+
+
+# ---------------------------------------------------------------------------
+# Turn 1 — request a code
+# ---------------------------------------------------------------------------
+
+
+class VerificationFlowHandler:
+    """Fake API covering POST /api/verifications and the check endpoints."""
+
+    def __init__(
+        self,
+        *,
+        sent_body: dict[str, Any] | None = None,
+        sent_status: int = 200,
+        verify_body: dict[str, Any] | None = None,
+        verify_status: int = 200,
+    ) -> None:
+        self.requests: list[httpx.Request] = []
+        self._sent_body = (
+            sent_body
+            if sent_body is not None
+            else {
+                "status": "sent",
+                "verification": {
+                    "verification_id": _VERIFICATION_ID,
+                    "channel": "sms",
+                    "expires_at": "2099-01-01T00:00:00+00:00",
+                    "masked_destination": "verified sms destination",
+                },
+            }
+        )
+        self._sent_status = sent_status
+        self._verify_body = verify_body or {"status": "granted", "grant": _grant_obj()}
+        self._verify_status = verify_status
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.path == "/api/verifications":
+            return _json_response(self._sent_status, self._sent_body)
+        if "/api/verifications/" in request.url.path:
+            return _json_response(self._verify_status, self._verify_body)
+        return _json_response(404, {"error": "not_found"})
+
+    def sent_payloads(self) -> list[dict[str, Any]]:
+        return [
+            json.loads(r.content)
+            for r in self.requests
+            if r.url.path == "/api/verifications"
+        ]
+
+    def verify_payloads(self) -> list[dict[str, Any]]:
+        return [
+            json.loads(r.content)
+            for r in self.requests
+            if r.url.path.endswith("/verify")
+        ]
+
+
+def _grant_obj(**overrides: Any) -> dict[str, Any]:
+    """The nested grant object the real CheckVerificationResponse carries."""
+    body = {
+        "grant_id": "grant_001",
+        "tenant_id": _TENANT_ID,
+        "customer_id": "cust_001",
+        "target_booking_id": None,
+        "allowed_action": "modify",
+        "expires_at": (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+        ).isoformat(),
+        "scope": "session",
+    }
+    body.update(overrides)
+    return body
+
+
+def _mutation_state(**overrides: Any) -> AgentState:
+    base: dict[str, Any] = {
+        "tenant_id": _TENANT_ID,
+        "session_id": "sess_vi_flow",
+        "operation": OperationType.modify,
+    }
+    base.update(overrides)
+    return AgentState(**base)
+
+
+@pytest.mark.unit
+async def test_first_entry_requests_a_code_and_ends_the_turn() -> None:
+    """No verification_id → send a code, say so, and wait for the caller.
+
+    Before this, nothing in the graph ever called request_verification, so
+    verification_id stayed None and every mutation was escalated to a human.
+    """
+    handler = VerificationFlowHandler()
+    set_tool_client(_make_client(handler))
+
+    result = await verify_identity(_mutation_state())
+
+    assert result["verification_id"] == _VERIFICATION_ID
+    assert result["verification_outcome"] == "code_sent"
+    assert "code" in result["pending_verification_prompt"].lower()
+    assert len(handler.sent_payloads()) == 1
+
+    updated = AgentState(**{**_mutation_state().model_dump(), **result})
+    assert route_after_verify_identity(updated) == END
+
+
+@pytest.mark.unit
+async def test_send_key_is_stable_for_session_and_action() -> None:
+    """Inv-9: the same session + action + round reuses one idempotency key."""
+    handler = VerificationFlowHandler()
+    set_tool_client(_make_client(handler))
+
+    await verify_identity(_mutation_state())
+    await verify_identity(_mutation_state())
+
+    keys = {p["verification_idempotency_key"] for p in handler.sent_payloads()}
+    assert len(keys) == 1
+    key = keys.pop()
+    assert "sess_vi_flow" in key
+    assert "modify" in key
+
+
+@pytest.mark.unit
+async def test_send_carries_the_target_booking() -> None:
+    """The code goes to the phone on the BOOKING, so the target is sent with it."""
+    handler = VerificationFlowHandler()
+    set_tool_client(_make_client(handler))
+
+    draft = BookingDraft(
+        tenant_id=_TENANT_ID,
+        session_id="sess_vi_flow",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(
+            operation=OperationType.cancel, target_booking_id="bk_777"
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+    await verify_identity(_mutation_state(operation=OperationType.cancel, draft=draft))
+
+    payload = handler.sent_payloads()[0]
+    assert payload["target_booking_id"] == "bk_777"
+    assert payload["action"] == "cancel"
+
+
+@pytest.mark.unit
+async def test_unsendable_code_escalates() -> None:
+    """No verified destination → there is no route to a grant; hand off (Inv-11)."""
+    handler = VerificationFlowHandler(
+        sent_body={"status": "no_verified_destination", "verification": None}
+    )
+    set_tool_client(_make_client(handler))
+
+    result = await verify_identity(_mutation_state())
+
+    assert result["verification_outcome"] == "invalid"
+    assert result["terminal_state"] == "human_handoff"
+    assert "verification_grant_id" not in result
+
+
+# ---------------------------------------------------------------------------
+# Turn 2 — the caller reads the code out
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_spoken_code_is_submitted_and_grants_advance() -> None:
+    """The digits in the transcript are POSTed and the grant advances the dialog."""
+    handler = VerificationFlowHandler()
+    set_tool_client(_make_client(handler))
+
+    state = _mutation_state(
+        verification_id=_VERIFICATION_ID,
+        verification_outcome="code_sent",
+        transcript_text="yeah it's four eight one five oh two",
+    )
+    result = await verify_identity(state)
+
+    assert handler.verify_payloads() == [{"code": "481502"}]
+    assert result["verification_grant_id"] == "grant_001"
+    assert result["verification_outcome"] == "valid"
+
+    updated = AgentState(**{**state.model_dump(), **result})
+    assert route_after_verify_identity(updated) == "capture_fields"
+
+
+@pytest.mark.unit
+async def test_wrong_code_re_asks_without_advancing() -> None:
+    """A wrong code is a re-ask, not a handoff — and never an advance (Inv-11)."""
+    handler = VerificationFlowHandler(verify_body={"status": "failed", "grant": None})
+    set_tool_client(_make_client(handler))
+
+    state = _mutation_state(
+        verification_id=_VERIFICATION_ID,
+        verification_outcome="code_sent",
+        transcript_text="481503",
+    )
+    result = await verify_identity(state)
+
+    assert result["verification_outcome"] == "code_retry"
+    assert result["verification_attempts"] == 1
+    assert "verification_grant_id" not in result
+    assert result["pending_verification_prompt"]
+
+    updated = AgentState(**{**state.model_dump(), **result})
+    assert route_after_verify_identity(updated) == END
+
+
+@pytest.mark.unit
+async def test_verification_attempts_are_bounded() -> None:
+    """A caller who cannot read the code back belongs with a human (Inv-11)."""
+    handler = VerificationFlowHandler(verify_body={"status": "failed", "grant": None})
+    set_tool_client(_make_client(handler))
+
+    state = _mutation_state(
+        verification_id=_VERIFICATION_ID,
+        verification_outcome="code_retry",
+        verification_attempts=MAX_VERIFICATION_ATTEMPTS - 1,
+        transcript_text="481503",
+    )
+    result = await verify_identity(state)
+
+    assert result["verification_outcome"] == "invalid"
+    assert result["terminal_state"] == "human_handoff"
+
+    updated = AgentState(**{**state.model_dump(), **result})
+    assert route_after_verify_identity(updated) == "human_handoff"
+
+
+@pytest.mark.unit
+async def test_expired_challenge_clears_the_verification_for_a_fresh_code() -> None:
+    """An aged-out code cannot be revived; the next turn sends a new one."""
+    handler = VerificationFlowHandler(verify_body={"status": "expired", "grant": None})
+    set_tool_client(_make_client(handler))
+
+    state = _mutation_state(
+        verification_id=_VERIFICATION_ID,
+        verification_outcome="code_sent",
+        transcript_text="481502",
+    )
+    result = await verify_identity(state)
+
+    assert result["verification_id"] is None
+    assert result["verification_outcome"] == "expired"
+    assert "expired" in result["pending_verification_prompt"].lower()
+
+    updated = AgentState(**{**state.model_dump(), **result})
+    assert route_after_verify_identity(updated) == END
+
+
+@pytest.mark.unit
+async def test_prompt_is_wired_into_what_the_caller_hears() -> None:
+    """The node ENDs the turn, so a silent verification turn is dead air."""
+    assert REPLY_TEXT_KEYS["verify_identity"] == "pending_verification_prompt"
+    assert (
+        segment_for("verify_identity", {"pending_verification_prompt": "code sent"})
+        == "code sent"
+    )

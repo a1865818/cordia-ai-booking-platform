@@ -12,6 +12,10 @@ Covers:
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
+import httpx
 import pytest
 
 from cordia_agent.checkpoint import (
@@ -19,7 +23,12 @@ from cordia_agent.checkpoint import (
     reset_session_checkpointer,
     set_session_checkpointer,
 )
-from cordia_agent.nodes.capture_fields import capture_fields, route_after_capture_fields
+from cordia_agent.nodes.capture_fields import (
+    POLICY_BLOCK_KEY,
+    capture_fields,
+    route_after_capture_fields,
+)
+from cordia_agent.safety.tenant_context import TenantContext
 from cordia_agent.slots.capture import (
     SlotCapture,
     UnknownSlotFieldError,
@@ -38,6 +47,7 @@ from cordia_agent.state import (
     SourceInfo,
     TriState,
 )
+from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 from tests._stubs.read_tools_fake import FakeSlotExtractor, make_service_id_capture
 
 
@@ -547,3 +557,189 @@ def test_route_follows_draft_operation_not_state_operation() -> None:
         "Fix B: router must follow draft.request.operation (cancel → verify_identity), "
         f"not state.operation (create → check_candidates); got {route!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The policy gate (§6.1)
+#
+# "A table for 400 people at 7pm" used to sail straight through to the
+# availability lookup, which answers a capacity question and has no opinion on
+# the size of a party or on whether the venue is open.
+# ---------------------------------------------------------------------------
+
+_TENANT_CONTEXT = TenantContext(
+    tenant_id="tenant_a",
+    channel=Channel.voice,
+    channel_endpoint_id="ep_1",
+    configuration_version="v1",
+    correlation_id="corr_1",
+    session_id="session_1",
+    allowed_agent_policy_ids=["p"],
+    allowed_tool_policy_ids=["p"],
+    issued_at="2026-07-25T00:00:00Z",
+    expires_at="2026-07-25T01:00:00Z",
+)
+
+_SITTINGS = [
+    {"resource_id": "breakfast", "kind": "service", "name": "Breakfast", "aliases": []},
+    {"resource_id": "lunch", "kind": "service", "name": "Lunch", "aliases": []},
+    {"resource_id": "dinner", "kind": "service", "name": "Dinner", "aliases": []},
+]
+
+TOO_BIG = "That's a big group! For anything over 20 the team will sort it out with you."
+
+
+def _install_platform(*, validation: dict, tracked: set[str]) -> list[str]:
+    """Serve the policy gate and the capacity probes; record the paths called."""
+    called: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        called.append(request.url.path)
+        if "booking-drafts/validate" in request.url.path:
+            return httpx.Response(200, content=json.dumps(validation).encode())
+        if "tenant-resources" in request.url.path:
+            return httpx.Response(
+                200,
+                content=json.dumps(
+                    {"status": "listed", "matches": _SITTINGS, "resolved": None}
+                ).encode(),
+            )
+        service_id = json.loads(request.content.decode())["draft"]["request"][
+            "service_id"
+        ]
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {
+                    "mode": "live" if service_id in tracked else "informational",
+                    "candidates": [],
+                    "hold": None,
+                }
+            ).encode(),
+        )
+
+    set_tool_client(
+        ToolClient(
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(handle), base_url="http://test"
+            ),
+            tenant_context=_TENANT_CONTEXT,
+        )
+    )
+    return called
+
+
+def _valid_response() -> dict:
+    return {
+        "status": "valid",
+        "valid": True,
+        "code": "valid",
+        "customer_message": "",
+        "recoverable_fields": [],
+        "suggested_action": None,
+        "policy_version": "v2",
+    }
+
+
+def _refused_response(message: str = TOO_BIG) -> dict:
+    return {
+        "status": "party_size_unsupported",
+        "valid": False,
+        "code": "party_size_unsupported",
+        "customer_message": message,
+        "recoverable_fields": ["party_size"],
+        "suggested_action": "request_human_handoff",
+        "policy_version": "v2",
+    }
+
+
+def _timed_draft() -> BookingDraft:
+    return _make_draft(
+        operation=OperationType.create,
+        starts_at=datetime(2026, 9, 15, 9, 0, tzinfo=UTC),
+    )
+
+
+@pytest.fixture
+def _reset_client():
+    yield
+    reset_tool_client()
+
+
+@pytest.mark.unit
+async def test_a_party_of_400_is_refused_in_the_venues_own_words(_reset_client) -> None:
+    called = _install_platform(validation=_refused_response(), tracked={"dinner"})
+    register_slot_extractor(FakeSlotExtractor([_make_capture("party_size", 400)]))
+
+    result = await capture_fields(_make_state(draft=_timed_draft()))
+
+    assert result[POLICY_BLOCK_KEY] == TOO_BIG
+    # And the capacity question is never asked: a refused draft has no business
+    # holding a table while the caller is told it cannot have one.
+    assert not any("availability" in path for path in called)
+
+
+@pytest.mark.unit
+async def test_a_draft_the_venue_accepts_is_not_blocked(_reset_client) -> None:
+    _install_platform(validation=_valid_response(), tracked={"dinner"})
+    register_slot_extractor(FakeSlotExtractor([_make_capture("party_size", 4)]))
+
+    result = await capture_fields(_make_state(draft=_timed_draft()))
+
+    assert result[POLICY_BLOCK_KEY] is None
+    assert result["draft"].request.service_id == "dinner"
+
+
+@pytest.mark.unit
+async def test_a_time_no_sitting_covers_offers_the_sittings_we_do(
+    _reset_client,
+) -> None:
+    """The venue is open, but nothing is being served then.
+
+    derive_sitting found no sitting and the agent went on to ask which ROOM the
+    caller wanted, which is not the answer to "a table at 3am".
+    """
+    _install_platform(validation=_valid_response(), tracked=set())
+    register_slot_extractor(FakeSlotExtractor([_make_capture("party_size", 4)]))
+
+    result = await capture_fields(_make_state(draft=_timed_draft()))
+
+    assert result[POLICY_BLOCK_KEY] == (
+        "We're not serving at that time, sorry. "
+        "We do Breakfast, Lunch, and Dinner. Which would suit?"
+    )
+
+
+@pytest.mark.unit
+async def test_a_draft_with_nothing_to_judge_does_not_call_the_gate(
+    _reset_client,
+) -> None:
+    """The gate rules on a party size and a start time and on nothing else."""
+    called = _install_platform(validation=_valid_response(), tracked={"dinner"})
+    register_slot_extractor(FakeSlotExtractor([make_service_id_capture("svc_1")]))
+
+    await capture_fields(_make_state(draft=_make_draft()))
+
+    assert called == []
+
+
+@pytest.mark.unit
+def test_a_refused_draft_routes_to_clarify_not_to_availability() -> None:
+    """Without this, "a table for 400 at 7pm" has every required field and goes
+    on to be priced, held and read back."""
+    complete = _make_draft(
+        operation=OperationType.create,
+        service_id="svc_1",
+        location_id="loc_1",
+        starts_at=datetime(2026, 9, 15, 9, 0, tzinfo=UTC),
+        party_size=400,
+    )
+    state = _make_state(draft=complete)
+    assert route_after_capture_fields(state) == "check_candidates"
+
+    # model_copy carries the channel capture_fields writes. AgentState declares
+    # it in the same change that teaches clarify to speak it; until then this is
+    # how the router's own behaviour is pinned.
+    refused = state.model_copy(update={POLICY_BLOCK_KEY: TOO_BIG})
+
+    assert route_after_capture_fields(refused) == "clarify"

@@ -1,11 +1,15 @@
 """Cordia agent node functions and routers.
 
-Re-exports all 11 node coroutines and their companion router functions so
+Re-exports all 13 node coroutines and their companion router functions so
 graph.py can import them from a single location.
 """
 
 from __future__ import annotations
 
+from cordia_agent.nodes.answer_inquiry import (
+    answer_inquiry,
+    route_after_identify_intent,
+)
 from cordia_agent.nodes.await_confirmation import (
     await_confirmation,
     route_after_await_confirmation,
@@ -32,6 +36,7 @@ from cordia_agent.nodes.verify_identity import (
 
 
 __all__ = [
+    "answer_inquiry",
     "await_confirmation",
     "capture_fields",
     "check_candidates",
@@ -44,6 +49,7 @@ __all__ = [
     "route_after_await_confirmation",
     "route_after_capture_fields",
     "route_after_check_candidates",
+    "route_after_identify_intent",
     "route_after_submit_intent",
     "route_after_verify_identity",
     "submit_intent",

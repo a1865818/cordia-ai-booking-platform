@@ -293,6 +293,50 @@ def test_tenant_context_view_round_trip() -> None:
 
 
 @pytest.mark.unit
+def test_tenant_context_view_carries_the_opening_hours() -> None:
+    """The agent could not say when the venue closes because nothing carried this.
+
+    ``extra="forbid"`` also makes it a two-sided change: had the API started
+    sending ``hours`` while this model still forbade it, the WHOLE payload would
+    have failed to parse and the agent would have lost the timezone with it.
+    """
+    view = TenantContextView.model_validate(
+        {
+            "tenant_id": "t-001",
+            "policy_version": "p1",
+            "timezone": "Australia/Melbourne",
+            "supported_operations": ["create"],
+            "capabilities": [],
+            "currency": "AUD",
+            "hours": [
+                {"d": "Monday", "open": "08:00", "close": "22:00", "on": False},
+                {"d": "Tuesday", "open": "08:00", "close": "22:00", "on": True},
+            ],
+        }
+    )
+    assert view.hours is not None
+    assert view.hours[0].d == "Monday"
+    assert view.hours[0].on is False
+    assert view.hours[1].close == "22:00"
+
+
+@pytest.mark.unit
+def test_tenant_context_view_without_hours_is_still_valid() -> None:
+    """A tenant with no hours row is unknown hours, not a broken payload."""
+    view = TenantContextView.model_validate(
+        {
+            "tenant_id": "t-001",
+            "policy_version": "p1",
+            "timezone": "UTC",
+            "supported_operations": [],
+            "capabilities": [],
+            "currency": "AUD",
+        }
+    )
+    assert view.hours is None
+
+
+@pytest.mark.unit
 def test_tenant_context_view_rejects_extra() -> None:
     with pytest.raises(ValidationError):
         TenantContextView.model_validate(

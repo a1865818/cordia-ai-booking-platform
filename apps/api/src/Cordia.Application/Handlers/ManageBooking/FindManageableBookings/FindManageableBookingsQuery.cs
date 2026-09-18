@@ -46,7 +46,16 @@ public sealed class FindManageableBookingsQueryHandler(IBookingReadRepository bo
             BookingReference: request.BookingReference);
 
         var candidates = await bookings.FindManageBookingCandidatesAsync(request.TenantId, hints, ct: ct);
-        var mapped = candidates.Select(ManageBookingMapper.ToContract).ToList();
+
+        // A booking the guest has already cancelled is not one they can manage, and it was
+        // being handed back as a candidate with no status field to tell it apart. Live effect:
+        // the agent's caller-ID discovery auto-targeted the dead booking on the next "cancel my
+        // booking" (harmless, the API answered already_cancelled), and a guest with one
+        // cancelled and one live booking saw two candidates and was asked for a reference for
+        // no reason. CancellationPending is excluded too: that guest has already asked, and
+        // offering the same booking again invites a second, conflicting cancellation.
+        var live = candidates.Where(c => ManageBookingMapper.IsManageable(c.LifecycleStatus)).ToList();
+        var mapped = live.Select(ManageBookingMapper.ToContract).ToList();
 
         var status = mapped.Count switch
         {
@@ -61,6 +70,19 @@ public sealed class FindManageableBookingsQueryHandler(IBookingReadRepository bo
 
 internal static class ManageBookingMapper
 {
+    /// <summary>
+    /// Lifecycle states in which a guest can still do something to the booking. The candidate
+    /// carries the status as the same wire label <see cref="BookingLifecycleProjection"/> emits.
+    /// </summary>
+    public static bool IsManageable(string? lifecycleStatus)
+    {
+        if (string.IsNullOrWhiteSpace(lifecycleStatus))
+            return true; // unknown is not evidence of cancellation; do not hide a booking on a blank
+
+        return !lifecycleStatus.Equals(BookingLifecycleProjection.Cancelled, StringComparison.OrdinalIgnoreCase)
+            && !lifecycleStatus.Equals(BookingLifecycleProjection.CancellationPending, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static ManageableBooking ToContract(ManageBookingCandidate candidate)
         => new()
         {

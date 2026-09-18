@@ -36,6 +36,26 @@ public class ManageBookingReadEndpointTests(AcceptanceApiFixture fixture)
     }
 
     [Fact]
+    public async Task FindManageableBookings_ExcludesCancelledBookings()
+    {
+        // A guest who has cancelled has nothing left to manage; handing the dead booking back
+        // as a candidate made the agent re-target it on the next call.
+        var tenantId = $"tenant-{Guid.NewGuid():N}";
+        await SeedManageableBookingAsync(
+            tenantId, "bk-gone", "CORD-GONE", "cust-gone", "+61400000009", BookingLifecycleStatus.Cancelled);
+
+        var result = await fixture.Host.Scenario(x =>
+        {
+            x.Get.Url("/api/bookings?phone_e164=%2B61400000009");
+            x.WithRequestHeader("X-Tenant-Id", tenantId);
+            x.StatusCodeShouldBeOk();
+        });
+
+        var body = await result.ReadAsJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal("none", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task FindManageableBookings_MissingHints_Returns400()
     {
         var tenantId = $"t8-http-hints-{Guid.NewGuid():N}";
@@ -100,7 +120,8 @@ public class ManageBookingReadEndpointTests(AcceptanceApiFixture fixture)
         string bookingId,
         string bookingReference,
         string customerId,
-        string phoneE164)
+        string phoneE164,
+        BookingLifecycleStatus lifecycle = BookingLifecycleStatus.Confirmed)
     {
         var intentId = $"int-{Guid.NewGuid():N}";
         var operationId = $"op-{Guid.NewGuid():N}";
@@ -143,7 +164,7 @@ public class ManageBookingReadEndpointTests(AcceptanceApiFixture fixture)
             BookingReference = bookingReference,
             ProviderReference = $"provider-{bookingId}",
             Version = 1,
-            LifecycleStatus = BookingLifecycleStatus.Confirmed,
+            LifecycleStatus = lifecycle,
             CustomerId = customerId,
             CreatedAt = now,
             UpdatedAt = now,

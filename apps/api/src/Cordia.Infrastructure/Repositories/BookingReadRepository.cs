@@ -135,6 +135,7 @@ public sealed class BookingReadRepository(
                UpdatedAt = op.UpdatedAt,
                CanonicalPayload = rev.CanonicalPayload,
                BookingReference = booking != null ? booking.BookingReference : null,
+               BookingLifecycle = booking != null ? booking.LifecycleStatus : null,
            };
 
     private static bool HasAnyHint(ManageBookingDiscoveryHints hints)
@@ -160,7 +161,11 @@ public sealed class BookingReadRepository(
         // guest a slug. A payload-carried name still wins for a historical row that has one.
         var business = FirstNonEmpty(payload.BusinessName, businessName);
 
-        var lifecycleStatus = ToLifecycleStatus(row.OperationType, row.Status);
+        // The bookings row knows what actually happened to the booking; the operation row only
+        // knows what THIS operation did. Prefer the former whenever finalize has written one.
+        var lifecycleStatus = row.BookingLifecycle is { } actual
+            ? ToLifecycleLabel(actual)
+            : ToLifecycleStatus(row.OperationType, row.Status);
         var projection = new BookingProjection(
             bookingId,
             row.OperationId,
@@ -247,6 +252,16 @@ public sealed class BookingReadRepository(
     private static string ToLifecycleStatus(OperationTypeEnum operationType, OperationStatus status)
         => BookingLifecycleProjection.From(operationType, status);
 
+    /// <summary>The wire label for a persisted lifecycle, using the same constants the projection emits.</summary>
+    private static string ToLifecycleLabel(BookingLifecycleStatus status)
+        => status switch
+        {
+            BookingLifecycleStatus.Cancelled => BookingLifecycleProjection.Cancelled,
+            BookingLifecycleStatus.CancellationPending => BookingLifecycleProjection.CancellationPending,
+            BookingLifecycleStatus.ModificationPending => BookingLifecycleProjection.ModificationPending,
+            _ => BookingLifecycleProjection.Confirmed,
+        };
+
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
@@ -265,6 +280,15 @@ public sealed class BookingReadRepository(
         public DateTimeOffset UpdatedAt { get; init; }
 
         public required string CanonicalPayload { get; init; }
+
+        /// <summary>
+        /// From the joined <c>bookings</c> row; null until finalize writes one. This is the
+        /// AUTHORITATIVE lifecycle. Deriving it from the operation row instead meant a cancelled
+        /// booking still projected as confirmed: the cancel operation's payload carries only the
+        /// target id, so its candidate is null and drops out, and the original create row
+        /// (Create + Booked => confirmed) is the one that survives GroupBy.
+        /// </summary>
+        public BookingLifecycleStatus? BookingLifecycle { get; init; }
 
         /// <summary>From the joined <c>bookings</c> row; null until finalize writes one.</summary>
         public string? BookingReference { get; init; }

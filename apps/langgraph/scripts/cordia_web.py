@@ -55,6 +55,11 @@ logger = logging.getLogger("cordia.web")
 
 DEFAULT_API_BASE_URL = "http://localhost:8000"
 DEFAULT_DID = "+61400000001"
+#: Stand-in caller number for the browser demo.  A phone call brings its own ANI
+#: and the telephony ingress passes it through as `from`; a browser tab has no
+#: such number, so without one the booking would be created with no guest
+#: attached and nowhere to send a confirmation.
+DEFAULT_CALLER_E164 = "+61400000002"
 
 #: Rate the browser captures at and the realtime socket expects.
 CAPTURE_RATE_HZ = 16000
@@ -134,12 +139,19 @@ class BrowserSession:
     """One browser tab: one call, one graph thread, one pre-warmed STT session."""
 
     def __init__(
-        self, *, base_url: str, did: str, egress: Any, silence_ms: int
+        self,
+        *,
+        base_url: str,
+        did: str,
+        egress: Any,
+        silence_ms: int,
+        caller: str = DEFAULT_CALLER_E164,
     ) -> None:
         self.base_url = base_url
         self.did = did
         self.egress = egress
         self.silence_ms = silence_ms
+        self.caller = caller
         self.audio: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._closed = False
 
@@ -168,7 +180,11 @@ class BrowserSession:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=15.0) as http:
             response = await http.post(
                 "/api/channels/telephony",
-                json={"to": self.did, "from": "+61411111111", "caller_name": "Browser"},
+                json={
+                    "to": self.did,
+                    "from": self.caller,
+                    "caller_name": "Browser",
+                },
             )
         if response.status_code != 200:
             raise RuntimeError(
@@ -198,6 +214,9 @@ class BrowserSession:
                 session_id=self.session_id,
                 tenant_id=self.claims["tenant_id"],
                 correlation_id=self.claims["correlation_id"],
+                # Contact hint only: the tenant came from the signed context the
+                # ingress minted off the called DID, never from this (Inv-13).
+                caller_phone_e164=self.caller,
                 channel="voice",
                 language="en-AU",
             ),
@@ -424,7 +443,14 @@ class BrowserSession:
         )
 
 
-def build_app(*, base_url: str, did: str, egress: Any, silence_ms: int) -> Any:
+def build_app(
+    *,
+    base_url: str,
+    did: str,
+    egress: Any,
+    silence_ms: int,
+    caller: str = DEFAULT_CALLER_E164,
+) -> Any:
     """Build the Starlette app serving the page and the audio socket."""
     from starlette.applications import Starlette
     from starlette.responses import HTMLResponse
@@ -438,7 +464,11 @@ def build_app(*, base_url: str, did: str, egress: Any, silence_ms: int) -> Any:
     async def socket(websocket: Any) -> None:
         await websocket.accept()
         session = BrowserSession(
-            base_url=base_url, did=did, egress=egress, silence_ms=silence_ms
+            base_url=base_url,
+            did=did,
+            egress=egress,
+            silence_ms=silence_ms,
+            caller=caller,
         )
 
         async def send_json(payload: dict) -> None:
@@ -490,6 +520,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base-url", default=None)
     parser.add_argument("--did", default=DEFAULT_DID)
+    parser.add_argument(
+        "--caller",
+        default=DEFAULT_CALLER_E164,
+        help=(
+            "E.164 number to present as the caller. A real phone call carries "
+            "an ANI and a browser tab does not, so the demo has to supply one: "
+            "without it the booking is created with no guest attached and no "
+            "destination to notify. It is a contact hint and nothing more - "
+            "the tenant is resolved from the called DID alone (Inv-13)."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
@@ -555,7 +596,11 @@ def main() -> int:
     import uvicorn
 
     app = build_app(
-        base_url=base_url, did=args.did, egress=egress, silence_ms=args.silence_ms
+        base_url=base_url,
+        did=args.did,
+        egress=egress,
+        silence_ms=args.silence_ms,
+        caller=args.caller,
     )
 
     print(f"API base URL: {base_url}")

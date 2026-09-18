@@ -44,6 +44,7 @@ _OPTIONAL = (
     "CORDIA_AUDIO_VAD_HANGOVER_FRAMES",
     "CORDIA_AUDIO_VAD_PREROLL_FRAMES",
     "CORDIA_AUDIO_MAX_UTTERANCE_SECONDS",
+    "CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS",
     "CORDIA_AUDIO_FALLBACK_ASR_CONFIDENCE",
     "CORDIA_AUDIO_BASE_TIMEOUT_SECONDS",
     "CORDIA_AUDIO_REALTIME_API_VERSION",
@@ -232,6 +233,41 @@ def test_non_positive_realtime_knobs_fail_closed(audio_env) -> None:
     audio_env.setenv("CORDIA_AUDIO_REALTIME_SILENCE_DURATION_MS", "0")
 
     with pytest.raises(AudioNotConfigured, match="realtime_silence_duration_ms"):
+        audio_settings_from_env()
+
+
+@pytest.mark.unit
+def test_the_idle_timeout_is_unset_by_default(audio_env) -> None:
+    # Silence on a phone call is a normal state, not a fault: with nothing
+    # configured the realtime stream waits for the caller indefinitely rather
+    # than killing a pre-warmed session out from under a quiet line.
+    settings = audio_settings_from_env()
+
+    assert settings.idle_timeout_seconds is None
+
+
+@pytest.mark.unit
+def test_the_idle_timeout_is_env_overridable(audio_env) -> None:
+    audio_env.setenv("CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS", "45.5")
+
+    assert audio_settings_from_env().idle_timeout_seconds == 45.5
+
+
+@pytest.mark.unit
+def test_a_non_positive_idle_timeout_fails_closed(audio_env) -> None:
+    # "No bound" is spelled by leaving the variable unset; 0 would mean "time
+    # out at once", which is only ever a typo.
+    audio_env.setenv("CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS", "0")
+
+    with pytest.raises(AudioNotConfigured, match="idle_timeout_seconds"):
+        audio_settings_from_env()
+
+
+@pytest.mark.unit
+def test_a_non_numeric_idle_timeout_fails_closed(audio_env) -> None:
+    audio_env.setenv("CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS", "forever")
+
+    with pytest.raises(AudioNotConfigured, match="CORDIA_AUDIO_IDLE_TIMEOUT_SECONDS"):
         audio_settings_from_env()
 
 

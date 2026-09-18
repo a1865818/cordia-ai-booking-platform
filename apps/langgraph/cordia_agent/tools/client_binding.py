@@ -26,37 +26,54 @@ from cordia_agent.tools.contracts import (
     AcceptanceResult,
     AvailabilityRequest,
     AvailabilityResult,
+    BookingProjectionRef,
+    CatalogItem,
+    CatalogSearchResult,
     ConsentPolicyView,
     ConsentRecordedResult,
     CustomerContextView,
     HandoffRequest,
     HandoffResult,
+    ManageableBooking,
     ModelTraceInput,
     OperationStatusView,
     PolicyValidationResult,
     RecordConsentInput,
     ResolvedResourcesView,
+    SubmitCancellationInput,
     SubmitConfirmedIntentInput,
+    SubmitModificationInput,
     TenantContextView,
     ToolResultEnvelope,
     TranscriptTurnInput,
     TranscriptTurnPersisted,
     VerificationGrantView,
+    VerificationRequest,
+    VerificationSentResult,
 )
 from cordia_agent.tools.foreground import (
     append_transcript_turn,
     check_candidate_availability,
     check_verification,
     find_customer_context,
+    get_catalog_item,
     get_operation_status,
     get_tenant_context,
     record_consent,
     record_model_trace,
     request_human_handoff,
+    request_verification,
     resolve_consent_policy,
     resolve_tenant_resources,
+    search_vendor_catalog,
     submit_confirmed_intent,
     validate_booking_draft,
+)
+from cordia_agent.tools.manage_booking import (
+    find_manageable_bookings,
+    get_booking_details,
+    submit_booking_cancellation,
+    submit_booking_modification,
 )
 
 
@@ -289,6 +306,89 @@ def parse_resolved_resources(env: ToolResultEnvelope) -> ResolvedResourcesView |
         return None
 
 
+# ---------------------------------------------------------------------------
+# search_vendor_catalog wrapper
+# ---------------------------------------------------------------------------
+
+
+async def get_catalog_item_call(*, item_id: str) -> ToolResultEnvelope:
+    """Invoke get_catalog_item and return the raw envelope.
+
+    Args:
+        item_id: The stable catalog item identifier.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await get_catalog_item.ainvoke({"item_id": item_id})
+
+
+def parse_catalog_item(env: ToolResultEnvelope) -> CatalogItem | None:
+    """Parse a ``CatalogItem`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The envelope returned by :func:`get_catalog_item_call`.
+
+    Returns:
+        The validated item, or ``None`` when the tool failed or the payload did
+        not parse.  ``None`` is NOT "we don't serve that" (§21.2): this is the
+        only endpoint carrying allergen_info, and a caller that reports an
+        absence here reports it to someone who asked because it matters.
+    """
+    if not env.ok or env.data is None:
+        _log.warning("get_catalog_item returned non-ok or empty data: %s", env.status)
+        return None
+    try:
+        return CatalogItem.model_validate(_payload(env.data, CatalogItem))
+    except Exception:
+        _log.exception("get_catalog_item returned an unparseable payload")
+        return None
+
+
+async def search_catalog_call(
+    *, query: str, category: str | None = None, max_results: int | None = None
+) -> ToolResultEnvelope:
+    """Invoke search_vendor_catalog and return the raw envelope.
+
+    Args:
+        query: Keyword to match against item name/description.
+        category: Optional category filter, e.g. ``"main"`` | ``"dessert"``.
+        max_results: Optional cap; the API defaults to 20.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await search_vendor_catalog.ainvoke(
+        {"query": query, "category": category, "max_results": max_results}
+    )
+
+
+def parse_catalog_search(env: ToolResultEnvelope) -> CatalogSearchResult | None:
+    """Parse a ``CatalogSearchResult`` from an ok envelope, or return ``None``.
+
+    Args:
+        env: The envelope returned by :func:`search_catalog_call`.
+
+    Returns:
+        The validated result, or ``None`` when the tool failed or the payload
+        did not parse.  ``None`` is NOT "the menu is empty" — the caller must
+        say it cannot reach the menu rather than claim the kitchen has nothing,
+        because inventing an absence is as wrong as inventing a dish (§21.2).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "search_vendor_catalog returned non-ok or empty data: %s", env.status
+        )
+        return None
+    try:
+        return CatalogSearchResult.model_validate(
+            _payload(env.data, CatalogSearchResult)
+        )
+    except Exception:
+        _log.exception("search_vendor_catalog returned an unparseable payload")
+        return None
+
+
 async def evaluate_candidates(req: AvailabilityRequest) -> ToolResultEnvelope:
     """Invoke the check_candidate_availability tool and return the raw envelope.
 
@@ -326,6 +426,26 @@ def parse_availability(env: ToolResultEnvelope) -> AvailabilityResult | None:
 # ---------------------------------------------------------------------------
 # submit_confirmed_intent wrapper (02-J)
 # ---------------------------------------------------------------------------
+
+
+async def submit_cancellation_call(inp: SubmitCancellationInput) -> ToolResultEnvelope:
+    """Invoke submit_booking_cancellation and return the raw envelope.
+
+    A cancellation goes to POST /api/bookings/{id}/cancellations, NOT to the
+    create endpoint.  Until this existed every operation was posted to
+    /api/bookings, and the API recorded a "cancel" that BOOKED a new table while
+    the one the caller wanted gone stayed exactly where it was.  Ids pass through
+    verbatim (Inv-2); the grant is what authorises the mutation (Inv-11).
+    """
+    return await submit_booking_cancellation.ainvoke(inp.model_dump(mode="json"))
+
+
+async def submit_modification_call(inp: SubmitModificationInput) -> ToolResultEnvelope:
+    """Invoke submit_booking_modification and return the raw envelope.
+
+    See :func:`submit_cancellation_call` for why this is not the create path.
+    """
+    return await submit_booking_modification.ainvoke(inp.model_dump(mode="json"))
 
 
 async def submit_intent_call(inp: SubmitConfirmedIntentInput) -> ToolResultEnvelope:
@@ -406,6 +526,65 @@ def parse_operation_status(env: ToolResultEnvelope) -> OperationStatusView | Non
 
 
 # ---------------------------------------------------------------------------
+# request_verification wrapper (02-K)
+# ---------------------------------------------------------------------------
+
+
+async def request_verification_call(req: VerificationRequest) -> ToolResultEnvelope:
+    """Invoke the request_verification tool and return the raw envelope.
+
+    The tool existed with no wrapper, so nothing in the graph could ever ask
+    for a code: ``AgentState.verification_id`` was read by verify_identity and
+    assigned by nobody, and every mutation therefore fell through to
+    human_handoff.  This is the missing half.
+
+    ``req.verification_idempotency_key`` is passed verbatim (Inv-9) — the same
+    key returns ``already_sent`` with the SAME verification_id rather than
+    sending the caller a second code.
+
+    Args:
+        req: The ``VerificationRequest`` carrying action, channel and the
+            stable idempotency key.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await request_verification.ainvoke(req.model_dump(mode="json"))
+
+
+def parse_verification_sent(env: ToolResultEnvelope) -> VerificationSentResult | None:
+    """Parse a ``VerificationSentResult`` from an ok envelope, or return ``None``.
+
+    The API wraps the payload: ``{"status": ..., "verification": {...}}``.  We
+    read the nested object when it is there and fall back to the flat body, so
+    a fixture that returns the fields at the top level parses too.
+
+    Args:
+        env: The ``ToolResultEnvelope`` returned by :func:`request_verification_call`.
+
+    Returns:
+        A validated ``VerificationSentResult``, or ``None`` when the send failed
+        (no verified destination, rate limited, transport error) — in which case
+        the caller cannot be verified and must go to a human (Inv-11).
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "request_verification_call returned non-ok or empty data: %s", env.status
+        )
+        return None
+    body = env.data.get("verification")
+    if not isinstance(body, dict):
+        body = env.data
+    try:
+        return VerificationSentResult.model_validate(
+            _payload(body, VerificationSentResult)
+        )
+    except Exception:
+        _log.exception("Failed to parse VerificationSentResult from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # check_verification wrapper (02-K)
 # ---------------------------------------------------------------------------
 
@@ -447,9 +626,19 @@ def parse_verification_grant(env: ToolResultEnvelope) -> VerificationGrantView |
             "check_verification_call returned non-ok or empty data: %s", env.status
         )
         return None
+    # The API answers ``{"status": ..., "grant": {...}}`` (CheckVerificationResponse),
+    # and ``grant`` is null on pending/failed/expired.  Validating the whole body
+    # against a model with extra="forbid" could only ever fail, so every real
+    # granted response parsed as "no grant" and routed the caller to a human.
+    # Read the nested object; keep the flat fallback for fixtures that inline it.
+    body = env.data.get("grant")
+    if body is None and "grant" in env.data:
+        return None
+    if not isinstance(body, dict):
+        body = env.data
     try:
         return VerificationGrantView.model_validate(
-            _payload(env.data, VerificationGrantView)
+            _payload(body, VerificationGrantView)
         )
     except Exception:
         _log.exception("Failed to parse VerificationGrantView from envelope data")
@@ -630,4 +819,113 @@ def parse_transcript_turn_persisted(
         )
     except Exception:
         _log.exception("Failed to parse TranscriptTurnPersisted from envelope data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Manage-booking discovery wrappers (spec 08 §9.4.1)
+# ---------------------------------------------------------------------------
+
+
+async def find_manageable_bookings_call(
+    *,
+    phone_e164: str | None = None,
+    booking_reference: str | None = None,
+    email: str | None = None,
+) -> ToolResultEnvelope:
+    """Invoke the find_manageable_bookings tool and return the raw envelope.
+
+    Discovery only.  The candidates it returns identify a caller; they NEVER
+    authorize anything (spec 08 MB-Inv-1) — a grant still has to be earned
+    before any mutation is submitted.
+
+    Args:
+        phone_e164: The caller's number, when the channel gave us one.
+        booking_reference: A reference the caller read out.
+        email: An email address, when that is what we have.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await find_manageable_bookings.ainvoke(
+        {
+            "phone_e164": phone_e164,
+            "booking_reference": booking_reference,
+            "email": email,
+        }
+    )
+
+
+def parse_manageable_bookings(env: ToolResultEnvelope) -> list[ManageableBooking]:
+    """Parse the discovery candidates from an ok envelope.
+
+    Args:
+        env: The envelope returned by :func:`find_manageable_bookings_call`.
+
+    Returns:
+        The candidates, or an empty list when the lookup failed or found
+        nothing.  Both mean the same thing to the caller of this function: we
+        do not know which booking they mean, so we have to ask.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "find_manageable_bookings returned non-ok or empty data: %s", env.status
+        )
+        return []
+    rows = env.data.get("candidates")
+    if not isinstance(rows, list):
+        return []
+    try:
+        return [ManageableBooking.model_validate(row) for row in rows]
+    except Exception:
+        _log.exception("find_manageable_bookings returned an unparseable candidate")
+        return []
+
+
+async def get_booking_details_call(
+    booking_id: str, *, grant_id: str | None = None
+) -> ToolResultEnvelope:
+    """Invoke the get_booking_details tool and return the raw envelope.
+
+    Args:
+        booking_id: The stable booking identifier to read.
+        grant_id: A verification grant, when one has been issued.  Without it
+            the API returns the minimal projection, which still carries the
+            optimistic-concurrency ``version`` a mutation has to echo back.
+
+    Returns:
+        The ``ToolResultEnvelope`` from the tool.
+    """
+    return await get_booking_details.ainvoke(
+        {"booking_id": booking_id, "grant_id": grant_id}
+    )
+
+
+def parse_booking_projection(env: ToolResultEnvelope) -> BookingProjectionRef | None:
+    """Parse a ``BookingProjectionRef`` from an ok envelope, or return ``None``.
+
+    The API answers ``{"status": ..., "booking": {...}}``; the nested object is
+    read first, with the flat body as a fallback.
+
+    Args:
+        env: The envelope returned by :func:`get_booking_details_call`.
+
+    Returns:
+        The validated projection, or ``None`` when the booking was not found or
+        the payload did not parse.
+    """
+    if not env.ok or env.data is None:
+        _log.warning(
+            "get_booking_details returned non-ok or empty data: %s", env.status
+        )
+        return None
+    body = env.data.get("booking")
+    if body is None and "booking" in env.data:
+        return None
+    if not isinstance(body, dict):
+        body = env.data
+    try:
+        return BookingProjectionRef.model_validate(_payload(body, BookingProjectionRef))
+    except Exception:
+        _log.exception("get_booking_details returned an unparseable payload")
         return None

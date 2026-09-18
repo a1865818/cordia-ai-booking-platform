@@ -40,6 +40,14 @@ ALLOWED: set[tuple[str, str]] = {
     ("consent_gate", END),
     ("load_context", "identify_intent"),
     ("identify_intent", "capture_fields"),
+    # An informational question is answered and ENDs the turn.  Before this,
+    # identify_intent -> capture_fields was unconditional and `inquire` (which
+    # builds no draft) dead-ended in clarify with an empty update.
+    ("identify_intent", "answer_inquiry"),
+    ("answer_inquiry", END),
+    # A turn that is just the caller reading a verification code out goes
+    # straight to the node that asked for it, past the slot extractor.
+    ("identify_intent", "verify_identity"),
     ("capture_fields", "clarify"),
     # clarify asks and ENDs the turn; the customer's answer arrives as the next
     # invocation.  See PER_TURN_BOUNDARY below.

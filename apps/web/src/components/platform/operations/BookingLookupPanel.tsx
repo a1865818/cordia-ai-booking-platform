@@ -94,8 +94,8 @@ export function BookingLookupPanel() {
     <Panel style={{ marginBottom: 18, padding: '15px' }}>
       <div className="flex items-start gap-[11px] mb-[13px]">
         <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center shrink-0"
-          style={{ background: '#E8EFFD' }}>
-          <Icon name="search" size={17} strokeWidth={2.1} color="#2F6BEB" />
+          style={{ background: '#F1F1EE' }}>
+          <Icon name="search" size={17} strokeWidth={2.1} color="#0A0A0A" />
         </span>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold text-ink">Find a booking</div>

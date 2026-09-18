@@ -5,9 +5,13 @@ Verifies representative utterances → each of create/reschedule/modify/cancel/i
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from cordia_agent.nodes.identify_intent import classify_intent, identify_intent
+from cordia_agent.safety.tenant_context import TenantContext
 from cordia_agent.state import (
     AgentState,
     BookingDraft,
@@ -18,6 +22,7 @@ from cordia_agent.state import (
     OperationType,
     SourceInfo,
 )
+from cordia_agent.tools.client import ToolClient, reset_tool_client, set_tool_client
 
 
 # ---------------------------------------------------------------------------
@@ -229,20 +234,20 @@ async def test_identify_intent_defers_draft_when_source_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fix E — identify_intent revalidates the draft's request on reclassify;
-#          an invalid mutation (no target_booking_id) is rejected, leaving the
-#          existing draft untouched
+# Fix E — identify_intent revalidates the draft's request on reclassify.
+#         A mutation with no target is VALID now (the target arrives later in
+#         the dialog); only a genuinely malformed request is rejected.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-async def test_identify_intent_rejects_reclassify_to_cancel_without_target() -> None:
-    """Fix E: reclassifying an existing create draft to cancel without a
-    target_booking_id must be rejected — the result must NOT contain a new draft
-    with operation=cancel, and must not raise.
+async def test_identify_intent_reclassifies_to_cancel_without_target() -> None:
+    """Reclassifying a create draft to cancel with no target must SUCCEED.
 
-    The result is either absent (no "draft" key) or the draft's operation is still
-    create (the invalid reclassify was rejected and the draft left untouched).
+    This used to be rejected, and rejecting it is the bug: "actually, cancel it"
+    left the draft on operation=create, so the dialog went on gathering booking
+    details for a booking the caller wanted rid of.  The target is asked for
+    afterwards and enforced at submission.
     """
     existing_draft = BookingDraft(
         tenant_id="tenant_fix_e",
@@ -262,13 +267,13 @@ async def test_identify_intent_rejects_reclassify_to_cancel_without_target() -> 
 
     result = await identify_intent(state)
 
-    # Must not propagate an invalid cancel draft.
     returned_draft = result.get("draft")
-    if returned_draft is not None:
-        assert returned_draft.request.operation == OperationType.create, (
-            "Fix E: reclassify to cancel without target_booking_id must be rejected; "
-            f"got operation={returned_draft.request.operation!r}"
-        )
+    assert returned_draft is not None, (
+        "a cancellation must be draftable before the caller has named the booking"
+    )
+    assert returned_draft.request.operation == OperationType.cancel
+    assert returned_draft.request.target_booking_id is None
+    assert result["operation"] == OperationType.cancel
 
 
 @pytest.mark.unit
@@ -307,3 +312,209 @@ async def test_identify_intent_reclassifies_cancel_when_target_present() -> None
     assert returned_draft.request.operation == OperationType.cancel, (
         f"Fix E positive: expected operation=cancel; got {returned_draft.request.operation!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Defect 1 — "I need to cancel my booking" must produce a draft
+# ---------------------------------------------------------------------------
+
+
+_TENANT = "tenant_ii_test"
+
+_FAKE_TENANT_CONTEXT = TenantContext(
+    tenant_id=_TENANT,
+    channel=Channel.voice,
+    channel_endpoint_id="ep_ii_001",
+    configuration_version="v1",
+    correlation_id="corr_ii_001",
+    session_id="sess_ii_001",
+    allowed_agent_policy_ids=["policy_a"],
+    allowed_tool_policy_ids=["policy_a"],
+    issued_at="2026-07-25T00:00:00Z",
+    expires_at="2026-07-25T01:00:00Z",
+)
+
+
+class DiscoveryHandler:
+    """Fake API for GET /api/bookings and GET /api/bookings/{id}."""
+
+    def __init__(self, candidates: list[dict], version: int | None = 7) -> None:
+        self.requests: list[httpx.Request] = []
+        self._candidates = candidates
+        self._version = version
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        body: dict
+        if request.url.path == "/api/bookings":
+            status = (
+                "none"
+                if not self._candidates
+                else ("found" if len(self._candidates) == 1 else "multiple")
+            )
+            body = {"status": status, "candidates": self._candidates}
+        elif request.url.path.startswith("/api/bookings/"):
+            body = {
+                "status": "ok",
+                "booking": {
+                    "booking_id": request.url.path.rsplit("/", 1)[-1],
+                    "booking_reference": "CORD-1",
+                    "status": "confirmed",
+                    "starts_at": "2026-06-15T19:00:00+00:00",
+                    "party_size": 4,
+                    "version": self._version,
+                },
+            }
+        else:
+            return httpx.Response(404, json={"error": "not_found"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(body).encode(),
+        )
+
+    def lookup_count(self) -> int:
+        return sum(1 for r in self.requests if r.url.path == "/api/bookings")
+
+
+def _candidate(booking_id: str) -> dict:
+    return {
+        "booking_id": booking_id,
+        "booking_reference": f"CORD-{booking_id}",
+        "business": "The Fitzroy",
+        "date": "2026-06-15",
+        "approx_time": "7:00 PM",
+        "party_size": 4,
+    }
+
+
+def _install(handler) -> None:
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+    set_tool_client(ToolClient(http, tenant_context=_FAKE_TENANT_CONTEXT))
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_client():
+    yield
+    reset_tool_client()
+
+
+def _cancel_state(**overrides) -> AgentState:
+    base = {
+        "tenant_id": _TENANT,
+        "session_id": "sess_ii_001",
+        "source": SourceInfo(channel=Channel.voice, language="en-AU"),
+        "transcript_text": "I need to cancel my booking",
+    }
+    base.update(overrides)
+    return AgentState(**base)
+
+
+@pytest.mark.unit
+async def test_cancel_produces_a_draft_with_no_target() -> None:
+    """The dead end: no draft meant capture_fields and clarify both no-opped.
+
+    With no caller number there is nothing to look up, so the draft is created
+    with the target still empty and clarify goes on to ask for the reference.
+    """
+    result = await identify_intent(_cancel_state())
+
+    draft = result["draft"]
+    assert draft.request.operation == OperationType.cancel
+    assert draft.request.target_booking_id is None
+
+
+@pytest.mark.unit
+async def test_caller_id_prefills_a_single_booking() -> None:
+    """One booking on the caller's number: do not make them read a reference out."""
+    handler = DiscoveryHandler([_candidate("bk_1")], version=7)
+    _install(handler)
+
+    result = await identify_intent(
+        _cancel_state(customer=CustomerRef(phone_e164="+61477000111"))
+    )
+
+    draft = result["draft"]
+    assert draft.request.target_booking_id == "bk_1"
+    assert draft.request.target_booking_version == 7
+    assert draft.field_provenance["target_booking_id"].capture_method.value == (
+        "channel_verified"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "candidates",
+    [[], [_candidate("bk_1"), _candidate("bk_2")]],
+)
+async def test_ambiguous_lookup_leaves_the_target_for_clarify(
+    candidates: list[dict],
+) -> None:
+    """Zero or several candidates: ask, never guess (spec 08 §9.4.1)."""
+    _install(DiscoveryHandler(candidates))
+
+    result = await identify_intent(
+        _cancel_state(customer=CustomerRef(phone_e164="+61477000111"))
+    )
+
+    assert result["draft"].request.target_booking_id is None
+    assert result["target_lookup_attempted"] is True
+
+
+@pytest.mark.unit
+async def test_lookup_is_not_repeated_every_turn() -> None:
+    """The lookup is a read, but a read per turn for the rest of the call."""
+    handler = DiscoveryHandler([])
+    _install(handler)
+
+    draft = BookingDraft(
+        tenant_id=_TENANT,
+        session_id="sess_ii_001",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(operation=OperationType.create),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+    state = _cancel_state(
+        customer=CustomerRef(phone_e164="+61477000111"),
+        draft=draft,
+        target_lookup_attempted=True,
+    )
+
+    await identify_intent(state)
+
+    assert handler.lookup_count() == 0
+
+
+@pytest.mark.unit
+async def test_a_spoken_code_is_not_reclassified() -> None:
+    """ "481502" classifies as inquire, and answering an inquiry ENDs the turn.
+
+    Holding the operation steady is what keeps the turn on its way to
+    verify_identity instead of stranding the cancellation.
+    """
+    draft = BookingDraft(
+        tenant_id=_TENANT,
+        session_id="sess_ii_001",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(
+            operation=OperationType.cancel, target_booking_id="bk_1"
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+    state = _cancel_state(
+        transcript_text="481502",
+        draft=draft,
+        operation=OperationType.cancel,
+        verification_id="verif_001",
+        verification_outcome="code_sent",
+    )
+
+    result = await identify_intent(state)
+
+    assert result["dialog_intent"] == DialogIntent.cancel
+    assert result["operation"] == OperationType.cancel
+    assert "draft" not in result

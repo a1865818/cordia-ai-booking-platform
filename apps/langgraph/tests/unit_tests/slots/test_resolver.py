@@ -241,3 +241,32 @@ async def test_provenance_survives_resolution() -> None:
 
     assert out[0].capture_method == CaptureMethod.speech
     assert out[0].model_confidence == 0.9
+
+
+@pytest.mark.unit
+async def test_the_declared_name_travels_with_the_identifier() -> None:
+    """The id is what gets booked; the name is what read-back can say out loud.
+
+    Dropping it here is why a caller used to hear "Location: fitzroy" — the slug
+    was the only thing anything downstream had left.
+    """
+    install_client()
+
+    out = await resolve_resource_names([name("location_name", "the Fitzroy room")])
+
+    assert [(c.field, c.value, c.resolved_name) for c in out] == [
+        ("location_id", "fitzroy", "Fitzroy dining room")
+    ]
+
+
+@pytest.mark.unit
+async def test_an_explicitly_spoken_identifier_carries_no_name() -> None:
+    """Nothing resolved it, so there is no declared name to attach — and inventing
+    one would be the same fabrication the resolver exists to prevent."""
+    install_client()
+
+    out = await resolve_resource_names(
+        [name("location_id", "fitzroy"), name("location_name", "the Fitzroy room")]
+    )
+
+    assert [(c.field, c.resolved_name) for c in out] == [("location_id", None)]

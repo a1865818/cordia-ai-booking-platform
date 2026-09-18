@@ -73,9 +73,9 @@ export function VenueNamePanel() {
     <Panel style={{ marginBottom: 18, padding: '15px' }}>
       <div className="flex items-start gap-[11px] mb-[12px]">
         <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center shrink-0"
-          style={{ background: unset ? '#FBF3DF' : '#E7F6EC' }}>
+          style={{ background: '#F1F1EE' }}>
           <Icon name={unset ? 'alert' : 'check'} size={17} strokeWidth={2.1}
-            color={unset ? '#C98A09' : '#15924B'} />
+            color="#0A0A0A" />
         </span>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold text-ink">Venue name</div>

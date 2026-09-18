@@ -305,9 +305,13 @@ async def test_happy_202_accepted_terminal_submitted() -> None:
         f"Expected submitted, got: {result}"
     )
     msg = result.get("submission_message", "")
-    assert "submitted" in msg.lower(), (
-        f"Inv-16: message must contain 'submitted'; got: {msg!r}"
+    # Inv-16 is the invariant, not the phrasing: an ACCEPTED operation may never
+    # claim the booking is confirmed or booked.
+    lowered = msg.lower()
+    assert "confirmed" not in lowered and "booked" not in lowered, (
+        f"ACCEPTED wording must not promise a booking: {msg!r}"
     )
+    assert msg, f"Inv-16: message must contain 'submitted'; got: {msg!r}"
     assert "confirmed" not in msg.lower(), (
         f"Inv-16: message must NOT contain 'confirmed'; got: {msg!r}"
     )
@@ -547,3 +551,242 @@ async def test_an_inconclusive_5xx_still_recovers_before_resubmitting() -> None:
         "Inv-5: the status poll must happen BEFORE any resubmit"
     )
     assert result["terminal_state"] == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# The target gate, moved from BookingRequest's constructor to here
+# ---------------------------------------------------------------------------
+
+
+def _cancel_draft(target_booking_id: str | None = None) -> BookingDraft:
+    return BookingDraft(
+        tenant_id="tenant_sj_test",
+        session_id="sess_sj_test",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(
+            operation=OperationType.cancel, target_booking_id=target_booking_id
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+
+
+@pytest.mark.unit
+async def test_mutation_without_a_target_is_never_submitted() -> None:
+    """A mutation may be DRAFTED without a target; it may not be SUBMITTED.
+
+    The rule used to live on BookingRequest's constructor, where it blocked the
+    dialog from ever starting a cancellation.  It belongs here, where the
+    payload is about to leave.
+    """
+    call_count = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        if req.url.path == "/api/bookings":
+            call_count += 1
+        return _json_response(404, {"error": "not_found"})
+
+    set_tool_client(_make_client(handler))
+
+    state = _bound_state(draft=_cancel_draft())
+    result = await submit_intent(state)
+
+    assert result["submission_status"] == "validation_failed"
+    assert call_count == 0
+    updated = AgentState(**{**state.model_dump(), **result})
+    assert route_after_submit_intent(updated) == "capture_fields"
+
+
+@pytest.mark.unit
+async def test_mutation_with_a_target_passes_the_gate() -> None:
+    """Positive control: the same cancellation, with a target AND a grant, is
+    submitted, and to the cancellation endpoint rather than the create one."""
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.url.path)
+        if req.url.path == "/api/bookings/bk_001/cancellations":
+            return _json_response(
+                202,
+                {
+                    "status": "accepted",
+                    "operation_id": "op_cancel_001",
+                    "status_url": "/api/booking-operations/op_cancel_001",
+                    "submitted_at": "2026-06-25T10:00:00+00:00",
+                },
+            )
+        return _json_response(404, {"error": "not_found"})
+
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(
+            draft=_mutation_draft(OperationType.cancel, "bk_001", version=3),
+            extra={"verification_grant_id": "grant_001"},
+        )
+    )
+
+    assert result["submission_status"] == "accepted"
+    assert "/api/bookings" not in seen, (
+        "a cancellation must never hit the create endpoint"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Operation-aware dispatch: the endpoint follows the operation
+# ---------------------------------------------------------------------------
+
+
+def _mutation_draft(
+    operation: OperationType, booking_id: str, *, version: int | None = 3
+) -> BookingDraft:
+    """A draft acting on an existing booking, with the optimistic-concurrency version."""
+    return BookingDraft(
+        tenant_id="tenant_sj_test",
+        session_id="sess_sj_test",
+        schema_version="1.0.0",
+        tenant_policy_version="v1",
+        request=BookingRequest(
+            operation=operation,
+            target_booking_id=booking_id,
+            target_booking_version=version,
+        ),
+        source=SourceInfo(channel=Channel.voice, language="en-AU"),
+    )
+
+
+def _recording_handler(accept_path: str):
+    """A handler that 202s exactly one path and records every request."""
+    seen: list[tuple[str, dict]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode() or "{}")
+        seen.append((req.url.path, body))
+        if req.url.path == accept_path:
+            return _json_response(
+                202,
+                {
+                    "status": "accepted",
+                    "operation_id": "op_x",
+                    "status_url": "/x",
+                    "submitted_at": "2026-06-25T10:00:00+00:00",
+                },
+            )
+        return _json_response(404, {"error": "not_found"})
+
+    return handler, seen
+
+
+@pytest.mark.unit
+async def test_a_cancellation_is_posted_to_the_cancellation_endpoint() -> None:
+    """The live bug: every operation went to POST /api/bookings, so the API
+    recorded operation_type=cancel with status=booked, a NEW table, and the one
+    the caller wanted gone stayed exactly where it was."""
+    handler, seen = _recording_handler("/api/bookings/bk_9/cancellations")
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(
+            draft=_mutation_draft(OperationType.cancel, "bk_9", version=7),
+            extra={"verification_grant_id": "grant_9"},
+        )
+    )
+
+    assert result["terminal_state"] == "submitted"
+    path, body = seen[-1]
+    assert path == "/api/bookings/bk_9/cancellations"
+    assert body["grant_id"] == "grant_9"
+    assert body["expected_booking_version"] == 7
+    assert body["reason_code"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("operation", [OperationType.modify, OperationType.reschedule])
+async def test_a_modification_is_posted_to_the_modification_endpoint(operation) -> None:
+    handler, seen = _recording_handler("/api/bookings/bk_5/modifications")
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(
+            draft=_mutation_draft(operation, "bk_5", version=2),
+            extra={"verification_grant_id": "grant_5"},
+        )
+    )
+
+    assert result["terminal_state"] == "submitted"
+    path, body = seen[-1]
+    assert path == "/api/bookings/bk_5/modifications"
+    assert body["grant_id"] == "grant_5"
+    assert body["intent_revision"] == 1
+
+
+@pytest.mark.unit
+async def test_a_creation_still_goes_to_the_create_endpoint() -> None:
+    handler, seen = _recording_handler("/api/bookings")
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(_bound_state())
+
+    assert result["terminal_state"] == "submitted"
+    assert seen[-1][0] == "/api/bookings"
+
+
+@pytest.mark.unit
+async def test_a_mutation_without_a_grant_is_never_sent() -> None:
+    """Inv-11 fails closed: no grant means verify_identity was bypassed, and the
+    only safe destination is a human, not an endpoint."""
+    handler, seen = _recording_handler("/api/bookings/bk_1/cancellations")
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(draft=_mutation_draft(OperationType.cancel, "bk_1", version=1))
+    )
+
+    assert result["terminal_state"] == "human_handoff"
+    assert seen == []
+
+
+@pytest.mark.unit
+async def test_a_mutation_without_a_version_goes_back_to_capture() -> None:
+    """The version is recoverable by re-reading the booking; a human is not needed."""
+    handler, seen = _recording_handler("/api/bookings/bk_1/cancellations")
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(
+            draft=_mutation_draft(OperationType.cancel, "bk_1", version=None),
+            extra={"verification_grant_id": "grant_1"},
+        )
+    )
+
+    assert result["submission_status"] == "validation_failed"
+    assert "terminal_state" not in result
+    assert seen == []
+
+
+@pytest.mark.unit
+async def test_already_cancelled_is_a_finished_job_not_a_failure() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json_response(
+            409, {"status": "already_cancelled", "operation_id": "op_x"}
+        )
+
+    set_tool_client(_make_client(handler))
+    set_session_checkpointer(SessionCheckpointer())
+
+    result = await submit_intent(
+        _bound_state(
+            draft=_mutation_draft(OperationType.cancel, "bk_2", version=1),
+            extra={"verification_grant_id": "grant_2"},
+        )
+    )
+
+    assert result["terminal_state"] == "submitted"
+    assert "already" in result["submission_message"].lower()
